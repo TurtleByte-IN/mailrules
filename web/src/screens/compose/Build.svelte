@@ -37,7 +37,7 @@
   }
 
   async function test() {
-    if (empty) return flash('Add a condition with a value first');
+    if (empty) return flash('Add a condition with a value, or say what the email is about');
     const account = b.account_id ?? accounts.list[0]?.id;
     if (account === undefined) return void (tested = { form, text: '', ok: false });
     const r = toRule(b);
@@ -63,7 +63,7 @@
   }
 
   async function save() {
-    if (empty) return flash('Add at least one condition with a value');
+    if (empty) return flash('Add a condition with a value, or say what the email is about');
     if (b.action === 'move' && !b.folder.trim()) return flash('Choose a folder to move these emails to');
     const r = toRule(b);
     const id = b.editingId;
@@ -95,14 +95,18 @@
     </div>
 
     <div class="flex flex-col gap-2.5">
-      <div class="flex flex-wrap items-center gap-2 font-semibold">
-        <span>When an email matches</span>
-        <select aria-label="All or any" class="field h-9 px-2.5 font-semibold" bind:value={b.match}>
-          <option value="all">all</option>
-          <option value="any">any</option>
-        </select>
-        <span>of these conditions</span>
-      </div>
+      {#if b.rows.length}
+        <div class="flex flex-wrap items-center gap-2 font-semibold">
+          <span>When an email matches</span>
+          <select aria-label="All or any" class="field h-9 px-2.5 font-semibold" bind:value={b.match}>
+            <option value="all">all</option>
+            <option value="any">any</option>
+          </select>
+          <span>of these conditions</span>
+        </div>
+      {:else}
+        <h3 class="font-semibold">Conditions (optional)</h3>
+      {/if}
       {#each b.rows as row, i}
         {@const def = fields[row.field]}
         <div class="flex flex-wrap items-center gap-2 rounded-md border {problem?.part === 'row' + i ? 'border-trash' : 'border-line-divider'} bg-selected-row p-2.5">
@@ -120,22 +124,20 @@
           {#if def.type !== 'bool'}
             <input aria-label="Value" class="field min-w-0 flex-[2_1_200px] font-mono text-[13px]" {...bad('row' + i, 'value')} bind:value={row.value} placeholder={def.ph} />
           {/if}
-          {#if b.rows.length > 1}
-            <button type="button" aria-label="Remove condition {i + 1}" class="grid size-10 place-items-center rounded border border-line-card bg-surface p-0 text-muted" onclick={() => b.rows.splice(i, 1)}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
-            </button>
-          {/if}
+          <button type="button" aria-label="Remove condition {i + 1}" class="grid size-10 place-items-center rounded border border-line-card bg-surface p-0 text-muted" onclick={() => b.rows.splice(i, 1)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+          </button>
           {@render why('row' + i)}
         </div>
       {/each}
-      <button type="button" class="inline-flex min-h-10 items-center gap-1.5 self-start rounded border border-dashed border-line-input bg-selected-row px-3.5 font-semibold" onclick={() => b.rows.push({ field: 'subject', op: 'contains_any', value: '' })}>
+      <button type="button" class="inline-flex min-h-10 items-center gap-1.5 self-start rounded border border-dashed border-line-input bg-selected-row px-3.5 font-semibold" onclick={() => b.rows.push(b.rows.length ? { field: 'subject', op: 'contains_any', value: '' } : { field: 'from_domain', op: 'in', value: '' })}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         Add condition
       </button>
     </div>
 
     <div class="flex flex-col gap-1.5">
-      <label for="b-intent" class="text-[13px] font-semibold">And the email is about <span class="font-normal text-muted">(optional, checked by AI only after the conditions match)</span></label>
+      <label for="b-intent" class="text-[13px] font-semibold">And the email is about <span class="font-normal text-muted">(checked by AI; if you add conditions, only after they match)</span></label>
       <input id="b-intent" class="field h-11" bind:value={b.intent} placeholder="For example: an invoice or payment request" {...bad('intent')} />
       {@render why('intent')}
     </div>

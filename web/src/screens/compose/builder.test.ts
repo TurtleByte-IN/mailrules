@@ -68,6 +68,7 @@ describe('builder', () => {
     ['keep', { action: 'keep', folder: '' }],
     ['keep and flag', { action: 'flag', folder: '' }],
     ['conditions only', { intent: '', unless: false, match: 'all' }],
+    ['AI only, no conditions', { rows: [], match: 'all', unless: false }],
   ])('loads a saved rule back into the same form: %s', (_, change) => {
     const b = { ...full, ...change };
     // The daemon's reply to saving this form, shaped as the contract's Rule.

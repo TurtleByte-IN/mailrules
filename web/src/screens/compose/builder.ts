@@ -25,7 +25,7 @@ export interface Builder extends Extras {
 export const emptyBuilder = (): Builder => ({
   name: '',
   match: 'all',
-  rows: [{ field: 'from_domain', op: 'in', value: '' }],
+  rows: [],
   intent: '',
   unless: false,
   action: 'move',
@@ -109,7 +109,7 @@ export function fromRule(r: Rule): Builder {
   return {
     name: r.name,
     match: r.conditions.any ? 'any' : 'all',
-    rows: rows.length ? rows : emptyBuilder().rows,
+    rows,
     intent: r.intent,
     unless: leaves(r.exceptions).length > 0,
     action: has('trash') ? 'trash' : has('move') ? 'move' : has('archive') ? 'archive' : has('flag') ? 'flag' : 'keep',
