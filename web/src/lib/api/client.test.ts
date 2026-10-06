@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, setUnauthorizedHandler } from './client';
+import { api, ApiError, notBuilt, query, setUnauthorizedHandler } from './client';
 
 function respond(status: number, body?: unknown) {
   const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
@@ -52,4 +52,16 @@ describe('api', () => {
     await expect(api('GET', '/auth/me')).rejects.toMatchObject({ status: 401 });
     expect(handler).toHaveBeenCalledExactlyOnceWith('unauthorized');
   });
+});
+
+it.each([
+  [{}, ''],
+  [{ cursor: '', limit: undefined, rule: null }, ''],
+  [{ limit: 50, account: 2, status: 'review' }, '?limit=50&account=2&status=review'],
+])('query(%j) = %j', (params, out) => expect(query(params)).toBe(out));
+
+it('notBuilt is true only for a 501 not_implemented', () => {
+  expect(notBuilt(new ApiError(501, 'not_implemented', 'x'))).toBe(true);
+  expect(notBuilt(new ApiError(404, 'not_found', 'x'))).toBe(false);
+  expect(notBuilt(new Error('x'))).toBe(false);
 });

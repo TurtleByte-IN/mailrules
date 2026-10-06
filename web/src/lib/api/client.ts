@@ -47,3 +47,14 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   if (res.status === 401) onUnauthorized(err?.code ?? 'unauthenticated');
   throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path);
 }
+
+/** True when the daemon has the route in its contract but has not built it yet (501). */
+export const notBuilt = (e: unknown) => e instanceof ApiError && e.code === 'not_implemented';
+
+/** Builds "?a=1&b=2" from the set values; empty string when there are none. */
+export function query(params: Record<string, string | number | boolean | null | undefined>) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  const s = q.toString();
+  return s ? '?' + s : '';
+}

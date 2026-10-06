@@ -72,6 +72,785 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Provider presets for the connect wizard */
+        get: operations["listPresets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Log in with credentials that are not stored, and list the folders
+         * @description Changes nothing, in the database or the mailbox. The password is used for this login only.
+         */
+        post: operations["testAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every connected mailbox, oldest first */
+        get: operations["listAccounts"];
+        put?: never;
+        /**
+         * Connect a mailbox and start watching it
+         * @description The login is checked against the server before anything is stored. Only mail that
+         *     arrives from now on is sorted; existing mail is Cleanup's job. The new account's
+         *     `status` is `new` until its supervisor reports over `account.status`.
+         */
+        post: operations["createAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** One account */
+        get: operations["getAccount"];
+        put?: never;
+        post?: never;
+        /**
+         * Disconnect a mailbox and wipe everything stored about it
+         * @description Stops watching, then deletes the account with its password, folders, contacts, messages, decisions, actions and the rules scoped to it. Nothing in the mailbox is touched.
+         */
+        delete: operations["deleteAccount"];
+        options?: never;
+        head?: never;
+        /**
+         * Rename, change the watched folder or the app password, pause or resume
+         * @description Anything but the label restarts the account's connection, so the change is in force when the response arrives.
+         */
+        patch: operations["updateAccount"];
+        trace?: never;
+    };
+    "/api/accounts/{id}/reconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Drop the connection and connect again
+         * @description Also how an account that stopped on `auth_failed` or `error` is started again. The outcome arrives over `account.status`.
+         */
+        post: operations["reconnectAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** The account's folders, as last discovered on the server */
+        get: operations["listAccountFolders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every rule in priority order, with this week's hit count and last match */
+        get: operations["listRules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turn free text into validated draft rules (M8)
+         * @description Nothing is saved. Each draft comes back validated and tested against the account's last 200 messages.
+         */
+        post: operations["composeRules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save approved drafts as rules, in one transaction (M8)
+         * @description Re-validates every rule, creates `new_folders` on the server, and inserts the rules at the end or at `position`. This is the only endpoint that creates rules besides import.
+         */
+        post: operations["createRules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set the priority order of all rules */
+        post: operations["reorderRules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run saved or draft rules over recent mail without acting (M8)
+         * @description Never touches the mailbox. Model usage is recorded with purpose `test`. With `limit`
+         *     up to 200 the answer is one JSON body. Above that it is a `text/event-stream`:
+         *     `progress` events carrying `TestProgress`, then one `done` event carrying `TestResult`.
+         */
+        post: operations["testRules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download every rule as a YAML file
+         * @description The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). The database stays the source of truth.
+         */
+        get: operations["exportRules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload a rules YAML file
+         * @description The request body is the file itself (at most 1 MB). Nothing is stored unless every
+         *     rule in it is valid. A rule whose name (`id` in the file) is already in use replaces
+         *     that rule's wording and keeps its place, account and id; the others are added after
+         *     the existing rules, in file order. Rules the file does not name are left alone.
+         */
+        post: operations["importRules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** One rule */
+        get: operations["getRule"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a rule
+         * @description Its past decisions stay in the activity feed under the name it had (`rule_id` becomes null there). Sender rules that route to it go with it.
+         */
+        delete: operations["deleteRule"];
+        options?: never;
+        head?: never;
+        /**
+         * Edit a rule; fields left out stay as they are
+         * @description The result is validated as a whole and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`.
+         */
+        patch: operations["updateRule"];
+        trace?: never;
+    };
+    "/api/rules/{id}/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-optimize one rule from its original wording plus new text (M8)
+         * @description Returns a single draft to replace the rule. Nothing is saved; save it with PATCH.
+         */
+        post: operations["recomposeRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/{id}/undo": {
+        parameters: {
+            query: {
+                /** @description Unix seconds; everything done at or after this time is undone */
+                since: components["parameters"]["Since"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo everything this rule did since a time
+         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest.
+         */
+        post: operations["undoRuleSince"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/senders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Senders by volume, with how each is routed (M9) */
+        get: operations["listSenders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/senders/{type}/{value}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: "address" | "domain";
+                /** @description The address or domain */
+                value: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Set how a sender is routed (M9) */
+        put: operations["putSender"];
+        post?: never;
+        /** Remove a sender rule, user-made or learned (M9) */
+        delete: operations["deleteSender"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The feed, newest first
+         * @description Every email MailRules has seen, with its latest decision and all actions taken on it.
+         */
+        get: operations["listActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/messages/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** One email with its decision trace ("Why this happened") */
+        get: operations["getMessage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/messages/{id}/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Say an email belongs to another rule, or to none
+         * @description Undoes what was done to the email (newest first), applies the right rule's actions
+         *     (`rule_id` null keeps it in the inbox), records the correction as a few-shot example
+         *     and forgets any learned sender rule for that sender. The new actions are one batch of
+         *     kind `correction`. In dry-run the earlier real actions are still undone and the new
+         *     ones are recorded as `dry_run`.
+         */
+        post: operations["correctMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Mail waiting in Needs review, newest first
+         * @description Each row's `decision` names the rule the model would have picked (`rule_id` null when it had none) and why it was unsure.
+         */
+        get: operations["listReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/{message_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve the suggested rule, choose another, or keep the email in the inbox
+         * @description The same as `/api/messages/{id}/correct`, for an email that is in Needs review.
+         */
+        post: operations["resolveReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/actions/undo": {
+        parameters: {
+            query: {
+                /** @description Unix seconds; everything done at or after this time is undone */
+                since: components["parameters"]["Since"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo everything done since a time ("Undo the last hour")
+         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone.
+         */
+        post: operations["undoSince"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/actions/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo one action
+         * @description A move goes back to the folder it came from; a flag goes back to what it was. Undoing an action that is already undone, or that never changed the mailbox (`dry_run`, `failed`), does nothing and answers 200. Undo ignores dry-run.
+         */
+        post: operations["undoAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/batches/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** One batch with its progress and action counts */
+        get: operations["getBatch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/batches/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo every action of a batch, newest first
+         * @description An action that cannot be undone does not stop the rest; `failed` counts them and the batch becomes `undone` only when every action was.
+         */
+        post: operations["undoBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cleanup/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Count what a cleanup run would do, per rule, without acting (M9) */
+        post: operations["previewCleanup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cleanup/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sort existing mail with the current rules, as one undoable batch (M9)
+         * @description Answers at once with the batch; progress arrives as `batch.progress` events and from `GET /api/batches/{id}`. Honours dry-run.
+         */
+        post: operations["runCleanup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The rule template gallery (M9)
+         * @description Each template carries a ready rule; add it by sending that rule to `/api/rules/batch`.
+         */
+        get: operations["listTemplates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Counts, cost and account health for the Activity tiles (M9) */
+        get: operations["statsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Model calls and cost by day, rule and model for the Usage screen (M9) */
+        get: operations["statsUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The settings in force
+         * @description Stored settings lie over the environment variables, which are the defaults. Provider keys are never returned; `keys` only says which are set.
+         */
+        get: operations["getSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change settings; fields left out stay as they are
+         * @description The result is validated as a whole and stored in one transaction. Everything takes effect without a restart, from the next email on. Provider keys are stored encrypted under the master key.
+         */
+        patch: operations["updateSettings"];
+        trace?: never;
+    };
+    "/api/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Server-Sent Events stream of everything that changes
+         * @description One long-lived `text/event-stream`. Each event has an `id` (counting up from 1 since
+         *     the daemon started), an `event` name and a JSON `data` line:
+         *
+         *     | event | data | when |
+         *     | --- | --- | --- |
+         *     | `message.processed` | `ActivityItem` | an email was decided, acted on or corrected |
+         *     | `message.review` | `ActivityItem` | an email went to Needs review |
+         *     | `action.undone` | `MessageAction` | one action was undone (a batch undo sends one per action) |
+         *     | `account.status` | `Account` | an account's status changed, or it was edited |
+         *     | `batch.progress` | `Batch` | a cleanup batch moved forward (M9) |
+         *     | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
+         *     | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
+         *
+         *     The daemon keeps the last 200 events. A client that reconnects sends the last id it saw
+         *     in `Last-Event-ID` (EventSource does this by itself) and is first sent what it missed;
+         *     an id from before a daemon restart replays everything kept. A new client (no header)
+         *     is sent only what happens from then on. A client that falls 256 events behind is
+         *     disconnected and catches up the same way. Lines starting with `:` are keep-alive comments.
+         */
+        get: operations["streamEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/healthz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The process is up */
+        get: operations["healthz"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The daemon can do its work (the database answers) */
+        get: operations["readyz"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prometheus metrics
+         * @description Go runtime and process metrics, `mailrules_build_info`, `mailrules_http_requests_total{method,route,code}` and `mailrules_http_request_duration_seconds{method,route}`. Not behind the session; the daemon listens on 127.0.0.1 by default.
+         */
+        get: operations["metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -100,6 +879,742 @@ export interface components {
                 path?: string;
             };
         };
+        Preset: {
+            name: components["schemas"]["PresetName"];
+            /** @description Shown in the provider picker, e.g. "iCloud Mail" */
+            label: string;
+            /** @description Empty for generic; the user supplies it */
+            host: string;
+            port: number;
+            tls_mode: components["schemas"]["TLSMode"];
+            /** @description Where the user creates an app password; may be empty */
+            help_url: string;
+            /** @description The server may want the part before "@" as the username; the daemon tries both */
+            local_part_login: boolean;
+        };
+        /** @enum {string} */
+        PresetName: "icloud" | "fastmail" | "yahoo" | "zoho" | "generic";
+        /** @enum {string} */
+        TLSMode: "implicit" | "starttls";
+        /**
+         * @description `auth_failed` and `error` have stopped and wait for the user (fix the password, then reconnect); `paused` was set by the user
+         * @enum {string}
+         */
+        AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "error" | "paused";
+        AccountInput: {
+            preset: components["schemas"]["PresetName"];
+            username: string;
+            /** @description The app password. Never returned */
+            password: string;
+            /** @description Defaults to the username */
+            label?: string;
+            /** @description Required with the generic preset; otherwise overrides the preset */
+            host?: string;
+            port?: number;
+            tls_mode?: components["schemas"]["TLSMode"];
+            /** @default INBOX */
+            watch_folder: string;
+        };
+        AccountTestResult: {
+            /** @description The username that worked (may be the local part) */
+            username: string;
+            folders: components["schemas"]["Folder"][];
+            /** @description False means rules can flag and mark mail here but not move it */
+            can_move: boolean;
+            /** @description False means new mail is checked for once a minute */
+            idle: boolean;
+        };
+        Account: {
+            /** Format: int64 */
+            id: number;
+            label: string;
+            preset: components["schemas"]["PresetName"];
+            host: string;
+            port: number;
+            tls_mode: components["schemas"]["TLSMode"];
+            username: string;
+            watch_folder: string;
+            status: components["schemas"]["AccountStatus"];
+            /** @description Why the status is what it is; empty when all is well */
+            last_error: string;
+            /**
+             * Format: int64
+             * @description When the status last changed
+             */
+            last_event_at: number | null;
+            /** @description What the server advertised at the last login */
+            capabilities: string[];
+            can_move: boolean;
+            folder_count: number;
+            /** Format: int64 */
+            created_at: number;
+        };
+        AccountEnvelope: {
+            account: components["schemas"]["Account"];
+        };
+        AccountPatch: {
+            label?: string;
+            watch_folder?: string;
+            /** @description A new app password; reconnect follows */
+            password?: string;
+            /** @description true stops watching; false resumes */
+            paused?: boolean;
+        };
+        Folder: {
+            /** @description The server's own name */
+            name: string;
+            delimiter: string;
+            /** @enum {string} */
+            special_use: "" | "\\Junk" | "\\Trash" | "\\Archive" | "\\Sent" | "\\Drafts";
+        };
+        /**
+         * @description One node of a condition tree: a group (`all` or `any` of its children) or a leaf
+         *     (`field`, `op`, `value`). `{}` is the empty tree, which always matches. Fields:
+         *     from, to, cc, delivered_to, from_domain, subject, body, list_id, attachment_ext,
+         *     `header:<Name>` (strings); has_attachment, is_contact, replied_before, is_bulk,
+         *     is_noreply (booleans); size_kb, age_days (numbers); dmarc (pass | fail | none);
+         *     account (an account id).
+         */
+        Condition: {
+            all?: components["schemas"]["Condition"][];
+            any?: components["schemas"]["Condition"][];
+            field?: string;
+            /** @enum {string} */
+            op?: "eq" | "ne" | "in" | "contains" | "contains_any" | "not_contains" | "matches" | "gt" | "lt" | "exists";
+            /** @description A string, number, boolean, or a list of them, as the operator needs. `matches` takes an RE2 pattern of at most 200 characters */
+            value?: unknown;
+        };
+        RuleAction: {
+            /** @enum {string} */
+            type: "move" | "archive" | "trash" | "junk" | "flag" | "unflag" | "read" | "unread" | "keep";
+            /** @description For move only: 1 to 200 characters, no wildcards */
+            folder?: string;
+        };
+        Rule: {
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description null = every account
+             */
+            account_id: number | null;
+            name: string;
+            /** @description The user's original wording; may be empty */
+            said: string;
+            /** @description Plain-English intent for the decision model; empty = condition-only */
+            intent: string;
+            conditions: components["schemas"]["Condition"];
+            exceptions: components["schemas"]["Condition"];
+            actions: components["schemas"]["RuleAction"][];
+            /** @description Lower runs first */
+            priority: number;
+            /** @description Also applies after another rule matched; condition-only */
+            stack: boolean;
+            /** @description Per-rule decider override; empty = the default */
+            model: string;
+            /** @description null = the default threshold */
+            min_confidence: number | null;
+            enabled: boolean;
+            /** @description Goes up by one with every edit */
+            version: number;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            updated_at: number;
+            /** @description Emails this rule was applied to in the last 7 days */
+            hits_week: number;
+            /** Format: int64 */
+            last_match_at: number | null;
+        };
+        RuleEnvelope: {
+            rule: components["schemas"]["Rule"];
+        };
+        RuleList: {
+            items: components["schemas"]["Rule"][];
+        };
+        ImportResult: {
+            items: components["schemas"]["Rule"][];
+            created: number;
+            updated: number;
+        };
+        /**
+         * @description Validation: a name; conditions, an intent, or both; at least one action; an
+         *     intent-based rule that trashes needs min_confidence of at least 0.85; a stacking rule
+         *     is condition-only.
+         */
+        RulePatch: {
+            name?: string;
+            said?: string;
+            intent?: string;
+            conditions?: components["schemas"]["Condition"];
+            exceptions?: components["schemas"]["Condition"];
+            actions?: components["schemas"]["RuleAction"][];
+            /** Format: int64 */
+            account_id?: number | null;
+            stack?: boolean;
+            model?: string;
+            min_confidence?: number | null;
+            enabled?: boolean;
+        };
+        /** @description A rule as the client sends it when creating one (M8). The same validation as RulePatch. */
+        RuleInput: {
+            name: string;
+            said?: string;
+            intent?: string | null;
+            conditions?: components["schemas"]["Condition"];
+            exceptions?: components["schemas"]["Condition"];
+            actions: components["schemas"]["RuleAction"][];
+            /** Format: int64 */
+            account_id?: number | null;
+            /** @default false */
+            stack: boolean;
+            model?: string;
+            min_confidence?: number | null;
+            /** @default true */
+            enabled: boolean;
+            /** @description Folders to create on the server when the rule is saved */
+            new_folders?: string[];
+            /** @description Where in the priority order to insert it (0 = first); left out = at the end */
+            position?: number;
+        };
+        ComposeRequest: {
+            /** @description Typed */
+            text: string;
+            /**
+             * Format: int64
+             * @description The account whose folders and recent mail the drafts are checked against
+             */
+            account_id?: number | null;
+        };
+        RuleDraft: {
+            name: string;
+            /** @description The exact span of the user's words this rule came from */
+            said: string;
+            intent: string | null;
+            conditions: components["schemas"]["Condition"];
+            exceptions: components["schemas"]["Condition"];
+            actions: components["schemas"]["RuleAction"][];
+            min_confidence: number | null;
+            /** @description Folders the rule names that do not exist yet */
+            new_folders: string[];
+            /** @description At most one question */
+            question: string | null;
+            conflicts: {
+                /** Format: int64 */
+                rule_id: number;
+                /** @enum {string} */
+                kind: "overlap" | "duplicate" | "shadowed";
+                note: string;
+            }[];
+            /** @description Validation problems of this draft; a draft with errors cannot be saved as it is */
+            errors: {
+                path: string;
+                message: string;
+            }[];
+            /** @description How many of the account's last 200 emails it would match */
+            match_count: number;
+            samples: components["schemas"]["TestRow"][];
+        };
+        ComposeResult: {
+            rules: components["schemas"]["RuleDraft"][];
+            /** @description Parts of the text that could not be turned into a rule */
+            unparsed: string[];
+        };
+        RuleBatchRequest: {
+            rules: components["schemas"]["RuleInput"][];
+        };
+        /** @description Give `rule_ids`, `rules`, or neither to test the saved rule set as it is. */
+        TestRequest: {
+            /** Format: int64 */
+            account_id: number;
+            /** @description Saved rules to test on their own */
+            rule_ids?: number[];
+            /** @description Draft rules */
+            rules?: components["schemas"]["RuleInput"][];
+            /** @default INBOX */
+            folder: string;
+            /** @default 200 */
+            limit: number;
+        };
+        TestRow: {
+            from: string;
+            subject: string;
+            /** Format: int64 */
+            received_at: number | null;
+            stage: components["schemas"]["Stage"];
+            /**
+             * Format: int64
+             * @description null = no rule
+             */
+            rule_id: number | null;
+            rule_name: string;
+            confidence: number;
+            reason: string;
+            /** @description Below the threshold; it would go to Needs review */
+            review?: boolean;
+            /** @description What it would do */
+            actions: components["schemas"]["RuleAction"][];
+        };
+        TestProgress: {
+            done: number;
+            total: number;
+        };
+        TestResult: {
+            results: components["schemas"]["TestRow"][];
+            tested: number;
+            matched: number;
+            model_calls: number;
+            cost_usd: number;
+        };
+        Sender: {
+            /** @enum {string} */
+            type: "address" | "domain";
+            /** @description Lower-case address or domain */
+            value: string;
+            /** @description Display name from the latest email; may be empty */
+            name: string;
+            /** @description Emails seen from this sender in the last 30 days */
+            messages: number;
+            /** Format: int64 */
+            last_seen_at: number | null;
+            has_list_unsubscribe: boolean;
+            /**
+             * @description null = no sender rule; the rules decide
+             * @enum {string|null}
+             */
+            verdict: "route" | "keep" | "block" | null;
+            /**
+             * Format: int64
+             * @description For route: the rule whose actions apply
+             */
+            rule_id: number | null;
+            /** @enum {string|null} */
+            source: "user" | "learned" | null;
+            /** @description How often the sender rule has applied */
+            hits: number;
+        };
+        SenderPut: {
+            /** @enum {string} */
+            verdict: "route" | "keep" | "block";
+            /**
+             * Format: int64
+             * @description Required for route
+             */
+            rule_id?: number;
+        };
+        /**
+         * @description Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule
+         * @enum {string}
+         */
+        Stage: "sender" | "condition" | "decider" | "fallback" | "none";
+        /**
+         * @description `acted`: a rule was applied (or recorded, in dry-run). `review`: waiting in Needs review. `skipped`: no rule matched, or the email was gone. `error`: failed; it is retried. `new` and `decided` are in progress
+         * @enum {string}
+         */
+        MessageState: "new" | "decided" | "acted" | "review" | "skipped" | "error";
+        /**
+         * @description `review` is the Needs review tag MailRules sets itself; no rule can name it
+         * @enum {string}
+         */
+        ActionKind: "move" | "archive" | "trash" | "junk" | "flag" | "unflag" | "read" | "unread" | "keep" | "review";
+        /** @enum {string} */
+        ActionStatus: "done" | "dry_run" | "failed" | "undone";
+        Decision: {
+            /** Format: int64 */
+            id: number;
+            stage: components["schemas"]["Stage"];
+            /**
+             * Format: int64
+             * @description null = no rule, or the rule has since been deleted (then rule_name still names it). In Needs review: the rule the model suggested
+             */
+            rule_id: number | null;
+            /** @description The rule's current name, or the name it had when a deleted rule decided this. Empty when there is no rule */
+            rule_name: string;
+            confidence: number;
+            /** @description One sentence saying why */
+            reason: string;
+            /** @description The model whose answer was used; empty when none was asked */
+            model: string;
+            tokens_in: number;
+            tokens_out: number;
+            cost_usd: number;
+            latency_ms: number;
+            /** Format: int64 */
+            created_at: number;
+        };
+        MessageAction: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            message_id: number;
+            /** Format: int64 */
+            account_id: number;
+            /**
+             * Format: int64
+             * @description null for a correction
+             */
+            decision_id: number | null;
+            /** Format: int64 */
+            batch_id: number | null;
+            kind: components["schemas"]["ActionKind"];
+            /** @description The destination a move names; empty otherwise */
+            folder: string;
+            /** @description Where the email was just before this action */
+            from_folder: string;
+            /** @description Where it was afterwards; empty unless the action was done */
+            to_folder: string;
+            status: components["schemas"]["ActionStatus"];
+            /** @description Why it failed; empty otherwise */
+            error: string;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            undone_at: number | null;
+        };
+        /** @description One email in the feed. `id` is the message id used by `/api/messages/{id}` and the fix endpoints. */
+        ActivityItem: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            account_id: number;
+            /** @description The sender's address */
+            from: string;
+            from_domain: string;
+            subject: string;
+            /** @description The first characters of the text; blank once retention has purged it */
+            snippet: string;
+            /** Format: int64 */
+            received_at: number | null;
+            /**
+             * Format: int64
+             * @description When MailRules first saw it
+             */
+            created_at: number;
+            has_attachment: boolean;
+            state: components["schemas"]["MessageState"];
+            /** @description The latest decision; null until one is made */
+            decision: components["schemas"]["Decision"] | null;
+            /** @description Every action taken on it */
+            actions: components["schemas"]["MessageAction"][];
+            /** @description At least one action is in effect and can be undone */
+            undoable: boolean;
+            /** @description The user's latest word on this email, which overrules `decision`; null when it was never corrected */
+            correction: components["schemas"]["Correction"] | null;
+        };
+        Correction: {
+            /**
+             * Format: int64
+             * @description The rule the user chose; null = keep in the inbox
+             */
+            rule_id: number | null;
+            rule_name: string;
+            /** Format: int64 */
+            created_at: number;
+        };
+        ActivityPage: {
+            items: components["schemas"]["ActivityItem"][];
+            next_cursor: string | null;
+        };
+        ReviewPage: {
+            items: components["schemas"]["ActivityItem"][];
+            next_cursor: string | null;
+            /** @description The size of the whole queue */
+            total: number;
+        };
+        Signals: {
+            bulk: boolean;
+            noreply: boolean;
+            is_contact: boolean;
+            replied_before: boolean;
+            /** @description pass, fail, none, or empty when unknown */
+            dmarc: string;
+        };
+        /** @description One line of the "Why this happened" panel, oldest first. */
+        TraceStep: {
+            /**
+             * @description A decision stage
+             * @enum {string}
+             */
+            kind: "sender" | "condition" | "decider" | "fallback" | "none" | "action" | "correction";
+            /** @description Short heading, e.g. "Decision model" */
+            label: string;
+            /** @description The sentence to show: the reason, or what the action did */
+            detail: string;
+            /** Format: int64 */
+            rule_id: number | null;
+            rule_name: string;
+            confidence: number | null;
+            model: string;
+            tokens_in: number;
+            tokens_out: number;
+            cost_usd: number;
+            latency_ms: number;
+            /**
+             * @description An action's status; empty for other kinds
+             * @enum {string}
+             */
+            status: "" | "done" | "dry_run" | "failed" | "undone";
+            /** Format: int64 */
+            at: number;
+            /** @description The step that settled where the email is now */
+            active: boolean;
+        };
+        MessageDetail: components["schemas"]["ActivityItem"] & {
+            to: string[];
+            list_id: string;
+            /** @description Bytes */
+            size: number;
+            signals: components["schemas"]["Signals"];
+            /** @description Where it arrived */
+            folder: string;
+            /** @description Where MailRules last left it */
+            current_folder: string;
+            /** @description Retries made after a failure */
+            attempts: number;
+            /** Format: int64 */
+            next_attempt_at: number | null;
+            trace: components["schemas"]["TraceStep"][];
+        };
+        FixRequest: {
+            /**
+             * Format: int64
+             * @description The rule the email belongs to; null = keep it in the inbox
+             */
+            rule_id: number | null;
+            /**
+             * @description Also store a sender rule
+             * @default false
+             */
+            always_for_sender: boolean;
+        };
+        FixResult: {
+            /**
+             * Format: int64
+             * @description The correction batch holding the new actions
+             */
+            batch_id: number;
+            item: components["schemas"]["ActivityItem"];
+        };
+        Batch: {
+            /** Format: int64 */
+            id: number;
+            /**
+             * @description `live` is one per UTC day of live processing, so "undo today" is one batch undo
+             * @enum {string}
+             */
+            kind: "live" | "cleanup" | "review" | "correction" | "undo";
+            /** @enum {string} */
+            status: "running" | "done" | "failed" | "undone";
+            /** @description How many items it set out to handle; null when not counted up front (live) */
+            total: number | null;
+            /** @description How many it has handled; for an undo batch */
+            done: number;
+            /** Format: int64 */
+            created_at: number;
+            /** @description How many of the batch's own actions have each status. An undo batch has none of its own */
+            actions: {
+                done: number;
+                dry_run: number;
+                failed: number;
+                undone: number;
+            };
+        };
+        UndoResult: {
+            batch: components["schemas"]["Batch"];
+            /** @description Actions undone by this call */
+            undone: number;
+            /** @description Actions that could not be undone: the email is gone, or its account is not connected */
+            failed: number;
+        };
+        CleanupRequest: {
+            /** Format: int64 */
+            account_id: number;
+            /** @default INBOX */
+            folder: string;
+            /**
+             * Format: int64
+             * @description Only mail received at or after this time; null = all of it
+             */
+            since?: number | null;
+            /** @description Only the newest N emails */
+            limit?: number;
+        };
+        CleanupPreview: {
+            total: number;
+            groups: {
+                /** @enum {string} */
+                outcome: "rule" | "none" | "review";
+                /** Format: int64 */
+                rule_id: number | null;
+                rule_name: string;
+                count: number;
+            }[];
+            estimated_model_calls: number;
+            estimated_cost_usd: number;
+        };
+        Template: {
+            id: string;
+            name: string;
+            description: string;
+            rule: components["schemas"]["RuleInput"];
+        };
+        ModelUsage: {
+            provider: string;
+            model: string;
+            /** @enum {string} */
+            purpose: "decide" | "escalate" | "compose" | "test";
+            calls: number;
+            tokens_in: number;
+            tokens_out: number;
+            cost_usd: number;
+        };
+        StatsSummary: {
+            /** @enum {string} */
+            range: "day" | "week" | "month";
+            /**
+             * Format: int64
+             * @description Start of the range
+             */
+            since: number;
+            counts: {
+                processed: number;
+                /** @description A rule was applied */
+                sorted: number;
+                trashed: number;
+                /** @description Waiting in Needs review now */
+                review: number;
+            };
+            /** @description Share of emails settled by sender rules or conditions alone */
+            decided_without_model: number;
+            cost_usd: number;
+            calls_by_model: components["schemas"]["ModelUsage"][];
+            top_rules: {
+                /** Format: int64 */
+                rule_id: number | null;
+                rule_name: string;
+                hits: number;
+            }[];
+            accounts: {
+                /** Format: int64 */
+                account_id: number;
+                label: string;
+                status: components["schemas"]["AccountStatus"];
+                /** Format: int64 */
+                last_event_at: number | null;
+                last_error: string;
+            }[];
+        };
+        StatsUsage: {
+            /** @enum {string} */
+            range: "month";
+            /** Format: int64 */
+            since: number;
+            /** @description Emails sorted in the range */
+            emails: number;
+            calls: number;
+            cost_usd: number;
+            /** @description One entry per UTC day, oldest first */
+            days: {
+                /** Format: date */
+                day: string;
+                models: {
+                    provider: string;
+                    model: string;
+                    calls: number;
+                    cost_usd: number;
+                }[];
+            }[];
+            by_rule: {
+                /** Format: int64 */
+                rule_id: number | null;
+                rule_name: string;
+                emails: number;
+                calls: number;
+                cost_usd: number;
+            }[];
+            by_model: components["schemas"]["ModelUsage"][];
+            /** @description Emails settled by conditions and sender rules */
+            without_model: number;
+        };
+        /** @enum {string} */
+        Decider: "jev" | "clef" | "anthropic" | "openai" | "ollama";
+        /** @description For each provider key, whether one is set (stored here, or in the environment). Never the key */
+        ProviderKeys: {
+            /** @description Jev */
+            openrouter_api_key: boolean;
+            /** @description Clef */
+            cloudflare_account_id: boolean;
+            /** @description Clef */
+            cloudflare_api_token: boolean;
+            /** @description The Haiku fallback and the rule composer */
+            anthropic_api_key: boolean;
+            /** @description An OpenAI-compatible endpoint */
+            openai_api_key: boolean;
+        };
+        Settings: {
+            /** @description While true */
+            dry_run: boolean;
+            decider: components["schemas"]["Decider"];
+            /** @description Empty = the provider's default; openai and ollama have none */
+            decider_model: string;
+            /** @description Asked when the decider is unsure; empty = off */
+            fallback_model: string;
+            composer_model: string;
+            /** @description Decider confidence below this asks the fallback */
+            escalate_below: number;
+            /** @description Default act threshold; a rule may set its own */
+            min_confidence: number;
+            /** @description How long message snippets are kept */
+            retention_days: number;
+            keys: components["schemas"]["ProviderKeys"];
+            readonly server: {
+                version: string;
+                data_dir: string;
+                listen: string;
+                /** @enum {string} */
+                mode: "selfhost" | "cloud";
+            };
+            /** @description Later-phase features the UI draws; each stays hidden until its flag is true */
+            readonly features: {
+                digest: boolean;
+                notifications: boolean;
+                timed_actions: boolean;
+                draft_replies: boolean;
+                billing: boolean;
+                unsubscribe: boolean;
+                oauth_providers: boolean;
+            };
+        };
+        SettingsPatch: {
+            dry_run?: boolean;
+            decider?: components["schemas"]["Decider"];
+            decider_model?: string;
+            fallback_model?: string;
+            composer_model?: string;
+            escalate_below?: number;
+            min_confidence?: number;
+            retention_days?: number;
+            /** @description Provider keys to store. An empty string removes the stored key, which puts the environment's back in force */
+            keys?: {
+                openrouter_api_key?: string;
+                cloudflare_account_id?: string;
+                cloudflare_api_token?: string;
+                anthropic_api_key?: string;
+                openai_api_key?: string;
+            };
+        };
+        /** @description Data of `message.processed` */
+        EventMessageProcessed: components["schemas"]["ActivityItem"];
+        /** @description Data of `message.review` */
+        EventMessageReview: components["schemas"]["ActivityItem"];
+        /** @description Data of `action.undone` */
+        EventActionUndone: components["schemas"]["MessageAction"];
+        /** @description Data of `account.status` */
+        EventAccountStatus: components["schemas"]["Account"];
+        /** @description Data of `batch.progress` */
+        EventBatchProgress: components["schemas"]["Batch"];
+        /** @description Data of `rules.changed` and `usage.updated`; refetch */
+        EventEmpty: Record<string, never>;
     };
     responses: {
         /** @description Error */
@@ -111,8 +1626,99 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
+        /** @description The request is wrong; `code` says how and `path` names the field */
+        Invalid: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description No session. `setup_required` (show first-run setup) or `unauthenticated` (show sign-in) */
+        Unauthenticated: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description `csrf_failed`: missing or wrong X-CSRF-Token header */
+        CsrfFailed: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description `not_found` */
+        NotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description The request is valid but cannot be done in the current state; `code` says why */
+        Conflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description `too_large`: the body is over 1 MB */
+        TooLarge: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /**
+         * @description The mail server could not be used with these details: `auth_failed` (path `password`),
+         *     `tls_failed` (path `host`), `no_folder` (path `watch_folder`) or `connection_failed` (path `host`)
+         */
+        ConnectionFailed: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description A mail server or model provider failed; `code` says which */
+        Upstream: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description `not_implemented`: the contract for a later milestone; mock it until then */
+        NotImplemented: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
     };
-    parameters: never;
+    parameters: {
+        Id: number;
+        /** @description The `next_cursor` of the previous page */
+        Cursor: string;
+        Limit: number;
+        /** @description Unix seconds; everything done at or after this time is undone */
+        Since: number;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
@@ -141,8 +1747,8 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
-            400: components["responses"]["Error"];
-            403: components["responses"]["Error"];
+            400: components["responses"]["Invalid"];
+            403: components["responses"]["CsrfFailed"];
             409: components["responses"]["Error"];
         };
     };
@@ -168,9 +1774,9 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
-            400: components["responses"]["Error"];
+            400: components["responses"]["Invalid"];
             401: components["responses"]["Error"];
-            403: components["responses"]["Error"];
+            403: components["responses"]["CsrfFailed"];
             /** @description rate_limited; five failed sign-ins per minute per IP */
             429: {
                 headers: {
@@ -200,7 +1806,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            403: components["responses"]["Error"];
+            403: components["responses"]["CsrfFailed"];
         };
     };
     authMe: {
@@ -222,6 +1828,1197 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error"];
+        };
+    };
+    listPresets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every preset, generic last */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Preset"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    testAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountInput"];
+            };
+        };
+        responses: {
+            /** @description The server accepted the login */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountTestResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            422: components["responses"]["ConnectionFailed"];
+        };
+    };
+    listAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accounts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Account"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    createAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountInput"];
+            };
+        };
+        responses: {
+            /** @description Stored and being watched */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountEnvelope"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ConnectionFailed"];
+        };
+    };
+    getAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountPatch"];
+            };
+        };
+        responses: {
+            /** @description The account as it is now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountEnvelope"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    reconnectAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reconnecting; the body is the account as stored at this moment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    listAccountFolders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folders by name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Folder"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rules, disabled ones included */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleList"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    composeRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComposeRequest"];
+            };
+        };
+        responses: {
+            /** @description Drafts to review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComposeResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            501: components["responses"]["NotImplemented"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    createRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuleBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description The saved rules */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Rule"][];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    reorderRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Every rule's id exactly once; the first runs first */
+                    ids: number[];
+                };
+            };
+        };
+        responses: {
+            /** @description The rules in their new order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleList"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+        };
+    };
+    testRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestRequest"];
+            };
+        };
+        responses: {
+            /** @description What each email would get */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestResult"];
+                    "text/event-stream": string;
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    exportRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rules file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    importRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/yaml": string;
+            };
+        };
+        responses: {
+            /** @description All rules after the import, with how many were added and updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            413: components["responses"]["TooLarge"];
+        };
+    };
+    getRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RulePatch"];
+            };
+        };
+        responses: {
+            /** @description The rule as saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleEnvelope"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    recomposeRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The replacement draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rule: components["schemas"]["RuleDraft"];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            501: components["responses"]["NotImplemented"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    undoRuleSince: {
+        parameters: {
+            query: {
+                /** @description Unix seconds; everything done at or after this time is undone */
+                since: components["parameters"]["Since"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The undo batch and its counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UndoResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listSenders: {
+        parameters: {
+            query?: {
+                sort?: "volume" | "recent";
+                /** @description Matches the address or display name */
+                q?: string;
+                /** @description Only senders with a sender rule from this source */
+                source?: "user" | "learned";
+                /** @description The `next_cursor` of the previous page */
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of senders */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Sender"][];
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    putSender: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: "address" | "domain";
+                /** @description The address or domain */
+                value: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SenderPut"];
+            };
+        };
+        responses: {
+            /** @description The sender with its rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sender: components["schemas"]["Sender"];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    deleteSender: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: "address" | "domain";
+                /** @description The address or domain */
+                value: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    listActivity: {
+        parameters: {
+            query?: {
+                /** @description Only this account */
+                account?: number;
+                /** @description Only mail whose latest decision names this rule */
+                rule?: number;
+                /** @description Only mail whose latest decision was made at this stage */
+                stage?: components["schemas"]["Stage"];
+                /** @description Only mail in this state */
+                status?: components["schemas"]["MessageState"];
+                /** @description Only mail with an action of this kind */
+                action?: components["schemas"]["ActionKind"];
+                /** @description The `next_cursor` of the previous page */
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityPage"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    getMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The feed row plus header details and the trace */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        message: components["schemas"]["MessageDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    correctMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FixRequest"];
+            };
+        };
+        responses: {
+            /** @description The email as it is now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FixResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    listReview: {
+        parameters: {
+            query?: {
+                account?: number;
+                /** @description The `next_cursor` of the previous page */
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page, and the size of the whole queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewPage"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    resolveReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FixRequest"];
+            };
+        };
+        responses: {
+            /** @description The email as it is now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FixResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    undoSince: {
+        parameters: {
+            query: {
+                /** @description Unix seconds; everything done at or after this time is undone */
+                since: components["parameters"]["Since"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The undo batch and its counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UndoResult"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+        };
+    };
+    undoAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The action as it is now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        action: components["schemas"]["MessageAction"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    getBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        batch: components["schemas"]["Batch"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    undoBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch and how the undo went */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UndoResult"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    previewCleanup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CleanupRequest"];
+            };
+        };
+        responses: {
+            /** @description The preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CleanupPreview"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    runCleanup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CleanupRequest"];
+            };
+        };
+        responses: {
+            /** @description Started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        batch: components["schemas"]["Batch"];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    listTemplates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Templates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Template"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    statsSummary: {
+        parameters: {
+            query?: {
+                range?: "day" | "week" | "month";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatsSummary"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    statsUsage: {
+        parameters: {
+            query?: {
+                range?: "month";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Usage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatsUsage"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    getSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Settings"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    updateSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description The settings as they are now */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Settings"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+        };
+    };
+    streamEvents: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Id of the last event the client saw */
+                "Last-Event-ID"?: number;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    healthz: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    readyz: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ok */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description The database is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    metrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prometheus text format */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
         };
     };
 }
