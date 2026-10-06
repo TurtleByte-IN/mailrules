@@ -15,4 +15,4 @@ export const list = (cursor?: string) => api<Page>('GET', '/batches' + query({ k
 export const get = (id: number) => api<{ batch: Batch }>('GET', `/batches/${id}`).then((x) => x.batch);
 export const undo = (id: number) => api<UndoResult>('POST', `/batches/${id}/undo`);
 /** The mailbox's folders, for the folder choice in the scope. */
-export const folders = (accountId: number) => api<{ items: Folder[] }>('GET', `/accounts/${accountId}/folders`).then((x) => x.items);
+export { folders } from './accounts';

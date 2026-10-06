@@ -50,9 +50,6 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-/** True when the daemon has the route in its contract but has not built it yet (501). */
-export const notBuilt = (e: unknown) => e instanceof ApiError && e.code === 'not_implemented';
-
 /** Builds "?a=1&b=2" from the set values; empty string when there are none. */
 export function query(params: Record<string, string | number | boolean | null | undefined>) {
   const q = new URLSearchParams();
