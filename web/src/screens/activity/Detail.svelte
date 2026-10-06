@@ -5,12 +5,14 @@
   import { accounts } from '../../lib/state/accounts.svelte';
   import { correct } from '../../lib/state/activity.svelte';
   import { rules } from '../../lib/state/rules.svelte';
+  import Always from './Always.svelte';
 
   // id keeps the select's label unique: the screen renders this panel once beside the feed and once under the row.
   let { message, id }: { message: MessageDetail; id: string } = $props();
 
   let correctTo = $state('keep');
-  let always = $state(false);
+  // Not there while the message waits in Needs review.
+  let always = $state<Always>();
   const account = $derived(accounts.list.find((a) => String(a.id) === String(message.account_id))?.label);
 
   // What a decision step picked and what it cost: "Recruiters 0.91 · 412 tokens · $0.0001 · 380 ms".
@@ -27,8 +29,7 @@
           .join(' · ');
 
   async function fix() {
-    await correct(message.id, correctTo === 'keep' ? null : Number(correctTo), always);
-    always = false;
+    always?.settle(await correct(message.id, correctTo === 'keep' ? null : Number(correctTo), always?.value()));
   }
 </script>
 
@@ -77,8 +78,6 @@
       </select>
       <button type="button" class="btn-primary" onclick={fix}>Fix it</button>
     </div>
-    <label class="flex min-h-8 items-center gap-2 text-[13px] text-nav">
-      <input type="checkbox" bind:checked={always} />Always do this for {message.from}
-    </label>
+    <Always bind:this={always} item={message} />
   </div>
 {/if}

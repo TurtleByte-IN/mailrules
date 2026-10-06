@@ -48,16 +48,17 @@ describe('review queue', () => {
   });
 
   it.each([
-    { name: 'approve the guess', to: 3, always: false, said: 'Done: Moved to Jobs' },
-    { name: 'another rule, always', to: 4, always: true, said: 'Done: Moved to Jobs' },
-    { name: 'keep in Inbox', to: null, always: false, said: 'Kept in Inbox' },
+    { name: 'approve the guess', to: 3, always: undefined, body: { rule_id: 3 }, said: 'Done: Moved to Jobs' },
+    { name: 'another rule, always for the domain', to: 4, always: 'domain' as const, body: { rule_id: 4, always_for: 'domain' }, said: 'Done: Moved to Jobs' },
+    { name: 'another rule, always for the address', to: 4, always: 'address' as const, body: { rule_id: 4, always_for: 'address' }, said: 'Done: Moved to Jobs' },
+    { name: 'keep in Inbox', to: null, always: undefined, body: { rule_id: null }, said: 'Kept in Inbox' },
   ])('$name', async (c) => {
     const settled = item({ id: 8, correction: { kind: 'review', rule_id: c.to, rule_name: 'Recruiters', created_at: 2000 }, actions: [action({ message_id: 8, decision_id: null })] });
     const calls = serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [200, { batch_id: 8, item: settled }]));
     await s.load();
     await s.resolve(8, c.to, c.always);
 
-    expect(calls[1]).toEqual({ call: 'POST /api/review/8/resolve', body: { rule_id: c.to, always_for_sender: c.always } });
+    expect(calls[1]).toEqual({ call: 'POST /api/review/8/resolve', body: c.body });
     expect(ids()).toEqual([9]);
     expect(badges['/review']).toBe(1);
     expect(toast.text).toBe(c.said);
@@ -67,7 +68,7 @@ describe('review queue', () => {
   it('shows why when the daemon refuses, and keeps the email in the queue', async () => {
     serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [409, error('not_in_review', 'This message is not waiting in Needs review.')]));
     await s.load();
-    await s.resolve(8, 3, false);
+    await s.resolve(8, 3);
     expect(toast.text).toBe('This message is not waiting in Needs review.');
     expect(ids()).toEqual([9, 8]);
     expect(badges['/review']).toBe(2);
@@ -77,10 +78,19 @@ describe('review queue', () => {
     const said = 'This mail account has no Archive folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.';
     serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [422, error('no_special_folder', said)]));
     await s.load();
-    await s.resolve(8, 3, false);
+    await s.resolve(8, 3);
     expect(toast.text).toBe(said);
     expect(ids()).toEqual([9, 8]);
     expect(badges['/review']).toBe(2);
+  });
+
+  it('hands back the refusal of a whole free-mail domain (422) for the card, without a toast, and keeps the email in the queue', async () => {
+    const said = "Anyone can have an address at gmail.com, so a rule for the whole domain would catch mail from strangers. Make the rule for this sender's address instead.";
+    serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [422, error('domain_too_broad', said, 'always_for')]));
+    await s.load();
+    expect(await s.resolve(8, 3, 'domain')).toBe(said);
+    expect(toast.text).toBe('');
+    expect(ids()).toEqual([9, 8]);
   });
 
   describe('live events', () => {

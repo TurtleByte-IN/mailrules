@@ -1,7 +1,7 @@
-import type { ActivityItem } from '../api/activity';
+import type { ActivityItem, FixRequest } from '../api/activity';
 import { subscribe } from '../api/events';
 import * as reviewApi from '../api/review';
-import { failed, outcome, upsert } from './activity.svelte';
+import { failed, outcome, refused, upsert } from './activity.svelte';
 import { badges } from './badges.svelte';
 import { flash } from './toast.svelte';
 
@@ -48,16 +48,20 @@ export async function loadMore() {
   }
 }
 
-/** ruleId null means keep in Inbox. */
-export async function resolve(id: number, ruleId: number | null, always: boolean) {
+/**
+ * ruleId null means keep in Inbox; alwaysFor also stores a sender rule for the address or the whole domain.
+ * Resolves with the daemon's message when it refuses the domain, and with '' otherwise.
+ */
+export async function resolve(id: number, ruleId: number | null, alwaysFor?: FixRequest['always_for']) {
   try {
-    const { item } = await reviewApi.resolve(id, { rule_id: ruleId, always_for_sender: always });
+    const { item } = await reviewApi.resolve(id, { rule_id: ruleId, always_for: alwaysFor });
     drop(id);
     // The daemon also sends this row as message.processed; applying it twice is harmless.
     upsert(item);
     flash(ruleId === null ? 'Kept in Inbox' : 'Done: ' + outcome(item));
+    return '';
   } catch (e) {
-    failed(e);
+    return refused(e);
   }
 }
 

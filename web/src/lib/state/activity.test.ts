@@ -36,11 +36,11 @@ describe('feed', () => {
     ['nothing', {}, ''],
     ['a rule', { rule: '3' }, '?rule=3'],
     ['a mailbox', { account: '2' }, '?account=2'],
-    ['sorted', { kind: 'ok' }, '?status=acted'],
-    ['trashed', { kind: 'trash' }, '?action=trash'],
-    ['no rule', { kind: 'none' }, '?stage=none'],
-    ['needs review', { kind: 'review' }, '?status=review'],
-    ['a rule, a mailbox and an outcome', { rule: '3', account: '2', kind: 'trash' }, '?account=2&rule=3&action=trash'],
+    ['sorted', { outcome: 'sorted' }, '?outcome=sorted'],
+    ['trashed', { outcome: 'trashed' }, '?outcome=trashed'],
+    ['left in Inbox', { outcome: 'inbox' }, '?outcome=inbox'],
+    ['needs review', { outcome: 'review' }, '?outcome=review'],
+    ['a rule, a mailbox and an outcome', { rule: '3', account: '2', outcome: 'trashed' }, '?account=2&rule=3&outcome=trashed'],
   ])('sends a filter by %s to the daemon', async (_name, f, want) => {
     const calls = serve(() => [200, page([], '5')]);
     Object.assign(s.activity.filter, f);
@@ -145,6 +145,15 @@ describe('undo', () => {
     expect(toast.text).toBe('This email is no longer in the mailbox.');
     expect(s.canUndo(s.activity.list[0])).toBe(true);
   });
+
+  it('says so when it was done too long ago (409 too_old), and leaves the row as it was', async () => {
+    const said = 'This was done more than 30 days ago, so it can no longer be undone.';
+    serve((call) => (call.startsWith('GET') ? [200, page([two()])] : [409, error('too_old', said)]));
+    await s.load();
+    await s.undo(s.activity.list[0]);
+    expect(toast.text).toBe(said);
+    expect(s.activity.list).toEqual([two()]);
+  });
 });
 
 describe('undoLastHour', () => {
@@ -174,14 +183,15 @@ describe('correct', () => {
   const fixed = item({ correction: { kind: 'correction', rule_id: 4, rule_name: 'Scams', created_at: 2000 }, actions: [action({ status: 'undone' }), action({ id: 30, decision_id: null, batch_id: 8, kind: 'trash', folder: '' })] });
 
   it.each([
-    { to: 4, always: false, said: 'Fixed. MailRules will use this as an example' },
-    { to: null, always: false, said: 'Fixed. MailRules will use this as an example' },
-    { to: 4, always: true, said: 'Fixed, and saved as a sender rule for priya@talentbridge.in' },
+    { to: 4, always: undefined, body: { rule_id: 4 }, said: 'Fixed. MailRules will use this as an example' },
+    { to: null, always: undefined, body: { rule_id: null }, said: 'Fixed. MailRules will use this as an example' },
+    { to: 4, always: 'domain' as const, body: { rule_id: 4, always_for: 'domain' }, said: 'Fixed, and saved as a sender rule for talentbridge.in' },
+    { to: 4, always: 'address' as const, body: { rule_id: 4, always_for: 'address' }, said: 'Fixed, and saved as a sender rule for priya@talentbridge.in' },
   ])('to $to, always $always', async (c) => {
     const calls = serve((call) => (call.startsWith('GET') ? [200, page([item()])] : [200, { batch_id: 8, item: fixed }]));
     await s.load();
     await s.correct(1, c.to, c.always);
-    expect(calls[1]).toEqual({ call: 'POST /api/messages/1/correct', body: { rule_id: c.to, always_for_sender: c.always } });
+    expect(calls[1]).toEqual({ call: 'POST /api/messages/1/correct', body: c.body });
     expect(s.activity.list).toHaveLength(1);
     expect(s.ruleName(s.activity.list[0])).toBe('Scams');
     expect(toast.text).toBe(c.said);
@@ -190,13 +200,13 @@ describe('correct', () => {
   it('refetches the open decision trace', async () => {
     const calls = serve((call) => (call.includes('/correct') ? [200, { batch_id: 8, item: fixed }] : [200, { message: detail() }]));
     await s.open(1);
-    await s.correct(1, 4, false);
+    await s.correct(1, 4);
     expect(calls.map((c) => c.call)).toEqual(['GET /api/messages/1', 'POST /api/messages/1/correct', 'GET /api/messages/1']);
   });
 
   it('shows why when the daemon refuses', async () => {
     serve(() => [409, error('account_offline', 'This mailbox is not connected.')]);
-    await s.correct(1, 4, false);
+    expect(await s.correct(1, 4)).toBe('');
     expect(toast.text).toBe('This mailbox is not connected.');
   });
 
@@ -204,8 +214,17 @@ describe('correct', () => {
     const said = 'This mail account has no Trash folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.';
     serve((call) => (call.startsWith('GET') ? [200, page([item()])] : [422, error('no_special_folder', said)]));
     await s.load();
-    await s.correct(1, 4, false);
+    await s.correct(1, 4);
     expect(toast.text).toBe(said);
+    expect(s.activity.list).toEqual([item()]);
+  });
+
+  it('hands back the refusal of a whole free-mail domain (422) for the form, without a toast', async () => {
+    const said = "Anyone can have an address at gmail.com, so a rule for the whole domain would catch mail from strangers. Make the rule for this sender's address instead.";
+    serve((call) => (call.startsWith('GET') ? [200, page([item()])] : [422, error('domain_too_broad', said, 'always_for')]));
+    await s.load();
+    expect(await s.correct(1, 4, 'domain')).toBe(said);
+    expect(toast.text).toBe('');
     expect(s.activity.list).toEqual([item()]);
   });
 });
@@ -230,7 +249,7 @@ describe('live events', () => {
   });
 
   it('with a filter on, a live row is updated in place but not added', () => {
-    s.activity.filter.kind = 'trash';
+    s.activity.filter.outcome = 'trashed';
     events.dispatch('message.processed', item({ id: 4 }));
     events.dispatch('message.processed', item({ id: 2, subject: 'Changed' }));
     expect(ids()).toEqual([3, 2, 1]);
