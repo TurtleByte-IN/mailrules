@@ -29,7 +29,7 @@
 
   const keep = $derived(compose.drafts.filter(savable).length);
   // A refused save stays on its card until the card is changed or skipped.
-  const change = (d: Draft, patch: Partial<Draft>) => Object.assign(d, patch, { refused: '' });
+  const change = (d: Draft, patch: Partial<Draft>) => Object.assign(d, patch, { refused: '', refusedName: false });
 
   async function save() {
     const added = await saveAll();
@@ -83,7 +83,8 @@
         {@const k = kind(d)}
         <article class="flex flex-col gap-3 rounded-md border border-line-input bg-surface p-[18px] {savable(d) ? '' : 'border-dashed opacity-60'}">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="flex flex-wrap items-center gap-2"><span class="text-base font-semibold">{d.name}</span><span class={k.chip}>{k.label}</span></div>
+            <div class="flex flex-wrap items-center gap-2"><!-- Editable: a name the daemon refuses (taken, or twice in one save) can only be fixed here. -->
+              <input class="field h-9 w-[220px] max-w-full text-base font-semibold" aria-label="Rule name" aria-invalid={d.refusedName || undefined} value={d.name} oninput={(e) => change(d, { name: e.currentTarget.value })} /><span class={k.chip}>{k.label}</span></div>
             <!-- The count is 0 when nothing was tested: a draft in error, or no mailbox to test on. -->
             {#if !d.errors.length && accounts.list.length}
               <span class="text-[12.5px] text-secondary">Matches {d.match_count} of your last 200 emails{d.intent ? '' : ' · no model needed'}</span>

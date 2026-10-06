@@ -167,9 +167,16 @@ it('a draft card chooses its mailbox, and a refused save shows on the card the d
   expect(JSON.parse(f.mock.calls[1][1].body as string).rules.map((r: Draft) => [r.name, r.account_id])).toEqual([['Other', null], ['Saved', 8]]);
   expect(toast.text).toBe('');
 
-  // It goes when the card is changed.
-  await fireEvent.change(applies()[2], { target: { value: '' } });
+  // The refusal was about the name, so the name field is the one marked.
+  const names = () => screen.getAllByLabelText<HTMLInputElement>('Rule name');
+  expect(names().map((n) => n.getAttribute('aria-invalid'))).toEqual([null, null, 'true']);
+
+  // Renaming the draft clears the refusal, and the next save sends the new name.
+  await fireEvent.input(names()[2], { target: { value: 'Saved too' } });
   expect(screen.queryByRole('alert')).toBeNull();
+  expect(names()[2].getAttribute('aria-invalid')).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Save 2 rules' }));
+  expect(JSON.parse(f.mock.calls[2][1].body as string).rules.map((r: Draft) => r.name)).toEqual(['Other', 'Saved too']);
 });
 
 it('offers no mailbox choice on a draft card with one mailbox connected', async () => {

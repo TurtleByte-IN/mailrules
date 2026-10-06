@@ -5,8 +5,8 @@ import * as templatesApi from '../api/templates';
 import { add, rules } from './rules.svelte';
 import { flash } from './toast.svelte';
 
-/** `refused` is the daemon's sentence when the last save was refused because of this draft. */
-export type Draft = composeApi.Draft & { rejected: boolean; refused?: string };
+/** `refused` is the daemon's sentence when the last save was refused because of this draft; `refusedName` says it was about the name. */
+export type Draft = composeApi.Draft & { rejected: boolean; refused?: string; refusedName?: boolean };
 
 // `text` lives here, not in the screen, so it survives leaving Add rules and another
 // screen can hand over a starting sentence. `needsModel` is the daemon's own sentence when
@@ -65,7 +65,7 @@ const toInput = ({ name, said, intent, conditions, exceptions, actions, account_
 export async function saveAll() {
   const keep = compose.drafts.filter(savable);
   if (!keep.length) return flash('Nothing to save: every draft is skipped');
-  for (const d of compose.drafts) d.refused = '';
+  for (const d of compose.drafts) Object.assign(d, { refused: '', refusedName: false });
   try {
     const added = await add(keep.map(toInput));
     compose.drafts = [];
@@ -76,7 +76,7 @@ export async function saveAll() {
   } catch (e) {
     // The daemon counts the rules as sent, so skipped drafts are not in its index.
     const at = e instanceof ApiError && /^rules\[(\d+)\]\./.exec(e.path ?? '');
-    if (at && keep[+at[1]]) keep[+at[1]].refused = e.message;
+    if (at && keep[+at[1]]) Object.assign(keep[+at[1]], { refused: e.message, refusedName: /\.name$/.test(e.path ?? '') });
     else fail(e);
   }
 }
