@@ -12,18 +12,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: make check
-      - run: make vuln
-      # The web app, once web/ is in the repository: its own checks, then the same build
-      # and embed a release does.
-      - if: hashFiles('web/package.json') != ''
-        uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - if: hashFiles('web/package.json') != ''
-        run: make build && npm --prefix web run check
+      - run: make check
+      - run: make vuln
+      # `make check` already ran the web app's own checks; this is the build and embed a release does.
+      - run: make build
 
   image:
     runs-on: ubuntu-latest

@@ -2,9 +2,9 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev
 # Pinned here so local runs and CI lint with the same version.
 GOLANGCI := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
-.PHONY: check fmt vet lint test vuln web build dev
+.PHONY: check fmt vet lint test vuln web web-check build dev
 
-check: fmt vet lint test
+check: fmt vet lint test web-check
 
 fmt:
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
@@ -20,6 +20,12 @@ test:
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+# Type check and tests, then fail if the generated API types are stale against api/openapi.yaml.
+web-check:
+	@if [ -f web/package.json ]; then \
+		cd web && npm ci && npm run check && npm run gen:api && git diff --exit-code -- src/lib/api/schema.d.ts; \
+	else echo "web/ is not in this checkout: skipping the web checks"; fi
 
 # The UI is embedded from internal/web/dist (go:embed cannot reach web/dist). That
 # directory holds a tracked placeholder index.html; `make web` builds the Svelte app and
