@@ -1,7 +1,6 @@
 <script lang="ts">
   import { features } from '../lib/features';
   import type { Sender, Sort } from '../lib/api/senders';
-  import NotBuilt from '../lib/components/NotBuilt.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import { forget, load, more, nameOf, routingOf, senders, setQuery, setRouting, setSort, targetOf } from '../lib/state/senders.svelte';
 
@@ -20,9 +19,7 @@
     <p class="mt-1 text-secondary">Who emails you most. Set a sender once and their mail never needs a model again.</p>
   </header>
 
-  {#if senders.status === 'not_built'}
-    <NotBuilt what="Senders" />
-  {:else if senders.status === 'error'}
+  {#if senders.status === 'error'}
     <div role="alert" class="flex flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-3 py-2 text-trash">
       <span>{senders.error}</span>
       <button type="button" class="btn" onclick={load}>Retry</button>
@@ -48,7 +45,7 @@
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 px-[18px] py-3.5 {i ? 'border-t border-line-divider' : ''}">
           <div class="min-w-0 flex-[1_1_220px]">
             <div class="font-semibold">{nameOf(s)}</div>
-            <div class="font-mono text-[12.5px] text-muted">{s.value}</div>
+            <div class="font-mono text-[12.5px] text-muted">{s.type === 'domain' ? 'Domain: all its addresses' : s.value}</div>
           </div>
           <div class="w-[130px]">
             <div class="font-semibold">{s.messages.toLocaleString()} emails</div>

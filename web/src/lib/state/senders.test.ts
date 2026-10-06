@@ -56,13 +56,10 @@ it('load fills the list, its cursor and the learned rules', async () => {
   expect(m.senders).toMatchObject({ status: 'ready', list: [swiggy, hdfc, jobs], next: 'c2', learned: [jobs] });
 });
 
-it.each([
-  [501, 'not_implemented', 'not_built'],
-  [500, 'internal', 'error'],
-])('a %i gives the %s state', async (status, code, want) => {
-  routes[LIST] = failed(status, code, 'This part of MailRules is not built yet.');
+it('a failed load gives the error state', async () => {
+  routes[LIST] = failed(500, 'internal', 'Something went wrong.');
   await m.load();
-  expect(m.senders).toMatchObject({ status: want, error: 'This part of MailRules is not built yet.', list: [] });
+  expect(m.senders).toMatchObject({ status: 'error', error: 'Something went wrong.', list: [] });
 });
 
 it('sort and search are asked of the server', async () => {

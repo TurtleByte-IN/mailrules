@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { Batch, Preview } from '../lib/api/cleanup';
-  import NotBuilt from '../lib/components/NotBuilt.svelte';
-  import { clock, day } from '../lib/format';
+  import { clock, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
-  import { cleanup, outcome, preview, run, setScope, undo, type Scope } from '../lib/state/cleanup.svelte';
+  import { cleanup, load, more, outcome, preview, run, setScope, undo, type Scope } from '../lib/state/cleanup.svelte';
+  import { settings } from '../lib/state/settings.svelte';
+
+  load();
 
   type Group = Preview['groups'][number];
 
@@ -25,11 +27,28 @@
   const max = $derived(Math.max(1, ...(cleanup.preview?.groups.map((g) => g.count) ?? [])));
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
 
-  const scopeLabel = (s: Scope | null) =>
-    s ? [accounts.list.find((a) => String(a.id) === s.accountId)?.label, folderName(s.folder), ranges[s.range].toLowerCase()].join(' · ') : '';
-  const actions = (b: Batch) => b.actions.done + b.actions.dry_run + b.actions.failed + b.actions.undone;
-  const statusName = (b: Batch) => (b.status === 'undone' ? 'Undone' : b.status === 'failed' ? 'Failed' : 'Done');
+  // account_id is null once the mailbox is deleted.
+  const mailbox = (b: Batch) => (b.account_id === null ? 'a removed mailbox' : accounts.list.find((a) => a.id === b.account_id)?.label);
+  const label = (b: Batch) =>
+    [mailbox(b), folderName(b.folder), b.since === null ? 'all time' : 'since ' + day(b.since)].filter(Boolean).join(' · ');
+  const counts = (b: Batch) =>
+    (['done', 'dry_run', 'failed', 'undone'] as const)
+      .filter((k) => b.actions[k])
+      .map((k) => b.actions[k].toLocaleString() + ' ' + k.replace('_', '-'))
+      .join(' · ') || 'no actions';
+  const statuses: Record<Batch['status'], string> = { running: 'Running', done: 'Done', failed: 'Cut short', undone: 'Undone' };
 </script>
+
+{#snippet progress(b: Batch)}
+  <div class="flex flex-col gap-1.5">
+    <div role="progressbar" aria-label="Cleanup progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} class="h-3 overflow-hidden rounded bg-neutral">
+      <div class="h-3 bg-ink" style:width="{pct}%"></div>
+    </div>
+    <div class="text-[13px] text-nav">
+      {b.done.toLocaleString()} of {(b.total ?? 0).toLocaleString()} sorted · {pct}% · {b.tokens.toLocaleString()} tokens · {money(b.cost_usd)}
+    </div>
+  </div>
+{/snippet}
 
 <div class="flex max-w-[980px] flex-col gap-[18px]">
   <header>
@@ -37,102 +56,114 @@
     <p class="mt-1 text-secondary">Apply your rules to mail that's already there. Preview first; each run can be undone as one batch.</p>
   </header>
 
-  {#if cleanup.notBuilt}
-    <NotBuilt what="Cleanup" />
-  {:else}
-    <section class="card flex flex-col gap-4 p-5">
-      <div class="flex flex-wrap gap-3">
-        <label class="flex flex-[1_1_200px] flex-col gap-1.5">
-          <span class="text-[13px] font-semibold">Mailbox</span>
-          <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
-            {#each accounts.list as a (a.id)}
-              <option value={String(a.id)}>{a.label}</option>
-            {/each}
-          </select>
-        </label>
-        <label class="flex flex-[1_1_160px] flex-col gap-1.5">
-          <span class="text-[13px] font-semibold">Folder</span>
-          <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.folder} onchange={(e) => setScope({ folder: e.currentTarget.value })}>
-            <option value="INBOX">Inbox</option>
-            {#if archive}
-              <option value={archive}>Archive</option>
-            {/if}
-          </select>
-        </label>
-        <label class="flex flex-[1_1_160px] flex-col gap-1.5">
-          <span class="text-[13px] font-semibold">Emails from</span>
-          <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.range} onchange={(e) => setScope({ range: e.currentTarget.value as Scope['range'] })}>
-            {#each Object.entries(ranges) as [value, name] (value)}
-              <option {value}>{name}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-      <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={running || !cleanup.scope.accountId} onclick={preview}>
-        {cleanup.preview ? 'Refresh preview' : 'Preview what would move'}
-      </button>
-
-      {#if cleanup.preview}
-        <div class="flex flex-col gap-2.5">
-          <h2>
-            {total.toLocaleString()} emails from {cleanup.scope.range === 'all' ? 'all time' : 'the ' + ranges[cleanup.scope.range].toLowerCase()} would be sorted like this
-          </h2>
-          {#each cleanup.preview.groups as g (g.outcome + g.rule_id)}
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-              <span class="w-[170px] font-medium">{groupName(g)}</span>
-              <div class="h-2.5 flex-[1_1_200px] overflow-hidden rounded bg-neutral">
-                <div class="h-2.5 rounded {fill[g.outcome]}" style:width="{Math.max(2, Math.round((g.count / max) * 100))}%"></div>
-              </div>
-              <span class="w-[90px] text-right font-mono text-[13px]">{g.count.toLocaleString()}</span>
-            </div>
+  <section class="card flex flex-col gap-4 p-5">
+    <div class="flex flex-wrap gap-3">
+      <label class="flex flex-[1_1_200px] flex-col gap-1.5">
+        <span class="text-[13px] font-semibold">Mailbox</span>
+        <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
+          {#each accounts.list as a (a.id)}
+            <option value={String(a.id)}>{a.label}</option>
           {/each}
-          <p class="text-[13px] text-secondary">
-            Nothing moves until you run it. Runs in the background, uses conditions and sender rules first, and can be undone as one batch.
-          </p>
-          {#if running && cleanup.batch}
-            <div class="flex flex-col gap-1.5">
-              <div
-                role="progressbar"
-                aria-label="Cleanup progress"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={pct}
-                class="h-3 overflow-hidden rounded bg-neutral"
-              >
-                <div class="h-3 bg-ink" style:width="{pct}%"></div>
-              </div>
-              <div class="text-[13px] text-nav">
-                {cleanup.batch.done.toLocaleString()} of {(cleanup.batch.total ?? total).toLocaleString()} sorted · {pct}%
-              </div>
-            </div>
+        </select>
+      </label>
+      <label class="flex flex-[1_1_160px] flex-col gap-1.5">
+        <span class="text-[13px] font-semibold">Folder</span>
+        <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.folder} onchange={(e) => setScope({ folder: e.currentTarget.value })}>
+          <option value="INBOX">Inbox</option>
+          {#if archive}
+            <option value={archive}>Archive</option>
           {/if}
-          <button type="button" class="btn-primary min-h-11 self-start px-[18px]" disabled={cleanup.phase !== 'previewed'} onclick={() => run()}>
-            {running ? 'Sorting…' : 'Sort ' + total.toLocaleString() + ' emails'}
-          </button>
-        </div>
-      {:else if cleanup.phase === 'done' && cleanup.batch}
-        <p role="status" class="text-[13px] text-secondary">{outcome(cleanup.batch)}</p>
-      {/if}
-    </section>
+        </select>
+      </label>
+      <label class="flex flex-[1_1_160px] flex-col gap-1.5">
+        <span class="text-[13px] font-semibold">Emails from</span>
+        <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.range} onchange={(e) => setScope({ range: e.currentTarget.value as Scope['range'] })}>
+          {#each Object.entries(ranges) as [value, name] (value)}
+            <option {value}>{name}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={running || !cleanup.scope.accountId} onclick={preview}>
+      {cleanup.preview ? 'Refresh preview' : 'Preview what would move'}
+    </button>
 
-    {#if cleanup.batch && cleanup.batch.status !== 'running'}
-      {@const b = cleanup.batch}
-      <section aria-label="Batches" class="card overflow-hidden">
-        <div class="px-[18px] py-3.5">
-          <h2 class="text-[15px]">Batches you can undo</h2>
-          <div class="text-[12.5px] text-muted">Undo puts every email back where it was.</div>
-        </div>
+    {#if cleanup.preview}
+      <div class="flex flex-col gap-2.5">
+        <h2>
+          {total.toLocaleString()} emails from {cleanup.scope.range === 'all' ? 'all time' : 'the ' + ranges[cleanup.scope.range].toLowerCase()} would be sorted like this
+        </h2>
+        {#each cleanup.preview.groups as g (g.outcome + g.rule_id + g.rule_name)}
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <span class="w-[170px] font-medium">{groupName(g)}</span>
+            <div class="h-2.5 flex-[1_1_200px] overflow-hidden rounded bg-neutral">
+              <div class="h-2.5 rounded {fill[g.outcome]}" style:width="{Math.max(2, Math.round((g.count / max) * 100))}%"></div>
+            </div>
+            <span class="w-[90px] text-right font-mono text-[13px]">{g.count.toLocaleString()}</span>
+          </div>
+          {#if g.samples.length}
+            <ul class="flex flex-col gap-0.5 text-[12.5px] text-muted">
+              {#each g.samples as m, i (i)}
+                <li class="truncate"><span class="font-mono">{m.from}</span> · {m.subject}</li>
+              {/each}
+            </ul>
+          {/if}
+        {/each}
+        <p class="text-[13px] text-secondary">
+          About {cleanup.preview.estimated_model_calls.toLocaleString()} model calls{cleanup.preview.estimated_cost_usd
+            ? ', around ' + money(cleanup.preview.estimated_cost_usd)
+            : ''}
+        </p>
+        <p class="text-[13px] text-secondary">
+          Nothing moves until you run it. Runs in the background, uses conditions and sender rules first, and can be undone as one batch.
+        </p>
+        {#if running && cleanup.batch}
+          {@render progress(cleanup.batch)}
+        {/if}
+        {#if settings.value.dry_run}
+          <p class="text-[13px] text-secondary">Dry-run is on: this run records what it would do and moves nothing.</p>
+        {/if}
+        <button type="button" class="btn-primary min-h-11 self-start px-[18px]" disabled={cleanup.phase !== 'previewed'} onclick={run}>
+          {running ? 'Sorting…' : 'Sort ' + total.toLocaleString() + ' emails'}
+        </button>
+      </div>
+    {:else if running && cleanup.batch}
+      {@render progress(cleanup.batch)}
+    {:else if cleanup.phase === 'done' && cleanup.batch}
+      <p role="status" class="text-[13px] text-secondary">{outcome(cleanup.batch)}</p>
+    {/if}
+  </section>
+
+  <section aria-label="Batches" class="card overflow-hidden">
+    <div class="px-[18px] py-3.5">
+      <h2 class="text-[15px]">Batches you can undo</h2>
+      <div class="text-[12.5px] text-muted">Undo puts every email back where it was.</div>
+    </div>
+    {#if cleanup.status === 'error'}
+      <div role="alert" class="flex flex-wrap items-center justify-between gap-2 bg-trash-bg px-[18px] py-2 text-trash">
+        <span>{cleanup.error}</span>
+        <button type="button" class="btn" onclick={load}>Retry</button>
+      </div>
+    {:else if cleanup.status === 'ready'}
+      {#each cleanup.batches as b (b.id)}
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line-divider px-[18px] py-3">
           <div class="flex-[1_1_260px]">
-            <div class="font-semibold">{scopeLabel(cleanup.batchScope)}</div>
-            <div class="text-[12.5px] text-muted">{day(b.created_at)}, {clock(b.created_at)} · {actions(b).toLocaleString()} actions</div>
+            <div class="font-semibold">{label(b)}</div>
+            <div class="text-[12.5px] text-muted">{day(b.created_at)}, {clock(b.created_at)} · {counts(b)}</div>
           </div>
-          <span class="text-[12.5px] font-semibold {b.status === 'undone' ? 'text-muted' : 'text-ink'}">{statusName(b)}</span>
-          {#if b.status !== 'undone'}
-            <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {scopeLabel(cleanup.batchScope)}" onclick={undo}>Undo batch</button>
+          <span class="text-[12.5px] font-semibold {b.status === 'undone' ? 'text-muted' : 'text-ink'}">{statuses[b.status]}</span>
+          {#if b.status === 'done' || b.status === 'failed'}
+            <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" onclick={() => undo(b)}>Undo batch</button>
           {/if}
         </div>
-      </section>
+      {:else}
+        <p class="border-t border-line-divider px-[18px] py-3 text-[13px] text-muted">No cleanup runs yet.</p>
+      {/each}
+      {#if cleanup.next}
+        <div class="border-t border-line-divider px-[18px] py-3">
+          <button type="button" class="btn px-3" onclick={more}>Show more</button>
+        </div>
+      {/if}
     {/if}
-  {/if}
+  </section>
 </div>

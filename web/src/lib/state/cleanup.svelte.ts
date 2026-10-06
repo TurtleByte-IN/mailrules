@@ -1,5 +1,4 @@
 import * as cleanupApi from '../api/cleanup';
-import { notBuilt } from '../api/client';
 import { subscribe } from '../api/events';
 import { flash } from './toast.svelte';
 
@@ -18,35 +17,65 @@ export interface Scope {
 
 export const cleanup = $state<{
   phase: Phase;
-  /** Set once the daemon answers 501 for preview or run. */
-  notBuilt: boolean;
   scope: Scope;
   /** Folders of the chosen mailbox. */
   folders: cleanupApi.Folder[];
   preview: cleanupApi.Preview | null;
   /** What the showing preview was counted for; run sends the same. */
   request: cleanupApi.CleanupRequest | null;
-  /** The run started in this session: in progress, finished or undone. */
+  /** The run being followed, or the last one that finished here. */
   batch: cleanupApi.Batch | null;
-  batchScope: Scope | null;
+  /** Past runs, newest first. */
+  batches: cleanupApi.Batch[];
+  /** Cursor of the next page of past runs; null at the end. */
+  next: string | null;
+  status: 'loading' | 'ready' | 'error';
+  error: string;
 }>({
   phase: 'idle',
-  notBuilt: false,
   scope: { accountId: '', folder: 'INBOX', range: '90' },
   folders: [],
   preview: null,
   request: null,
   batch: null,
-  batchScope: null,
+  batches: [],
+  next: null,
+  status: 'loading',
+  error: '',
 });
+
+const POLL_MS = 2000;
 
 let timer: ReturnType<typeof setInterval> | undefined;
 // Counts scope changes and runs, so a preview that answers after one is dropped.
 let edits = 0;
 
-function fail(e: unknown) {
-  if (notBuilt(e)) cleanup.notBuilt = true;
-  else flash((e as Error).message);
+const fail = (e: unknown) => flash((e as Error).message);
+
+export async function load() {
+  try {
+    const page = await cleanupApi.list();
+    cleanup.batches = page.items;
+    cleanup.next = page.next_cursor;
+    cleanup.status = 'ready';
+    // A run that was going before the page loaded is followed like one started here.
+    // ponytail: one run is followed; a second mailbox's run moves only its row, by events.
+    const going = page.items.find((b) => b.status === 'running');
+    if (going && cleanup.phase !== 'running') follow(going);
+  } catch (e) {
+    cleanup.status = 'error';
+    cleanup.error = (e as Error).message;
+  }
+}
+
+export async function more() {
+  try {
+    const page = await cleanupApi.list(cleanup.next ?? undefined);
+    cleanup.batches.push(...page.items);
+    cleanup.next = page.next_cursor;
+  } catch (e) {
+    fail(e);
+  }
 }
 
 const toRequest = (s: Scope): cleanupApi.CleanupRequest => ({
@@ -92,22 +121,31 @@ export async function preview() {
 }
 
 /** Refused unless the user is looking at a preview of this scope. */
-export async function run(pollMs = 2000) {
+export async function run() {
   if (cleanup.phase !== 'previewed' || !cleanup.request) return false;
   edits++;
   cleanup.phase = 'running';
+  let b: cleanupApi.Batch;
   try {
-    cleanup.batch = await cleanupApi.run($state.snapshot(cleanup.request));
+    b = await cleanupApi.run($state.snapshot(cleanup.request));
   } catch (e) {
     cleanup.phase = 'previewed';
     fail(e);
     return false;
   }
-  cleanup.batchScope = $state.snapshot(cleanup.scope);
-  // batch.progress moves the bar; the poll covers a stream that is closed or missed an event.
-  timer = setInterval(tick, pollMs);
-  progress(cleanup.batch);
+  cleanup.batches.unshift(b);
+  follow(b);
+  progress(b);
   return true;
+}
+
+function follow(b: cleanupApi.Batch) {
+  // A preview still on its way must not land on a run.
+  edits++;
+  cleanup.phase = 'running';
+  cleanup.batch = b;
+  // batch.progress moves the bar; the poll covers a stream that is closed or missed an event.
+  timer = setInterval(tick, POLL_MS);
 }
 
 // A failed poll is not a failed batch: the next poll or event tries again.
@@ -117,6 +155,8 @@ async function tick() {
 }
 
 function progress(b: cleanupApi.Batch) {
+  // Only a row still running moves, so a late event cannot reopen a finished one.
+  cleanup.batches = cleanup.batches.map((x) => (x.id === b.id && x.status === 'running' ? b : x));
   if (cleanup.phase !== 'running' || b.id !== cleanup.batch?.id) return;
   cleanup.batch = b;
   if (b.status === 'running') return;
@@ -127,23 +167,25 @@ function progress(b: cleanupApi.Batch) {
   flash(outcome(b));
 }
 
-subscribe('batch.progress', (b) => progress(b as cleanupApi.Batch));
+subscribe('batch.progress', progress);
 
 /** How a finished run went. Cleanup honours dry-run, and then nothing was moved. */
 export const outcome = (b: cleanupApi.Batch) =>
   b.status === 'failed'
-    ? 'Cleanup failed after ' + b.done.toLocaleString() + ' emails. Undo it as one batch below.'
+    ? 'Cleanup was cut short after ' + b.done.toLocaleString() + ' emails. What it did can be undone as one batch below.'
     : b.actions.dry_run
       ? 'Dry run: ' + b.done.toLocaleString() + ' emails checked, nothing moved.'
       : 'Cleanup done: ' + b.done.toLocaleString() + ' emails sorted. Undo it as one batch below.';
 
-export async function undo() {
-  if (!cleanup.batch) return;
+export async function undo(b: cleanupApi.Batch) {
   try {
-    const r = await cleanupApi.undo(cleanup.batch.id);
-    cleanup.batch = r.batch;
+    const r = await cleanupApi.undo(b.id);
     // The batch is undone only when every action was; otherwise Undo stays on offer.
-    if (cleanup.phase === 'done' && r.batch.status === 'undone') cleanup.phase = 'idle';
+    cleanup.batches = cleanup.batches.map((x) => (x.id === b.id ? r.batch : x));
+    if (cleanup.batch?.id === b.id) {
+      cleanup.batch = r.batch;
+      if (cleanup.phase === 'done' && r.batch.status === 'undone') cleanup.phase = 'idle';
+    }
     flash(r.undone.toLocaleString() + ' emails moved back where they were' + (r.failed ? '; ' + r.failed.toLocaleString() + ' could not be' : ''));
   } catch (e) {
     fail(e);

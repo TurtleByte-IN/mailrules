@@ -1,4 +1,3 @@
-import { notBuilt } from '../api/client';
 import * as sendersApi from '../api/senders';
 import { rules } from './rules.svelte';
 import { flash } from './toast.svelte';
@@ -6,7 +5,7 @@ import { flash } from './toast.svelte';
 type Sender = sendersApi.Sender;
 
 export const senders = $state<{
-  status: 'loading' | 'ready' | 'not_built' | 'error';
+  status: 'loading' | 'ready' | 'error';
   error: string;
   list: Sender[];
   /** Cursor of the next page of the list; null at the end. */
@@ -38,7 +37,7 @@ export async function load() {
     senders.learned = learned.items;
     senders.status = 'ready';
   } catch (e) {
-    senders.status = notBuilt(e) ? 'not_built' : 'error';
+    senders.status = 'error';
     senders.error = (e as Error).message;
   }
 }

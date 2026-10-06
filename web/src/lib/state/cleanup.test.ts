@@ -40,7 +40,6 @@ const previewed: Preview = {
   estimated_cost_usd: 0.01,
 };
 const failed = (status: number, code: string, message: string): Reply => [status, { error: { code, message } }];
-const NOT_BUILT = failed(501, 'not_implemented', 'This part of MailRules is not built yet.');
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -198,14 +197,14 @@ it('done → run is refused until a new preview', async () => {
 it.each([
   ['sorted', finished, 'Cleanup done: 412 emails sorted. Undo it as one batch below.'],
   ['dry run', batch({ status: 'done', done: 412, actions: { done: 0, dry_run: 310, failed: 0, undone: 0 } }), 'Dry run: 412 emails checked, nothing moved.'],
-  ['failed', batch({ status: 'failed', done: 90 }), 'Cleanup failed after 90 emails. Undo it as one batch below.'],
+  ['failed', batch({ status: 'failed', done: 90 }), 'Cleanup was cut short after 90 emails. What it did can be undone as one batch below.'],
 ])('outcome: %s', (_name, b, text) => expect(m.outcome(b)).toBe(text));
 
 it('done → idle when the batch is undone', async () => {
   await m.preview();
   await m.run();
   await finish();
-  await m.undo();
+  await m.undo(m.cleanup.batch!);
   expect(fetchMock.mock.calls.at(-1)![0]).toBe('/api/batches/3/undo');
   expect(m.cleanup).toMatchObject({ phase: 'idle', batch: { id: 3, status: 'undone' } });
   expect(toast.text).toBe('310 emails moved back where they were');
@@ -216,23 +215,66 @@ it('an undo that could not put everything back keeps the batch on offer', async 
   await m.run();
   await finish();
   routes['POST /api/batches/3/undo'] = [200, { batch: finished, undone: 300, failed: 10 } satisfies UndoResult];
-  await m.undo();
+  await m.undo(m.cleanup.batch!);
   expect(m.cleanup).toMatchObject({ phase: 'done', batch: { status: 'done' } });
   expect(toast.text).toBe('300 emails moved back where they were; 10 could not be');
 });
 
 it.each([
-  ['preview', 'POST /api/cleanup/preview', NOT_BUILT, { notBuilt: true, phase: 'idle' }, ''],
-  ['preview', 'POST /api/cleanup/preview', failed(500, 'internal', 'Something went wrong.'), { notBuilt: false, phase: 'idle' }, 'Something went wrong.'],
-  ['run', 'POST /api/cleanup/run', NOT_BUILT, { notBuilt: true, phase: 'previewed' }, ''],
-  ['run', 'POST /api/cleanup/run', failed(409, 'cleanup_running', 'A cleanup is already running.'), { notBuilt: false, phase: 'previewed' }, 'A cleanup is already running.'],
-])('%s answered %o leaves %o', async (_step, route, reply, want, text) => {
+  ['preview', 'POST /api/cleanup/preview', failed(502, 'mailbox_error', 'The mail server did not answer.'), 'idle'],
+  ['run', 'POST /api/cleanup/run', failed(409, 'cleanup_running', 'A cleanup is already running for this account. Wait for it to finish.'), 'previewed'],
+  ['run', 'POST /api/cleanup/run', failed(502, 'mailbox_error', 'The mail server did not answer.'), 'previewed'],
+] as const)('%s answered %o leaves the phase %s and says why', async (_step, route, reply, phase) => {
   routes[route] = reply;
   await m.preview();
   expect(await m.run()).toBe(false);
-  expect(m.cleanup).toMatchObject({ ...want, batch: null });
-  expect(toast.text).toBe(text);
-  expect(vi.getTimerCount()).toBe(text ? 1 : 0);
+  expect(m.cleanup).toMatchObject({ phase, batch: null, batches: [] });
+  expect(toast.text).toBe((reply[1] as { error: { message: string } }).error.message);
+  // Only the toast's timer: no poll was started.
+  expect(vi.getTimerCount()).toBe(1);
+});
+
+const PAST = 'GET /api/batches?kind=cleanup';
+const older = batch({ id: 2, status: 'done', done: 80, actions: { done: 60, dry_run: 0, failed: 0, undone: 0 } });
+
+it('load lists past runs and more follows the cursor', async () => {
+  routes[PAST] = [200, { items: [finished], next_cursor: '3' }];
+  routes[PAST + '&cursor=3'] = [200, { items: [older], next_cursor: null }];
+  await m.load();
+  expect(m.cleanup).toMatchObject({ status: 'ready', batches: [finished], next: '3', phase: 'idle', batch: null });
+  await m.more();
+  expect(m.cleanup).toMatchObject({ batches: [finished, older], next: null });
+});
+
+it('a failed load gives the error state', async () => {
+  routes[PAST] = failed(500, 'internal', 'Something went wrong.');
+  await m.load();
+  expect(m.cleanup).toMatchObject({ status: 'error', error: 'Something went wrong.', batches: [] });
+});
+
+it('a run still going at load is picked up and followed to its end', async () => {
+  routes[PAST] = [200, { items: [batch({ done: 10 }), older], next_cursor: null }];
+  await m.load();
+  expect(m.cleanup).toMatchObject({ phase: 'running', batch: { id: 3, done: 10 } });
+
+  events.dispatch('batch.progress', batch({ done: 200, tokens: 900, cost_usd: 0.002 }));
+  expect(m.cleanup.batches[0]).toMatchObject({ done: 200, tokens: 900, cost_usd: 0.002 });
+
+  await finish();
+  expect(m.cleanup).toMatchObject({ phase: 'done', batch: finished, batches: [finished, older] });
+});
+
+it('a run started here joins the list, and undoing an older run leaves this one alone', async () => {
+  routes[PAST] = [200, { items: [older], next_cursor: null }];
+  await m.load();
+  await m.preview();
+  await m.run();
+  expect(m.cleanup.batches.map((b) => b.id)).toEqual([3, 2]);
+  await finish();
+
+  routes['POST /api/batches/2/undo'] = [200, { batch: { ...older, status: 'undone' }, undone: 60, failed: 0 } satisfies UndoResult];
+  await m.undo(older);
+  expect(m.cleanup).toMatchObject({ phase: 'done', batch: finished, batches: [finished, { id: 2, status: 'undone' }] });
 });
 
 it('a refused undo says why and changes nothing', async () => {
@@ -240,7 +282,7 @@ it('a refused undo says why and changes nothing', async () => {
   await m.run();
   await finish();
   routes['POST /api/batches/3/undo'] = failed(404, 'not_found', 'No such batch.');
-  await m.undo();
+  await m.undo(m.cleanup.batch!);
   expect(m.cleanup).toMatchObject({ phase: 'done', batch: finished });
   expect(toast.text).toBe('No such batch.');
 });
