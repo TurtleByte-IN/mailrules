@@ -5,7 +5,8 @@ import * as templatesApi from '../api/templates';
 import { add, rules } from './rules.svelte';
 import { flash } from './toast.svelte';
 
-export type Draft = composeApi.Draft & { rejected: boolean };
+/** `refused` is the daemon's sentence when the last save was refused because of this draft. */
+export type Draft = composeApi.Draft & { rejected: boolean; refused?: string };
 
 // `text` lives here, not in the screen, so it survives leaving Add rules and another
 // screen can hand over a starting sentence. `needsModel` is the daemon's own sentence when
@@ -43,23 +44,28 @@ export async function optimize() {
 /** A draft the daemon found a problem in cannot be saved as it is. */
 export const savable = (d: Draft) => !d.rejected && !d.errors.length;
 
-const toInput = ({ name, said, intent, conditions, exceptions, actions, min_confidence, new_folders }: Draft): RuleInput => ({
+const toInput = ({ name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders }: Draft): RuleInput => ({
   name,
   said,
   intent,
   conditions,
   exceptions,
   actions,
+  account_id,
+  stack,
+  model,
   min_confidence,
   new_folders,
-  stack: false,
-  enabled: true,
 });
 
-/** Saves every draft not skipped. Returns the saved rules, or nothing when nothing was saved. */
+/**
+ * Saves every draft not skipped. Returns the saved rules, or nothing when nothing was saved.
+ * A refusal that names one of the rules sent ("rules[1].name") goes on that draft.
+ */
 export async function saveAll() {
   const keep = compose.drafts.filter(savable);
   if (!keep.length) return flash('Nothing to save: every draft is skipped');
+  for (const d of compose.drafts) d.refused = '';
   try {
     const added = await add(keep.map(toInput));
     compose.drafts = [];
@@ -68,7 +74,10 @@ export async function saveAll() {
     flash(added.length + (added.length === 1 ? ' rule saved and live' : ' rules saved and live'));
     return added;
   } catch (e) {
-    fail(e);
+    // The daemon counts the rules as sent, so skipped drafts are not in its index.
+    const at = e instanceof ApiError && /^rules\[(\d+)\]\./.exec(e.path ?? '');
+    if (at && keep[+at[1]]) keep[+at[1]].refused = e.message;
+    else fail(e);
   }
 }
 

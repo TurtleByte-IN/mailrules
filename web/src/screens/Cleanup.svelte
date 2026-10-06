@@ -2,7 +2,7 @@
   import type { Batch, Preview } from '../lib/api/cleanup';
   import { clock, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
-  import { cleanup, load, more, outcome, preview, run, setScope, undo, type Scope } from '../lib/state/cleanup.svelte';
+  import { cleanup, load, more, noUndo, outcome, preview, run, setScope, undo, UNDO_DAYS, type Scope } from '../lib/state/cleanup.svelte';
   import { settings } from '../lib/state/settings.svelte';
 
   load();
@@ -139,7 +139,7 @@
   <section aria-label="Batches" class="card overflow-hidden">
     <div class="px-[18px] py-3.5">
       <h2 class="text-[15px]">Batches you can undo</h2>
-      <div class="text-[12.5px] text-muted">Undo puts every email back where it was.</div>
+      <div class="text-[12.5px] text-muted">Kept for {UNDO_DAYS} days. Undo puts every email back where it was.</div>
     </div>
     {#if cleanup.status === 'error'}
       <div role="alert" class="flex flex-wrap items-center justify-between gap-2 bg-trash-bg px-[18px] py-2 text-trash">
@@ -155,7 +155,12 @@
           </div>
           <span class="text-[12.5px] font-semibold {b.status === 'undone' ? 'text-muted' : 'text-ink'}">{statuses[b.status]}</span>
           {#if b.status === 'done' || b.status === 'failed'}
-            <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" onclick={() => undo(b)}>Undo batch</button>
+            {@const why = noUndo(b)}
+            {#if why}
+              <span class="text-[12.5px] text-muted">{why}</span>
+            {:else}
+              <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" onclick={() => undo(b)}>Undo batch</button>
+            {/if}
           {/if}
         </div>
       {:else}

@@ -286,3 +286,12 @@ it('a refused undo says why and changes nothing', async () => {
   expect(m.cleanup).toMatchObject({ phase: 'done', batch: finished });
   expect(toast.text).toBe('No such batch.');
 });
+
+it.each([
+  ['29 days old', batch({ status: 'done', created_at: NOW - 29 * 86400, actions: { done: 3, dry_run: 0, failed: 0, undone: 0 } }), ''],
+  ['30 days old to the second', batch({ status: 'done', created_at: NOW - 30 * 86400, actions: { done: 3, dry_run: 0, failed: 0, undone: 0 } }), ''],
+  ['a second past 30 days', batch({ status: 'done', created_at: NOW - 30 * 86400 - 1, actions: { done: 3, dry_run: 0, failed: 0, undone: 0 } }), 'Too old to undo'],
+  ['only dry-run actions', batch({ status: 'done', actions: { done: 0, dry_run: 9, failed: 0, undone: 0 } }), 'Dry run: nothing to undo'],
+  ['dry-run and real actions', batch({ status: 'failed', actions: { done: 0, dry_run: 9, failed: 1, undone: 0 } }), ''],
+  ['no actions at all', batch({ status: 'done' }), ''],
+])('noUndo: %s', (_name, b, why) => expect(m.noUndo(b, NOW * 1000)).toBe(why));

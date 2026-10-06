@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Draft } from '../lib/api/compose';
+import { accounts } from '../lib/state/accounts.svelte';
 import { compose } from '../lib/state/compose.svelte';
 import { rules } from '../lib/state/rules.svelte';
 import { toast } from '../lib/state/toast.svelte';
@@ -27,6 +28,7 @@ async function describe(text: string) {
 beforeEach(() => {
   Object.assign(compose, { text: '', drafts: [], unparsed: [], busy: false, templates: [], needsModel: '' });
   Object.assign(rules, { list: [], loaded: true, error: '' });
+  Object.assign(accounts, { list: [], loaded: true });
   toast.text = '';
 });
 afterEach(() => {
@@ -118,4 +120,62 @@ it('flashes a refused builder save the form has no control for', async () => {
 
   await vi.waitFor(() => expect(toast.text).toBe(message));
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+// A draft as POST /api/rules/compose returns it.
+const drafted = (name: string): Draft => ({
+  name,
+  said: name + ' in my words',
+  intent: null,
+  account_id: null,
+  stack: false,
+  model: '',
+  conditions: { all: [{ field: 'from_domain', op: 'in', value: ['acme.com'] }] },
+  exceptions: {},
+  actions: [{ type: 'archive' }],
+  min_confidence: null,
+  new_folders: [],
+  question: null,
+  conflicts: [],
+  errors: [],
+  match_count: 0,
+  samples: [],
+});
+const mailboxes = [{ id: 7, label: 'me@icloud.com' }, { id: 8, label: 'work@acme.com' }];
+
+it('a draft card chooses its mailbox, and a refused save shows on the card the daemon names', async () => {
+  Object.assign(accounts, { list: mailboxes });
+  // The daemon's own refusal for a name a saved rule has. It counts the rules sent, so
+  // with the first draft skipped its rules[1] is the third card.
+  const message = 'There is already a rule named "Saved". Choose another name.';
+  const f = serve({
+    'POST /api/rules/compose': [200, { rules: [drafted('First'), drafted('Other'), drafted('Saved')], unparsed: [] }],
+    'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[1].name' } }],
+  });
+  await describe('Three rules');
+
+  const applies = () => screen.getAllByLabelText<HTMLSelectElement>('Applies to');
+  await screen.findByText('3 rules found. Check them before saving.');
+  expect([...applies()[2].options].map((o) => o.text)).toEqual(['All mailboxes', 'me@icloud.com', 'work@acme.com']);
+  await fireEvent.change(applies()[2], { target: { value: '8' } });
+  await fireEvent.click(screen.getAllByRole('button', { name: 'Skip' })[0]);
+  await fireEvent.click(screen.getByRole('button', { name: 'Save 2 rules' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toBe(message);
+  expect(screen.getAllByRole('article')[2].contains(alert)).toBe(true);
+  expect(JSON.parse(f.mock.calls[1][1].body as string).rules.map((r: Draft) => [r.name, r.account_id])).toEqual([['Other', null], ['Saved', 8]]);
+  expect(toast.text).toBe('');
+
+  // It goes when the card is changed.
+  await fireEvent.change(applies()[2], { target: { value: '' } });
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('offers no mailbox choice on a draft card with one mailbox connected', async () => {
+  Object.assign(accounts, { list: mailboxes.slice(0, 1) });
+  serve({ 'POST /api/rules/compose': [200, { rules: [drafted('First')], unparsed: [] }] });
+  await describe('One rule');
+  expect(await screen.findByText('Will be saved')).toBeTruthy();
+  expect(screen.queryByLabelText('Applies to')).toBeNull();
 });
