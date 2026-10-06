@@ -1,13 +1,13 @@
-import type { Credentials, TestResult } from '../../lib/api/accounts';
+import type { AccountInput, Preset, TestResult } from '../../lib/api/accounts';
 import * as accountsApi from '../../lib/api/accounts';
-import { ApiError } from '../../lib/api/client';
+import { ApiError, notBuilt } from '../../lib/api/client';
 import { accounts, connect } from '../../lib/state/accounts.svelte';
 import { addTemplatesByName } from '../../lib/state/compose.svelte';
+import { flash } from '../../lib/state/toast.svelte';
 
 export const stepNames = ['Provider', 'Sign in', 'Rules', 'Preview'];
 
 // Names match templates in lib/api/templates.ts; the ones left on are saved as rules at Go live.
-// DEMO: the preview counts become a real preview run (POST /api/rules/test).
 const starterTemplates = [
   { id: 't1', name: 'Newsletters', desc: 'move to Reading and mark read', on: true },
   { id: 't2', name: 'Receipts', desc: 'move to Receipts', on: true },
@@ -15,18 +15,14 @@ const starterTemplates = [
   { id: 't4', name: 'Cold sales', desc: 'trash pitches from people you never emailed', on: false },
   { id: 't5', name: 'Travel', desc: 'tickets and bookings to Travel', on: false },
 ];
-export const preview = [
-  { count: 41, label: 'to Reading (Newsletters)' },
-  { count: 12, label: 'to Receipts' },
-  { count: 6, label: 'login codes flagged' },
-  { count: 38, label: 'left in Inbox' },
-  { count: 3, label: 'to Needs review' },
-];
+
+/** What the provider calls the secret the user pastes. A preset without a host is the user's own server. */
+export const secretLabel = (p: Preset) => (p.name === 'icloud' ? 'App-specific password' : p.host ? 'App password' : 'Password');
 
 /** View state for one run of the connect wizard. Thrown away when the wizard closes. */
 export class Wizard {
   step = $state(0);
-  presetId = $state('icloud');
+  presetId = $state<Preset['name']>('icloud');
   email = $state('');
   password = $state('');
   host = $state('');
@@ -34,12 +30,20 @@ export class Wizard {
   test = $state<'idle' | 'testing' | 'ok' | 'err'>('idle');
   result = $state<TestResult>();
   error = $state('');
+  /** The request field the error is about, as the API names it; empty when it names none. */
+  errorPath = $state('');
   busy = $state(false);
   templates = $state(starterTemplates.map((t) => ({ ...t })));
   #run = 0;
 
   get preset() {
-    return accounts.presets.find((p) => p.id === this.presetId);
+    return accounts.presets.find((p) => p.name === this.presetId);
+  }
+
+  /** The field to show the error beside; empty when that field is not on the form (a preset's own host). */
+  get errorField() {
+    const shown = this.preset?.host ? ['username', 'password'] : ['username', 'password', 'host', 'port'];
+    return this.test === 'err' && shown.includes(this.errorPath) ? this.errorPath : '';
   }
 
   get nextLabel() {
@@ -60,16 +64,21 @@ export class Wizard {
     this.test = 'idle';
   }
 
-  #credentials(): Credentials {
-    const c = { preset: this.presetId, email: this.email.trim(), password: this.password };
-    return this.preset?.knowsHost ? c : { ...c, host: this.host.trim(), port: this.port };
+  #input(): AccountInput {
+    const c = { preset: this.presetId, username: this.email.trim(), password: this.password };
+    return this.preset?.host ? c : { ...c, host: this.host.trim(), port: this.port };
+  }
+
+  #fail(message: string, path = '') {
+    this.error = message;
+    this.errorPath = path;
+    this.test = 'err';
   }
 
   async runTest() {
-    const c = this.#credentials();
-    if (!c.email || !c.password.trim() || (!this.preset?.knowsHost && !c.host)) {
-      this.error = 'Enter your email and the app-specific password first.';
-      this.test = 'err';
+    const c = this.#input();
+    if (!c.username || !c.password.trim() || (!this.preset?.host && !c.host)) {
+      this.#fail('Enter your email and the app-specific password first.');
       return;
     }
     const run = ++this.#run;
@@ -82,14 +91,13 @@ export class Wizard {
     } catch (e) {
       if (!(e instanceof ApiError)) throw e;
       if (run !== this.#run) return;
-      this.error = e.message;
-      this.test = 'err';
+      this.#fail(e.message, e.path);
     }
   }
 
   /** Moves on one step; on the last one saves the mailbox. Resolves true once it is saved. */
   async next(): Promise<boolean> {
-    if (this.step === 0 && !this.preset?.available) return false;
+    if (this.step === 0 && !this.preset) return false;
     if (this.step === 1 && this.test !== 'ok') {
       await this.runTest();
       return false;
@@ -101,12 +109,23 @@ export class Wizard {
     if (this.test !== 'ok' || this.busy) return false;
     this.busy = true;
     try {
-      await connect(this.#credentials());
-      await addTemplatesByName(this.templates.filter((t) => t.on).map((t) => t.name));
+      const a = await connect(this.#input()).finally(() => (this.password = ''));
+      // The mailbox is connected from here on, whatever happens to the starter rules.
+      const names = this.templates.filter((t) => t.on).map((t) => t.name);
+      try {
+        if (names.length) await addTemplatesByName(names);
+      } catch (e) {
+        flash(notBuilt(e) ? a.label + ' is live. Starter rules could not be added yet.' : e instanceof Error ? e.message : String(e));
+      }
+      return true;
+    } catch (e) {
+      if (!(e instanceof ApiError)) throw e;
+      // Refused (already connected, or the server stopped accepting the login): back to the form.
+      this.#fail(e.message, e.path);
+      this.step = 1;
+      return false;
     } finally {
       this.busy = false;
-      this.password = '';
     }
-    return true;
   }
 }
