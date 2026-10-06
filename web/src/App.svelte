@@ -33,14 +33,14 @@
   <Login />
 {:else if auth.status === 'in'}
   <div class="flex min-h-screen flex-wrap">
-    <nav aria-label="Main" class="flex flex-[1_1_240px] flex-col gap-5 border-r border-line-card px-3.5 py-5">
+    <nav aria-label="Main" class="flex flex-[1_1_196px] flex-col gap-3.5 border-r border-line-card px-2.5 py-3.5">
       <div class="flex items-center gap-2.5 px-1.5">
-        <span class="grid size-7 place-items-center rounded bg-signal">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <span class="grid size-[22px] place-items-center rounded bg-signal">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" />
           </svg>
         </span>
-        <span class="text-base font-extrabold tracking-[-0.035em]">MailRules</span>
+        <span class="text-sm font-semibold tracking-[-0.01em]">MailRules</span>
       </div>
       <div class="flex flex-wrap gap-0.5">
         {#each screens as s (s.path)}
@@ -49,9 +49,9 @@
             href={s.path}
             use:link
             aria-current={on ? 'page' : undefined}
-            class="flex min-h-10 flex-[1_1_160px] items-center gap-2.5 rounded px-2.5 no-underline {on ? 'bg-selected font-semibold text-ink' : 'font-medium text-nav'}"
+            class="flex min-h-7 flex-[1_1_160px] items-center gap-[7px] rounded px-2 no-underline {on ? 'bg-selected font-medium text-ink' : 'text-nav'}"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d={s.icon} />
             </svg>
             {s.label}
@@ -82,8 +82,8 @@
       </div>
     </nav>
 
-    <main class="min-w-0 flex-[999_1_480px] p-6">
-      <div class="mx-auto flex max-w-[1280px] flex-col gap-[22px]">
+    <main class="min-w-0 flex-[999_1_480px] px-5 py-4">
+      <div class="mx-auto flex max-w-[1280px] flex-col gap-3.5">
         {#if settings.value.dry_run}
           <div role="status" class="flex flex-wrap items-center justify-between gap-2.5 rounded-md border border-warn-line bg-warn-bg px-4 py-3 text-warn">
             <span><strong>Dry-run is on.</strong> MailRules logs what it would do but doesn't touch your mailbox.</span>
