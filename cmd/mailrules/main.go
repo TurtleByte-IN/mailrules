@@ -26,6 +26,7 @@ const usage = `usage: mailrules <command> [flags]
 
   serve     run the daemon and web UI
   migrate   apply database migrations
+  accounts  add, list or test mail accounts
   version   print the version
 `
 
@@ -59,6 +60,8 @@ func run(args []string) error {
 		}
 		defer db.Close()
 		return store.Migrate(ctx, db)
+	case "accounts":
+		return accountsCLI{stdin: os.Stdin, stdout: os.Stdout, getenv: os.Getenv}.run(ctx, args[1:])
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {
@@ -93,7 +96,7 @@ func serve(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 
-	// Loaded here so a bad key stops startup; account credentials use it from M2.
+	// Loaded here so a bad key stops startup; the account watchers that use it start in M5.
 	if _, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir); err != nil {
 		return err
 	}

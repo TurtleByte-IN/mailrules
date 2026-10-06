@@ -1,0 +1,40 @@
+Delivered-To: me@icloud.com
+Delivered-To: alias@icloud.com
+Authentication-Results: mx.icloud.com; dkim=pass header.d=example.org
+From: Priya Raman <priya@example.org>
+To: me@icloud.com, "Sam Lee" <Sam@Example.org>
+Cc: accounts@example.org
+Subject: Signed contract attached
+Date: Fri, 02 Oct 2026 14:05:00 +0000
+Message-ID: <contract-9@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mix-1"
+
+--mix-1
+Content-Type: multipart/alternative; boundary="alt-2"
+
+--alt-2
+Content-Type: text/plain; charset=utf-8
+
+Hi,
+
+The signed contract is attached. Let me know if anything is missing.
+
+Priya
+--alt-2
+Content-Type: text/html; charset=utf-8
+
+<p>Hi,</p><p>The signed contract is attached.</p>
+--alt-2--
+--mix-1
+Content-Type: application/pdf; name="Contract.PDF"
+Content-Disposition: attachment; filename="Contract.PDF"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsj6IKNSAwIG9iago8PC9MZW5ndGggNiAwIFI+PgpzdHJlYW0K
+--mix-1
+Content-Type: text/plain; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+
+THIS ATTACHED TEXT IS NOT THE BODY
+--mix-1--

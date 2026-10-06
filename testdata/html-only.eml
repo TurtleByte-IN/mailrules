@@ -1,0 +1,18 @@
+Authentication-Results: mx.icloud.com; dkim=none; dmarc=fail (p=none) header.from=promo.example
+From: deals@promo.example
+To: undisclosed-recipients:;
+Subject: =?utf-8?Q?Flash_sale=E2=80=8B_ends_tonight?=
+Date: Sat, 03 Oct 2026 10:00:00 +0000
+Message-ID: <flash-77@promo.example>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><title>Sale</title><style>.x { color: red; }</style>
+<script>trackOpen("abc");</script></head>
+<body>
+<div style=3D"display:none">Preheader&zwnj;&nbsp;&zwnj;&nbsp;text</div>
+<h1>Flash sale</h1>
+<p>Everything is <b>50% off</b> &amp; shipping is free.</p>
+<p><a href=3D"https://promo.example/sale">Shop now</a></p>
+</body></html>
