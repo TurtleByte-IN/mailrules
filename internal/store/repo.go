@@ -152,3 +152,57 @@ func (s *Store) AddUsage(ctx context.Context, day, provider, model, purpose stri
 	}
 	return nil
 }
+
+// Ping reports whether the database answers.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping database: %w", err)
+	}
+	return nil
+}
+
+// Settings returns every stored setting, key to JSON value.
+func (s *Store) Settings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, fmt.Errorf("list settings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("list settings: %w", err)
+		}
+		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list settings: %w", err)
+	}
+	return out, nil
+}
+
+// SetSettings stores several settings in one transaction, so a change is never half
+// applied. A nil value removes the key, which puts its default back in force.
+func (s *Store) SetSettings(ctx context.Context, values map[string]*string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set settings: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	for k, v := range values {
+		if v == nil {
+			_, err = tx.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, k)
+		} else {
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, *v)
+		}
+		if err != nil {
+			return fmt.Errorf("set settings: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set settings: %w", err)
+	}
+	return nil
+}

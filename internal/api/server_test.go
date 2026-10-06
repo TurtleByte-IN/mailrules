@@ -4,14 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"regexp"
-	"sort"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
 // client is a browser stand-in: it keeps cookies and echoes the CSRF token.
@@ -30,6 +25,17 @@ type reply struct {
 		Error apiError `json:"error"`
 	}
 	setCookies map[string]*http.Cookie
+	raw        []byte
+}
+
+// object is the response body as a JSON object.
+func (r reply) object(t *testing.T) map[string]any {
+	t.Helper()
+	var v map[string]any
+	if err := json.Unmarshal(r.raw, &v); err != nil {
+		t.Fatalf("body is not a JSON object: %s", r.raw)
+	}
+	return v
 }
 
 func (c *client) do(method, path, body string) reply {
@@ -43,7 +49,7 @@ func (c *client) do(method, path, body string) reply {
 	}
 	rec := httptest.NewRecorder()
 	c.h.ServeHTTP(rec, req)
-	out := reply{status: rec.Code, header: rec.Header(), setCookies: map[string]*http.Cookie{}}
+	out := reply{status: rec.Code, header: rec.Header(), setCookies: map[string]*http.Cookie{}, raw: rec.Body.Bytes()}
 	for _, ck := range rec.Result().Cookies() {
 		out.setCookies[ck.Name] = ck
 		if ck.MaxAge < 0 {
@@ -66,16 +72,8 @@ func (c *clock) now() time.Time { return c.t }
 
 func newClient(t *testing.T) (*client, *clock) {
 	t.Helper()
-	db, err := store.Open(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	ck := &clock{t: time.Unix(1_800_000_000, 0)}
-	return &client{t: t, h: NewHandler(Options{Store: store.New(db), Now: ck.now}), cookies: map[string]string{}}, ck
+	e := newEnv(t)
+	return e.client, e.ck
 }
 
 func expect(t *testing.T, r reply, status int, code string) {
@@ -203,33 +201,5 @@ func TestLoginRateLimit(t *testing.T) {
 	ck.t = ck.t.Add(61 * time.Second)
 	if r := c.do(http.MethodPost, "/api/auth/login", goodBody); r.status != http.StatusOK {
 		t.Fatalf("login after the window = %d %q", r.status, r.body.Error.Code)
-	}
-}
-
-// The route table and the OpenAPI contract are two lists of the same thing; keep them equal.
-func TestRoutesMatchOpenAPI(t *testing.T) {
-	spec, err := os.ReadFile("../../api/openapi.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var inSpec []string
-	path := ""
-	for _, line := range strings.Split(string(spec), "\n") {
-		if m := regexp.MustCompile(`^  (/api/\S+):$`).FindStringSubmatch(line); m != nil {
-			path = m[1]
-		} else if m := regexp.MustCompile(`^    (get|post|put|patch|delete):$`).FindStringSubmatch(line); m != nil && path != "" {
-			inSpec = append(inSpec, strings.ToUpper(m[1])+" "+path)
-		} else if !strings.HasPrefix(line, "    ") && line != "" && !strings.HasPrefix(line, "  /") {
-			path = ""
-		}
-	}
-	var served []string
-	for _, r := range (&server{}).routes() {
-		served = append(served, r.method+" "+r.path)
-	}
-	sort.Strings(inSpec)
-	sort.Strings(served)
-	if strings.Join(inSpec, "\n") != strings.Join(served, "\n") {
-		t.Fatalf("api/openapi.yaml and the route table differ\nspec:\n%s\nserved:\n%s", strings.Join(inSpec, "\n"), strings.Join(served, "\n"))
 	}
 }

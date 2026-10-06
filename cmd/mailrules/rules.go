@@ -1,12 +1,11 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"mime"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -14,20 +13,28 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-const rulesUsage = `usage: mailrules rules validate <file>
+const rulesUsage = `usage: mailrules rules import <file>
+       mailrules rules export [file]
+       mailrules rules validate <file>
        mailrules rules test <file> --eml <dir>
 `
 
-// rulesCmd runs the offline rule commands: both read a rules YAML file and
-// neither touches a mailbox, a model or the database.
-func rulesCmd(args []string, out io.Writer) error {
+// rulesCmd runs the rule commands. import and export work on the database (a running
+// daemon reads the rules for every email, so it follows an import at once); validate and
+// test only read a rules YAML file and touch no mailbox, model or database.
+func rulesCmd(ctx context.Context, args []string, getenv func(string) string, out io.Writer) error {
+	if len(args) > 0 && (args[0] == "import" || args[0] == "export") {
+		return rulesDB(ctx, args, getenv, out)
+	}
 	if len(args) < 2 || (args[0] != "validate" && args[0] != "test") {
 		fmt.Fprint(os.Stderr, rulesUsage)
-		return errors.New("rules: expected validate or test, then a rules file")
+		return errors.New("rules: expected import, export, validate or test")
 	}
 	data, err := os.ReadFile(args[1]) // #nosec G304 G703 -- the operator names the file on the command line
 	if err != nil {
@@ -97,61 +104,85 @@ func testRules(rs []rules.Rule, files []string, out io.Writer) error {
 	return tw.Flush()
 }
 
-// summaryFromEML reads an .eml fixture into the type the matcher runs on.
-// ponytail: headers only, through net/mail. The body is taken as plain text
-// (no MIME decoding, no HTML-to-text), attachments are not detected and the
-// contact signals stay false. Swap this for the internal/message parser once
-// that milestone lands.
+// summaryFromEML reads an .eml file through the same parser as live mail.
+// ponytail: attachments come from the server's BODYSTRUCTURE, which a file does not have,
+// so has_attachment and attachment_ext never match here; the contact signals stay false
+// because there is no account.
 func summaryFromEML(path string) (message.Summary, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- fixture directory named on the command line
 	if err != nil {
 		return message.Summary{}, fmt.Errorf("read email: %w", err)
 	}
-	m, err := mail.ReadMessage(bytes.NewReader(data))
+	// Raw.Header and Raw.Text are read back to back, so the whole file can go in one.
+	e, err := message.Parse(&message.Raw{Header: data, Size: int64(len(data))}, 0, 2000) // the BODY_CHARS default
 	if err != nil {
 		return message.Summary{}, fmt.Errorf("parse %s: %w", path, err)
 	}
-	h := m.Header
-	body, _ := io.ReadAll(io.LimitReader(m.Body, 2000)) // the BODY_CHARS default
-	addrs := func(key string) []string {
-		list, _ := h.AddressList(key)
-		out := make([]string, 0, len(list))
-		for _, a := range list {
-			out = append(out, strings.ToLower(a.Address))
-		}
-		return out
+	if e.From == "" {
+		return message.Summary{}, fmt.Errorf("parse %s: not an email: it has no From header", path)
+	}
+	if dates := e.Headers["Date"]; len(dates) > 0 {
+		e.ReceivedAt, _ = mail.ParseDate(dates[0]) // a file has no server arrival time
+	}
+	return *e, nil
+}
+
+// rulesDB imports a rules YAML file into the database or exports the rules as one. An
+// import replaces the rules whose names the file uses and adds the others after the
+// existing ones, the same as POST /api/rules/import.
+func rulesDB(ctx context.Context, args []string, getenv func(string) string, out io.Writer) error {
+	if (args[0] == "import" && len(args) != 2) || len(args) > 2 {
+		fmt.Fprint(os.Stderr, rulesUsage)
+		return fmt.Errorf("rules %s: wrong number of arguments", args[0])
+	}
+	cfg, err := config.Load(nil, getenv)
+	if err != nil {
+		return err
+	}
+	db, err := store.Open(ctx, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := store.Migrate(ctx, db); err != nil {
+		return err
+	}
+	st := store.New(db)
+	user, err := st.FirstUser(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("rules %s: no admin user yet; run `mailrules serve` and finish first-run setup in the browser", args[0])
+	}
+	if err != nil {
+		return err
 	}
 
-	e := message.Summary{
-		To:          addrs("To"),
-		Cc:          addrs("Cc"),
-		DeliveredTo: addrs("Delivered-To"),
-		Body:        string(body),
-		Headers:     h,
-		SizeKB:      float64(len(data)) / 1024,
-		DMARC:       "none",
-	}
-	if from, err := mail.ParseAddress(h.Get("From")); err == nil {
-		e.From, e.FromName = strings.ToLower(from.Address), from.Name
-		local, domain, _ := strings.Cut(e.From, "@")
-		e.FromDomain = domain
-		e.IsNoreply = strings.Contains(strings.NewReplacer("-", "", "_", "", ".", "").Replace(local), "noreply")
-	}
-	if e.Subject, err = new(mime.WordDecoder).DecodeHeader(h.Get("Subject")); err != nil {
-		e.Subject = h.Get("Subject")
-	}
-	e.ReceivedAt, _ = h.Date()
-	if _, id, ok := strings.Cut(h.Get("List-Id"), "<"); ok {
-		e.ListID = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(id), ">"))
-	}
-	precedence := strings.ToLower(h.Get("Precedence"))
-	e.IsBulk = h.Get("List-Unsubscribe") != "" || precedence == "bulk" || precedence == "list"
-	if _, v, ok := strings.Cut(strings.ToLower(h.Get("Authentication-Results")), "dmarc="); ok {
-		if strings.HasPrefix(v, "pass") {
-			e.DMARC = "pass"
-		} else if strings.HasPrefix(v, "fail") {
-			e.DMARC = "fail"
+	if args[0] == "export" {
+		rs, err := st.Rules(ctx, user.ID)
+		if err != nil {
+			return err
 		}
+		data, err := rules.MarshalYAML(rules.File{Rules: rs})
+		if err != nil {
+			return err
+		}
+		if len(args) == 2 {
+			return os.WriteFile(args[1], data, 0o600) // #nosec G304 G703 -- the operator names the file on the command line
+		}
+		_, err = out.Write(data)
+		return err
 	}
-	return e, nil
+	data, err := os.ReadFile(args[1]) // #nosec G304 G703 -- the operator names the file on the command line
+	if err != nil {
+		return fmt.Errorf("read rules: %w", err)
+	}
+	f, err := rules.ParseYAML(data)
+	if err != nil {
+		return fmt.Errorf("%s:\n%w", args[1], err)
+	}
+	created, updated, err := st.ImportRules(ctx, user.ID, f.Rules, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s: %d rules added, %d updated\n", args[1], created, updated)
+	return err
 }

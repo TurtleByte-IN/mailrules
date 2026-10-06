@@ -181,3 +181,23 @@ func TestCondJSON(t *testing.T) {
 		t.Errorf("empty tree = %s, want {}", b)
 	}
 }
+
+func TestCondText(t *testing.T) {
+	tests := []struct{ json, want string }{
+		{`{}`, ""},
+		{`{"field":"from_domain","op":"in","value":["a.com","b.com"]}`, "from_domain is one of a.com, b.com"},
+		{`{"all":[{"field":"subject","op":"contains","value":"refund"},{"any":[{"field":"is_bulk","op":"eq","value":true},{"field":"size_kb","op":"gt","value":10}]}]}`,
+			"subject contains refund and (is_bulk is true or size_kb is more than 10)"},
+		{`{"any":[{"field":"header:List-Id","op":"exists","value":false},{"field":"list_id","op":"exists","value":true}]}`,
+			"header:List-Id is missing or list_id is present"},
+	}
+	for _, tt := range tests {
+		var c Cond
+		if err := json.Unmarshal([]byte(tt.json), &c); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.Text(); got != tt.want {
+			t.Errorf("Text(%s) = %q, want %q", tt.json, got, tt.want)
+		}
+	}
+}

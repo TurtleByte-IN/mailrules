@@ -4,8 +4,8 @@
     "rule": {
       "criteria": {
         "none": "None of these",
-        "rule_12": "Food delivery order updates (unless: it is a promotion)",
-        "rule_15": "Invoices and receipts"
+        "rule_12": "Food: Food delivery order updates (unless: it is a promotion)",
+        "rule_15": "Receipts: Invoices and receipts"
       },
       "instructions": "Which of these rules does this email match?",
       "type": "choice"

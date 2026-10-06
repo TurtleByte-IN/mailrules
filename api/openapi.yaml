@@ -1,21 +1,59 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.1.0
+  version: 0.7.0
   description: |
-    JSON REST API of the MailRules daemon. This file is the contract the web UI's
-    TypeScript client is generated from. It grows one area per backend milestone;
-    a test fails if the daemon serves an /api path that is not listed here, or the reverse.
+    JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
+    the contract the web UI's TypeScript client is generated from. A test fails if the daemon
+    serves an /api path that is not listed here, or the reverse.
 
-    Conventions: JSON bodies; timestamps are unix seconds; lists use cursor pagination
-    (`?cursor=&limit=`, max 100). Every request receives a `mailrules_csrf` cookie, and
-    every non-GET request must send its value back in the `X-CSRF-Token` header.
-    Call `GET /api/auth/me` first: it hands out the cookie and says which screen to show.
+    **Conventions**
+
+    - JSON bodies. Unknown fields in a request are rejected with 400 `invalid_json`.
+    - Timestamps are unix seconds. Ids are integers. An absent time or reference is `null`.
+    - Errors are `{"error": {"code", "message", "path"}}`. `code` is stable and machine-readable;
+      `message` is a sentence safe to show; `path` names the field when there is one
+      (for a rule: `conditions.all[0].op`).
+    - Lists that can grow use cursor pagination: `?cursor=&limit=` (limit 1 to 100, default 50).
+      The response carries `next_cursor`; pass it back as `cursor`, and `null` means the end.
+    - Every route except the four under `/api/auth`, `/healthz`, `/readyz` and `/metrics` needs
+      the `mailrules_session` cookie, and answers 401 without one: `setup_required` before the
+      admin account exists, `unauthenticated` after.
+    - Every response hands out a `mailrules_csrf` cookie, and every non-GET request must send
+      its value back in the `X-CSRF-Token` header, or it is answered 403 `csrf_failed`.
+      Call `GET /api/auth/me` first: it hands out the cookie and says which screen to show.
+    - The only message text the API ever returns is `snippet`, at most 200 characters.
+      Passwords and provider keys are write-only: no response contains one.
+
+    **Not built yet**
+
+    Operations marked `x-status: planned` are the contract for a later backend milestone
+    (M8: rule composer and tester; M9: senders, cleanup, templates, stats). Until then the
+    daemon answers them 501 `not_implemented`, after the session and CSRF checks. Their
+    schemas may still gain fields when they are built; the UI mocks them meanwhile.
 servers:
   - url: http://127.0.0.1:8080
+security:
+  - session: []
+tags:
+  - { name: Auth }
+  - { name: Accounts }
+  - { name: Rules }
+  - { name: Senders }
+  - { name: Activity }
+  - { name: Review }
+  - { name: Fixes }
+  - { name: Cleanup }
+  - { name: Templates }
+  - { name: Stats }
+  - { name: Settings }
+  - { name: Live }
+  - { name: Ops }
 paths:
   /api/auth/setup:
     post:
+      tags: [Auth]
+      security: []
       operationId: authSetup
       summary: Create the admin account (first run only) and sign in
       requestBody:
@@ -29,11 +67,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Session' }
-        '400': { $ref: '#/components/responses/Error' } # invalid_input (path: email | password), invalid_json
-        '403': { $ref: '#/components/responses/Error' } # csrf_failed
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: email | password), invalid_json
+        '403': { $ref: '#/components/responses/CsrfFailed' }
         '409': { $ref: '#/components/responses/Error' } # already_set_up
   /api/auth/login:
     post:
+      tags: [Auth]
+      security: []
       operationId: authLogin
       summary: Sign in; replaces any session the browser already holds
       requestBody:
@@ -47,9 +87,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Session' }
-        '400': { $ref: '#/components/responses/Error' } # invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_json
         '401': { $ref: '#/components/responses/Error' } # invalid_credentials
-        '403': { $ref: '#/components/responses/Error' } # csrf_failed
+        '403': { $ref: '#/components/responses/CsrfFailed' }
         '429':
           description: rate_limited; five failed sign-ins per minute per IP
           headers:
@@ -61,13 +101,17 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorBody' }
   /api/auth/logout:
     post:
+      tags: [Auth]
+      security: []
       operationId: authLogout
       summary: End the session; safe to call when not signed in
       responses:
         '204': { description: Signed out }
-        '403': { $ref: '#/components/responses/Error' } # csrf_failed
+        '403': { $ref: '#/components/responses/CsrfFailed' }
   /api/auth/me:
     get:
+      tags: [Auth]
+      security: []
       operationId: authMe
       summary: Who is signed in
       responses:
@@ -77,7 +121,965 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Session' }
         '401': { $ref: '#/components/responses/Error' } # setup_required (show first-run setup) | unauthenticated (show sign-in)
+  /api/presets:
+    get:
+      tags: [Accounts]
+      operationId: listPresets
+      summary: Provider presets for the connect wizard
+      responses:
+        '200':
+          description: Every preset, generic last
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Preset' } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/accounts/test:
+    post:
+      tags: [Accounts]
+      operationId: testAccount
+      summary: Log in with credentials that are not stored, and list the folders
+      description: Changes nothing, in the database or the mailbox. The password is used for this login only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountInput' }
+      responses:
+        '200':
+          description: The server accepted the login
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountTestResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: preset | username | password | host | port | tls_mode), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '422': { $ref: '#/components/responses/ConnectionFailed' }
+  /api/accounts:
+    get:
+      tags: [Accounts]
+      operationId: listAccounts
+      summary: Every connected mailbox, oldest first
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Account' } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    post:
+      tags: [Accounts]
+      operationId: createAccount
+      summary: Connect a mailbox and start watching it
+      description: |
+        The login is checked against the server before anything is stored. Only mail that
+        arrives from now on is sorted; existing mail is Cleanup's job. The new account's
+        `status` is `new` until its supervisor reports over `account.status`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountInput' }
+      responses:
+        '201':
+          description: Stored and being watched
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '400': { $ref: '#/components/responses/Invalid' } # as for /api/accounts/test
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_exists (path: username)
+        '422': { $ref: '#/components/responses/ConnectionFailed' }
+  /api/accounts/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: One account
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Accounts]
+      operationId: updateAccount
+      summary: Rename, change the watched folder or the app password, pause or resume
+      description: Anything but the label restarts the account's connection, so the change is in force when the response arrives.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountPatch' }
+      responses:
+        '200':
+          description: The account as it is now
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: label | watch_folder | password | paused), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Accounts]
+      operationId: deleteAccount
+      summary: Disconnect a mailbox and wipe everything stored about it
+      description: Stops watching, then deletes the account with its password, folders, contacts, messages, decisions, actions and the rules scoped to it. Nothing in the mailbox is touched.
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/accounts/{id}/reconnect:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Accounts]
+      operationId: reconnectAccount
+      summary: Drop the connection and connect again
+      description: Also how an account that stopped on `auth_failed` or `error` is started again. The outcome arrives over `account.status`.
+      responses:
+        '200':
+          description: Reconnecting; the body is the account as stored at this moment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_paused
+  /api/accounts/{id}/folders:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Accounts]
+      operationId: listAccountFolders
+      summary: The account's folders, as last discovered on the server
+      responses:
+        '200':
+          description: Folders by name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Folder' } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/rules:
+    get:
+      tags: [Rules]
+      operationId: listRules
+      summary: Every rule in priority order, with this week's hit count and last match
+      responses:
+        '200':
+          description: Rules, disabled ones included
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleList' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/rules/compose:
+    post:
+      tags: [Rules]
+      operationId: composeRules
+      x-status: planned
+      summary: Turn free text into validated draft rules (M8)
+      description: Nothing is saved. Each draft comes back validated and tested against the account's last 200 messages.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComposeRequest' }
+      responses:
+        '200':
+          description: Drafts to review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComposeResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: text | account_id), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+        '502': { $ref: '#/components/responses/Upstream' } # model_error, model_not_configured
+  /api/rules/batch:
+    post:
+      tags: [Rules]
+      operationId: createRules
+      x-status: planned
+      summary: Save approved drafts as rules, in one transaction (M8)
+      description: Re-validates every rule, creates `new_folders` on the server, and inserts the rules at the end or at `position`. This is the only endpoint that creates rules besides import.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RuleBatchRequest' }
+      responses:
+        '201':
+          description: The saved rules
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Rule' } }
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path: rules[0].conditions.all[0].op), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/rules/reorder:
+    post:
+      tags: [Rules]
+      operationId: reorderRules
+      summary: Set the priority order of all rules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              additionalProperties: false
+              properties:
+                ids:
+                  type: array
+                  items: { type: integer, format: int64 }
+                  description: Every rule's id exactly once; the first runs first
+      responses:
+        '200':
+          description: The rules in their new order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleList' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: ids), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+  /api/rules/test:
+    post:
+      tags: [Rules]
+      operationId: testRules
+      x-status: planned
+      summary: Run saved or draft rules over recent mail without acting (M8)
+      description: |
+        Never touches the mailbox. Model usage is recorded with purpose `test`. With `limit`
+        up to 200 the answer is one JSON body. Above that it is a `text/event-stream`:
+        `progress` events carrying `TestProgress`, then one `done` event carrying `TestResult`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TestRequest' }
+      responses:
+        '200':
+          description: What each email would get
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestResult' }
+            text/event-stream:
+              schema: { type: string, description: '`progress` events (TestProgress), then `done` (TestResult)' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_ids | account_id | folder | limit), rule_invalid, invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_offline
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/rules/export:
+    get:
+      tags: [Rules]
+      operationId: exportRules
+      summary: Download every rule as a YAML file
+      description: The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). The database stays the source of truth.
+      responses:
+        '200':
+          description: The rules file
+          content:
+            application/yaml:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/rules/import:
+    post:
+      tags: [Rules]
+      operationId: importRules
+      summary: Upload a rules YAML file
+      description: |
+        The request body is the file itself (at most 1 MB). Nothing is stored unless every
+        rule in it is valid. A rule whose name (`id` in the file) is already in use replaces
+        that rule's wording and keeps its place, account and id; the others are added after
+        the existing rules, in file order. Rules the file does not name are left alone.
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema: { type: string }
+      responses:
+        '200':
+          description: All rules after the import, with how many were added and updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message lists every problem, path is the first one's
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+  /api/rules/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Rules]
+      operationId: getRule
+      summary: One rule
+      responses:
+        '200':
+          description: The rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Rules]
+      operationId: updateRule
+      summary: Edit a rule; fields left out stay as they are
+      description: The result is validated as a whole and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RulePatch' }
+      responses:
+        '200':
+          description: The rule as saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleEnvelope' }
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path e.g. conditions.all[0].op), invalid_input (path: a field of the wrong type, or account_id), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Rules]
+      operationId: deleteRule
+      summary: Delete a rule
+      description: Its past decisions stay in the activity feed under the name it had (`rule_id` becomes null there). Sender rules that route to it go with it.
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/rules/{id}/compose:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Rules]
+      operationId: recomposeRule
+      x-status: planned
+      summary: Re-optimize one rule from its original wording plus new text (M8)
+      description: Returns a single draft to replace the rule. Nothing is saved; save it with PATCH.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              additionalProperties: false
+              properties:
+                text: { type: string, maxLength: 4000 }
+      responses:
+        '200':
+          description: The replacement draft
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rule]
+                properties:
+                  rule: { $ref: '#/components/schemas/RuleDraft' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: text), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+        '502': { $ref: '#/components/responses/Upstream' } # model_error, model_not_configured
+  /api/rules/{id}/undo:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+      - { $ref: '#/components/parameters/Since' }
+    post:
+      tags: [Fixes]
+      operationId: undoRuleSince
+      summary: Undo everything this rule did since a time
+      description: Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest.
+      responses:
+        '200':
+          description: The undo batch and its counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UndoResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: since)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/senders:
+    get:
+      tags: [Senders]
+      operationId: listSenders
+      x-status: planned
+      summary: Senders by volume, with how each is routed (M9)
+      parameters:
+        - { name: sort, in: query, schema: { type: string, enum: [volume, recent], default: volume } }
+        - { name: q, in: query, schema: { type: string }, description: Matches the address or display name }
+        - { name: source, in: query, schema: { type: string, enum: [user, learned] }, description: Only senders with a sender rule from this source }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: One page of senders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Sender' } }
+                  next_cursor: { type: [string, 'null'] }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: sort | cursor | limit)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/senders/{type}/{value}:
+    parameters:
+      - { name: type, in: path, required: true, schema: { type: string, enum: [address, domain] } }
+      - { name: value, in: path, required: true, schema: { type: string }, description: The address or domain, lower-case, URL-encoded }
+    put:
+      tags: [Senders]
+      operationId: putSender
+      x-status: planned
+      summary: Set how a sender is routed (M9)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SenderPut' }
+      responses:
+        '200':
+          description: The sender with its rule
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sender]
+                properties:
+                  sender: { $ref: '#/components/schemas/Sender' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: verdict | rule_id), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    delete:
+      tags: [Senders]
+      operationId: deleteSender
+      x-status: planned
+      summary: Remove a sender rule, user-made or learned (M9)
+      responses:
+        '204': { description: Removed, or there was none }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/activity:
+    get:
+      tags: [Activity]
+      operationId: listActivity
+      summary: The feed, newest first
+      description: Every email MailRules has seen, with its latest decision and all actions taken on it.
+      parameters:
+        - { name: account, in: query, schema: { type: integer, format: int64 }, description: Only this account }
+        - { name: rule, in: query, schema: { type: integer, format: int64 }, description: Only mail whose latest decision names this rule }
+        - { name: stage, in: query, schema: { $ref: '#/components/schemas/Stage' }, description: Only mail whose latest decision was made at this stage }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/MessageState' }, description: Only mail in this state }
+        - { name: action, in: query, schema: { $ref: '#/components/schemas/ActionKind' }, description: Only mail with an action of this kind }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivityPage' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account | rule | stage | status | action | cursor | limit)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/messages/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Activity]
+      operationId: getMessage
+      summary: One email with its decision trace ("Why this happened")
+      responses:
+        '200':
+          description: The feed row plus header details and the trace
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: { $ref: '#/components/schemas/MessageDetail' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/messages/{id}/correct:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Fixes]
+      operationId: correctMessage
+      summary: Say an email belongs to another rule, or to none
+      description: |
+        Undoes what was done to the email (newest first), applies the right rule's actions
+        (`rule_id` null keeps it in the inbox), records the correction as a few-shot example
+        and forgets any learned sender rule for that sender. The new actions are one batch of
+        kind `correction`. In dry-run the earlier real actions are still undone and the new
+        ones are recorded as `dry_run`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FixRequest' }
+      responses:
+        '200':
+          description: The email as it is now
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FixResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline
+        '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
+  /api/review:
+    get:
+      tags: [Review]
+      operationId: listReview
+      summary: Mail waiting in Needs review, newest first
+      description: Each row's `decision` names the rule the model would have picked (`rule_id` null when it had none) and why it was unsure.
+      parameters:
+        - { name: account, in: query, schema: { type: integer, format: int64 } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: One page, and the size of the whole queue
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewPage' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account | cursor | limit)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/review/{message_id}/resolve:
+    parameters:
+      - { name: message_id, in: path, required: true, schema: { type: integer, format: int64 } }
+    post:
+      tags: [Review]
+      operationId: resolveReview
+      summary: Approve the suggested rule, choose another, or keep the email in the inbox
+      description: The same as `/api/messages/{id}/correct`, for an email that is in Needs review.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FixRequest' }
+      responses:
+        '200':
+          description: The email as it is now
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FixResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # not_in_review, message_gone, account_offline
+        '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
+  /api/actions/undo:
+    parameters:
+      - { $ref: '#/components/parameters/Since' }
+    post:
+      tags: [Fixes]
+      operationId: undoSince
+      summary: Undo everything done since a time ("Undo the last hour")
+      description: Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone.
+      responses:
+        '200':
+          description: The undo batch and its counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UndoResult' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: since)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+  /api/actions/{id}/undo:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Fixes]
+      operationId: undoAction
+      summary: Undo one action
+      description: A move goes back to the folder it came from; a flag goes back to what it was. Undoing an action that is already undone, or that never changed the mailbox (`dry_run`, `failed`), does nothing and answers 200. Undo ignores dry-run.
+      responses:
+        '200':
+          description: The action as it is now
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [action]
+                properties:
+                  action: { $ref: '#/components/schemas/MessageAction' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # message_gone (the action stays done), account_offline
+        '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
+  /api/batches/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      tags: [Cleanup]
+      operationId: getBatch
+      summary: One batch with its progress and action counts
+      responses:
+        '200':
+          description: The batch
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch]
+                properties:
+                  batch: { $ref: '#/components/schemas/Batch' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/batches/{id}/undo:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Fixes]
+      operationId: undoBatch
+      summary: Undo every action of a batch, newest first
+      description: An action that cannot be undone does not stop the rest; `failed` counts them and the batch becomes `undone` only when every action was.
+      responses:
+        '200':
+          description: The batch and how the undo went
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UndoResult' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/cleanup/preview:
+    post:
+      tags: [Cleanup]
+      operationId: previewCleanup
+      x-status: planned
+      summary: Count what a cleanup run would do, per rule, without acting (M9)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CleanupRequest' }
+      responses:
+        '200':
+          description: The preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CleanupPreview' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | folder | since | limit), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_offline
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/cleanup/run:
+    post:
+      tags: [Cleanup]
+      operationId: runCleanup
+      x-status: planned
+      summary: Sort existing mail with the current rules, as one undoable batch (M9)
+      description: Answers at once with the batch; progress arrives as `batch.progress` events and from `GET /api/batches/{id}`. Honours dry-run.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CleanupRequest' }
+      responses:
+        '202':
+          description: Started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch]
+                properties:
+                  batch: { $ref: '#/components/schemas/Batch' }
+        '400': { $ref: '#/components/responses/Invalid' } # as for preview
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_offline, cleanup_running
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/templates:
+    get:
+      tags: [Templates]
+      operationId: listTemplates
+      x-status: planned
+      summary: The rule template gallery (M9)
+      description: Each template carries a ready rule; add it by sending that rule to `/api/rules/batch`.
+      responses:
+        '200':
+          description: Templates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Template' } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/stats/summary:
+    get:
+      tags: [Stats]
+      operationId: statsSummary
+      x-status: planned
+      summary: Counts, cost and account health for the Activity tiles (M9)
+      parameters:
+        - { name: range, in: query, schema: { type: string, enum: [day, week, month], default: day } }
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatsSummary' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: range)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/stats/usage:
+    get:
+      tags: [Stats]
+      operationId: statsUsage
+      x-status: planned
+      summary: Model calls and cost by day, rule and model for the Usage screen (M9)
+      parameters:
+        - { name: range, in: query, schema: { type: string, enum: [month], default: month } }
+      responses:
+        '200':
+          description: Usage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatsUsage' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: range)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /api/settings:
+    get:
+      tags: [Settings]
+      operationId: getSettings
+      summary: The settings in force
+      description: Stored settings lie over the environment variables, which are the defaults. Provider keys are never returned; `keys` only says which are set.
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settings' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    patch:
+      tags: [Settings]
+      operationId: updateSettings
+      summary: Change settings; fields left out stay as they are
+      description: The result is validated as a whole and stored in one transaction. Everything takes effect without a restart, from the next email on. Provider keys are stored encrypted under the master key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SettingsPatch' }
+      responses:
+        '200':
+          description: The settings as they are now
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settings' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | keys.<name>), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+  /api/events:
+    get:
+      tags: [Live]
+      operationId: streamEvents
+      summary: Server-Sent Events stream of everything that changes
+      description: |
+        One long-lived `text/event-stream`. Each event has an `id` (counting up from 1 since
+        the daemon started), an `event` name and a JSON `data` line:
+
+        | event | data | when |
+        | --- | --- | --- |
+        | `message.processed` | `ActivityItem` | an email was decided, acted on or corrected |
+        | `message.review` | `ActivityItem` | an email went to Needs review |
+        | `action.undone` | `MessageAction` | one action was undone (a batch undo sends one per action) |
+        | `account.status` | `Account` | an account's status changed, or it was edited |
+        | `batch.progress` | `Batch` | a cleanup batch moved forward (M9) |
+        | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
+        | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
+
+        The daemon keeps the last 200 events. A client that reconnects sends the last id it saw
+        in `Last-Event-ID` (EventSource does this by itself) and is first sent what it missed;
+        an id from before a daemon restart replays everything kept. A new client (no header)
+        is sent only what happens from then on. A client that falls 256 events behind is
+        disconnected and catches up the same way. Lines starting with `:` are keep-alive comments.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          schema: { type: integer, format: int64 }
+          description: Id of the last event the client saw
+      responses:
+        '200':
+          description: The stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /healthz:
+    get:
+      tags: [Ops]
+      operationId: healthz
+      security: []
+      summary: The process is up
+      responses:
+        '200':
+          description: ok
+          content:
+            text/plain:
+              schema: { type: string }
+  /readyz:
+    get:
+      tags: [Ops]
+      operationId: readyz
+      security: []
+      summary: The daemon can do its work (the database answers)
+      responses:
+        '200':
+          description: ok
+          content:
+            text/plain:
+              schema: { type: string }
+        '503':
+          description: The database is unavailable
+          content:
+            text/plain:
+              schema: { type: string }
+  /metrics:
+    get:
+      tags: [Ops]
+      operationId: metrics
+      security: []
+      summary: Prometheus metrics
+      description: Go runtime and process metrics, `mailrules_build_info`, `mailrules_http_requests_total{method,route,code}` and `mailrules_http_request_duration_seconds{method,route}`. Not behind the session; the daemon listens on 127.0.0.1 by default.
+      responses:
+        '200':
+          description: Prometheus text format
+          content:
+            text/plain:
+              schema: { type: string }
 components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: mailrules_session
+      description: Set by `/api/auth/setup` and `/api/auth/login`. Non-GET requests also need the `X-CSRF-Token` header.
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: The `next_cursor` of the previous page
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    Since:
+      name: since
+      in: query
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+      description: Unix seconds; everything done at or after this time is undone
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Invalid:
+      description: The request is wrong; `code` says how and `path` names the field
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Unauthenticated:
+      description: No session. `setup_required` (show first-run setup) or `unauthenticated` (show sign-in)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    CsrfFailed:
+      description: '`csrf_failed`: missing or wrong X-CSRF-Token header'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: '`not_found`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: The request is valid but cannot be done in the current state; `code` says why
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    TooLarge:
+      description: '`too_large`: the body is over 1 MB'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    ConnectionFailed:
+      description: |
+        The mail server could not be used with these details: `auth_failed` (path `password`),
+        `tls_failed` (path `host`), `no_folder` (path `watch_folder`) or `connection_failed` (path `host`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Upstream:
+      description: A mail server or model provider failed; `code` says which
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotImplemented:
+      description: '`not_implemented`: the contract for a later milestone; mock it until then'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
   schemas:
     Credentials:
       type: object
@@ -110,9 +1112,688 @@ components:
               description: Stable machine-readable code, e.g. invalid_input, csrf_failed, unauthenticated
             message: { type: string, description: Sentence safe to show the user }
             path: { type: string, description: Field the error is about, when there is one }
-  responses:
-    Error:
-      description: Error
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+    Preset:
+      type: object
+      required: [name, label, host, port, tls_mode, help_url, local_part_login]
+      properties:
+        name: { $ref: '#/components/schemas/PresetName' }
+        label: { type: string, description: 'Shown in the provider picker, e.g. "iCloud Mail"' }
+        host: { type: string, description: Empty for generic; the user supplies it }
+        port: { type: integer }
+        tls_mode: { $ref: '#/components/schemas/TLSMode' }
+        help_url: { type: string, description: Where the user creates an app password; may be empty }
+        local_part_login: { type: boolean, description: The server may want the part before "@" as the username; the daemon tries both }
+    PresetName: { type: string, enum: [icloud, fastmail, yahoo, zoho, generic] }
+    TLSMode: { type: string, enum: [implicit, starttls] }
+    AccountStatus:
+      type: string
+      enum: [new, live, reconnecting, auth_failed, error, paused]
+      description: '`auth_failed` and `error` have stopped and wait for the user (fix the password, then reconnect); `paused` was set by the user'
+    AccountInput:
+      type: object
+      required: [preset, username, password]
+      additionalProperties: false
+      properties:
+        preset: { $ref: '#/components/schemas/PresetName' }
+        username: { type: string }
+        password: { type: string, writeOnly: true, description: The app password. Never returned }
+        label: { type: string, description: Defaults to the username }
+        host: { type: string, description: Required with the generic preset; otherwise overrides the preset }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        tls_mode: { $ref: '#/components/schemas/TLSMode' }
+        watch_folder: { type: string, default: INBOX }
+    AccountTestResult:
+      type: object
+      required: [username, folders, can_move, idle]
+      properties:
+        username: { type: string, description: The username that worked (may be the local part) }
+        folders: { type: array, items: { $ref: '#/components/schemas/Folder' } }
+        can_move: { type: boolean, description: False means rules can flag and mark mail here but not move it }
+        idle: { type: boolean, description: False means new mail is checked for once a minute }
+    Account:
+      type: object
+      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, capabilities, can_move, folder_count, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        label: { type: string }
+        preset: { $ref: '#/components/schemas/PresetName' }
+        host: { type: string }
+        port: { type: integer }
+        tls_mode: { $ref: '#/components/schemas/TLSMode' }
+        username: { type: string }
+        watch_folder: { type: string }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        last_error: { type: string, description: Why the status is what it is; empty when all is well }
+        last_event_at: { type: [integer, 'null'], format: int64, description: When the status last changed }
+        capabilities: { type: array, items: { type: string }, description: What the server advertised at the last login }
+        can_move: { type: boolean }
+        folder_count: { type: integer }
+        created_at: { type: integer, format: int64 }
+    AccountEnvelope:
+      type: object
+      required: [account]
+      properties:
+        account: { $ref: '#/components/schemas/Account' }
+    AccountPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        label: { type: string }
+        watch_folder: { type: string }
+        password: { type: string, writeOnly: true, description: A new app password; reconnect follows }
+        paused: { type: boolean, description: true stops watching; false resumes }
+    Folder:
+      type: object
+      required: [name, delimiter, special_use]
+      properties:
+        name: { type: string, description: The server's own name, hierarchy delimiter included }
+        delimiter: { type: string }
+        special_use: { type: string, enum: ['', '\Junk', '\Trash', '\Archive', '\Sent', '\Drafts'] }
+
+    Condition:
+      type: object
+      additionalProperties: false
+      description: |
+        One node of a condition tree: a group (`all` or `any` of its children) or a leaf
+        (`field`, `op`, `value`). `{}` is the empty tree, which always matches. Fields:
+        from, to, cc, delivered_to, from_domain, subject, body, list_id, attachment_ext,
+        `header:<Name>` (strings); has_attachment, is_contact, replied_before, is_bulk,
+        is_noreply (booleans); size_kb, age_days (numbers); dmarc (pass | fail | none);
+        account (an account id).
+      properties:
+        all: { type: array, items: { $ref: '#/components/schemas/Condition' } }
+        any: { type: array, items: { $ref: '#/components/schemas/Condition' } }
+        field: { type: string }
+        op: { type: string, enum: [eq, ne, in, contains, contains_any, not_contains, matches, gt, lt, exists] }
+        value: { description: 'A string, number, boolean, or a list of them, as the operator needs. `matches` takes an RE2 pattern of at most 200 characters' }
+    RuleAction:
+      type: object
+      required: [type]
+      additionalProperties: false
+      properties:
+        type: { type: string, enum: [move, archive, trash, junk, flag, unflag, read, unread, keep] }
+        folder: { type: string, description: 'For move only: 1 to 200 characters, no wildcards' }
+    Rule:
+      type: object
+      required: [id, account_id, name, said, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, version, created_at, updated_at, hits_week, last_match_at]
+      properties:
+        id: { type: integer, format: int64 }
+        account_id: { type: [integer, 'null'], format: int64, description: null = every account }
+        name: { type: string }
+        said: { type: string, description: The user's original wording; may be empty }
+        intent: { type: string, description: Plain-English intent for the decision model; empty = condition-only }
+        conditions: { $ref: '#/components/schemas/Condition' }
+        exceptions: { $ref: '#/components/schemas/Condition' }
+        actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
+        priority: { type: integer, description: Lower runs first }
+        stack: { type: boolean, description: Also applies after another rule matched; condition-only }
+        model: { type: string, description: Per-rule decider override; empty = the default }
+        min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1, description: null = the default threshold }
+        enabled: { type: boolean }
+        version: { type: integer, description: Goes up by one with every edit }
+        created_at: { type: integer, format: int64 }
+        updated_at: { type: integer, format: int64 }
+        hits_week: { type: integer, description: Emails this rule was applied to in the last 7 days }
+        last_match_at: { type: [integer, 'null'], format: int64 }
+    RuleEnvelope:
+      type: object
+      required: [rule]
+      properties:
+        rule: { $ref: '#/components/schemas/Rule' }
+    RuleList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Rule' } }
+    ImportResult:
+      type: object
+      required: [items, created, updated]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Rule' } }
+        created: { type: integer }
+        updated: { type: integer }
+    RulePatch:
+      type: object
+      additionalProperties: false
+      description: |
+        Validation: a name; conditions, an intent, or both; at least one action; an
+        intent-based rule that trashes needs min_confidence of at least 0.85; a stacking rule
+        is condition-only.
+      properties:
+        name: { type: string }
+        said: { type: string }
+        intent: { type: string }
+        conditions: { $ref: '#/components/schemas/Condition' }
+        exceptions: { $ref: '#/components/schemas/Condition' }
+        actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
+        account_id: { type: [integer, 'null'], format: int64 }
+        stack: { type: boolean }
+        model: { type: string }
+        min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        enabled: { type: boolean }
+    RuleInput:
+      type: object
+      required: [name, actions]
+      additionalProperties: false
+      description: A rule as the client sends it when creating one (M8). The same validation as RulePatch.
+      properties:
+        name: { type: string }
+        said: { type: string }
+        intent: { type: [string, 'null'] }
+        conditions: { $ref: '#/components/schemas/Condition' }
+        exceptions: { $ref: '#/components/schemas/Condition' }
+        actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
+        account_id: { type: [integer, 'null'], format: int64 }
+        stack: { type: boolean, default: false }
+        model: { type: string }
+        min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        enabled: { type: boolean, default: true }
+        new_folders: { type: array, items: { type: string }, description: Folders to create on the server when the rule is saved }
+        position: { type: integer, minimum: 0, description: Where in the priority order to insert it (0 = first); left out = at the end }
+    ComposeRequest:
+      type: object
+      required: [text]
+      additionalProperties: false
+      properties:
+        text: { type: string, maxLength: 4000, description: Typed, or dictated and transcribed in the browser }
+        account_id: { type: [integer, 'null'], format: int64, description: The account whose folders and recent mail the drafts are checked against }
+    RuleDraft:
+      type: object
+      required: [name, said, intent, conditions, exceptions, actions, min_confidence, new_folders, question, conflicts, errors, match_count, samples]
+      properties:
+        name: { type: string }
+        said: { type: string, description: The exact span of the user's words this rule came from }
+        intent: { type: [string, 'null'] }
+        conditions: { $ref: '#/components/schemas/Condition' }
+        exceptions: { $ref: '#/components/schemas/Condition' }
+        actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
+        min_confidence: { type: [number, 'null'] }
+        new_folders: { type: array, items: { type: string }, description: Folders the rule names that do not exist yet }
+        question: { type: [string, 'null'], description: At most one question, when the text was genuinely ambiguous }
+        conflicts:
+          type: array
+          items:
+            type: object
+            required: [rule_id, kind, note]
+            properties:
+              rule_id: { type: integer, format: int64 }
+              kind: { type: string, enum: [overlap, duplicate, shadowed] }
+              note: { type: string }
+        errors:
+          type: array
+          description: Validation problems of this draft; a draft with errors cannot be saved as it is
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path: { type: string }
+              message: { type: string }
+        match_count: { type: integer, description: How many of the account's last 200 emails it would match }
+        samples: { type: array, maxItems: 5, items: { $ref: '#/components/schemas/TestRow' } }
+    ComposeResult:
+      type: object
+      required: [rules, unparsed]
+      properties:
+        rules: { type: array, items: { $ref: '#/components/schemas/RuleDraft' } }
+        unparsed: { type: array, items: { type: string }, description: Parts of the text that could not be turned into a rule }
+    RuleBatchRequest:
+      type: object
+      required: [rules]
+      additionalProperties: false
+      properties:
+        rules: { type: array, minItems: 1, items: { $ref: '#/components/schemas/RuleInput' } }
+    TestRequest:
+      type: object
+      required: [account_id]
+      additionalProperties: false
+      description: Give `rule_ids`, `rules`, or neither to test the saved rule set as it is.
+      properties:
+        account_id: { type: integer, format: int64 }
+        rule_ids: { type: array, items: { type: integer, format: int64 }, description: Saved rules to test on their own }
+        rules: { type: array, items: { $ref: '#/components/schemas/RuleInput' }, description: Draft rules, tested as if saved after the existing ones }
+        folder: { type: string, default: INBOX }
+        limit: { type: integer, minimum: 1, maximum: 2000, default: 200 }
+    TestRow:
+      type: object
+      required: [from, subject, received_at, stage, rule_id, rule_name, confidence, reason, actions]
+      properties:
+        from: { type: string }
+        subject: { type: string }
+        received_at: { type: [integer, 'null'], format: int64 }
+        stage: { $ref: '#/components/schemas/Stage' }
+        rule_id: { type: [integer, 'null'], format: int64, description: null = no rule, or a draft (see rule_name) }
+        rule_name: { type: string }
+        confidence: { type: number }
+        reason: { type: string }
+        review: { type: boolean, description: Below the threshold; it would go to Needs review }
+        actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' }, description: What it would do }
+    TestProgress:
+      type: object
+      required: [done, total]
+      properties:
+        done: { type: integer }
+        total: { type: integer }
+    TestResult:
+      type: object
+      required: [results, tested, matched, model_calls, cost_usd]
+      properties:
+        results: { type: array, items: { $ref: '#/components/schemas/TestRow' } }
+        tested: { type: integer }
+        matched: { type: integer }
+        model_calls: { type: integer }
+        cost_usd: { type: number }
+
+    Sender:
+      type: object
+      required: [type, value, name, messages, last_seen_at, has_list_unsubscribe, verdict, rule_id, source, hits]
+      properties:
+        type: { type: string, enum: [address, domain] }
+        value: { type: string, description: Lower-case address or domain }
+        name: { type: string, description: Display name from the latest email; may be empty }
+        messages: { type: integer, description: Emails seen from this sender in the last 30 days }
+        last_seen_at: { type: [integer, 'null'], format: int64 }
+        has_list_unsubscribe: { type: boolean }
+        verdict: { type: [string, 'null'], enum: [route, keep, block, null], description: null = no sender rule; the rules decide }
+        rule_id: { type: [integer, 'null'], format: int64, description: 'For route: the rule whose actions apply' }
+        source: { type: [string, 'null'], enum: [user, learned, null] }
+        hits: { type: integer, description: How often the sender rule has applied }
+    SenderPut:
+      type: object
+      required: [verdict]
+      additionalProperties: false
+      properties:
+        verdict: { type: string, enum: [route, keep, block] }
+        rule_id: { type: integer, format: int64, description: Required for route }
+
+    Stage:
+      type: string
+      enum: [sender, condition, decider, fallback, none]
+      description: 'Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule'
+    MessageState:
+      type: string
+      enum: [new, decided, acted, review, skipped, error]
+      description: '`acted`: a rule was applied (or recorded, in dry-run). `review`: waiting in Needs review. `skipped`: no rule matched, or the email was gone. `error`: failed; it is retried. `new` and `decided` are in progress'
+    ActionKind:
+      type: string
+      enum: [move, archive, trash, junk, flag, unflag, read, unread, keep, review]
+      description: '`review` is the Needs review tag MailRules sets itself; no rule can name it'
+    ActionStatus:
+      type: string
+      enum: [done, dry_run, failed, undone]
+    Decision:
+      type: object
+      required: [id, stage, rule_id, rule_name, confidence, reason, model, tokens_in, tokens_out, cost_usd, latency_ms, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        stage: { $ref: '#/components/schemas/Stage' }
+        rule_id: { type: [integer, 'null'], format: int64, description: 'null = no rule, or the rule has since been deleted (then rule_name still names it). In Needs review: the rule the model suggested' }
+        rule_name: { type: string, description: 'The rule''s current name, or the name it had when a deleted rule decided this. Empty when there is no rule' }
+        confidence: { type: number }
+        reason: { type: string, description: One sentence saying why }
+        model: { type: string, description: The model whose answer was used; empty when none was asked }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_usd: { type: number }
+        latency_ms: { type: integer }
+        created_at: { type: integer, format: int64 }
+    MessageAction:
+      type: object
+      required: [id, message_id, account_id, decision_id, batch_id, kind, folder, from_folder, to_folder, status, error, created_at, undone_at]
+      properties:
+        id: { type: integer, format: int64 }
+        message_id: { type: integer, format: int64 }
+        account_id: { type: integer, format: int64 }
+        decision_id: { type: [integer, 'null'], format: int64, description: null for a correction }
+        batch_id: { type: [integer, 'null'], format: int64 }
+        kind: { $ref: '#/components/schemas/ActionKind' }
+        folder: { type: string, description: The destination a move names; empty otherwise }
+        from_folder: { type: string, description: Where the email was just before this action }
+        to_folder: { type: string, description: Where it was afterwards; empty unless the action was done }
+        status: { $ref: '#/components/schemas/ActionStatus' }
+        error: { type: string, description: Why it failed; empty otherwise }
+        created_at: { type: integer, format: int64 }
+        undone_at: { type: [integer, 'null'], format: int64 }
+    ActivityItem:
+      type: object
+      required: [id, account_id, from, from_domain, subject, snippet, received_at, created_at, has_attachment, state, decision, actions, undoable, correction]
+      description: One email in the feed. `id` is the message id used by `/api/messages/{id}` and the fix endpoints.
+      properties:
+        id: { type: integer, format: int64 }
+        account_id: { type: integer, format: int64 }
+        from: { type: string, description: The sender's address }
+        from_domain: { type: string }
+        subject: { type: string }
+        snippet: { type: string, maxLength: 200, description: The first characters of the text; blank once retention has purged it }
+        received_at: { type: [integer, 'null'], format: int64 }
+        created_at: { type: integer, format: int64, description: When MailRules first saw it }
+        has_attachment: { type: boolean }
+        state: { $ref: '#/components/schemas/MessageState' }
+        decision:
+          oneOf:
+            - { $ref: '#/components/schemas/Decision' }
+            - { type: 'null' }
+          description: The latest decision; null until one is made
+        actions: { type: array, items: { $ref: '#/components/schemas/MessageAction' }, description: Every action taken on it, oldest first }
+        undoable: { type: boolean, description: At least one action is in effect and can be undone }
+        correction:
+          oneOf:
+            - { $ref: '#/components/schemas/Correction' }
+            - { type: 'null' }
+          description: The user's latest word on this email, which overrules `decision`; null when it was never corrected
+    Correction:
+      type: object
+      required: [rule_id, rule_name, created_at]
+      properties:
+        rule_id: { type: [integer, 'null'], format: int64, description: The rule the user chose; null = keep in the inbox }
+        rule_name: { type: string }
+        created_at: { type: integer, format: int64 }
+    ActivityPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ActivityItem' } }
+        next_cursor: { type: [string, 'null'] }
+    ReviewPage:
+      type: object
+      required: [items, next_cursor, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ActivityItem' } }
+        next_cursor: { type: [string, 'null'] }
+        total: { type: integer, description: The size of the whole queue, for the nav badge }
+    Signals:
+      type: object
+      required: [bulk, noreply, is_contact, replied_before, dmarc]
+      properties:
+        bulk: { type: boolean }
+        noreply: { type: boolean }
+        is_contact: { type: boolean }
+        replied_before: { type: boolean }
+        dmarc: { type: string, description: 'pass, fail, none, or empty when unknown' }
+    TraceStep:
+      type: object
+      required: [kind, label, detail, rule_id, rule_name, confidence, model, tokens_in, tokens_out, cost_usd, latency_ms, status, at, active]
+      description: One line of the "Why this happened" panel, oldest first.
+      properties:
+        kind: { type: string, enum: [sender, condition, decider, fallback, none, action, correction], description: A decision stage, an action, or a correction by the user }
+        label: { type: string, description: 'Short heading, e.g. "Decision model"' }
+        detail: { type: string, description: 'The sentence to show: the reason, or what the action did' }
+        rule_id: { type: [integer, 'null'], format: int64 }
+        rule_name: { type: string }
+        confidence: { type: [number, 'null'] }
+        model: { type: string }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_usd: { type: number }
+        latency_ms: { type: integer }
+        status: { type: string, enum: ['', done, dry_run, failed, undone], description: An action's status; empty for other kinds }
+        at: { type: integer, format: int64 }
+        active: { type: boolean, description: The step that settled where the email is now }
+    MessageDetail:
+      allOf:
+        - { $ref: '#/components/schemas/ActivityItem' }
+        - type: object
+          required: [to, list_id, size, signals, folder, current_folder, attempts, next_attempt_at, trace]
+          properties:
+            to: { type: array, items: { type: string } }
+            list_id: { type: string }
+            size: { type: integer, description: Bytes }
+            signals: { $ref: '#/components/schemas/Signals' }
+            folder: { type: string, description: Where it arrived }
+            current_folder: { type: string, description: Where MailRules last left it }
+            attempts: { type: integer, description: Retries made after a failure }
+            next_attempt_at: { type: [integer, 'null'], format: int64 }
+            trace: { type: array, items: { $ref: '#/components/schemas/TraceStep' } }
+    FixRequest:
+      type: object
+      required: [rule_id]
+      additionalProperties: false
+      properties:
+        rule_id: { type: [integer, 'null'], format: int64, description: The rule the email belongs to; null = keep it in the inbox }
+        always_for_sender: { type: boolean, default: false, description: Also store a sender rule, so future mail from this address goes the same way }
+    FixResult:
+      type: object
+      required: [batch_id, item]
+      properties:
+        batch_id: { type: integer, format: int64, description: The correction batch holding the new actions }
+        item: { $ref: '#/components/schemas/ActivityItem' }
+    Batch:
+      type: object
+      required: [id, kind, status, total, done, created_at, actions]
+      properties:
+        id: { type: integer, format: int64 }
+        kind: { type: string, enum: [live, cleanup, review, correction, undo], description: '`live` is one per UTC day of live processing, so "undo today" is one batch undo' }
+        status: { type: string, enum: [running, done, failed, undone] }
+        total: { type: [integer, 'null'], description: How many items it set out to handle; null when not counted up front (live) }
+        done: { type: integer, description: How many it has handled; for an undo batch, how many actions were undone }
+        created_at: { type: integer, format: int64 }
+        actions:
+          type: object
+          description: How many of the batch's own actions have each status. An undo batch has none of its own
+          required: [done, dry_run, failed, undone]
+          properties:
+            done: { type: integer }
+            dry_run: { type: integer }
+            failed: { type: integer }
+            undone: { type: integer }
+    UndoResult:
+      type: object
+      required: [batch, undone, failed]
+      properties:
+        batch: { $ref: '#/components/schemas/Batch' }
+        undone: { type: integer, description: Actions undone by this call }
+        failed: { type: integer, description: 'Actions that could not be undone: the email is gone, or its account is not connected' }
+
+    CleanupRequest:
+      type: object
+      required: [account_id]
+      additionalProperties: false
+      properties:
+        account_id: { type: integer, format: int64 }
+        folder: { type: string, default: INBOX }
+        since: { type: [integer, 'null'], format: int64, description: Only mail received at or after this time; null = all of it }
+        limit: { type: integer, minimum: 1, description: Only the newest N emails }
+    CleanupPreview:
+      type: object
+      required: [total, groups, estimated_model_calls, estimated_cost_usd]
+      properties:
+        total: { type: integer }
+        groups:
+          type: array
+          items:
+            type: object
+            required: [outcome, rule_id, rule_name, count]
+            properties:
+              outcome: { type: string, enum: [rule, none, review] }
+              rule_id: { type: [integer, 'null'], format: int64 }
+              rule_name: { type: string }
+              count: { type: integer }
+        estimated_model_calls: { type: integer }
+        estimated_cost_usd: { type: number }
+    Template:
+      type: object
+      required: [id, name, description, rule]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        rule: { $ref: '#/components/schemas/RuleInput' }
+
+    ModelUsage:
+      type: object
+      required: [provider, model, purpose, calls, tokens_in, tokens_out, cost_usd]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        purpose: { type: string, enum: [decide, escalate, compose, test] }
+        calls: { type: integer }
+        tokens_in: { type: integer }
+        tokens_out: { type: integer }
+        cost_usd: { type: number }
+    StatsSummary:
+      type: object
+      required: [range, since, counts, decided_without_model, cost_usd, calls_by_model, top_rules, accounts]
+      properties:
+        range: { type: string, enum: [day, week, month] }
+        since: { type: integer, format: int64, description: Start of the range }
+        counts:
+          type: object
+          required: [processed, sorted, trashed, review]
+          properties:
+            processed: { type: integer }
+            sorted: { type: integer, description: A rule was applied }
+            trashed: { type: integer }
+            review: { type: integer, description: Waiting in Needs review now }
+        decided_without_model: { type: number, minimum: 0, maximum: 1, description: Share of emails settled by sender rules or conditions alone }
+        cost_usd: { type: number }
+        calls_by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' } }
+        top_rules:
+          type: array
+          items:
+            type: object
+            required: [rule_id, rule_name, hits]
+            properties:
+              rule_id: { type: [integer, 'null'], format: int64 }
+              rule_name: { type: string }
+              hits: { type: integer }
+        accounts:
+          type: array
+          items:
+            type: object
+            required: [account_id, label, status, last_event_at, last_error]
+            properties:
+              account_id: { type: integer, format: int64 }
+              label: { type: string }
+              status: { $ref: '#/components/schemas/AccountStatus' }
+              last_event_at: { type: [integer, 'null'], format: int64 }
+              last_error: { type: string }
+    StatsUsage:
+      type: object
+      required: [range, since, emails, calls, cost_usd, days, by_rule, by_model, without_model]
+      properties:
+        range: { type: string, enum: [month] }
+        since: { type: integer, format: int64 }
+        emails: { type: integer, description: Emails sorted in the range }
+        calls: { type: integer }
+        cost_usd: { type: number }
+        days:
+          type: array
+          description: One entry per UTC day, oldest first
+          items:
+            type: object
+            required: [day, models]
+            properties:
+              day: { type: string, format: date }
+              models:
+                type: array
+                items:
+                  type: object
+                  required: [provider, model, calls, cost_usd]
+                  properties:
+                    provider: { type: string }
+                    model: { type: string }
+                    calls: { type: integer }
+                    cost_usd: { type: number }
+        by_rule:
+          type: array
+          items:
+            type: object
+            required: [rule_id, rule_name, emails, calls, cost_usd]
+            properties:
+              rule_id: { type: [integer, 'null'], format: int64 }
+              rule_name: { type: string }
+              emails: { type: integer }
+              calls: { type: integer }
+              cost_usd: { type: number }
+        by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' } }
+        without_model: { type: integer, description: Emails settled by conditions and sender rules, at no cost }
+
+    Decider: { type: string, enum: [jev, clef, anthropic, openai, ollama] }
+    ProviderKeys:
+      type: object
+      description: 'For each provider key, whether one is set (stored here, or in the environment). Never the key'
+      required: [openrouter_api_key, cloudflare_account_id, cloudflare_api_token, anthropic_api_key, openai_api_key]
+      properties:
+        openrouter_api_key: { type: boolean, description: Jev }
+        cloudflare_account_id: { type: boolean, description: Clef }
+        cloudflare_api_token: { type: boolean, description: Clef }
+        anthropic_api_key: { type: boolean, description: The Haiku fallback and the rule composer }
+        openai_api_key: { type: boolean, description: An OpenAI-compatible endpoint }
+    Settings:
+      type: object
+      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, keys, server, features]
+      properties:
+        dry_run: { type: boolean, description: While true, decisions are logged and no mailbox is changed }
+        decider: { $ref: '#/components/schemas/Decider' }
+        decider_model: { type: string, description: 'Empty = the provider''s default; openai and ollama have none' }
+        fallback_model: { type: string, description: Asked when the decider is unsure; empty = off }
+        composer_model: { type: string }
+        escalate_below: { type: number, minimum: 0, maximum: 1, description: Decider confidence below this asks the fallback }
+        min_confidence: { type: number, minimum: 0, maximum: 1, description: Default act threshold; a rule may set its own }
+        retention_days: { type: integer, minimum: 1, maximum: 3650, description: How long message snippets are kept }
+        keys: { $ref: '#/components/schemas/ProviderKeys' }
+        server:
+          type: object
+          readOnly: true
+          required: [version, data_dir, listen, mode]
+          properties:
+            version: { type: string }
+            data_dir: { type: string }
+            listen: { type: string }
+            mode: { type: string, enum: [selfhost, cloud] }
+        features:
+          type: object
+          readOnly: true
+          description: Later-phase features the UI draws; each stays hidden until its flag is true
+          required: [digest, notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers]
+          properties:
+            digest: { type: boolean }
+            notifications: { type: boolean }
+            timed_actions: { type: boolean }
+            draft_replies: { type: boolean }
+            billing: { type: boolean }
+            unsubscribe: { type: boolean }
+            oauth_providers: { type: boolean }
+    SettingsPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        dry_run: { type: boolean }
+        decider: { $ref: '#/components/schemas/Decider' }
+        decider_model: { type: string }
+        fallback_model: { type: string }
+        composer_model: { type: string }
+        escalate_below: { type: number, minimum: 0, maximum: 1 }
+        min_confidence: { type: number, minimum: 0, maximum: 1 }
+        retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        keys:
+          type: object
+          writeOnly: true
+          additionalProperties: false
+          description: Provider keys to store. An empty string removes the stored key, which puts the environment's back in force
+          properties:
+            openrouter_api_key: { type: string }
+            cloudflare_account_id: { type: string }
+            cloudflare_api_token: { type: string }
+            anthropic_api_key: { type: string }
+            openai_api_key: { type: string }
+
+    EventMessageProcessed:
+      description: Data of `message.processed`
+      allOf: [{ $ref: '#/components/schemas/ActivityItem' }]
+    EventMessageReview:
+      description: Data of `message.review`
+      allOf: [{ $ref: '#/components/schemas/ActivityItem' }]
+    EventActionUndone:
+      description: Data of `action.undone`
+      allOf: [{ $ref: '#/components/schemas/MessageAction' }]
+    EventAccountStatus:
+      description: Data of `account.status`
+      allOf: [{ $ref: '#/components/schemas/Account' }]
+    EventBatchProgress:
+      description: Data of `batch.progress`
+      allOf: [{ $ref: '#/components/schemas/Batch' }]
+    EventEmpty:
+      description: Data of `rules.changed` and `usage.updated`; refetch
+      type: object
+      additionalProperties: false

@@ -104,7 +104,7 @@ func (r *Router) record(ctx context.Context, purpose string, u Usage) {
 // NewDecider builds one decider from config. spec is a MAILRULES_DECIDER name,
 // optionally followed by ":model" (for example "clef:clef-flash" or
 // "ollama:llama3.2"). jev, clef and anthropic have default models; openai and
-// ollama need one named, because the plan has no setting for it.
+// ollama need one named (MAILRULES_DECIDER_MODEL, see config.DeciderSpec).
 func NewDecider(cfg *config.Config, spec string, deps Deps) (Decider, error) {
 	name, model, _ := strings.Cut(spec, ":")
 	ready := *cfg

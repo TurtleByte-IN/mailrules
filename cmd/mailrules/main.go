@@ -15,12 +15,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/api"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
+	"github.com/TurtleByte-IN/mailrules/internal/events"
+	"github.com/TurtleByte-IN/mailrules/internal/mail"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/imap"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
+	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
+	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -33,7 +41,10 @@ const usage = `usage: mailrules <command> [flags]
   accounts  add, list or test mail accounts
   eval      measure decider accuracy on labeled mail:
             eval --labels testdata/labeled.jsonl --decider jev,clef:clef-flash
-  rules     validate a rules file, or test it over .eml files
+  rules     import or export the rules as YAML; validate a rules file, or
+            test it over .eml files
+  dry-run   on | off: switch the global dry-run; with no argument, show it.
+            While it is on, decisions are logged and no mailbox is changed.
   version   print the version
 `
 
@@ -72,7 +83,9 @@ func run(args []string) error {
 	case "eval":
 		return eval(ctx, args[1:], os.Stdout)
 	case "rules":
-		return rulesCmd(args[1:], os.Stdout)
+		return rulesCmd(ctx, args[1:], os.Getenv, os.Stdout)
+	case "dry-run":
+		return dryRunCmd(ctx, args[1:], os.Getenv, os.Stdout)
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {
@@ -94,10 +107,6 @@ func serve(ctx context.Context, cfg *config.Config) error {
 		slog.Warn("web UI is reachable from other machines; put it behind a reverse proxy with TLS", "listen", cfg.Listen)
 	}
 
-	if err := cfg.DeciderReady(); err != nil {
-		slog.Warn("no decision model yet; new mail waits in Needs review until one is set", "missing", err.Error())
-	}
-
 	db, err := store.Open(ctx, cfg.DataDir)
 	if err != nil {
 		return err
@@ -106,17 +115,69 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	if err := store.Migrate(ctx, db); err != nil {
 		return err
 	}
-
-	// Loaded here so a bad key stops startup; the account watchers that use it start in M5.
-	if _, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir); err != nil {
+	st := store.New(db)
+	master, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir)
+	if err != nil {
 		return err
 	}
 
-	handler := api.NewHandler(api.Options{Store: store.New(db), SecureCookies: !cfg.ListensLocally()})
+	// The decider, its models, the thresholds and the provider keys can be changed in the
+	// browser, so the pipeline asks for them per message (sett.Live) instead of holding a router.
+	prices, err := models.LoadPrices(cfg.PricesFile)
+	if err != nil {
+		return err
+	}
+	sett := &settings.Settings{Store: st, Master: master, Env: cfg,
+		Deps: models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}}
+	sett.Live(ctx) // logs now if the decider is not ready, rather than at the first email
+
+	// One supervisor per account. They stop with ctx and get a few seconds to finish
+	// queued mail; the database closes only after they have.
+	accounts, err := st.Accounts(ctx)
+	if err != nil {
+		return err
+	}
+	hub := events.NewHub()
+	ctx, stopAll := context.WithCancel(ctx)
+	supervisors := &worker.Manager{}
+	defer supervisors.Wait()
+	defer stopAll() // runs first, so Wait returns even when the HTTP server is what failed
+	// The executor is the one place that changes a mailbox; the HTTP layer reaches it for
+	// undo and corrections.
+	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
+	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
+	start := func(acct store.Account) {
+		supervisors.Start(ctx, &worker.Supervisor{
+			Account: acct, Store: st, Hub: hub, Open: openAccount(st, master, acct),
+			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
+		})
+	}
+	for _, acct := range accounts {
+		if acct.Status != worker.StatusPaused {
+			start(acct)
+		}
+	}
+	dryRun, err := st.DryRun(ctx, cfg.DryRun)
+	if err != nil {
+		return err
+	}
+
+	handler := api.NewHandler(api.Options{
+		Store: st, SecureCookies: !cfg.ListensLocally(), Hub: hub, Exec: exec, Settings: sett, Master: master,
+		Metrics: telemetry.NewMetrics(version), Version: version,
+		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
+			mb, username, err := dial(ctx, acct, password, nil)
+			if err != nil {
+				return nil, "", err // not mb: a nil *imap.Mailbox is not a nil mail.Mailbox
+			}
+			return mb, username, nil
+		},
+		StartAccount: start, StopAccount: supervisors.Stop,
+	})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("listening", "listen", cfg.Listen, "version", version, "dry_run", cfg.DryRun)
+	slog.Info("listening", "listen", cfg.Listen, "version", version, "dry_run", dryRun, "accounts", len(accounts))
 
 	select {
 	case err := <-errc:
@@ -131,6 +192,58 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+// dryRunCmd shows or sets the global dry-run switch. It lives in the database, so a
+// running daemon follows it from its next action on.
+func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, out io.Writer) error {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "on" && args[0] != "off") {
+		return errors.New("usage: mailrules dry-run [on|off]")
+	}
+	cfg, err := config.Load(nil, getenv)
+	if err != nil {
+		return err
+	}
+	db, err := store.Open(ctx, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := store.Migrate(ctx, db); err != nil {
+		return err
+	}
+	st := store.New(db)
+	if len(args) == 1 {
+		if err := st.SetDryRun(ctx, args[0] == "on"); err != nil {
+			return err
+		}
+	}
+	on, err := st.DryRun(ctx, cfg.DryRun)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "dry-run is %s\n", map[bool]string{true: "on: decisions are logged, no mailbox is changed", false: "off: rules change mailboxes"}[on])
+	return err
+}
+
+// openAccount returns how a supervisor connects to an account. The password is decrypted
+// for each connection and kept nowhere else.
+func openAccount(st *store.Store, master []byte, acct store.Account) func(context.Context) (mail.Mailbox, error) {
+	return func(ctx context.Context) (mail.Mailbox, error) {
+		password, err := st.AccountSecret(ctx, master, acct.ID)
+		if err != nil {
+			return nil, err
+		}
+		preset, _ := presets.Get(acct.Preset)
+		mb, err := imap.Open(ctx, imap.Config{
+			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+			Username: acct.Username, Password: password, Preset: preset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return mb, nil
+	}
+}
+
 // eval runs each named decider over a labeled file and prints its report.
 // Settings come from the environment; nothing is written to the database.
 func eval(ctx context.Context, args []string, out io.Writer) error {
@@ -143,7 +256,7 @@ func eval(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	labelsPath := fs.String("labels", "testdata/labeled.jsonl", "labeled emails and their rule set")
-	deciders := fs.String("decider", cfg.Decider, "comma-separated deciders, each name or name:model")
+	deciders := fs.String("decider", cfg.DeciderSpec(), "comma-separated deciders, each name or name:model")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

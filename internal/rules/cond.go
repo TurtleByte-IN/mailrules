@@ -2,6 +2,7 @@ package rules
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -416,4 +417,54 @@ func (c Cond) valueProblem(k kind) string {
 		}
 	}
 	return ""
+}
+
+// opWords is how each operator reads in Text.
+var opWords = map[string]string{
+	OpEq: "is", OpNe: "is not", OpIn: "is one of", OpContains: "contains", OpContainsAny: "contains any of",
+	OpNotContains: "contains none of", OpMatches: "matches", OpGt: "is more than", OpLt: "is less than",
+}
+
+// Text renders the tree as one line of plain English, for showing a rule's "unless" part
+// to a model: `from_domain is one of a.com, b.com and (subject contains refund or
+// is_bulk is true)`. The empty tree renders as "".
+func (c Cond) Text() string {
+	join := func(children []Cond, sep string) string {
+		var parts []string
+		for _, ch := range children {
+			t := ch.Text()
+			if t == "" {
+				continue
+			}
+			if len(ch.All)+len(ch.Any) > 1 {
+				t = "(" + t + ")"
+			}
+			parts = append(parts, t)
+		}
+		return strings.Join(parts, sep)
+	}
+	switch {
+	case c.Op == OpExists:
+		if c.Value == false {
+			return c.Field + " is missing"
+		}
+		return c.Field + " is present"
+	case c.Field != "" || c.Op != "":
+		var vals []string
+		switch v := c.Value.(type) {
+		case []any:
+			for _, x := range v {
+				vals = append(vals, fmt.Sprint(x))
+			}
+		case []string:
+			vals = v
+		default:
+			vals = []string{fmt.Sprint(v)}
+		}
+		return c.Field + " " + cmp.Or(opWords[c.Op], c.Op) + " " + strings.Join(vals, ", ")
+	case len(c.Any) > 0:
+		return join(c.Any, " or ")
+	default:
+		return join(c.All, " and ")
+	}
 }
