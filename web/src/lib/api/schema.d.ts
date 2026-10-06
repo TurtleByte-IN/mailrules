@@ -1753,7 +1753,7 @@ export interface components {
             };
             /** @description Enabled rules applied to no email in the range */
             quiet_rules: number;
-            /** @description Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed */
+            /** @description Share of the processed emails a sender rule or a condition rule acted on, with no model asked. An email waiting in Needs review, one no rule matched, and one a model decided do not count, but all stay in the base. 0 when nothing was processed */
             decided_without_model: number;
             cost_usd: number;
             /** @description One row per provider, model and purpose, dearest first: a model used both to decide and as the fallback has two rows. Add them up for a per-model figure */
@@ -1818,7 +1818,7 @@ export interface components {
             }[];
             /** @description One row per provider, model and purpose, dearest first */
             by_model: components["schemas"]["ModelUsage"][];
-            /** @description Of the `processed` emails, those settled without asking a model: by conditions or sender rules, or because no rule was in play. Never more than `processed`; the free share is `without_model / processed`, not over `emails` */
+            /** @description Of the `processed` emails, those a sender rule or a condition rule acted on, with no model asked (not the ones waiting in Needs review, nor those no rule matched). Never more than `processed`; the free share is `without_model / processed`, not over `emails` */
             without_model: number;
         };
         /** @enum {string} */

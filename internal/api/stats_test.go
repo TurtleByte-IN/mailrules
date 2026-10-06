@@ -325,8 +325,9 @@ func TestTraceShowsTheCandidatesProbabilities(t *testing.T) {
 	}
 }
 
-// MAI-19: 15 emails processed, 10 of them sorted, no model in play. The free share is
-// counted over the processed emails, so it is 100% and can never pass it.
+// MAI-19: 15 emails processed, 10 of them sorted by a rule, 5 matched by no rule. The free
+// share is counted over the processed emails and only the rule-settled ones count (MAI-31),
+// so it is 10 of 15 and can never pass it.
 func TestUsageFreeShareIsOverProcessed(t *testing.T) {
 	e := newEnv(t)
 	e.connect()
@@ -341,11 +342,38 @@ func TestUsageFreeShareIsOverProcessed(t *testing.T) {
 	}
 	u := e.call(http.MethodGet, "/api/stats/usage", "", http.StatusOK)
 	conform(t, e.doc, "StatsUsage", u)
-	if u["processed"] != float64(15) || u["emails"] != float64(10) || u["without_model"] != float64(15) {
-		t.Fatalf("usage = processed %v, emails %v, without_model %v; want 15, 10, 15", u["processed"], u["emails"], u["without_model"])
+	if u["processed"] != float64(15) || u["emails"] != float64(10) || u["without_model"] != float64(10) {
+		t.Fatalf("usage = processed %v, emails %v, without_model %v; want 15, 10, 10", u["processed"], u["emails"], u["without_model"])
 	}
 	if u["without_model"].(float64) > u["processed"].(float64) {
 		t.Errorf("without_model %v is more than processed %v", u["without_model"], u["processed"])
+	}
+}
+
+// MAI-31: no model key, one rule that needs a model, one email nothing can take. It waits
+// in Needs review and nobody decided it, so both free figures read 0; a condition rule
+// that does act makes it 1 of 2 processed.
+func TestNothingDecidedIsNotDecidedWithoutAModel(t *testing.T) {
+	e := newEnv(t)
+	e.noDecider = true
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[
+		{"name":"Newsletters","intent":"Newsletters and promotions","actions":[{"type":"move","folder":"Reading"}]},
+		{"name":"Food","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"}]}]}`, http.StatusCreated)
+	e.deliver("friend@example.org", "lunch")
+	e.item("lunch", "review")
+	free := func() (float64, float64, float64) {
+		s := e.call(http.MethodGet, "/api/stats/summary?range=month", "", http.StatusOK)
+		u := e.call(http.MethodGet, "/api/stats/usage", "", http.StatusOK)
+		return s["decided_without_model"].(float64), u["without_model"].(float64), u["processed"].(float64)
+	}
+	if share, n, processed := free(); share != 0 || n != 0 || processed != 1 {
+		t.Errorf("one email in review: share %v, without_model %v of %v; want 0, 0 of 1", share, n, processed)
+	}
+	e.deliver("noreply@swiggy.in", "order one")
+	e.item("order one", "acted")
+	if share, n, processed := free(); share != 0.5 || n != 1 || processed != 2 {
+		t.Errorf("one by a condition rule: share %v, without_model %v of %v; want 0.5, 1 of 2", share, n, processed)
 	}
 }
 

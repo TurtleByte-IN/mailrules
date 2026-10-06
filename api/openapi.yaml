@@ -1855,7 +1855,7 @@ components:
             review: { type: integer, description: 'Of the processed emails, those waiting in Needs review' }
             trashed: { type: integer, description: 'A rule was applied and it trashed the email, and that is still in effect (not undone)' }
         quiet_rules: { type: integer, description: Enabled rules applied to no email in the range }
-        decided_without_model: { type: number, minimum: 0, maximum: 1, description: 'Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed' }
+        decided_without_model: { type: number, minimum: 0, maximum: 1, description: 'Share of the processed emails a sender rule or a condition rule acted on, with no model asked. An email waiting in Needs review, one no rule matched, and one a model decided do not count, but all stay in the base. 0 when nothing was processed' }
         cost_usd: { type: number }
         calls_by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' }, description: 'One row per provider, model and purpose, dearest first: a model used both to decide and as the fallback has two rows. Add them up for a per-model figure' }
         top_rules:
@@ -1924,7 +1924,7 @@ components:
               calls: { type: integer, description: Decisions a model was asked for }
               cost_usd: { type: number }
         by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' }, description: 'One row per provider, model and purpose, dearest first' }
-        without_model: { type: integer, description: 'Of the `processed` emails, those settled without asking a model: by conditions or sender rules, or because no rule was in play. Never more than `processed`; the free share is `without_model / processed`, not over `emails`' }
+        without_model: { type: integer, description: 'Of the `processed` emails, those a sender rule or a condition rule acted on, with no model asked (not the ones waiting in Needs review, nor those no rule matched). Never more than `processed`; the free share is `without_model / processed`, not over `emails`' }
 
     Decider: { type: string, enum: [jev, clef, anthropic, openai, ollama] }
     KeySource:
