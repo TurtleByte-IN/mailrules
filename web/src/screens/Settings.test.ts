@@ -166,3 +166,14 @@ it('shows the Ollama setup guide only while Ollama is the decision model', async
   expect(a.getAttribute('target')).toBe('_blank');
   expect(a.getAttribute('rel')).toBe('noopener noreferrer');
 });
+
+it('keeps the keys nothing uses under a collapsed "Other providers" until it is opened', async () => {
+  await show(fresh({ fallback_model: '', composer_model: '', keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' } }));
+  const other = screen.getByText('Other providers').closest('details')!;
+  expect(other.open).toBe(false);
+  const inOther = (label: RegExp) => other.contains(screen.getByLabelText(label));
+  expect(inOther(/^OpenRouter API key/)).toBe(false);
+  expect([/^Cloudflare account ID/, /^Cloudflare API token/, /^Anthropic API key/, /^OpenAI API key/].map(inOther)).toEqual([true, true, true, true]);
+  await fireEvent.click(screen.getByText('Other providers'));
+  expect(other.open).toBe(true);
+});
