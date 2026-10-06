@@ -27,7 +27,7 @@ it('uploads the YAML file as the body, with the CSRF header', async () => {
 });
 
 it('turns a refused import into the API error, every problem in the message', async () => {
-  const message = 'rule 1 ("Bad"): conditions: a rule needs conditions, an intent, or both\nrule 2 ("Worse"): actions: a rule needs at least one action';
+  const message = 'Rule 1 ("Bad"): A rule needs conditions, an intent, or both.\nRule 2 ("Worse"): A rule needs at least one action.';
   respond(400, JSON.stringify({ error: { code: 'rule_invalid', message, path: 'conditions' } }));
   await expect(importYaml(new Blob(['x']))).rejects.toMatchObject({ status: 400, code: 'rule_invalid', message, path: 'conditions' });
 });

@@ -82,9 +82,9 @@ it('saves a URL, shows a refusal beside the field, and removes the stored one wi
   await show(fresh({ decider: 'ollama', decider_model: 'llama3.2' }));
   const field = screen.getByLabelText('Ollama server URL') as HTMLInputElement;
 
-  routes['PATCH /api/settings'] = [400, { error: { code: 'invalid_input', message: 'must be an http or https URL', path: 'ollama_url' } }];
+  routes['PATCH /api/settings'] = [400, { error: { code: 'invalid_input', message: 'Enter an http or https URL, such as http://localhost:11434.', path: 'ollama_url' } }];
   await fireEvent.change(field, { target: { value: 'localhost:11434' } });
-  expect((await screen.findByRole('alert')).textContent).toBe('must be an http or https URL');
+  expect((await screen.findByRole('alert')).textContent).toBe('Enter an http or https URL, such as http://localhost:11434.');
   expect(field.getAttribute('aria-invalid')).toBe('true');
 
   routes['PATCH /api/settings'] = [200, fresh({ decider: 'ollama', decider_model: 'llama3.2', ollama_url: 'http://localhost:11434' })];

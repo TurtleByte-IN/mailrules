@@ -125,7 +125,7 @@ func (in accountInput) account(w http.ResponseWriter) (store.Account, bool) {
 	case a.Port < 1 || a.Port > 65535:
 		invalid(w, "port", "The port must be between 1 and 65535.")
 	case a.TLSMode != presets.TLSImplicit && a.TLSMode != presets.TLSStartTLS:
-		invalid(w, "tls_mode", "tls_mode must be implicit or starttls.")
+		invalid(w, "tls_mode", "The TLS mode is implicit or starttls.")
 	default:
 		return a, true
 	}

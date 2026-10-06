@@ -77,7 +77,7 @@ it('saves only the drafts not skipped and not in error, as rule inputs', async (
   compose.drafts = [
     { ...draft('Finance', { intent: 'Bank statements', actions: [{ type: 'move', folder: 'Finance' }], new_folders: ['Finance'] }), rejected: false },
     { ...draft('LinkedIn'), rejected: true },
-    { ...draft('Broken', { errors: [{ path: 'actions', message: 'actions: a rule needs at least one action' }] }), rejected: false },
+    { ...draft('Broken', { errors: [{ path: 'actions', message: 'A rule needs at least one action.' }] }), rejected: false },
     { ...draft('Cold sales', { intent: 'Cold sales pitches', actions: [{ type: 'trash' }], question: 'Trash them, or keep them in a Sales folder?' }), rejected: false },
   ];
   const added = await saveAll();

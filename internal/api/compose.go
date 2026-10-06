@@ -185,8 +185,8 @@ type ruleInput struct {
 	Position      *int           `json:"position"`
 }
 
-// readRules decodes and validates a list of rule inputs, answering 400 itself with the
-// path of the first problem (rules[1].conditions.all[0].op).
+// readRules decodes and validates a list of rule inputs, answering 400 itself with a
+// sentence for the first problem and its location in path (rules[1].conditions.all[0].op).
 func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.RawMessage) ([]ruleInput, []rules.Rule, bool) {
 	ins, out := make([]ruleInput, len(raws)), make([]rules.Rule, len(raws))
 	for i, raw := range raws {
@@ -213,11 +213,11 @@ func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.R
 		}
 		var ve *rules.ValidationError
 		if err := rule.Validate(); errors.As(err, &ve) {
-			writeError(w, http.StatusBadRequest, "rule_invalid", at+"."+ve.Error(), at+"."+ve.Path)
+			writeError(w, http.StatusBadRequest, "rule_invalid", ve.Message, at+"."+ve.Path)
 			return nil, nil, false
 		}
-		if err := settings.CheckModel(rule.Model); err != nil {
-			writeError(w, http.StatusBadRequest, "rule_invalid", at+".model: "+err.Error(), at+".model")
+		if msg := settings.CheckModel(rule.Model); msg != "" {
+			writeError(w, http.StatusBadRequest, "rule_invalid", msg, at+".model")
 			return nil, nil, false
 		}
 		for j, name := range in.NewFolders {
@@ -302,6 +302,10 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if in.AccountID == 0 {
+		invalid(w, "account_id", "An account is required: say which mailbox to test the rules on.")
+		return
+	}
 	acct, err := s.store.Account(ctx, in.AccountID)
 	if err != nil {
 		invalid(w, "account_id", "No such account.")
@@ -312,7 +316,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		limit = *in.Limit
 	}
 	if limit < 1 || limit > composer.MaxLimit {
-		invalid(w, "limit", fmt.Sprintf("limit must be between 1 and %d.", composer.MaxLimit))
+		invalid(w, "limit", fmt.Sprintf("The limit must be between 1 and %d.", composer.MaxLimit))
 		return
 	}
 	if in.Folder == "" {

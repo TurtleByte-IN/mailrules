@@ -32,9 +32,9 @@ func (s *server) cleanupRequest(w http.ResponseWriter, r *http.Request) (worker.
 	case err != nil:
 		invalid(w, "account_id", "No such account.")
 	case in.Since != nil && *in.Since < 0:
-		invalid(w, "since", "since is a unix time in seconds, or null for all mail.")
+		invalid(w, "since", "Give the start as a unix time in seconds, or null for all mail.")
 	case in.Limit != nil && *in.Limit < 1:
-		invalid(w, "limit", "limit must be at least 1.")
+		invalid(w, "limit", "The limit must be at least 1.")
 	default:
 		if in.Since != nil && *in.Since > 0 {
 			c.Since = time.Unix(*in.Since, 0)
@@ -128,7 +128,7 @@ func (s *server) handleBatches(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("cursor"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n <= 0 {
-			invalid(w, "cursor", "cursor must be a positive integer.")
+			invalid(w, "cursor", "The cursor must be a positive integer.")
 			return
 		}
 		before = n
@@ -136,7 +136,7 @@ func (s *server) handleBatches(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 100 {
-			invalid(w, "limit", "limit must be between 1 and 100.")
+			invalid(w, "limit", "The limit must be between 1 and 100.")
 			return
 		}
 		limit = n

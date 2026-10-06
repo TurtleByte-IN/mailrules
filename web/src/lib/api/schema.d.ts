@@ -953,9 +953,9 @@ export interface components {
             error: {
                 /** @description Stable machine-readable code, e.g. invalid_input, csrf_failed, unauthenticated */
                 code: string;
-                /** @description Sentence safe to show the user */
+                /** @description A sentence for a person, safe to show as it is: capitalised, ending with a full stop, with no field path in it. A refused import has one such line per rule, separated by newlines */
                 message: string;
-                /** @description Field the error is about */
+                /** @description Where the problem is, when there is a place: a field (`limit`), or a path into a rule (`rules[0].conditions.all[0].op`) */
                 path?: string;
             };
         };

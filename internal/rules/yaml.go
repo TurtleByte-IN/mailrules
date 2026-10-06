@@ -47,9 +47,26 @@ type yamlRule struct {
 	Enabled       *bool    `yaml:"enabled,omitempty"` // omitted = true
 }
 
+// RuleError is a problem with one rule of a rules file: which rule, and what is wrong.
+type RuleError struct {
+	N   int    // the rule's place in the file, from 1
+	ID  string // its id (name) as written
+	Err *ValidationError
+}
+
+// Error is the line the command line prints: it keeps the path.
+func (e *RuleError) Error() string { return fmt.Sprintf("rule %d (%q): %v", e.N, e.ID, e.Err) }
+
+// Sentence is the same for a person: which rule and what is wrong, without the field path.
+func (e *RuleError) Sentence() string {
+	return fmt.Sprintf("Rule %d (%q): %s", e.N, e.ID, e.Err.Message)
+}
+
+func (e *RuleError) Unwrap() error { return e.Err }
+
 // ParseYAML reads a rules file and validates every rule. Priority follows
-// the order in the file. All problems are returned together, each prefixed
-// with its rule's id.
+// the order in the file. All problems are returned together (errors.Join), each a
+// *RuleError.
 func ParseYAML(data []byte) (File, error) {
 	var yf yamlFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -61,20 +78,22 @@ func ParseYAML(data []byte) (File, error) {
 	var errs []error
 	seen := map[string]bool{}
 	for i, yr := range yf.Rules {
-		r, err := yr.rule()
-		if err == nil {
+		r, ve := yr.rule()
+		if ve == nil {
 			r.Priority = i + 1
 			if r.MinConfidence == nil {
 				r.MinConfidence = yf.Defaults.MinConfidence
 			}
-			err = r.Validate()
+			if err := r.Validate(); err != nil {
+				ve = err.(*ValidationError) //nolint:errorlint // Validate returns nothing else
+			}
 		}
-		if err == nil && seen[r.Name] {
-			err = &ValidationError{"id", "used by more than one rule"}
+		if ve == nil && seen[r.Name] {
+			ve = &ValidationError{"id", "This name is used by more than one rule."}
 		}
 		seen[r.Name] = true
-		if err != nil {
-			errs = append(errs, fmt.Errorf("rule %d (%q): %w", i+1, yr.ID, err))
+		if ve != nil {
+			errs = append(errs, &RuleError{N: i + 1, ID: yr.ID, Err: ve})
 		}
 		f.Rules = append(f.Rules, r)
 	}
@@ -84,15 +103,15 @@ func ParseYAML(data []byte) (File, error) {
 	return f, nil
 }
 
-func (yr yamlRule) rule() (Rule, error) {
+func (yr yamlRule) rule() (Rule, *ValidationError) {
 	r := Rule{Name: yr.ID, Said: yr.Said, Intent: yr.When, MinConfidence: yr.MinConfidence,
 		Model: yr.Model, Stack: yr.Stack, Enabled: yr.Enabled == nil || *yr.Enabled}
 	var err error
 	if r.Conditions, err = condFromYAML(yr.Match); err != nil {
-		return r, &ValidationError{"conditions", err.Error()}
+		return r, &ValidationError{"conditions", "The conditions cannot be read: " + err.Error() + "."}
 	}
 	if r.Exceptions, err = condFromYAML(yr.Unless); err != nil {
-		return r, &ValidationError{"exceptions", err.Error()}
+		return r, &ValidationError{"exceptions", "The exceptions cannot be read: " + err.Error() + "."}
 	}
 	for i, item := range yr.Actions {
 		var a Action
@@ -107,10 +126,10 @@ func (yr yamlRule) rule() (Rule, error) {
 				err = dec.Decode(&a)
 			}
 			if err != nil {
-				return r, &ValidationError{fmt.Sprintf("actions[%d]", i), "needs type and, for move, folder"}
+				return r, &ValidationError{fmt.Sprintf("actions[%d]", i), "An action needs a type and, for move, a folder."}
 			}
 		default:
-			return r, &ValidationError{fmt.Sprintf("actions[%d]", i), `write an action as "move:Folder", "trash" or {type, folder}`}
+			return r, &ValidationError{fmt.Sprintf("actions[%d]", i), `Write an action as "move:Folder", "trash" or {type, folder}.`}
 		}
 		r.Actions = append(r.Actions, a)
 	}

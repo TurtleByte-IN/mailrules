@@ -296,14 +296,14 @@ func domainMatches(got, want string) bool {
 func compileRegex(v any) (*regexp.Regexp, error) {
 	s, ok := v.(string)
 	if !ok || s == "" {
-		return nil, errors.New("needs a pattern")
+		return nil, errors.New("it is empty")
 	}
 	if utf8.RuneCountInString(s) > maxRegexLen {
-		return nil, fmt.Errorf("pattern is longer than %d characters", maxRegexLen)
+		return nil, fmt.Errorf("it is longer than %d characters", maxRegexLen)
 	}
 	re, err := regexp.Compile("(?i)" + s)
 	if err != nil {
-		return nil, fmt.Errorf("pattern does not compile: %w", err)
+		return nil, fmt.Errorf("it does not compile: %w", err)
 	}
 	return re, nil
 }
@@ -377,7 +377,7 @@ func (c Cond) validate(path string) error {
 		}
 	}
 	if parts > 1 {
-		return &ValidationError{path, "use exactly one of all, any, or field/op/value"}
+		return &ValidationError{path, "A condition is either a group (all or any) or one field with an operator and a value."}
 	}
 	for i, ch := range c.All {
 		if err := ch.validate(fmt.Sprintf("%s.all[%d]", path, i)); err != nil {
@@ -395,12 +395,12 @@ func (c Cond) validate(path string) error {
 
 	k, ok := fieldKind(c.Field)
 	if !ok {
-		return &ValidationError{path + ".field", fmt.Sprintf("unknown field %q", c.Field)}
+		return &ValidationError{path + ".field", fmt.Sprintf("Unknown field %q.", c.Field)}
 	}
 	if !slices.Contains(kindOps(k), c.Op) {
-		msg := fmt.Sprintf("unknown operator %q", c.Op)
+		msg := fmt.Sprintf("Unknown operator %q.", c.Op)
 		if slices.Contains(kindOps(kindStr), c.Op) || slices.Contains(kindOps(kindNum), c.Op) {
-			msg = fmt.Sprintf("operator %q does not apply to field %q", c.Op, c.Field)
+			msg = fmt.Sprintf("The operator %q does not apply to the field %q.", c.Op, c.Field)
 		}
 		return &ValidationError{path + ".op", msg}
 	}
@@ -410,36 +410,36 @@ func (c Cond) validate(path string) error {
 	return nil
 }
 
-// valueProblem says what is wrong with a leaf's value, or "" when it fits.
+// valueProblem says, in a sentence, what is wrong with a leaf's value, or "" when it fits.
 func (c Cond) valueProblem(k kind) string {
 	switch {
 	case c.Op == OpExists:
 		if _, ok := c.Value.(bool); !ok && c.Value != nil {
-			return "exists takes true or false"
+			return "The exists operator takes true or false."
 		}
 	case c.Op == OpMatches:
 		if _, err := compileRegex(c.Value); err != nil {
-			return err.Error()
+			return "The pattern cannot be used: " + err.Error() + "."
 		}
 	case k == kindBool:
 		if _, ok := c.Value.(bool); !ok {
-			return "needs true or false"
+			return "This field needs true or false."
 		}
 	case k == kindNum || k == kindID:
 		if c.Op == OpIn {
 			if _, ok := nums(c.Value); !ok {
-				return "needs a list of numbers"
+				return "This field needs a list of numbers."
 			}
 		} else if _, ok := num(c.Value); !ok {
-			return "needs a number"
+			return "This field needs a number."
 		}
 	default:
 		vs, ok := strs(c.Value)
 		if !ok {
-			return "needs a non-empty string or list of strings"
+			return "This field needs a non-empty text or a list of texts."
 		}
 		if k == kindEnum && slices.ContainsFunc(vs, func(v string) bool { return !slices.Contains(dmarcValues, strings.ToLower(v)) }) {
-			return "dmarc is one of pass, fail, none"
+			return "A DMARC result is one of pass, fail, none."
 		}
 	}
 	return ""

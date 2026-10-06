@@ -74,9 +74,9 @@ it.each<[string, SettingsPatch]>([
 });
 
 it('shows why a change was refused and keeps the saved value', async () => {
-  refuse = { status: 400, error: { code: 'invalid_input', message: 'ollama has no default model: name one', path: 'decider_model' } };
+  refuse = { status: 400, error: { code: 'invalid_input', message: 'The ollama decider has no default model. Name one.', path: 'decider_model' } };
   expect(await patch({ decider: 'ollama' })).toBe(false);
-  expect(toast.text).toBe('ollama has no default model: name one');
+  expect(toast.text).toBe('The ollama decider has no default model. Name one.');
   expect(settings.value).toEqual(fresh());
 });
 
@@ -90,8 +90,8 @@ it('saves a decider URL, removes it with an empty string, and hands back a refus
   expect(settings.value.ollama_url).toBe('');
 
   toast.text = '';
-  refuse = { status: 400, error: { code: 'invalid_input', message: 'must be an http or https URL', path: 'openai_base_url' } };
-  expect(await setUrl('openai_base_url', 'not a url')).toBe('must be an http or https URL');
+  refuse = { status: 400, error: { code: 'invalid_input', message: 'Enter an http or https URL, such as http://localhost:11434.', path: 'openai_base_url' } };
+  expect(await setUrl('openai_base_url', 'not a url')).toBe('Enter an http or https URL, such as http://localhost:11434.');
   expect([toast.text, settings.value.openai_base_url]).toEqual(['', '']);
 
   refuse = { status: 500, error: { code: 'internal', message: 'Something went wrong.' } };

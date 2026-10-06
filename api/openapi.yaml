@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.13.0
+  version: 0.14.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -11,9 +11,11 @@ info:
 
     - JSON bodies. Unknown fields in a request are rejected with 400 `invalid_json`.
     - Timestamps are unix seconds. Ids are integers. An absent time or reference is `null`.
-    - Errors are `{"error": {"code", "message", "path"}}`. `code` is stable and machine-readable;
-      `message` is a sentence safe to show; `path` names the field when there is one
-      (for a rule: `conditions.all[0].op`).
+    - Errors are `{"error": {"code", "message", "path"}}`. `code` is stable and machine-readable.
+      `message` is a sentence for a person, safe to show as it is: it starts with a capital,
+      ends with a full stop and never contains a field path. `path` alone says where the
+      problem is, when there is a place (for a rule: `conditions.all[0].op`; in a batch:
+      `rules[1].conditions.all[0].op`).
     - Lists that can grow use cursor pagination: `?cursor=&limit=` (limit 1 to 100, default 50).
       The response carries `next_cursor`; pass it back as `cursor`, and `null` means the end.
     - Every route except the four under `/api/auth`, `/healthz`, `/readyz` and `/metrics` needs
@@ -443,7 +445,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ImportResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message lists every problem, path is the first one's
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op)
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '413': { $ref: '#/components/responses/TooLarge' }
@@ -1172,8 +1174,8 @@ components:
             code:
               type: string
               description: Stable machine-readable code, e.g. invalid_input, csrf_failed, unauthenticated
-            message: { type: string, description: Sentence safe to show the user }
-            path: { type: string, description: Field the error is about, when there is one }
+            message: { type: string, description: 'A sentence for a person, safe to show as it is: capitalised, ending with a full stop, with no field path in it. A refused import has one such line per rule, separated by newlines' }
+            path: { type: string, description: 'Where the problem is, when there is a place: a field (`limit`), or a path into a rule (`rules[0].conditions.all[0].op`)' }
 
     Preset:
       type: object

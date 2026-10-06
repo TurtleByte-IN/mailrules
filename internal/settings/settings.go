@@ -57,7 +57,8 @@ func KeyNames() []string {
 	return names
 }
 
-// Invalid is a settings change the user has to correct. Path names the field.
+// Invalid is a settings change the user has to correct. Path names the field; Message is a
+// sentence for a person, complete without the path.
 type Invalid struct{ Path, Message string }
 
 func (e *Invalid) Error() string { return e.Path + ": " + e.Message }
@@ -273,13 +274,13 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 			continue
 		}
 		if u, err := url.Parse(*f.dst); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return &Invalid{key, "must be an http or https URL"}
+			return &Invalid{key, "Enter an http or https URL, such as http://localhost:11434."}
 		}
 		put(key, *f.dst)
 	}
 	for name, value := range p.Keys {
 		if keyFields[name] == nil {
-			return &Invalid{"keys." + name, "unknown key; the keys are " + strings.Join(KeyNames(), ", ")}
+			return &Invalid{"keys." + name, "Unknown key. The keys are " + strings.Join(KeyNames(), ", ") + "."}
 		}
 		if value = strings.TrimSpace(value); value == "" {
 			set[keyPrefix+name] = nil
@@ -295,20 +296,20 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 	// The same rules as config.Validate, worded for a form field.
 	switch {
 	case !slices.Contains(Deciders, cfg.Decider):
-		return &Invalid{"decider", "must be " + strings.Join(Deciders, ", ")}
+		return &Invalid{"decider", "The decision model must be one of " + strings.Join(Deciders, ", ") + "."}
 	case (cfg.Decider == "openai" || cfg.Decider == "ollama") && cfg.DeciderModel == "":
-		return &Invalid{"decider_model", cfg.Decider + " has no default model: name one"}
+		return &Invalid{"decider_model", "The " + cfg.Decider + " decider has no default model. Name one."}
 	case cfg.ComposerModel == "":
-		return &Invalid{"composer_model", "the rule composer needs a model"}
+		return &Invalid{"composer_model", "The rule composer needs a model."}
 	case cfg.EscalateBelow < 0 || cfg.EscalateBelow > 1:
-		return &Invalid{"escalate_below", "must be between 0 and 1"}
+		return &Invalid{"escalate_below", "The escalation threshold must be between 0 and 1."}
 	case cfg.MinConfidence < 0 || cfg.MinConfidence > 1:
-		return &Invalid{"min_confidence", "must be between 0 and 1"}
+		return &Invalid{"min_confidence", "The confidence threshold must be between 0 and 1."}
 	case retention < 1 || retention > maxRetentionDays:
-		return &Invalid{"retention_days", fmt.Sprintf("must be between 1 and %d", maxRetentionDays)}
+		return &Invalid{"retention_days", fmt.Sprintf("Retention must be between 1 and %d days.", maxRetentionDays)}
 	}
 	if err := cfg.Validate(); err != nil { // whatever config.Validate learns to check later
-		return &Invalid{"", err.Error()}
+		return &Invalid{"", "These settings cannot be used together: " + err.Error() + "."}
 	}
 	return s.Store.SetSettings(ctx, set)
 }
@@ -356,20 +357,21 @@ func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfiden
 	return s.router, s.minCon
 }
 
-// CheckModel says whether a rule's model override is a decider this daemon knows: empty
-// (the default), a decider name, or name:model. openai and ollama have no default model.
-func CheckModel(spec string) error {
+// CheckModel says, in a sentence, what is wrong with a rule's model override, or "" when it
+// is a decider this daemon knows: empty (the default), a decider name, or name:model.
+// openai and ollama have no default model.
+func CheckModel(spec string) string {
 	if spec == "" {
-		return nil
+		return ""
 	}
 	name, model, _ := strings.Cut(spec, ":")
 	if !slices.Contains(Deciders, name) {
-		return fmt.Errorf("the model must be empty, or one of %s, optionally followed by :model", strings.Join(Deciders, ", "))
+		return fmt.Sprintf("The model must be empty, or one of %s, optionally followed by :model.", strings.Join(Deciders, ", "))
 	}
 	if (name == "openai" || name == "ollama") && model == "" {
-		return fmt.Errorf("%s has no default model: write it as %s:<model>", name, name)
+		return fmt.Sprintf("The %s decider has no default model. Write it as %s:<model>.", name, name)
 	}
-	return nil
+	return ""
 }
 
 // RouterFor returns the router for a rule's model override (a decider spec, see

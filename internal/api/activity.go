@@ -134,7 +134,7 @@ func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilte
 		if v := q.Get(name); v != "" {
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil || n <= 0 {
-				invalid(w, name, name+" must be a positive integer.")
+				invalid(w, name, "The "+name+" must be a positive integer.")
 				return f, false
 			}
 			*dst = n
@@ -143,7 +143,7 @@ func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilte
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 100 {
-			invalid(w, "limit", "limit must be between 1 and 100.")
+			invalid(w, "limit", "The limit must be between 1 and 100.")
 			return f, false
 		}
 		f.Limit = n

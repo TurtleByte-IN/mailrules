@@ -76,11 +76,11 @@ func (s *server) handleSenders(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	sort, source, find := cmp.Or(q.Get("sort"), "volume"), q.Get("source"), strings.ToLower(strings.TrimSpace(q.Get("q")))
 	if sort != "volume" && sort != "recent" {
-		invalid(w, "sort", "sort must be volume or recent.")
+		invalid(w, "sort", "Sort by volume or recent.")
 		return
 	}
 	if source != "" && source != "user" && source != "learned" {
-		invalid(w, "source", "source must be user or learned.")
+		invalid(w, "source", "The source is user or learned.")
 		return
 	}
 	offset, limit := 0, 50
@@ -88,7 +88,7 @@ func (s *server) handleSenders(w http.ResponseWriter, r *http.Request) {
 		if v := q.Get(name); v != "" {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 0 || (name == "limit" && (n < 1 || n > 100)) {
-				invalid(w, name, name+" is not valid.")
+				invalid(w, name, "The "+name+" is not valid.")
 				return
 			}
 			*dst = n
@@ -169,7 +169,7 @@ func (s *server) handleSenderPut(w http.ResponseWriter, r *http.Request) {
 		}
 		sr.RuleID = *in.RuleID
 	default:
-		invalid(w, "verdict", "verdict must be route, keep or block.")
+		invalid(w, "verdict", "The verdict is route, keep or block.")
 		return
 	}
 	if _, err := s.store.PutSenderRule(r.Context(), sr, s.now().Unix()); err != nil {

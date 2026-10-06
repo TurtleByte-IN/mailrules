@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -111,14 +112,39 @@ func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ruleInvalid answers for a rule that does not pass validation, with the path of the problem.
+// ruleInvalid answers for a rule that does not pass validation: the message is a sentence
+// for a person, and where the problem is goes in path.
 func ruleInvalid(w http.ResponseWriter, err error) {
 	var ve *rules.ValidationError
 	if errors.As(err, &ve) {
-		writeError(w, http.StatusBadRequest, "rule_invalid", err.Error(), ve.Path)
+		writeError(w, http.StatusBadRequest, "rule_invalid", ve.Message, ve.Path)
 		return
 	}
-	writeError(w, http.StatusBadRequest, "rule_invalid", err.Error(), "")
+	writeError(w, http.StatusBadRequest, "rule_invalid", "This rule cannot be used.", "")
+}
+
+// importInvalid answers for a rules file that cannot be imported. Every rule with a
+// problem gets one sentence that names it ("Rule 3 ("Scams"): ..."), one per line; path is
+// where the first problem is, inside its rule.
+func importInvalid(w http.ResponseWriter, r *http.Request, err error) {
+	var lines []string
+	var path string
+	if joined, ok := err.(interface{ Unwrap() []error }); ok { //nolint:errorlint // ParseYAML returns the join itself
+		for _, e := range joined.Unwrap() {
+			var re *rules.RuleError
+			if errors.As(e, &re) {
+				if lines == nil {
+					path = re.Err.Path
+				}
+				lines = append(lines, re.Sentence())
+			}
+		}
+	}
+	if lines == nil { // not YAML, or not the shape of a rules file
+		slog.InfoContext(r.Context(), "a rules file could not be read", "error", err.Error())
+		lines = []string{"This file could not be read as a rules file. Check that it is YAML in the shape MailRules exports."}
+	}
+	writeError(w, http.StatusBadRequest, "rule_invalid", strings.Join(lines, "\n"), path)
 }
 
 func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
@@ -149,8 +175,8 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 		ruleInvalid(w, err)
 		return
 	}
-	if err := settings.CheckModel(rule.Model); err != nil {
-		writeError(w, http.StatusBadRequest, "rule_invalid", "model: "+err.Error(), "model")
+	if msg := settings.CheckModel(rule.Model); msg != "" {
+		writeError(w, http.StatusBadRequest, "rule_invalid", msg, "model")
 		return
 	}
 	if err := s.store.UpdateRule(r.Context(), rule, s.now().Unix()); err != nil {
@@ -222,12 +248,12 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := rules.ParseYAML(data)
 	if err != nil {
-		ruleInvalid(w, err)
+		importInvalid(w, r, err)
 		return
 	}
-	for _, rule := range f.Rules {
-		if err := settings.CheckModel(rule.Model); err != nil {
-			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("rule %q: model: %v", rule.Name, err), "model")
+	for i, rule := range f.Rules {
+		if msg := settings.CheckModel(rule.Model); msg != "" {
+			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("Rule %d (%q): %s", i+1, rule.Name, msg), "model")
 			return
 		}
 	}

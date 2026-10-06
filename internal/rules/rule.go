@@ -67,8 +67,10 @@ type Rule struct {
 	UpdatedAt     int64
 }
 
-// ValidationError is a rule problem, with the path of the offending key as
-// the API reports it, e.g. "conditions.all[0].op".
+// ValidationError is a rule problem. Path is the offending key as the API reports it,
+// e.g. "conditions.all[0].op". Message is a sentence for a person, complete without the
+// path: capitalised, ending with a full stop, and naming no field path. Error joins the
+// two for a log or the command line.
 type ValidationError struct {
 	Path    string
 	Message string
@@ -81,10 +83,10 @@ func (e *ValidationError) Error() string { return e.Path + ": " + e.Message }
 func (r Rule) Validate() error {
 	hasIntent := strings.TrimSpace(r.Intent) != ""
 	if strings.TrimSpace(r.Name) == "" {
-		return &ValidationError{"name", "a rule needs a name"}
+		return &ValidationError{"name", "A rule needs a name."}
 	}
 	if r.Conditions.IsEmpty() && !hasIntent {
-		return &ValidationError{"conditions", "a rule needs conditions, an intent, or both"}
+		return &ValidationError{"conditions", "A rule needs conditions, an intent, or both."}
 	}
 	if err := r.Conditions.validate("conditions"); err != nil {
 		return err
@@ -93,46 +95,46 @@ func (r Rule) Validate() error {
 		return err
 	}
 	if len(r.Actions) == 0 {
-		return &ValidationError{"actions", "a rule needs at least one action"}
+		return &ValidationError{"actions", "A rule needs at least one action."}
 	}
 	for i, a := range r.Actions {
 		path := fmt.Sprintf("actions[%d]", i)
 		if !slices.Contains(actionTypes, a.Type) {
-			return &ValidationError{path + ".type", fmt.Sprintf("unknown action %q", a.Type)}
+			return &ValidationError{path + ".type", fmt.Sprintf("Unknown action %q.", a.Type)}
 		}
 		if msg := folderProblem(a); msg != "" {
 			return &ValidationError{path + ".folder", msg}
 		}
 	}
 	if r.MinConfidence != nil && (*r.MinConfidence < 0 || *r.MinConfidence > 1) {
-		return &ValidationError{"min_confidence", "must be between 0 and 1"}
+		return &ValidationError{"min_confidence", "The confidence threshold must be between 0 and 1."}
 	}
 	trashes := slices.ContainsFunc(r.Actions, func(a Action) bool { return a.Type == ActTrash })
 	if hasIntent && trashes && (r.MinConfidence == nil || *r.MinConfidence < MinTrashConfidence) {
-		return &ValidationError{"min_confidence", fmt.Sprintf("a rule that trashes on intent needs min_confidence of at least %v", MinTrashConfidence)}
+		return &ValidationError{"min_confidence", fmt.Sprintf("A rule that trashes on intent needs a confidence threshold of at least %v.", MinTrashConfidence)}
 	}
 	if r.Stack && hasIntent {
-		return &ValidationError{"stack", "a stacking rule is condition-only"}
+		return &ValidationError{"stack", "A stacking rule is condition-only: it cannot have an intent."}
 	}
 	return nil
 }
 
-// FolderProblem says what is wrong with a folder name a rule would move mail to, or ""
-// when it is fine. It is the check a move action's folder gets.
+// FolderProblem says, in a sentence, what is wrong with a folder name a rule would move
+// mail to, or "" when it is fine. It is the check a move action's folder gets.
 func FolderProblem(name string) string { return folderProblem(Action{Type: ActMove, Folder: name}) }
 
 func folderProblem(a Action) string {
 	if a.Type != ActMove {
 		if a.Folder != "" {
-			return "only move takes a folder"
+			return "Only a move action takes a folder."
 		}
 		return ""
 	}
 	if n := utf8.RuneCountInString(a.Folder); n < 1 || n > maxFolderLen {
-		return fmt.Sprintf("folder name must be 1 to %d characters", maxFolderLen)
+		return fmt.Sprintf("A folder name must be 1 to %d characters.", maxFolderLen)
 	}
 	if strings.ContainsAny(a.Folder, "*%") || strings.ContainsFunc(a.Folder, unicode.IsControl) {
-		return "folder name must not contain wildcards or control characters"
+		return "A folder name must not contain wildcards or control characters."
 	}
 	return ""
 }

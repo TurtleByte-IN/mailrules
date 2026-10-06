@@ -105,7 +105,7 @@ it('puts a refused builder save on the row its path names, until that row is edi
 });
 
 it('flashes a refused builder save the form has no control for', async () => {
-  const message = 'rules[0].model: the model must be empty, or one of jev, clef, anthropic, openai, ollama, optionally followed by :model';
+  const message = 'The model must be empty, or one of jev, clef, anthropic, openai, ollama, optionally followed by :model.';
   serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].model' } }] });
   render(Compose);
   await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));

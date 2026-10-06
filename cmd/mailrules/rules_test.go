@@ -25,7 +25,7 @@ func TestRulesCmd(t *testing.T) {
 		wantErr string
 	}{
 		{"validate", []string{"validate", rulesFile}, []string{"4 rules ok"}, ""},
-		{"validate reports the path", []string{"validate", bad}, nil, `rule 1 ("a"): conditions.all[0].field: unknown field "sender"`},
+		{"validate reports the path", []string{"validate", bad}, nil, `rule 1 ("a"): conditions.all[0].field: Unknown field "sender".`},
 		{"test over fixtures", []string{"test", rulesFile, "--eml", fixtures}, []string{
 			"newsletter.eml", "newsletters", "move:Reading, read, flag (+ flag failed dmarc)",
 			"receipt.eml", "food", "move:Food",
