@@ -1,0 +1,119 @@
+package store
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+
+	"github.com/TurtleByte-IN/mailrules/internal/rules"
+)
+
+func TestRules(t *testing.T) {
+	s, db := open(t)
+	ctx := t.Context()
+	u, _ := s.CreateFirstUser(ctx, "me@icloud.com", "hash", 100)
+	threshold := 0.9
+
+	food, err := s.CreateRule(ctx, rules.Rule{UserID: u.ID, Name: "food", Said: "Swiggy and Zomato go to Food", Priority: 20, Enabled: true,
+		Conditions: rules.Cond{All: []rules.Cond{{Field: "from_domain", Op: rules.OpIn, Value: []any{"swiggy.in", "zomato.com"}}}},
+		Exceptions: rules.Cond{Field: "subject", Op: rules.OpMatches, Value: "^refund"},
+		Actions:    []rules.Action{{Type: rules.ActMove, Folder: "Food"}, {Type: rules.ActRead}}}, 100)
+	if err != nil || food.ID == 0 || food.Version != 1 || food.CreatedAt != 100 {
+		t.Fatalf("create: %+v %v", food, err)
+	}
+	scams, err := s.CreateRule(ctx, rules.Rule{UserID: u.ID, Name: "scams", Intent: "Fake bank alerts", Priority: 10, Enabled: true,
+		Model: "clef", MinConfidence: &threshold, Actions: []rules.Action{{Type: rules.ActTrash}}}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything survives the trip, the optional columns included.
+	for _, want := range []rules.Rule{food, scams} {
+		got, err := s.Rule(ctx, u.ID, want.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, _ := json.Marshal(got)
+		b, _ := json.Marshal(want)
+		if string(a) != string(b) {
+			t.Errorf("rule %d = %s\nwant %s", want.ID, a, b)
+		}
+		if err := got.Validate(); err != nil {
+			t.Errorf("stored rule no longer validates: %v", err)
+		}
+	}
+	// Unset optional columns are NULL, as the schema documents, not empty strings.
+	var nulls int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rules WHERE id = ? AND account_id IS NULL AND intent IS NULL
+		AND model IS NULL AND min_confidence IS NULL AND exceptions != '{}'`, food.ID).Scan(&nulls); err != nil || nulls != 1 {
+		t.Errorf("optional columns not NULL: %d %v", nulls, err)
+	}
+
+	list, err := s.Rules(ctx, u.ID)
+	if err != nil || len(list) != 2 || list[0].ID != scams.ID || list[1].ID != food.ID {
+		t.Fatalf("list not in priority order: %+v %v", list, err)
+	}
+	if other, err := s.Rules(ctx, u.ID+1); err != nil || len(other) != 0 {
+		t.Fatalf("another user's rules: %+v %v", other, err)
+	}
+
+	food.Name, food.Enabled, food.Priority, food.Exceptions = "meals", false, 5, rules.Cond{}
+	if err := s.UpdateRule(ctx, food, 200); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Rule(ctx, u.ID, food.ID)
+	if err != nil || got.Name != "meals" || got.Enabled || got.Version != 2 || got.UpdatedAt != 200 || got.CreatedAt != 100 || !got.Exceptions.IsEmpty() {
+		t.Fatalf("after update: %+v %v", got, err)
+	}
+	if err := s.UpdateRule(ctx, rules.Rule{ID: 999, UserID: u.ID, Name: "x"}, 200); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("update missing rule: got %v", err)
+	}
+	if _, err := s.Rule(ctx, u.ID+1, food.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user's rule: got %v", err)
+	}
+
+	// Deleting a rule takes the sender rules that route to it along.
+	if _, err := s.PutSenderRule(ctx, rules.SenderRule{UserID: u.ID, MatchType: rules.MatchDomain, Value: "zomato.com",
+		RuleID: food.ID, Verdict: rules.VerdictRoute, Source: "learned"}, 300); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRule(ctx, u.ID, food.ID); err != nil {
+		t.Fatal(err)
+	}
+	if srs, _ := s.SenderRules(ctx, u.ID); len(srs) != 0 {
+		t.Errorf("sender rule outlived its rule: %+v", srs)
+	}
+	if err := s.DeleteRule(ctx, u.ID, food.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleting twice: got %v", err)
+	}
+}
+
+func TestSenderRules(t *testing.T) {
+	s, _ := open(t)
+	ctx := t.Context()
+	u, _ := s.CreateFirstUser(ctx, "me@icloud.com", "hash", 100)
+
+	keep, err := s.PutSenderRule(ctx, rules.SenderRule{UserID: u.ID, MatchType: rules.MatchAddress, Value: "alumni@college.edu",
+		Verdict: rules.VerdictKeep, Source: "user"}, 100)
+	if err != nil || keep.ID == 0 || keep.CreatedAt != 100 {
+		t.Fatalf("put: %+v %v", keep, err)
+	}
+	// The same sender again replaces the verdict and keeps the row.
+	block, err := s.PutSenderRule(ctx, rules.SenderRule{UserID: u.ID, MatchType: rules.MatchAddress, Value: "alumni@college.edu",
+		Verdict: rules.VerdictBlock, Source: "user"}, 200)
+	if err != nil || block.ID != keep.ID || block.CreatedAt != 100 {
+		t.Fatalf("replace: %+v %v", block, err)
+	}
+	list, err := s.SenderRules(ctx, u.ID)
+	if err != nil || len(list) != 1 || list[0] != block {
+		t.Fatalf("list = %+v, %v; want %+v", list, err, block)
+	}
+	for range 2 { // deleting twice is harmless
+		if err := s.DeleteSenderRule(ctx, u.ID, rules.MatchAddress, "alumni@college.edu"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if list, _ := s.SenderRules(ctx, u.ID); len(list) != 0 {
+		t.Errorf("after delete: %+v", list)
+	}
+}

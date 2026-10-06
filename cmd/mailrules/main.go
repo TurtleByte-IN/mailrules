@@ -32,6 +32,7 @@ const usage = `usage: mailrules <command> [flags]
   migrate   apply database migrations
   eval      measure decider accuracy on labeled mail:
             eval --labels testdata/labeled.jsonl --decider jev,clef:clef-flash
+  rules     validate a rules file, or test it over .eml files
   version   print the version
 `
 
@@ -67,6 +68,8 @@ func run(args []string) error {
 		return store.Migrate(ctx, db)
 	case "eval":
 		return eval(ctx, args[1:], os.Stdout)
+	case "rules":
+		return rulesCmd(args[1:], os.Stdout)
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {
