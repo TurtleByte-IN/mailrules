@@ -257,7 +257,7 @@ func TestRuleTester(t *testing.T) {
 		t.Errorf("row 1 = %v", order)
 	}
 
-	// One saved rule on its own, a draft tested as if saved after the others, and a rule's own model.
+	// One saved rule on its own, a draft tested on its own, and a rule's own model.
 	only := e.call(http.MethodPost, "/api/rules/test", `{"account_id":1,"rule_ids":[1],"limit":10,"folder":"INBOX"}`, http.StatusOK)
 	if only["tested"] != float64(10) || only["matched"] != float64(5) || only["model_calls"] != float64(0) {
 		t.Errorf("rule 1 alone = %v", only)
@@ -347,6 +347,18 @@ func TestRuleTester(t *testing.T) {
 	// Rules with an intent need a decision model; conditions alone do not.
 	e.noDecider = true
 	e.refuse(http.MethodPost, "/api/rules/test", `{"account_id":1}`, http.StatusConflict, "no_composer_model", "")
+	// MAI-22: a draft with conditions and no intent is tested on its own, so the saved
+	// rule with an intent (Reading) does not make it need a model. A draft with an intent does.
+	alone := e.call(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":4,"rules":[{"name":"Issues","conditions":{"field":"subject","op":"contains","value":"issue"},"actions":[{"type":"flag"}]}]}`, http.StatusOK)
+	if alone["tested"] != float64(4) || alone["matched"] != float64(2) || alone["model_calls"] != float64(0) {
+		t.Errorf("a conditions-only draft without a model = %v", alone)
+	}
+	for _, row := range alone["results"].([]any) {
+		if row := row.(map[string]any); row["rule_name"] != "Issues" && row["stage"] != "none" {
+			t.Errorf("a rule that was not named took part in a draft's test: %v", row)
+		}
+	}
+	e.refuse(http.MethodPost, "/api/rules/test", `{"account_id":1,"rules":[{"name":"News","intent":"Newsletters","actions":[{"type":"flag"}]}]}`, http.StatusConflict, "no_composer_model", "")
 	if got := e.call(http.MethodPost, "/api/rules/test", `{"account_id":1,"rule_ids":[1],"limit":2}`, http.StatusOK); got["tested"] != float64(2) {
 		t.Errorf("a condition-only test without a model = %v", got)
 	}

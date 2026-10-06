@@ -319,15 +319,17 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		in.Folder = "INBOX"
 	}
 
-	// The rule set: the saved rules as they are, or only the ones named, each switched on
-	// so a rule can be tried before it is enabled; then the drafts, as if saved after them.
+	// The rule set. A request that names rules (saved ones by id, drafts inline, or both)
+	// tests exactly those and nothing else, each switched on so a rule can be tried before
+	// it is enabled. Only a request that names none tests the saved set as it is, sender
+	// rules included.
 	saved, err := s.store.Rules(ctx, user(r).ID)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
 	var senders []rules.SenderRule
-	if in.RuleIDs == nil {
+	if in.RuleIDs == nil && len(in.Rules) == 0 {
 		if senders, err = s.store.SenderRules(ctx, user(r).ID); err != nil {
 			internalError(w, r, err)
 			return

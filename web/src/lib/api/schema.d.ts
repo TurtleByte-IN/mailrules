@@ -299,9 +299,12 @@ export interface paths {
          * Run saved or draft rules over recent mail without acting
          * @description Never touches the mailbox: mail is read with BODY.PEEK and stays unread and where it
          *     is. Decides exactly as live processing does (sender rules, conditions, the decision
-         *     model, each rule's own `model`). Model usage is recorded with purpose `test`. Rules
-         *     with an intent need a decision model: 409 `no_composer_model` when none is set;
-         *     condition-only rules are tested without one. With `limit` up to 200 the answer is
+         *     model, each rule's own `model`). Model usage is recorded with purpose `test`. A
+         *     request that names rules (`rule_ids`, `rules`, or both) tests exactly those and
+         *     nothing else: no other saved rule and no sender rule takes part. Only a request that
+         *     names neither tests the saved rule set as it is. A decision model is needed only when
+         *     at least one of the tested rules has an intent: 409 `no_composer_model` when none is
+         *     set; condition-only rules are tested without one. With `limit` up to 200 the answer is
          *     one JSON body. Above that it is a `text/event-stream`: `progress` events carrying
          *     `TestProgress` (one per 25 emails), then one `done` event carrying `TestResult`, or,
          *     if the run fails midway, one `error` event carrying `ErrorBody` (code `test_failed`).
@@ -1198,13 +1201,13 @@ export interface components {
         RuleBatchRequest: {
             rules: components["schemas"]["RuleInput"][];
         };
-        /** @description Give `rule_ids`, `rules`, or neither to test the saved rule set as it is. */
+        /** @description Give `rule_ids`, `rules` or both to test exactly those rules, or neither to test the saved rule set as it is. */
         TestRequest: {
             /** Format: int64 */
             account_id: number;
-            /** @description Saved rules to test on their own */
+            /** @description Saved rules to test, each switched on, without the other saved rules and without the sender rules */
             rule_ids?: number[];
-            /** @description Draft rules */
+            /** @description Draft rules to test, in the order given, after any saved rules named in `rule_ids`. The other saved rules take no part */
             rules?: components["schemas"]["RuleInput"][];
             /** @default INBOX */
             folder: string;

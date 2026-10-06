@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.11.0
+  version: 0.12.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -381,9 +381,12 @@ paths:
       description: |
         Never touches the mailbox: mail is read with BODY.PEEK and stays unread and where it
         is. Decides exactly as live processing does (sender rules, conditions, the decision
-        model, each rule's own `model`). Model usage is recorded with purpose `test`. Rules
-        with an intent need a decision model: 409 `no_composer_model` when none is set;
-        condition-only rules are tested without one. With `limit` up to 200 the answer is
+        model, each rule's own `model`). Model usage is recorded with purpose `test`. A
+        request that names rules (`rule_ids`, `rules`, or both) tests exactly those and
+        nothing else: no other saved rule and no sender rule takes part. Only a request that
+        names neither tests the saved rule set as it is. A decision model is needed only when
+        at least one of the tested rules has an intent: 409 `no_composer_model` when none is
+        set; condition-only rules are tested without one. With `limit` up to 200 the answer is
         one JSON body. Above that it is a `text/event-stream`: `progress` events carrying
         `TestProgress` (one per 25 emails), then one `done` event carrying `TestResult`, or,
         if the run fails midway, one `error` event carrying `ErrorBody` (code `test_failed`).
@@ -1404,11 +1407,11 @@ components:
       type: object
       required: [account_id]
       additionalProperties: false
-      description: Give `rule_ids`, `rules`, or neither to test the saved rule set as it is.
+      description: Give `rule_ids`, `rules` or both to test exactly those rules, or neither to test the saved rule set as it is.
       properties:
         account_id: { type: integer, format: int64 }
-        rule_ids: { type: array, items: { type: integer, format: int64 }, description: Saved rules to test on their own }
-        rules: { type: array, items: { $ref: '#/components/schemas/RuleInput' }, description: Draft rules, tested as if saved after the existing ones }
+        rule_ids: { type: array, items: { type: integer, format: int64 }, description: 'Saved rules to test, each switched on, without the other saved rules and without the sender rules' }
+        rules: { type: array, items: { $ref: '#/components/schemas/RuleInput' }, description: 'Draft rules to test, in the order given, after any saved rules named in `rule_ids`. The other saved rules take no part' }
         folder: { type: string, default: INBOX }
         limit: { type: integer, minimum: 1, maximum: 2000, default: 200 }
     TestRow:
