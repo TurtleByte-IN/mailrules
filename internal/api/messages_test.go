@@ -91,7 +91,7 @@ func TestRefusalMessagesAreSentences(t *testing.T) {
 		{"senders: sort", "GET", "/api/senders?sort=x", "", "invalid_input", "sort", ""},
 		{"senders: limit", "GET", "/api/senders?limit=0", "", "invalid_input", "limit", ""},
 		{"batches: cursor", "GET", "/api/batches?cursor=x", "", "invalid_input", "cursor", ""},
-		{"cleanup: limit", "POST", "/api/cleanup/preview", `{"account_id":1,"limit":0}`, "invalid_input", "limit", ""},
+		{"cleanup: limit", "POST", "/api/cleanup/check", `{"account_id":1,"limit":0}`, "invalid_input", "limit", ""},
 		{"sender: verdict", "PUT", "/api/senders/domain/a.example", `{"verdict":"x"}`, "invalid_input", "verdict", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,19 +434,20 @@ func TestContractGaps(t *testing.T) {
 	e.connectErr = nil
 	e.refuse(http.MethodPost, "/api/accounts/9/test", "", http.StatusNotFound, "not_found", "")
 
-	// A cleanup preview's groups have keys that stay put.
+	// A cleanup check settles a folder's mail by the same steps as live processing: a
+	// condition rule, a sender rule and an email no rule takes.
 	e.mb.AddFolder("Old", "")
 	e.mb.Deliver("Old", "From: noreply@swiggy.in\r\nSubject: old order\r\n\r\nbody\r\n")
 	e.mb.Deliver("Old", "From: friend@example.org\r\nSubject: old lunch\r\n\r\nbody\r\n")
 	e.mb.Deliver("Old", "From: news@keep.example\r\nSubject: old news\r\n\r\nbody\r\n")
 	e.call(http.MethodPut, "/api/senders/domain/keep.example", `{"verdict":"keep"}`, http.StatusOK)
-	var keys []string
-	for _, g := range e.call(http.MethodPost, "/api/cleanup/preview", `{"account_id":1,"folder":"Old"}`, http.StatusOK)["groups"].([]any) {
-		keys = append(keys, g.(map[string]any)["key"].(string))
+	var stages []string
+	for _, r := range rowsOf(e.checkReady(`{"account_id":1,"folder":"Old"}`)) {
+		stages = append(stages, r["stage"].(string))
 	}
-	slices.Sort(keys)
-	if got := strings.Join(keys, " "); got != "none rule:1 sender:keep" {
-		t.Errorf("preview group keys = %q", got)
+	slices.Sort(stages)
+	if got := strings.Join(stages, " "); got != "condition none sender" {
+		t.Errorf("check row stages = %q", got)
 	}
 
 	// A sender rule for an address with no mail has no name: the UI shows the address once.

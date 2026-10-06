@@ -10,6 +10,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
 // keepAlive is how often an idle stream gets a comment line, so proxies keep it open.
@@ -33,6 +34,8 @@ func (s *server) eventData(ctx context.Context, ev events.Event) any {
 		if b, err := s.batchJSON(ctx, v); err == nil {
 			return b
 		}
+	case worker.CheckState:
+		return s.checkJSON(v)
 	}
 	return struct{}{}
 }

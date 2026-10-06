@@ -22,8 +22,8 @@ Record the result at the bottom. Any unticked box blocks the release.
 - [ ] **A condition rule would move mail.** Create a rule from conditions only (for example: sender is the second address, move to a folder named `Smoke`). Send another mail. The feed shows the rule and the move it would make, marked as dry-run.
 - [ ] **Nothing changed.** In webmail the message is still in the inbox, unread, and the folder `Smoke` has no new mail.
 - [ ] **Needs review.** Send a mail no rule clearly covers (or remove the model key and send one that needs a model). It shows up in Needs review with a reason; resolving it there records the choice [`GET /api/review`, `POST /api/review/{message_id}/resolve`].
-- [ ] **Cleanup preview.** Preview a cleanup of the inbox. The counts per outcome add up to the number of messages selected, and nothing in the mailbox changes [`POST /api/cleanup/preview`].
-- [ ] **Cleanup run in dry-run.** Run it. The batch finishes, and nothing in the mailbox changes [`POST /api/cleanup/run`].
+- [ ] **Cleanup check.** Check a cleanup of the inbox. "N of M checked" moves, the model calls and real cost grow, and the table then shows one row per email with the rule, action and confidence; nothing in the mailbox changes [`POST /api/cleanup/check`, `GET /api/cleanup/check`]. Reload the page mid-check and after it: the same check and table come back.
+- [ ] **Cleanup Sort in dry-run.** Untick a few rows, then Sort the rest. The batch finishes, and nothing in the mailbox changes [`POST /api/cleanup/run`].
 
 ## 3. Live
 
@@ -39,7 +39,7 @@ Switch dry-run off in Settings [`PATCH /api/settings {"dry_run": false}`, or `ma
 - [ ] **Revoked password.** Revoke the app password at the provider. Within a few minutes the account shows the auth-failed state (`auth_failed`) and stops: the log shows no further login attempts.
   - [ ] Entering a new app password and reconnecting brings it back to Live [`PATCH /api/accounts/{id} {"password": "..."}`, then `POST /api/accounts/{id}/reconnect`], and mail that arrived meanwhile is processed once.
 - [ ] **Rule test.** In Rules, test a rule on 20 emails, then on 200. "N of M emails tested" moves from the first second, the mail stays unread and where it was, and with `LOG_LEVEL=debug` the log has `rule test started` and `rule test finished` (tested, matched, model calls, duration), one `model call` line per attempt and the mail server's list and fetch times. Reload the page in the middle of a test: the log says `rule test cancelled by the client after N of M` at INFO, and there is no ERROR line.
-- [ ] **Cleanup run, live.** Preview, then run a cleanup on a folder with a known number of messages. Progress moves, the batch finishes, and the messages are where the preview said they would go.
+- [ ] **Cleanup Sort, live.** Check a folder with a known number of messages, then Sort the selected rows. Progress moves, the batch finishes, and the messages are where the table said they would go. If you move one checked email by hand before sorting, it is reported skipped and left alone. Edit a rule after a check and the table shows an out-of-date notice and refuses Sort until you check again.
 - [ ] **Cleanup undo.** Undo the whole batch [`POST /api/batches/{id}/undo`]. Every message is back in its original folder with its original flags.
 
 ## 4. Afterwards

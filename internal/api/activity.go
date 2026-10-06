@@ -573,12 +573,13 @@ type batchJSON struct {
 	Since     *int64  `json:"since"`
 	Tokens    int     `json:"tokens"`
 	CostUSD   float64 `json:"cost_usd"`
+	Skipped   int     `json:"skipped"` // cleanup Sort: selected emails passed over because they moved since the check
 }
 
 // batchJSON adds the status counts of the batch's actions.
 func (s *server) batchJSON(ctx context.Context, b store.Batch) (batchJSON, error) {
 	out := batchJSON{ID: b.ID, Kind: b.Kind, Status: b.Status, Total: ts(int64(b.Total)), Done: b.Done, CreatedAt: b.CreatedAt,
-		AccountID: ts(b.AccountID), Folder: b.Folder, Since: ts(b.Since), Tokens: b.Tokens, CostUSD: b.CostUSD}
+		AccountID: ts(b.AccountID), Folder: b.Folder, Since: ts(b.Since), Tokens: b.Tokens, CostUSD: b.CostUSD, Skipped: b.Skipped}
 	if b.Kind == store.BatchCleanup {
 		total := int64(b.Total) // counted up front, so 0 means an empty selection
 		out.Total = &total

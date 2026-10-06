@@ -397,24 +397,24 @@ func TestConditionRuleBelowAnIntentRuleWithoutAModel(t *testing.T) {
 		t.Errorf("mail only the AI rule could take = %v, in %q", d, e.folderOf("lunch"))
 	}
 
-	// The preview says the same of mail that is already there.
+	// A cleanup check says the same of mail that is already there: with no model, the
+	// condition rule takes the swiggy order and the friend's mail waits in review.
 	e.mb.AddFolder("Old", "")
 	e.mb.Deliver("Old", "From: noreply@swiggy.in\r\nSubject: old order\r\n\r\nbody\r\n")
 	e.mb.Deliver("Old", "From: friend@example.org\r\nSubject: old lunch\r\n\r\nbody\r\n")
-	got := map[string]any{}
-	for _, g := range e.call(http.MethodPost, "/api/cleanup/preview", `{"account_id":1,"folder":"Old"}`, http.StatusOK)["groups"].([]any) {
-		g := g.(map[string]any)
-		got[fmt.Sprint(g["outcome"], ":", g["rule_name"])] = g["count"]
+	got := map[string]bool{}
+	for _, r := range rowsOf(e.checkReady(`{"account_id":1,"folder":"Old"}`)) {
+		got[fmt.Sprint(r["stage"], ":", r["selectable"])] = true
 	}
-	if len(got) != 2 || got["rule:Food"] != float64(1) || got["review:"] != float64(1) {
-		t.Errorf("preview groups = %v, want one under Food and one for review", got)
+	if !got["condition:true"] || !got["none:false"] {
+		t.Errorf("check rows = %v, want a Food condition row and a review row", got)
 	}
 	// With a model set, the same two emails are the model's to decide: the intent rule is
-	// above the condition rule for both.
+	// above the condition rule for both, so both reach the model.
 	e.noDecider = false
-	prev := e.call(http.MethodPost, "/api/cleanup/preview", `{"account_id":1,"folder":"Old"}`, http.StatusOK)
-	if g := prev["groups"].([]any); len(g) != 1 || g[0].(map[string]any)["outcome"] != "model" || prev["estimated_model_calls"] != float64(2) {
-		t.Errorf("preview with a model = %v", prev)
+	e.decider.DecideFunc = bySubject("")
+	if chk := e.checkReady(`{"account_id":1,"folder":"Old"}`); id(chk["model_calls"]) != 2 {
+		t.Errorf("check with a model made %v model calls, want 2", chk["model_calls"])
 	}
 }
 

@@ -162,7 +162,7 @@ type UsageRow struct {
 	Day       string // YYYY-MM-DD, UTC
 	Provider  string
 	Model     string
-	Purpose   string // decide | escalate | compose | test
+	Purpose   string // decide | escalate | compose | test | cleanup
 	Calls     int
 	TokensIn  int
 	TokensOut int
@@ -190,22 +190,4 @@ func (s *Store) Usage(ctx context.Context, sinceDay string) ([]UsageRow, error) 
 		return nil, fmt.Errorf("list usage: %w", err)
 	}
 	return out, nil
-}
-
-// DecideCost is what one live decision has cost on average so far, the fallback's share
-// included: the ledger's "decide" and "escalate" cost over its "decide" calls. 0 until
-// there is history.
-func (s *Store) DecideCost(ctx context.Context) (float64, error) {
-	var cost float64
-	var calls int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(cost_usd), 0), COALESCE(SUM(CASE WHEN purpose = 'decide' THEN calls END), 0)
-		 FROM usage_daily WHERE purpose IN ('decide', 'escalate')`).Scan(&cost, &calls)
-	if err != nil {
-		return 0, fmt.Errorf("average decision cost: %w", err)
-	}
-	if calls == 0 {
-		return 0, nil
-	}
-	return cost / float64(calls), nil
 }

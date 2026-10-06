@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Draft } from '../lib/api/compose';
-import type { Preview } from '../lib/api/cleanup';
+import { dispatch } from '../lib/api/events';
 import type { Rule } from '../lib/api/rules';
 import { accounts } from '../lib/state/accounts.svelte';
 import { cleanup as cleanupState } from '../lib/state/cleanup.svelte';
@@ -160,17 +160,32 @@ it('Rules: undoing what a rule did today is busy until the daemon is through', a
   expect(await screen.findByRole('button', { name: 'Undo what it did today' })).toBeTruthy();
 });
 
-it('Cleanup: a preview, which reports no progress, shows a waiting state until it answers', async () => {
-  const preview: Preview = { total: 0, groups: [], estimated_model_calls: 0, estimated_cost_usd: 0 };
-  Object.assign(cleanupState, { phase: 'idle', previewing: false, preview: null, request: null, batch: null, batches: [], status: 'ready', scope: { accountId: '3', folder: 'INBOX', range: '90' } });
-  const d = serve({ 'POST /api/cleanup/preview': 'hold', 'GET /api/batches?kind=cleanup': [200, { items: [], next_cursor: null }], 'GET /api/accounts/3/folders': [200, { items: [] }] });
+it('Cleanup: a running check shows a waiting state until it is ready', async () => {
+  Object.assign(cleanupState, { phase: 'idle', check: null, excluded: new Set(), batch: null, batches: [], next: null, status: 'ready', scope: { accountId: '3', folder: 'INBOX', range: '90' }, folders: [] });
+  const base = { id: 'c1', account_id: 3, folder: 'INBOX', since: null, limit: null, done: 0, total: 0, model_calls: 0, tokens: 0, cost_usd: 0, error: '', rows: [] };
+  let current: unknown = null;
+  let releaseCheck: (() => void) | null = null;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init: RequestInit) => {
+      const key = `${init.method} ${url}`;
+      if (key === 'GET /api/cleanup/check?account_id=3') return new Response(JSON.stringify({ check: current }), { status: 200 });
+      if (key === 'POST /api/cleanup/check') return new Promise<Response>((resolve) => (releaseCheck = () => resolve(new Response(JSON.stringify({ check: { ...base, status: 'running' } }), { status: 202 }))));
+      const body = key === 'GET /api/batches?kind=cleanup' ? { items: [], next_cursor: null } : key === 'GET /api/accounts/3/folders' ? { items: [] } : { error: { code: 'not_found', message: 'no route' } };
+      return new Response(JSON.stringify(body), { status: key.startsWith('GET') ? 200 : 404 });
+    }),
+  );
   render(Cleanup);
-  await fireEvent.click(await screen.findByRole('button', { name: 'Preview what would move' }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Check what would move' }));
 
   expect(screen.getByText('Reading your mailbox and checking each email against your rules…')).toBeTruthy();
-  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Counting…' }).disabled).toBe(true);
-  d.release('POST /api/cleanup/preview', [200, preview]);
-  expect(await screen.findByRole('button', { name: 'Refresh preview' })).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Checking…' }).disabled).toBe(true);
+
+  releaseCheck!();
+  // The check turns ready; the event carries no rows, so the screen GETs them, ending the wait.
+  current = { ...base, status: 'ready' };
+  dispatch('check.progress', { ...base, status: 'ready' });
+  expect(await screen.findByRole('button', { name: 'Check what would move' })).toBeTruthy();
   expect(screen.queryByText(/checking each email/)).toBeNull();
 });
 

@@ -228,14 +228,17 @@ type Batch struct {
 	Since     int64 // only mail received from this time on; 0 = all of it
 	Tokens    int   // model tokens, in and out
 	CostUSD   float64
+	// Skipped is how many selected emails a cleanup Sort passed over because they were no
+	// longer where its check found them (MAI-44). 0 for the other kinds.
+	Skipped int
 }
 
 const batchCols = `id, kind, status, COALESCE(total, 0), done, created_at,
-	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd`
+	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd, skipped`
 
 func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
 	var b Batch
-	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD)
+	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped)
 	return b, err
 }
 
@@ -251,11 +254,11 @@ func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder 
 	return s.Batch(ctx, id)
 }
 
-// AddBatchProgress records that a cleanup batch handled more emails and what their model
-// calls cost.
-func (s *Store) AddBatchProgress(ctx context.Context, id int64, done, tokens int, costUSD float64) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET done = done + ?, tokens = tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`,
-		done, tokens, costUSD, id); err != nil {
+// AddBatchProgress records that a cleanup batch handled more emails, passed over some that
+// had moved, and what their model calls cost.
+func (s *Store) AddBatchProgress(ctx context.Context, id int64, done, skipped, tokens int, costUSD float64) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET done = done + ?, skipped = skipped + ?, tokens = tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`,
+		done, skipped, tokens, costUSD, id); err != nil {
 		return fmt.Errorf("add batch progress: %w", err)
 	}
 	return nil

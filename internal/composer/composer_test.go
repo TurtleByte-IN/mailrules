@@ -507,3 +507,62 @@ func TestTesterLogsNeverCarryMailOrKeys(t *testing.T) {
 		}
 	}
 }
+
+// Check runs the real decision flow over a folder and returns one row per email: its mail
+// reference, its display fields and the settled outcome, newest first. Progress opens at
+// 0 of N and ends at N of N, with the model calls and cost only growing.
+func TestTesterCheckReturnsRowsWithRefs(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	for i := range 3 {
+		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
+	}
+	for i := range 2 {
+		e.deliver("hello@news.example", fmt.Sprintf("Reading issue %d", i))
+	}
+	rs := []rules.Rule{
+		{ID: 1, Name: "Food", Enabled: true, Priority: 1, Conditions: cond(t, `{"field":"from_domain","op":"eq","value":"swiggy.in"}`),
+			Actions: []rules.Action{{Type: rules.ActMove, Folder: "Food"}}},
+		{ID: 2, Name: "Reading", Enabled: true, Priority: 2, Intent: "Newsletters", Conditions: cond(t, `{"field":"from_domain","op":"eq","value":"news.example"}`),
+			Actions: []rules.Action{{Type: rules.ActTrash}}},
+	}
+	var steps []CheckProgress
+	tester := Tester{Store: e.st, Mailbox: e.mb, AccountID: e.acct.ID, BodyChars: 2000,
+		Decider: pipeline.Decider{Router: decider(e.st), MinConfidence: 0.75, Now: time.Unix(1_800_000_000, 0)}}
+	rows, err := tester.Check(ctx, rs, nil, "INBOX", time.Time{}, 0, func(p CheckProgress) { steps = append(steps, p) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("%d rows, want 5", len(rows))
+	}
+	// Newest first: a newsletter the model decided, carrying a confidence; its ref is real.
+	r0 := rows[0]
+	if r0.Subject != "Reading issue 1" || r0.From == "" || r0.Ref.Folder != "INBOX" || r0.Ref.UID == 0 || r0.Ref.UIDValidity == 0 ||
+		r0.Outcome.Stage != rules.StageDecider || r0.Outcome.RuleID != 2 || !r0.Outcome.Asked || r0.Outcome.Confidence != 0.95 {
+		t.Errorf("row 0 = %+v", r0)
+	}
+	// The oldest row: a swiggy order a condition settled, no model asked.
+	last := rows[len(rows)-1]
+	if last.Subject != "order 0" || last.Outcome.Stage != rules.StageCondition || last.Outcome.RuleID != 1 || last.Outcome.Asked {
+		t.Errorf("last row = %+v", last)
+	}
+	// Every row's reference points at a message still in the inbox.
+	for _, r := range rows {
+		if _, err := e.mb.Fetch(ctx, r.Ref, 0); err != nil {
+			t.Errorf("row ref %+v is not fetchable: %v", r.Ref, err)
+		}
+	}
+	// Progress: 0 of 5 first, 5 of 5 last; two model calls, their tokens and cost.
+	if len(steps) != 6 || steps[0] != (CheckProgress{Total: 5}) {
+		t.Fatalf("progress = %d steps, first %+v", len(steps), steps[0])
+	}
+	if lp := steps[5]; lp.Done != 5 || lp.Total != 5 || lp.ModelCalls != 2 || lp.Tokens != 2*105 || lp.CostUSD < 0.0019 || lp.CostUSD > 0.0021 {
+		t.Errorf("last progress = %+v", lp)
+	}
+	for i, p := range steps {
+		if p.Done != i || p.Total != 5 || (i > 0 && (p.ModelCalls < steps[i-1].ModelCalls || p.CostUSD < steps[i-1].CostUSD)) {
+			t.Fatalf("step %d = %+v", i, p)
+		}
+	}
+}

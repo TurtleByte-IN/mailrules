@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -253,119 +252,86 @@ func row(sum *message.Summary, out pipeline.Outcome) *Row {
 	return r
 }
 
-// Preview outcomes: what a cleanup run would do with a group of emails.
-const (
-	OutcomeRule   = "rule"   // a rule or sender rule applies, settled without a model
-	OutcomeNone   = "none"   // no rule matches: the email stays where it is
-	OutcomeModel  = "model"  // rules with an intent are in play: the decision model decides during the run
-	OutcomeReview = "review" // only rules with an intent could take it and no decision model is set: it would wait in Needs review
-)
-
-// Group is the emails of a cleanup preview that share an outcome. Its JSON is one entry
-// of the contract's CleanupPreview.groups.
-type Group struct {
-	// Key names the group and stays the same from one preview to the next: "rule:<id>",
-	// "sender:keep" or "sender:trash" for a sender rule without a rule, "none", "model", "review".
-	Key      string `json:"key"`
-	Outcome  string `json:"outcome"`
-	RuleID   *int64 `json:"rule_id"`
-	RuleName string `json:"rule_name"` // for a sender rule without a rule: "Sender rule: keep" or "Sender rule: trash"
-	Count    int    `json:"count"`
-	Samples  []Row  `json:"samples"` // the newest few
+// CheckRow is one checked email: how the real flow settled it, kept so a cleanup Sort can
+// apply the same answer without asking the model again. Ref says where the email was when
+// it was checked; Sort verifies it is still there. The display fields live only in the
+// daemon's memory and are never logged or written to the database (MAI-44).
+type CheckRow struct {
+	Ref        mail.MsgRef
+	From       string
+	Subject    string
+	ReceivedAt int64 // 0 = unknown
+	Outcome    pipeline.Outcome
 }
 
-// Preview is what a cleanup run would do, as far as it can be told without asking a model.
-type Preview struct {
-	Total      int     `json:"total"`
-	Groups     []Group `json:"groups"` // biggest first
-	ModelCalls int     `json:"estimated_model_calls"`
-	CostUSD    float64 `json:"estimated_cost_usd"` // filled in by the caller, who knows what a call costs
+// CheckProgress reports how far a check has got. The daemon turns it into a check.progress
+// event and into the "N of M checked", model-call and cost totals the screen shows.
+type CheckProgress struct {
+	Done       int
+	Total      int
+	ModelCalls int
+	Tokens     int
+	CostUSD    float64
 }
 
-// Preview counts, per outcome, what a cleanup of folder would do with the mail received
-// since (zero = all of it; a positive limit keeps the newest limit). It asks no model:
-// what sender rules and conditions settle is counted under its rule, and the emails that
-// rules with an intent compete for are counted as the model calls the run will make.
-func (t Tester) Preview(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, since time.Time, limit int) (Preview, error) {
+// Check runs every selected email of folder (the mail received since, newest limit kept)
+// through the real flow — sender rules, conditions, then the decision model for rules with
+// an intent, exactly as live processing decides — and returns one row per email with what
+// was settled, newest first. It moves nothing and records nothing: the model is really
+// asked and really paid (the caller books the calls under the "cleanup" purpose), but no
+// mailbox is changed and no activity is written. progress, when set, is called once the
+// mail is listed (0 of N) and after every email, never concurrently.
+func (t Tester) Check(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, since time.Time, limit int, progress func(CheckProgress)) ([]CheckRow, error) {
 	refs, err := t.list(ctx, folder, since, limit)
 	if err != nil {
-		return Preview{}, err
+		return nil, err
 	}
-	slices.Reverse(refs) // newest first, so the samples are the newest
-	names := map[int64]string{}
-	for _, r := range rs {
-		names[r.ID] = r.Name
+	slices.Reverse(refs) // newest first
+	if progress != nil {
+		progress(CheckProgress{Total: len(refs)})
 	}
-	type key struct {
-		outcome string
-		rule    int64
-		name    string
-	}
-	rows := make([]*Row, len(refs))
-	keys := make([]key, len(refs))
-	var mu sync.Mutex
-	err = t.each(ctx, refs, func(_ context.Context, i int, sum *message.Summary) error {
-		if sum == nil {
-			return nil
-		}
-		// Settle with no model at all: it says NoModel exactly for the mail that needs one,
-		// and what becomes of that mail while none is set.
-		out, err := pipeline.Decider{MinConfidence: t.Decider.MinConfidence, Now: t.Decider.Now}.Settle(ctx, *sum, rs, senders)
-		if err != nil {
-			return err
-		}
-		k := key{OutcomeRule, out.RuleID, out.RuleName}
-		switch {
-		case out.NoModel && t.Decider.Router != nil:
-			k = key{outcome: OutcomeModel}
-			out.Result, out.RuleName, out.Reason = rules.Result{Stage: rules.StageDecider}, "", "The decision model decides this during the run"
-		case out.Review:
-			k = key{outcome: OutcomeReview}
-		case out.Stage == rules.StageNone:
-			k = key{outcome: OutcomeNone}
-		case out.RuleID == 0: // a sender rule that keeps or blocks
-			k.name = out.Reason
+	var (
+		mu    sync.Mutex
+		done  int
+		calls int
+		toks  int
+		cost  float64
+		rows  = make([]*CheckRow, len(refs))
+	)
+	err = t.each(ctx, refs, func(ctx context.Context, i int, sum *message.Summary) error {
+		var out pipeline.Outcome
+		if sum != nil {
+			var err error
+			if out, err = t.Decider.Settle(ctx, *sum, rs, senders); err != nil {
+				return err
+			}
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		rows[i], keys[i] = row(sum, out), k
+		if sum != nil {
+			r := CheckRow{Ref: refs[i], From: sum.From, Subject: sum.Subject, Outcome: out}
+			if !sum.ReceivedAt.IsZero() {
+				r.ReceivedAt = sum.ReceivedAt.Unix()
+			}
+			rows[i] = &r
+		}
+		calls += out.Calls
+		toks += out.Usage.TokensIn + out.Usage.TokensOut
+		cost += out.Usage.CostUSD
+		done++
+		if progress != nil {
+			progress(CheckProgress{Done: done, Total: len(refs), ModelCalls: calls, Tokens: toks, CostUSD: cost})
+		}
 		return nil
 	})
 	if err != nil {
-		return Preview{}, err
+		return nil, err
 	}
-	var p Preview
-	at := map[key]int{}
-	for i, r := range rows {
-		if r == nil {
-			continue
-		}
-		k := keys[i]
-		j, ok := at[k]
-		if !ok {
-			j, at[k] = len(p.Groups), len(p.Groups)
-			g := Group{Key: k.outcome, Outcome: k.outcome, RuleName: k.name, Samples: []Row{}}
-			switch {
-			case k.rule > 0:
-				g.RuleID, g.Key = &k.rule, fmt.Sprintf("rule:%d", k.rule)
-			case k.outcome == OutcomeRule: // a sender rule that keeps or blocks; its name is "Sender rule: keep"
-				g.Key = "sender:" + strings.TrimPrefix(k.name, "Sender rule: ")
-			}
-			p.Groups = append(p.Groups, g)
-		}
-		g := &p.Groups[j]
-		g.Count++
-		if len(g.Samples) < maxSamples {
-			g.Samples = append(g.Samples, *r)
-		}
-		p.Total++
-		if k.outcome == OutcomeModel {
-			p.ModelCalls++
+	out := make([]CheckRow, 0, len(rows))
+	for _, r := range rows {
+		if r != nil {
+			out = append(out, *r)
 		}
 	}
-	slices.SortStableFunc(p.Groups, func(a, b Group) int { return b.Count - a.Count })
-	if p.Groups == nil {
-		p.Groups = []Group{}
-	}
-	return p, nil
+	return out, nil
 }

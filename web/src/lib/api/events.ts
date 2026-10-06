@@ -12,6 +12,7 @@ export interface Events {
   'action.undone': Schemas['EventActionUndone'];
   'account.status': Schemas['EventAccountStatus'];
   'batch.progress': Schemas['EventBatchProgress'];
+  'check.progress': Schemas['CleanupCheck'];
   'rules.changed': Schemas['EventEmpty'];
   'usage.updated': Schemas['EventEmpty'];
 }
@@ -23,6 +24,7 @@ const names: Record<keyof Events, true> = {
   'action.undone': true,
   'account.status': true,
   'batch.progress': true,
+  'check.progress': true,
   'rules.changed': true,
   'usage.updated': true,
 };

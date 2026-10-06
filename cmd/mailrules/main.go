@@ -183,7 +183,8 @@ func serve(ctx context.Context, cfg *config.Config) error {
 			}
 			return mb, username, nil
 		},
-		StartAccount: start, StopAccount: supervisors.Stop, Cleanup: supervisors.Cleanup,
+		StartAccount: start, StopAccount: supervisors.Stop,
+		StartCheck: supervisors.StartCheck, Checks: supervisors.Checks(), Sort: supervisors.Sort,
 	})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)

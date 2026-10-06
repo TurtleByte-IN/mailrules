@@ -1,14 +1,30 @@
 <script lang="ts">
-  import type { Batch, Preview } from '../lib/api/cleanup';
+  import type { Batch, CleanupCheckRow } from '../lib/api/cleanup';
   import Waiting from '../lib/components/Waiting.svelte';
   import { clock, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
-  import { cleanup, load, more, noUndo, outcome, preview, run, setScope, undo, UNDO_DAYS, type Scope } from '../lib/state/cleanup.svelte';
+  import {
+    check,
+    cleanup,
+    discard,
+    load,
+    more,
+    noUndo,
+    outcome,
+    selectAll,
+    selectedCount,
+    selectNone,
+    setScope,
+    sort,
+    toggleRow,
+    undo,
+    UNDO_DAYS,
+    type Scope,
+  } from '../lib/state/cleanup.svelte';
   import { settings } from '../lib/state/settings.svelte';
+  import { actionsText } from './rules/text';
 
   load();
-
-  type Group = Preview['groups'][number];
 
   // The mailbox list arrives after the shell mounts; start on the first one.
   $effect(() => {
@@ -16,14 +32,16 @@
   });
 
   const ranges: Record<Scope['range'], string> = { '30': 'Last 30 days', '90': 'Last 90 days', '365': 'Last year', all: 'All time' };
-  const fill: Record<Group['outcome'], string> = { rule: 'bg-ink', none: 'bg-line-input', model: 'bg-secondary', review: 'bg-review' };
-  const groupName = (g: Group) => (g.outcome === 'rule' ? g.rule_name : g.outcome === 'review' ? 'Needs review' : g.outcome === 'model' ? 'For the model to decide' : 'Left where it is');
 
   // Archive goes by a different name on every server; the mailbox's folder list knows which.
   const archive = $derived(cleanup.folders.find((f) => f.special_use === '\\Archive')?.name);
   const folderName = (folder: string) => (folder === 'INBOX' ? 'Inbox' : folder === archive ? 'Archive' : folder);
 
-  const running = $derived(cleanup.phase === 'running');
+  const checking = $derived(cleanup.phase === 'checking');
+  const sorting = $derived(cleanup.phase === 'sorting');
+  const showTable = $derived(cleanup.phase === 'ready' || cleanup.phase === 'stale');
+  const locked = $derived(checking || sorting);
+
   // The batch being undone; an undo moves every email of the run back, one by one, on the mail server.
   let undoing = $state<Record<number, boolean>>({});
   async function undoBatch(b: Batch) {
@@ -34,8 +52,23 @@
       undoing[b.id] = false;
     }
   }
-  const total = $derived(cleanup.preview?.total ?? 0);
-  const max = $derived(Math.max(1, ...(cleanup.preview?.groups.map((g) => g.count) ?? [])));
+
+  // The table reads over every row; the filter and paging are view-only and never change what Sort acts on.
+  const PAGE = 50;
+  let ruleFilter = $state('');
+  let pageIndex = $state(0);
+  const rows = $derived(cleanup.check?.rows ?? []);
+  const ruleNames = $derived([...new Set(rows.filter((r) => r.rule_name).map((r) => r.rule_name))]);
+  const filtered = $derived(ruleFilter ? rows.filter((r) => r.rule_name === ruleFilter) : rows);
+  const pageCount = $derived(Math.max(1, Math.ceil(filtered.length / PAGE)));
+  const visible = $derived(filtered.slice(pageIndex * PAGE, pageIndex * PAGE + PAGE));
+  // A filter change or a fresh check can leave the page out of range.
+  $effect(() => {
+    if (pageIndex >= pageCount) pageIndex = 0;
+  });
+  const ticked = (r: CleanupCheckRow) => r.selectable && !cleanup.excluded.has(r.index);
+  const confidencePct = (c: number | null) => (c === null ? '' : Math.round(c * 100) + '%');
+
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
 
   // account_id is null once the mailbox is deleted.
@@ -56,7 +89,7 @@
       <div class="h-3 bg-ink" style:width="{pct}%"></div>
     </div>
     <div class="text-[13px] text-nav">
-      {b.done.toLocaleString()} of {(b.total ?? 0).toLocaleString()} sorted · {pct}% · {b.tokens.toLocaleString()} tokens · {money(b.cost_usd)}
+      {b.done.toLocaleString()} of {(b.total ?? 0).toLocaleString()} sorted · {pct}%{b.skipped ? ' · ' + b.skipped.toLocaleString() + ' skipped' : ''} · {b.tokens.toLocaleString()} tokens · {money(b.cost_usd)}
     </div>
   </div>
 {/snippet}
@@ -64,14 +97,14 @@
 <div class="flex max-w-[980px] flex-col gap-[18px]">
   <header>
     <h1>Cleanup</h1>
-    <p class="mt-1 text-secondary">Apply your rules to mail that's already there. Preview first; each run can be undone as one batch.</p>
+    <p class="mt-1 text-secondary">Apply your rules to mail that's already there. Check what would move, untick anything you want to keep, then sort it as one undoable batch.</p>
   </header>
 
   <section class="card flex flex-col gap-4 p-5">
     <div class="flex flex-wrap gap-3">
       <label class="flex flex-[1_1_200px] flex-col gap-1.5">
         <span class="text-[13px] font-semibold">Mailbox</span>
-        <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
+        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
           {#each accounts.list as a (a.id)}
             <option value={String(a.id)}>{a.label}</option>
           {/each}
@@ -79,7 +112,7 @@
       </label>
       <label class="flex flex-[1_1_160px] flex-col gap-1.5">
         <span class="text-[13px] font-semibold">Folder</span>
-        <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.folder} onchange={(e) => setScope({ folder: e.currentTarget.value })}>
+        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.folder} onchange={(e) => setScope({ folder: e.currentTarget.value })}>
           <option value="INBOX">Inbox</option>
           {#if archive}
             <option value={archive}>Archive</option>
@@ -88,65 +121,120 @@
       </label>
       <label class="flex flex-[1_1_160px] flex-col gap-1.5">
         <span class="text-[13px] font-semibold">Emails from</span>
-        <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.range} onchange={(e) => setScope({ range: e.currentTarget.value as Scope['range'] })}>
+        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.range} onchange={(e) => setScope({ range: e.currentTarget.value as Scope['range'] })}>
           {#each Object.entries(ranges) as [value, name] (value)}
             <option {value}>{name}</option>
           {/each}
         </select>
       </label>
     </div>
-    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={running || cleanup.previewing || !cleanup.scope.accountId} onclick={preview}>
-      {cleanup.previewing ? 'Counting…' : cleanup.preview ? 'Refresh preview' : 'Preview what would move'}
+
+    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={locked || !cleanup.scope.accountId} onclick={check}>
+      {checking ? 'Checking…' : 'Check what would move'}
     </button>
-    {#if cleanup.previewing}
+
+    {#if checking && cleanup.check}
+      <div class="flex flex-col gap-2">
+        <p class="text-[13px] text-nav">
+          {cleanup.check.done.toLocaleString()} of {cleanup.check.total.toLocaleString()} checked · {cleanup.check.model_calls.toLocaleString()} model calls · {money(cleanup.check.cost_usd)}
+        </p>
+        <Waiting text="Reading your mailbox and checking each email against your rules" />
+      </div>
+    {:else if checking}
       <Waiting text="Reading your mailbox and checking each email against your rules" />
     {/if}
 
-    {#if cleanup.preview}
-      <div class="flex flex-col gap-2.5">
-        <h2>
-          {total.toLocaleString()} emails from {cleanup.scope.range === 'all' ? 'all time' : 'the ' + ranges[cleanup.scope.range].toLowerCase()} would be sorted like this
-        </h2>
-        {#each cleanup.preview.groups as g (g.key)}
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <span class="w-[170px] font-medium">{groupName(g)}</span>
-            <div class="h-2.5 flex-[1_1_200px] overflow-hidden rounded bg-neutral">
-              <div class="h-2.5 rounded {fill[g.outcome]}" style:width="{Math.max(2, Math.round((g.count / max) * 100))}%"></div>
-            </div>
-            <span class="w-[90px] text-right font-mono text-[13px]">{g.count.toLocaleString()}</span>
-          </div>
-          {#if g.samples.length}
-            <ul class="flex flex-col gap-0.5 text-[12.5px] text-muted">
-              {#each g.samples as m, i (i)}
-                <li class="truncate"><span class="font-mono">{m.from}</span> · {m.subject}</li>
-              {/each}
-            </ul>
-          {/if}
-        {/each}
-        {#if cleanup.preview.estimated_model_calls}
-          <p class="text-[13px] text-secondary">
-            About {cleanup.preview.estimated_model_calls.toLocaleString()} model calls{cleanup.preview.estimated_cost_usd
-              ? ', around ' + money(cleanup.preview.estimated_cost_usd)
-              : ''}
+    {#if cleanup.phase === 'failed'}
+      <p role="alert" class="text-[13px] text-trash">The check failed. {cleanup.check?.error}</p>
+    {/if}
+
+    {#if showTable}
+      <div class="flex flex-col gap-3">
+        {#if cleanup.phase === 'stale'}
+          <p role="alert" class="rounded bg-trash-bg px-3 py-2 text-[13px] text-trash">
+            These results are out of date: the rules changed since this check. Check again before sorting.
           </p>
         {/if}
-        <p class="text-[13px] text-secondary">
-          Nothing moves until you run it. Runs in the background, uses conditions and sender rules first, and can be undone as one batch.
-        </p>
-        {#if running && cleanup.batch}
-          {@render progress(cleanup.batch)}
-        {:else if running}
-          <Waiting text="Listing the emails to sort" />
+
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <button type="button" class="btn min-h-9 px-3" onclick={selectAll}>Select all</button>
+          <button type="button" class="btn min-h-9 px-3" onclick={selectNone}>Select none</button>
+          {#if ruleNames.length}
+            <label class="flex items-center gap-1.5 text-[13px]">
+              <span>Rule</span>
+              <select class="field h-9 px-2" value={ruleFilter} onchange={(e) => (ruleFilter = e.currentTarget.value)}>
+                <option value="">All rules</option>
+                {#each ruleNames as name (name)}
+                  <option value={name}>{name}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+          <span class="text-[13px] text-secondary">{selectedCount().toLocaleString()} selected of {rows.length.toLocaleString()}</span>
+        </div>
+
+        <table class="w-full text-[13px]">
+          <thead>
+            <tr class="border-b border-line-divider text-left text-muted">
+              <th class="w-8 py-2"><span class="sr-only">Selected</span></th>
+              <th class="py-2 font-medium">From</th>
+              <th class="py-2 font-medium">Subject</th>
+              <th class="py-2 font-medium">Rule</th>
+              <th class="py-2 font-medium">Action</th>
+              <th class="py-2 text-right font-medium">Confidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each visible as r (r.index)}
+              <tr class="border-b border-line-divider align-top">
+                <td class="py-2">
+                  <input
+                    type="checkbox"
+                    aria-label="Sort {r.from} · {r.subject}"
+                    checked={ticked(r)}
+                    disabled={!r.selectable}
+                    title={r.selectable ? '' : r.reason}
+                    onchange={() => toggleRow(r.index)}
+                  />
+                </td>
+                <td class="truncate py-2 font-mono">{r.from}</td>
+                <td class="py-2">
+                  <div class="truncate">{r.subject}</div>
+                  {#if !r.selectable && r.reason}
+                    <div class="text-[12px] text-muted">{r.reason}</div>
+                  {/if}
+                </td>
+                <td class="py-2">{r.rule_name || '—'}</td>
+                <td class="py-2">{r.selectable ? actionsText(r.actions) : '—'}</td>
+                <td class="py-2 text-right font-mono">{confidencePct(r.confidence)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+
+        {#if rows.length > PAGE}
+          <div class="flex items-center gap-3 text-[13px]">
+            <button type="button" class="btn min-h-9 px-3" disabled={pageIndex === 0} onclick={() => (pageIndex -= 1)}>Previous</button>
+            <span class="text-secondary">Page {pageIndex + 1} of {pageCount}</span>
+            <button type="button" class="btn min-h-9 px-3" disabled={pageIndex >= pageCount - 1} onclick={() => (pageIndex += 1)}>Next</button>
+          </div>
         {/if}
+
         {#if settings.value.dry_run}
           <p class="text-[13px] text-secondary">Dry-run is on: this run records what it would do and moves nothing.</p>
         {/if}
-        <button type="button" class="btn-primary min-h-11 self-start px-[18px]" disabled={cleanup.phase !== 'previewed' || cleanup.previewing} onclick={run}>
-          {running ? 'Sorting…' : 'Sort ' + total.toLocaleString() + ' emails'}
-        </button>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={cleanup.phase !== 'ready' || selectedCount() === 0} onclick={sort}>
+            Sort {selectedCount().toLocaleString()} selected
+          </button>
+          <button type="button" class="btn min-h-11 px-[18px]" onclick={discard}>Discard check</button>
+        </div>
       </div>
-    {:else if running && cleanup.batch}
+    {:else if sorting && cleanup.batch}
       {@render progress(cleanup.batch)}
+    {:else if sorting}
+      <Waiting text="Listing the emails to sort" />
     {:else if cleanup.phase === 'done' && cleanup.batch}
       <p role="status" class="text-[13px] text-secondary">{outcome(cleanup.batch)}</p>
     {/if}

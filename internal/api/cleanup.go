@@ -1,21 +1,28 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
+	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
+	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
-// cleanupRequest reads the body both cleanup endpoints take: which mail to sort.
-func (s *server) cleanupRequest(w http.ResponseWriter, r *http.Request) (worker.Cleanup, bool) {
+// cleanupScope reads the body a cleanup check takes: which mail to check. It is the same
+// selection the old preview took (mailbox, folder, "emails from" range, optional limit).
+func (s *server) cleanupScope(w http.ResponseWriter, r *http.Request) (worker.Cleanup, bool) {
 	var in struct {
 		AccountID int64  `json:"account_id"`
 		Folder    string `json:"folder"`
@@ -34,8 +41,8 @@ func (s *server) cleanupRequest(w http.ResponseWriter, r *http.Request) (worker.
 		invalid(w, "account_id", "No such account.")
 	case in.Since != nil && *in.Since < 0:
 		invalid(w, "since", "Give the start as a unix time in seconds, or null for all mail.")
-	case in.Limit != nil && *in.Limit < 1:
-		invalid(w, "limit", "The limit must be at least 1.")
+	case in.Limit != nil && (*in.Limit < 1 || *in.Limit > composer.MaxLimit):
+		invalid(w, "limit", "The limit must be between 1 and "+strconv.Itoa(composer.MaxLimit)+".")
 	default:
 		if in.Since != nil && *in.Since > 0 {
 			c.Since = time.Unix(*in.Since, 0)
@@ -48,78 +55,327 @@ func (s *server) cleanupRequest(w http.ResponseWriter, r *http.Request) (worker.
 	return worker.Cleanup{}, false
 }
 
-// handleCleanupPreview counts what a cleanup run would do, per rule, without acting and
-// without asking a model: the emails that need one are counted as the calls the run will make.
-// ponytail: answers in one request, reading every email of the selection; a folder of
-// tens of thousands takes minutes. Give limit, or make the preview a background batch
-// with progress like the run if that hurts.
-func (s *server) handleCleanupPreview(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.cleanupRequest(w, r)
+// rulesFingerprint is the signature of the rules a check was run against: the enabled rules
+// in evaluation order and the sender rules. A cleanup Sort compares it with the rules in
+// force; when they differ the check is stale and Sort is refused, so mail is never sorted
+// by a rule the user has since rewritten (MAI-44, Tilak's option A).
+func rulesFingerprint(rs []rules.Rule, senders []rules.SenderRule) string {
+	type ruleFP struct {
+		ID         int64
+		Priority   int
+		Name       string
+		Intent     string
+		Conditions rules.Cond
+		Exceptions rules.Cond
+		Actions    []rules.Action
+		Stack      bool
+		Model      string
+		Min        *float64
+		Account    int64
+	}
+	type senderFP struct {
+		Type, Value, Verdict string
+		RuleID               int64
+	}
+	var rfp []ruleFP
+	for _, x := range rs {
+		if !x.Enabled {
+			continue
+		}
+		rfp = append(rfp, ruleFP{x.ID, x.Priority, x.Name, x.Intent, x.Conditions, x.Exceptions, x.Actions, x.Stack, x.Model, x.MinConfidence, x.AccountID})
+	}
+	sfp := make([]senderFP, len(senders))
+	for i, x := range senders {
+		sfp[i] = senderFP{x.MatchType, x.Value, x.Verdict, x.RuleID}
+	}
+	slices.SortFunc(sfp, func(a, b senderFP) int {
+		if a.Type != b.Type {
+			return cmpStr(a.Type, b.Type)
+		}
+		return cmpStr(a.Value, b.Value)
+	})
+	b, _ := json.Marshal(struct {
+		R []ruleFP
+		S []senderFP
+	}{rfp, sfp})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func cmpStr(a, b string) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+// currentFingerprint is the fingerprint of the user's rules right now.
+func (s *server) currentFingerprint(ctx context.Context, userID int64) (string, error) {
+	rs, err := s.store.Rules(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	senders, err := s.store.SenderRules(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return rulesFingerprint(rs, senders), nil
+}
+
+// handleCleanupCheckStart runs one real check of the selected mail — the whole flow, sender
+// rules then conditions then the decision model, as live processing decides — moving
+// nothing and recording nothing, but really asking the model and paying for it (the calls
+// are booked under the "cleanup" purpose). It answers at once with the check, running; its
+// rows, progress and cost arrive through check.progress events and GET /api/cleanup/check.
+// The check runs in the background and survives the browser dropping this request.
+func (s *server) handleCleanupCheckStart(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.cleanupScope(w, r)
 	if !ok {
 		return
 	}
-	ctx := r.Context()
+	ctx, uid := r.Context(), user(r).ID
 	mb, err := s.reader(c.AccountID)
 	if err != nil {
 		fail(w, r, err, "account")
 		return
 	}
-	rs, err := s.store.Rules(ctx, user(r).ID)
+	rs, err := s.store.Rules(ctx, uid)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	senders, err := s.store.SenderRules(ctx, user(r).ID)
+	senders, err := s.store.SenderRules(ctx, uid)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	router, minConfidence := s.modelSource().Live(ctx)
-	t := composer.Tester{Store: s.store, Mailbox: mb, AccountID: c.AccountID, BodyChars: s.Settings.Env.BodyChars}
-	t.Decider.Router, t.Decider.MinConfidence, t.Decider.Now = router, minConfidence, s.now()
-	began := time.Now()
-	slog.InfoContext(ctx, "cleanup preview started", "account", c.AccountID, "folder", c.Folder, "limit", c.Limit, "rules", len(rs))
-	p, err := t.Preview(ctx, rs, senders, c.Folder, c.Since, c.Limit)
+	fp := rulesFingerprint(rs, senders)
+	t := composer.Tester{Store: s.store, Mailbox: mb, AccountID: c.AccountID, Decider: s.cleanupDecider(ctx, uid), BodyChars: s.Settings.Env.BodyChars}
+	run := func(ctx context.Context, report func(composer.CheckProgress)) ([]composer.CheckRow, error) {
+		return t.Check(ctx, rs, senders, c.Folder, c.Since, c.Limit, report)
+	}
+	chk, err := s.StartCheck(c, fp, run)
 	if err != nil {
-		if ctx.Err() == nil {
-			slog.WarnContext(ctx, "cleanup preview failed", "account", c.AccountID, "folder", c.Folder, "duration_ms", time.Since(began).Milliseconds(), "error", err.Error())
-		}
-		s.modelFail(w, r, err)
+		fail(w, r, err, "account") // not connected
 		return
 	}
-	slog.InfoContext(ctx, "cleanup preview finished", "account", c.AccountID, "folder", c.Folder, "limit", c.Limit, "rules", len(rs),
-		"total", p.Total, "groups", len(p.Groups), "model_calls", p.ModelCalls, "duration_ms", time.Since(began).Milliseconds())
-	each, err := s.store.DecideCost(ctx)
-	if err != nil {
-		internalError(w, r, err)
-		return
-	}
-	p.CostUSD = float64(p.ModelCalls) * each
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusAccepted, map[string]any{"check": s.checkJSON(chk.State())})
 }
 
-// handleCleanupRun starts sorting existing mail in the background and answers with the
-// run's batch. Progress arrives as batch.progress events.
-func (s *server) handleCleanupRun(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.cleanupRequest(w, r)
+// handleCleanupCheckGet returns the account's current check, or null when there is none. A
+// ready check whose rules have changed since is reported (and kept) stale.
+func (s *server) handleCleanupCheckGet(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.checkAccount(w, r)
 	if !ok {
 		return
 	}
-	b, err := s.Cleanup(r.Context(), c)
+	chk := s.Checks.Get(id)
+	if chk == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"check": nil})
+		return
+	}
+	st := chk.State()
+	if st.Status == worker.CheckReady {
+		fp, err := s.currentFingerprint(r.Context(), user(r).ID)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		if fp != st.Fingerprint {
+			chk.MarkStale()
+			st = chk.State()
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"check": s.checkJSON(st)})
+}
+
+// handleCleanupCheckDelete discards the account's current check: the user pressed Discard.
+func (s *server) handleCleanupCheckDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.checkAccount(w, r)
+	if !ok {
+		return
+	}
+	s.Checks.Discard(id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// checkAccount reads ?account_id= and checks the account exists.
+func (s *server) checkAccount(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("account_id"), 10, 64)
+	if err != nil || id < 1 {
+		invalid(w, "account_id", "Give account_id as a positive integer.")
+		return 0, false
+	}
+	if _, err := s.store.Account(r.Context(), id); err != nil {
+		invalid(w, "account_id", "No such account.")
+		return 0, false
+	}
+	return id, true
+}
+
+// handleCleanupRun applies a finished check's kept rows, as one undoable cleanup batch,
+// making no model calls. The body names the check and, as an exclude list of row indices,
+// the selectable rows the user unticked. The run is refused when the check is not this
+// account's current one, is not ready (still running, failed, or stale because the rules
+// changed since), or a Sort is already going for the account.
+func (s *server) handleCleanupRun(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AccountID int64  `json:"account_id"`
+		CheckID   string `json:"check_id"`
+		Exclude   []int  `json:"exclude"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	ctx := r.Context()
+	if _, err := s.store.Account(ctx, in.AccountID); err != nil {
+		invalid(w, "account_id", "No such account.")
+		return
+	}
+	if in.CheckID == "" {
+		invalid(w, "check_id", "Say which check to sort: run a check first.")
+		return
+	}
+	chk := s.Checks.Get(in.AccountID)
+	if chk == nil || chk.State().ID != in.CheckID {
+		writeError(w, http.StatusConflict, "preview_stale", "This check is no longer current. Run a new check, then sort.", "")
+		return
+	}
+	st := chk.State()
+	// A ready check may have gone stale: the rules changed since it ran.
+	if st.Status == worker.CheckReady {
+		fp, err := s.currentFingerprint(ctx, user(r).ID)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		if fp != st.Fingerprint {
+			chk.MarkStale()
+			st = chk.State()
+		}
+	}
+	switch st.Status {
+	case worker.CheckReady:
+	case worker.CheckStale:
+		writeError(w, http.StatusConflict, "preview_stale", "The rules changed since this check. Run a new check, then sort.", "")
+		return
+	default: // running or failed
+		writeError(w, http.StatusConflict, "check_not_ready", "This check is not ready to sort yet.", "")
+		return
+	}
+
+	exclude := map[int]bool{}
+	for _, i := range in.Exclude {
+		exclude[i] = true
+	}
+	var rows []composer.CheckRow
+	for i, row := range st.Rows {
+		if selectableRow(row) && !exclude[i] {
+			rows = append(rows, row)
+		}
+	}
+	b, err := s.Sort(ctx, worker.SortRun{AccountID: in.AccountID, Folder: st.Folder, Since: st.Since, Rows: rows})
 	if errors.Is(err, worker.ErrCleanupRunning) {
 		writeError(w, http.StatusConflict, "cleanup_running", "A cleanup is already running for this account. Wait for it to finish.", "")
 		return
 	}
 	if err != nil {
-		s.modelFail(w, r, err) // an unknown folder, an offline account, the mail server
+		fail(w, r, err, "account")
 		return
 	}
-	bj, err := s.batchJSON(r.Context(), b)
+	s.Checks.Take(in.AccountID, in.CheckID) // used: delete it, unless a newer check replaced it
+	bj, err := s.batchJSON(ctx, b)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"batch": bj})
+}
+
+// selectableRow reports whether a checked email can be ticked for Sort: a rule settled it
+// with an action, and it would not wait in Needs review.
+func selectableRow(row composer.CheckRow) bool {
+	return len(row.Outcome.Actions) > 0 && !row.Outcome.Review
+}
+
+// checkRowJSON is one row of the check table: its JSON is the contract's CleanupCheckRow.
+type checkRowJSON struct {
+	Index       int            `json:"index"`
+	From        string         `json:"from"`
+	Subject     string         `json:"subject"`
+	ReceivedAt  *int64         `json:"received_at"`
+	Folder      string         `json:"folder"`
+	UID         uint32         `json:"uid"`
+	UIDValidity uint32         `json:"uidvalidity"`
+	Stage       string         `json:"stage"`
+	RuleID      *int64         `json:"rule_id"`
+	RuleName    string         `json:"rule_name"`
+	Actions     []rules.Action `json:"actions"`
+	Confidence  *float64       `json:"confidence"` // null where no model was asked
+	Selectable  bool           `json:"selectable"`
+	Reason      string         `json:"reason"`
+}
+
+// cleanupCheckJSON is a check read back: its JSON is the contract's CleanupCheck.
+type cleanupCheckJSON struct {
+	ID         string         `json:"id"`
+	AccountID  int64          `json:"account_id"`
+	Folder     string         `json:"folder"`
+	Since      *int64         `json:"since"`
+	Limit      *int           `json:"limit"`
+	Status     string         `json:"status"`
+	Done       int            `json:"done"`
+	Total      int            `json:"total"`
+	ModelCalls int            `json:"model_calls"`
+	Tokens     int            `json:"tokens"`
+	CostUSD    float64        `json:"cost_usd"`
+	Error      string         `json:"error"`
+	Rows       []checkRowJSON `json:"rows"`
+}
+
+// checkJSON shapes a check for the browser. Rows are present only when it is ready or stale.
+func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
+	out := cleanupCheckJSON{ID: st.ID, AccountID: st.AccountID, Folder: st.Folder, Since: ts(st.Since), Status: st.Status,
+		Done: st.Done, Total: st.Total, ModelCalls: st.ModelCalls, Tokens: st.Tokens, CostUSD: st.CostUSD, Error: st.Error, Rows: []checkRowJSON{}}
+	if st.Limit > 0 {
+		out.Limit = &st.Limit
+	}
+	for i, row := range st.Rows {
+		o := row.Outcome
+		j := checkRowJSON{Index: i, From: row.From, Subject: row.Subject, Folder: row.Ref.Folder, UID: row.Ref.UID,
+			UIDValidity: row.Ref.UIDValidity, Stage: string(o.Stage), RuleName: o.RuleName,
+			Actions: append([]rules.Action{}, o.Actions...), Selectable: selectableRow(row), Reason: o.Reason}
+		if row.ReceivedAt != 0 {
+			at := row.ReceivedAt
+			j.ReceivedAt = &at
+		}
+		if o.RuleID > 0 {
+			id := o.RuleID
+			j.RuleID = &id
+		}
+		if j.RuleName == "" && o.Stage == rules.StageSender {
+			j.RuleName = o.Reason // "Sender rule: keep" / "Sender rule: trash"
+		}
+		if o.Asked {
+			c := o.Confidence
+			j.Confidence = &c
+		}
+		out.Rows = append(out.Rows, j)
+	}
+	return out
+}
+
+// cleanupDecider is the deciding step of a cleanup check: the routers in force, with their
+// calls booked under the "cleanup" purpose so Usage can tell them from live sorting.
+func (s *server) cleanupDecider(ctx context.Context, userID int64) pipeline.Decider {
+	src := s.modelSource()
+	router, minConfidence := src.Live(ctx)
+	return pipeline.Decider{Router: router.For("cleanup"), MinConfidence: minConfidence, Now: s.now(),
+		Examples: pipeline.Corrections(s.store, userID),
+		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("cleanup") }}
 }
 
 var batchKinds = []string{store.BatchLive, store.BatchCleanup, "review", store.BatchCorrection, store.BatchUndo}

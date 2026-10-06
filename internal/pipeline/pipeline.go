@@ -199,7 +199,6 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		return err
 	}
 	res := out.Result
-	dec.Reason, dec.RuleName, dec.Probabilities = out.Reason, out.RuleName, out.Probabilities
 	if res.SenderRuleID != 0 {
 		if err := p.Store.HitSenderRule(ctx, res.SenderRuleID); err != nil {
 			return err
@@ -211,20 +210,80 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		if p.Spent != nil {
 			p.Spent(u.TokensIn+u.TokensOut, u.CostUSD)
 		}
-		dec.Model, dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = u.Model, u.TokensIn, u.TokensOut, u.CostUSD, u.Latency.Milliseconds()
 	}
-	dec.Stage, dec.RuleID, dec.RuleVersion, dec.Confidence = string(res.Stage), res.RuleID, res.RuleVersion, res.Confidence
+	dec = decisionFrom(out, m.ID, now)
 	if err := p.finish(ctx, m, dec, res); err != nil {
 		return err
 	}
+	p.learnFrom(ctx, dec, res, sum.From)
+	return nil
+}
 
-	// Learn: only a model's own confident picks teach anything about a sender.
-	if (dec.Stage == string(rules.StageDecider) || dec.Stage == "fallback") && !res.Review && sum.From != "" {
-		if _, err := learn.Observe(ctx, p.Store, p.Account.UserID, sum.From, now.Unix()); err != nil {
-			slog.WarnContext(ctx, "could not update learned sender rules", "account", m.AccountID, "error", err.Error())
+// decisionFrom shapes the decision row an Outcome implies for a message. It is the one
+// place that turns a settled Outcome into a store.Decision, so a live email and a cleanup
+// Sort that replay the same Outcome record the same decision. It writes nothing.
+func decisionFrom(out Outcome, messageID int64, now time.Time) store.Decision {
+	res := out.Result
+	d := store.Decision{MessageID: messageID, CreatedAt: now.Unix(), Stage: string(res.Stage), RuleID: res.RuleID,
+		RuleVersion: res.RuleVersion, Confidence: res.Confidence, Reason: out.Reason, RuleName: out.RuleName, Probabilities: out.Probabilities}
+	if out.Asked {
+		u := out.Usage
+		d.Model, d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS = u.Model, u.TokensIn, u.TokensOut, u.CostUSD, u.Latency.Milliseconds()
+	}
+	return d
+}
+
+// learnFrom teaches the sender index from a model's own confident pick, as the only thing
+// that tells us anything new about a sender. A failure is logged and costs the lesson, not
+// the decision.
+func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.Result, from string) {
+	if (dec.Stage == string(rules.StageDecider) || dec.Stage == "fallback") && !res.Review && from != "" {
+		if _, err := learn.Observe(ctx, p.Store, p.Account.UserID, from, p.now().Unix()); err != nil {
+			slog.WarnContext(ctx, "could not update learned sender rules", "account", p.Account.ID, "error", err.Error())
 		}
 	}
-	return nil
+}
+
+// SortSaved applies a decision a cleanup check already settled to one existing email,
+// without asking a model: it verifies the email is still where the check found it
+// (BODY.PEEK, never marking it read), ingests its row, records the decision carrying the
+// check's stage, rule, model, confidence and reason — but no fresh cost, which is on the
+// ledger once from the check — and hands the actions to the executor in the run's batch.
+// applied is false when the email has moved or gone since the check: it is passed over.
+func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) (applied bool, err error) {
+	raw, err := p.Mailbox.Fetch(ctx, ref, 0)
+	if errors.Is(err, mail.ErrNotFound) {
+		return false, nil // moved or deleted since the check: skip it, and say so
+	}
+	if err != nil {
+		return false, fmt.Errorf("fetch: %w", err)
+	}
+	now := p.now()
+	m, _, err := p.Store.IngestMessage(ctx, ref, now.Unix())
+	if err != nil {
+		return false, err
+	}
+	if sum, perr := message.Parse(raw, m.AccountID, p.BodyChars); perr == nil {
+		if err := contacts.Fill(ctx, p.Store, sum); err != nil {
+			return false, err
+		}
+		fill(&m, sum, raw)
+		if err := p.Store.SaveMessageSummary(ctx, m); err != nil {
+			return false, err
+		}
+	}
+	if out.SenderRuleID != 0 {
+		if err := p.Store.HitSenderRule(ctx, out.SenderRuleID); err != nil {
+			return false, err
+		}
+	}
+	dec := decisionFrom(out, m.ID, now)
+	dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = 0, 0, 0, 0 // paid once, on the check's ledger
+	if err := p.finish(ctx, &m, dec, out.Result); err != nil {
+		return false, err
+	}
+	p.learnFrom(ctx, dec, out.Result, m.FromAddr)
+	return true, nil
 }
 
 // finish records the decision, acts on it or parks the message in Needs review, sets the

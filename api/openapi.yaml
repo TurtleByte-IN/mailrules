@@ -908,58 +908,98 @@ paths:
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # too_old: the batch is older than 30 days
-  /api/cleanup/preview:
+  /api/cleanup/check:
     post:
       tags: [Cleanup]
-      operationId: previewCleanup
-      summary: Count what a cleanup run would do, per rule, without acting
+      operationId: startCleanupCheck
+      summary: Check the selected mail for real, keeping the result to sort from
       description: |
-        Reads the selected mail (BODY.PEEK) and groups it by what the run would do, with up
-        to 5 sample emails per group. No model is asked: what sender rules and conditions
-        settle is counted under its rule (`rule`) or as left alone (`none`); the emails that
-        rules with an intent compete for are one group, `model`, which is also
-        `estimated_model_calls`. With no decision model set, rules with an intent are passed
-        over, as in live processing: an email a condition-only rule below them takes is
-        counted under that rule, and only what nothing else takes is `review`.
-        `estimated_cost_usd` is those calls times what a live decision has cost on average
-        so far (0 until there is history). The answer comes in one response, so a very large
-        folder takes a while: give `limit`.
+        Runs every selected email through the real flow — sender rules, then conditions,
+        then the decision model for rules with an intent, exactly as live processing decides
+        — moving nothing and recording nothing in Activity, but really asking the model and
+        paying for it: the calls are booked on the usage ledger under the `cleanup` purpose,
+        so Usage can tell them from live sorting. It answers at once with the check,
+        `running`; its rows, progress and real cost arrive as `check.progress` events and
+        through `GET /api/cleanup/check`. The check runs in the background and keeps going if
+        this request is dropped. There is one check per account: starting a new one replaces
+        (and cancels) the previous. The result is held in the daemon's memory until Sort uses
+        it or it is discarded, and is lost on a daemon restart.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CleanupRequest' }
+            schema: { $ref: '#/components/schemas/CleanupCheckRequest' }
       responses:
-        '200':
-          description: The preview
+        '202':
+          description: Started
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CleanupPreview' }
+              schema:
+                type: object
+                required: [check]
+                properties:
+                  check: { $ref: '#/components/schemas/CleanupCheck' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | folder | since | limit), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '409': { $ref: '#/components/responses/Conflict' } # account_offline
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
+    get:
+      tags: [Cleanup]
+      operationId: getCleanupCheck
+      summary: The account's current check, or none
+      description: |
+        Returns the account's current check so a page reload, or leaving and coming back,
+        shows the same result: `running` with `done`/`total`, `ready` with its rows, `failed`
+        with a message, or `stale` when the rules changed since it ran. `check` is null when
+        there is no check. A `ready` check whose rules have changed since is reported `stale`.
+      parameters:
+        - { name: account_id, in: query, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: The current check, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [check]
+                properties:
+                  check: { oneOf: [{ $ref: '#/components/schemas/CleanupCheck' }, { type: 'null' }] }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    delete:
+      tags: [Cleanup]
+      operationId: discardCleanupCheck
+      summary: Discard the account's current check
+      parameters:
+        - { name: account_id, in: query, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '204': { description: Discarded (or there was none) }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
   /api/cleanup/run:
     post:
       tags: [Cleanup]
       operationId: runCleanup
-      summary: Sort existing mail with the current rules, as one undoable batch
+      summary: Sort a finished check's kept rows, as one undoable batch
       description: |
-        Answers at once with the batch (kind `cleanup`, status `running`, `total` the emails
-        selected). The run goes on in the background, oldest email first, through the same
-        pipeline and executor as new mail: about a hundred `batch.progress` events carry
-        `done`, `total`, `tokens` and `cost_usd` as they grow, and `GET /api/batches/{id}`
-        says the same. It ends `done`, or `failed` if the account disconnects or the daemon
-        stops. Every email of the selection is decided afresh, also one MailRules has seen
-        before. Honours dry-run: the actions are then recorded as `dry_run` and nothing
-        moves. Undo the whole run with `POST /api/batches/{id}/undo`. One run per account
-        at a time.
+        Applies the answers a check already settled for its selectable rows, minus the ones
+        the user unticked (`exclude`, row indices). It makes no model calls: the decisions
+        are replayed, not asked again. Answers at once with the batch (kind `cleanup`, status
+        `running`, `total` the rows being sorted). The run goes on in the background, oldest
+        email first, through the same pipeline and executor as new mail: about a hundred
+        `batch.progress` events carry `done`, `total`, `skipped` and the counts as they grow,
+        and `GET /api/batches/{id}` says the same. An email no longer where the check found
+        it is passed over and counted in `skipped`. Honours dry-run: the actions are then
+        recorded as `dry_run` and nothing moves. Undo the whole run with
+        `POST /api/batches/{id}/undo`. The check is deleted once it has been used. One run per
+        account at a time.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CleanupRequest' }
+            schema: { $ref: '#/components/schemas/CleanupRunRequest' }
       responses:
         '202':
           description: Started
@@ -970,10 +1010,10 @@ paths:
                 required: [batch]
                 properties:
                   batch: { $ref: '#/components/schemas/Batch' }
-        '400': { $ref: '#/components/responses/Invalid' } # as for preview
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | check_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
-        '409': { $ref: '#/components/responses/Conflict' } # account_offline, cleanup_running
+        '409': { $ref: '#/components/responses/Conflict' } # preview_stale (the check is gone or the rules changed), check_not_ready, account_offline, cleanup_running
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
   /api/templates:
     get:
@@ -1017,7 +1057,7 @@ paths:
       summary: Model calls and cost by day, rule and model for the Usage screen
       description: |
         `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
-        every model call under its purpose (decide, escalate, compose, test). `by_rule` comes
+        every model call under its purpose (decide, escalate, compose, test, cleanup). `by_rule` comes
         from the decisions, which know which rule a call was for, so it leaves out composing
         and testing and its costs add up to less than `cost_usd`.
       parameters:
@@ -1096,7 +1136,8 @@ paths:
         | `message.review` | `ActivityItem` | an email went to Needs review |
         | `action.undone` | `MessageAction` | one action was undone (a batch undo sends one per action) |
         | `account.status` | `Account` | an account's status changed, or it was edited |
-        | `batch.progress` | `Batch` | a cleanup run moved forward or ended; `done`, `tokens` and `cost_usd` are its running totals |
+        | `batch.progress` | `Batch` | a cleanup Sort moved forward or ended; `done`, `skipped`, `tokens` and `cost_usd` are its running totals |
+        | `check.progress` | `CleanupCheck` | a cleanup check moved forward or ended; `done`, `total`, `model_calls` and `cost_usd` grow, then `status` is `ready`, `failed` or `stale`. Rows are not carried; GET the check for them |
         | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
         | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
 
@@ -1756,7 +1797,7 @@ components:
         failed: { type: integer, description: 'Actions that could not be undone and are still in effect; `item.actions` says which' }
     Batch:
       type: object
-      required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd]
+      required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd, skipped]
       properties:
         id: { type: integer, format: int64 }
         kind: { type: string, enum: [live, cleanup, review, correction, undo], description: '`live` is one per UTC day of live processing, so "undo today" is one batch undo' }
@@ -1769,6 +1810,7 @@ components:
         since: { type: [integer, 'null'], format: int64, description: 'Cleanup: only mail received from this time on; null = all of it' }
         tokens: { type: integer, description: 'Cleanup: model tokens used so far, in and out. 0 for the other kinds' }
         cost_usd: { type: number, description: 'Cleanup: model cost so far. 0 for the other kinds' }
+        skipped: { type: integer, description: 'Cleanup Sort: selected emails passed over because they were no longer where the check found them. 0 for the other kinds' }
         actions:
           type: object
           description: How many of the batch's own actions have each status. An undo batch has none of its own
@@ -1786,7 +1828,7 @@ components:
         undone: { type: integer, description: Actions undone by this call }
         failed: { type: integer, description: 'Actions that could not be undone: the email is gone, or its account is not connected' }
 
-    CleanupRequest:
+    CleanupCheckRequest:
       type: object
       required: [account_id]
       additionalProperties: false
@@ -1794,30 +1836,52 @@ components:
         account_id: { type: integer, format: int64 }
         folder: { type: string, description: 'One folder of the account; left out = INBOX. There is no "all folders"' }
         since: { type: [integer, 'null'], format: int64, description: Only mail received on or after this time's date; null = all of it }
-        limit: { type: integer, minimum: 1, description: Only the newest N emails }
-    CleanupPreview:
+        limit: { type: integer, minimum: 1, description: 'Only the newest N emails; capped at 2000' }
+    CleanupRunRequest:
       type: object
-      required: [total, groups, estimated_model_calls, estimated_cost_usd]
+      required: [account_id, check_id]
+      additionalProperties: false
       properties:
-        total: { type: integer }
-        groups:
-          type: array
-          description: Biggest group first
-          items:
-            type: object
-            required: [key, outcome, rule_id, rule_name, count, samples]
-            properties:
-              key: { type: string, description: 'Names the group, unique within a preview and the same from one preview to the next: `rule:<id>` for a rule, `sender:keep` or `sender:trash` for a sender rule without a rule, `none`, `model`, `review`' }
-              outcome:
-                type: string
-                enum: [rule, none, model, review]
-                description: '`rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: only rules with an intent could take it and no decision model is set, so it would wait in Needs review'
-              rule_id: { type: [integer, 'null'], format: int64, description: 'The rule, for outcome rule; null otherwise, and for a sender rule that keeps or blocks' }
-              rule_name: { type: string, description: 'The rule''s name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty for the other outcomes' }
-              count: { type: integer }
-              samples: { type: array, maxItems: 5, items: { $ref: '#/components/schemas/TestRow' }, description: The newest emails of the group }
-        estimated_model_calls: { type: integer, description: The count of the model group }
-        estimated_cost_usd: { type: number, description: 'Those calls times the average cost of a live decision so far; 0 until there is history' }
+        account_id: { type: integer, format: int64 }
+        check_id: { type: string, description: The check to sort; it must still be the account's current one }
+        exclude: { type: array, items: { type: integer }, description: 'Row indices (CleanupCheckRow.index) of selectable rows the user unticked; omitted or empty sorts every selectable row' }
+    CleanupCheck:
+      type: object
+      description: One real check of a mailbox, held in the daemon's memory until Sort uses it or it is discarded
+      required: [id, account_id, folder, since, limit, status, done, total, model_calls, tokens, cost_usd, error, rows]
+      properties:
+        id: { type: string, description: Changes with every new check of the account }
+        account_id: { type: integer, format: int64 }
+        folder: { type: string, description: The folder checked, for restoring the screen's scope }
+        since: { type: [integer, 'null'], format: int64, description: 'Only mail from this time on; null = all of it' }
+        limit: { type: [integer, 'null'], description: 'Only the newest N emails; null = no limit' }
+        status: { type: string, enum: [running, ready, failed, stale], description: '`running`: the check is still going (`done`/`total`). `ready`: through, `rows` present. `failed`: `error` says why. `stale`: the rules changed since; Sort is refused until a new check' }
+        done: { type: integer, description: Emails checked so far }
+        total: { type: integer, description: Emails the check will go through, known once the mail is listed }
+        model_calls: { type: integer, description: Model calls made so far }
+        tokens: { type: integer, description: Model tokens so far, in and out }
+        cost_usd: { type: number, description: Real model cost so far }
+        error: { type: string, description: Why the check failed; empty otherwise }
+        rows: { type: array, items: { $ref: '#/components/schemas/CleanupCheckRow' }, description: 'One per checked email, newest first; present when ready or stale, empty otherwise' }
+    CleanupCheckRow:
+      type: object
+      description: One checked email and how the real flow settled it
+      required: [index, from, subject, received_at, folder, uid, uidvalidity, stage, rule_id, rule_name, actions, confidence, selectable, reason]
+      properties:
+        index: { type: integer, description: 'Its position in rows; name it in CleanupRunRequest.exclude to untick it' }
+        from: { type: string }
+        subject: { type: string }
+        received_at: { type: [integer, 'null'], format: int64 }
+        folder: { type: string, description: Where the email was when checked }
+        uid: { type: integer, format: int64 }
+        uidvalidity: { type: integer, format: int64 }
+        stage: { $ref: '#/components/schemas/Stage' }
+        rule_id: { type: [integer, 'null'], format: int64, description: 'The rule that took it; null for a sender keep/block, Needs review and left-alone rows' }
+        rule_name: { type: string, description: 'The rule''s name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty where nothing took it' }
+        actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' }, description: What would be done; empty for review and left-alone rows }
+        confidence: { type: [number, 'null'], description: 'How sure the model was, 0..1; null where no model was asked' }
+        selectable: { type: boolean, description: 'Whether the row can be ticked for Sort: a rule settled it with an action and it would not wait in Needs review. Ticked by default' }
+        reason: { type: string, description: One sentence saying how it was settled, or why it cannot be ticked }
     Template:
       type: object
       required: [id, name, description, rule]
@@ -1834,7 +1898,7 @@ components:
       properties:
         provider: { type: string }
         model: { type: string }
-        purpose: { type: string, enum: [decide, escalate, compose, test] }
+        purpose: { type: string, enum: [decide, escalate, compose, test, cleanup] }
         calls: { type: integer }
         tokens_in: { type: integer }
         tokens_out: { type: integer }
@@ -1917,7 +1981,7 @@ components:
                   properties:
                     provider: { type: string }
                     model: { type: string }
-                    purpose: { type: string, enum: [decide, escalate, compose, test] }
+                    purpose: { type: string, enum: [decide, escalate, compose, test, cleanup] }
                     calls: { type: integer }
                     cost_usd: { type: number }
         by_rule:

@@ -17,8 +17,20 @@ var ErrNotConnected = errors.New("account is not connected")
 type Manager struct {
 	mu       sync.Mutex
 	sups     map[int64]*running
-	cleaning map[int64]bool // accounts with a cleanup run going
-	wg       sync.WaitGroup // supervisors and cleanup runs
+	cleaning map[int64]bool // accounts with a cleanup Sort going
+	checks   *CheckStore    // the current cleanup check of each account, in memory (MAI-44)
+	wg       sync.WaitGroup // supervisors, cleanup Sorts and cleanup checks
+}
+
+// Checks is the account cleanup checks held in the daemon's memory (MAI-44). It is created
+// on first use, so a Manager needs no constructor.
+func (m *Manager) Checks() *CheckStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.checks == nil {
+		m.checks = NewCheckStore()
+	}
+	return m.checks
 }
 
 type running struct {

@@ -827,3 +827,75 @@ func TestSortExistingMail(t *testing.T) {
 		t.Errorf("sender rules = %+v, want 2 hits", srs)
 	}
 }
+
+// SortSaved replays an answer a cleanup check already settled: it records the same decision
+// as the live/direct path, without asking the model again and without booking its cost a
+// second time, and it passes over a reference that is gone.
+func TestSortSavedReplaysTheCheck(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.primary.DecideFunc = answer(e.food.ID, 0.93)
+
+	// The direct path: Pipeline.Sort decides and records as live processing does.
+	refA := e.deliver("orders@swiggy.example", "order A")
+	if err := e.p.Sort(ctx, refA); err != nil {
+		t.Fatal(err)
+	}
+	d1 := e.row(refA).Decision
+
+	// The check path: Decider.Settle settles the answer (one model call), then SortSaved
+	// replays it with no further call.
+	refB := e.deliver("orders@swiggy.example", "order B")
+	rs, err := e.st.Rules(ctx, e.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senders, err := e.st.SenderRules(ctx, e.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := e.mb.Fetch(ctx, refB, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := message.Parse(raw, e.p.Account.ID, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Decider{Router: e.p.Router, MinConfidence: 0.75, Now: e.now}.Settle(ctx, *sum, rs, senders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callsBefore := len(e.primary.Requests())
+	applied, err := e.p.SortSaved(ctx, refB, out)
+	if err != nil || !applied {
+		t.Fatalf("SortSaved = %v, %v", applied, err)
+	}
+	if n := len(e.primary.Requests()); n != callsBefore {
+		t.Errorf("SortSaved asked the model %d times", n-callsBefore)
+	}
+	d2 := e.row(refB).Decision
+
+	// The two recorded decisions agree on what was decided, by whom, and that a model decided it.
+	if d1.Stage != "decider" || d1.Stage != d2.Stage || d1.RuleID != d2.RuleID || d1.Confidence != d2.Confidence ||
+		d1.Model != d2.Model || d1.RuleName != d2.RuleName {
+		t.Errorf("decisions differ: direct %+v, replayed %+v", d1, d2)
+	}
+	if got := e.exec.applied(); !slices.Equal(got, []string{"move:Food", "move:Food"}) {
+		t.Errorf("applied %v, want two move:Food", got)
+	}
+	// The replayed decision carries the stage, rule, model, confidence and reason, but no cost.
+	if d2.Model == "" || d2.Confidence != 0.93 || d2.Reason == "" || d2.TokensIn != 0 || d2.TokensOut != 0 || d2.CostUSD != 0 {
+		t.Errorf("replayed decision = %+v", d2)
+	}
+	// The direct decision booked the model cost once.
+	if d1.CostUSD == 0 {
+		t.Errorf("the direct decision recorded no cost: %+v", d1)
+	}
+
+	// A reference that is gone since the check is passed over, not acted on.
+	e.p.Mailbox = &flaky{Mailbox: e.mb, fetchErr: mail.ErrNotFound}
+	if applied, err := e.p.SortSaved(ctx, refB, out); err != nil || applied {
+		t.Errorf("SortSaved of a gone reference = %v, %v", applied, err)
+	}
+}

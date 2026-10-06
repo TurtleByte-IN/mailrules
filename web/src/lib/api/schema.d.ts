@@ -770,30 +770,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cleanup/preview": {
+    "/api/cleanup/check": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * The account's current check, or none
+         * @description Returns the account's current check so a page reload, or leaving and coming back,
+         *     shows the same result: `running` with `done`/`total`, `ready` with its rows, `failed`
+         *     with a message, or `stale` when the rules changed since it ran. `check` is null when
+         *     there is no check. A `ready` check whose rules have changed since is reported `stale`.
+         */
+        get: operations["getCleanupCheck"];
         put?: never;
         /**
-         * Count what a cleanup run would do, per rule, without acting
-         * @description Reads the selected mail (BODY.PEEK) and groups it by what the run would do, with up
-         *     to 5 sample emails per group. No model is asked: what sender rules and conditions
-         *     settle is counted under its rule (`rule`) or as left alone (`none`); the emails that
-         *     rules with an intent compete for are one group, `model`, which is also
-         *     `estimated_model_calls`. With no decision model set, rules with an intent are passed
-         *     over, as in live processing: an email a condition-only rule below them takes is
-         *     counted under that rule, and only what nothing else takes is `review`.
-         *     `estimated_cost_usd` is those calls times what a live decision has cost on average
-         *     so far (0 until there is history). The answer comes in one response, so a very large
-         *     folder takes a while: give `limit`.
+         * Check the selected mail for real, keeping the result to sort from
+         * @description Runs every selected email through the real flow — sender rules, then conditions,
+         *     then the decision model for rules with an intent, exactly as live processing decides
+         *     — moving nothing and recording nothing in Activity, but really asking the model and
+         *     paying for it: the calls are booked on the usage ledger under the `cleanup` purpose,
+         *     so Usage can tell them from live sorting. It answers at once with the check,
+         *     `running`; its rows, progress and real cost arrive as `check.progress` events and
+         *     through `GET /api/cleanup/check`. The check runs in the background and keeps going if
+         *     this request is dropped. There is one check per account: starting a new one replaces
+         *     (and cancels) the previous. The result is held in the daemon's memory until Sort uses
+         *     it or it is discarded, and is lost on a daemon restart.
          */
-        post: operations["previewCleanup"];
-        delete?: never;
+        post: operations["startCleanupCheck"];
+        /** Discard the account's current check */
+        delete: operations["discardCleanupCheck"];
         options?: never;
         head?: never;
         patch?: never;
@@ -809,16 +817,18 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Sort existing mail with the current rules, as one undoable batch
-         * @description Answers at once with the batch (kind `cleanup`, status `running`, `total` the emails
-         *     selected). The run goes on in the background, oldest email first, through the same
-         *     pipeline and executor as new mail: about a hundred `batch.progress` events carry
-         *     `done`, `total`, `tokens` and `cost_usd` as they grow, and `GET /api/batches/{id}`
-         *     says the same. It ends `done`, or `failed` if the account disconnects or the daemon
-         *     stops. Every email of the selection is decided afresh, also one MailRules has seen
-         *     before. Honours dry-run: the actions are then recorded as `dry_run` and nothing
-         *     moves. Undo the whole run with `POST /api/batches/{id}/undo`. One run per account
-         *     at a time.
+         * Sort a finished check's kept rows, as one undoable batch
+         * @description Applies the answers a check already settled for its selectable rows, minus the ones
+         *     the user unticked (`exclude`, row indices). It makes no model calls: the decisions
+         *     are replayed, not asked again. Answers at once with the batch (kind `cleanup`, status
+         *     `running`, `total` the rows being sorted). The run goes on in the background, oldest
+         *     email first, through the same pipeline and executor as new mail: about a hundred
+         *     `batch.progress` events carry `done`, `total`, `skipped` and the counts as they grow,
+         *     and `GET /api/batches/{id}` says the same. An email no longer where the check found
+         *     it is passed over and counted in `skipped`. Honours dry-run: the actions are then
+         *     recorded as `dry_run` and nothing moves. Undo the whole run with
+         *     `POST /api/batches/{id}/undo`. The check is deleted once it has been used. One run per
+         *     account at a time.
          */
         post: operations["runCleanup"];
         delete?: never;
@@ -878,7 +888,7 @@ export interface paths {
         /**
          * Model calls and cost by day, rule and model for the Usage screen
          * @description `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
-         *     every model call under its purpose (decide, escalate, compose, test). `by_rule` comes
+         *     every model call under its purpose (decide, escalate, compose, test, cleanup). `by_rule` comes
          *     from the decisions, which know which rule a call was for, so it leaves out composing
          *     and testing and its costs add up to less than `cost_usd`.
          */
@@ -951,7 +961,8 @@ export interface paths {
          *     | `message.review` | `ActivityItem` | an email went to Needs review |
          *     | `action.undone` | `MessageAction` | one action was undone (a batch undo sends one per action) |
          *     | `account.status` | `Account` | an account's status changed, or it was edited |
-         *     | `batch.progress` | `Batch` | a cleanup run moved forward or ended; `done`, `tokens` and `cost_usd` are its running totals |
+         *     | `batch.progress` | `Batch` | a cleanup Sort moved forward or ended; `done`, `skipped`, `tokens` and `cost_usd` are its running totals |
+         *     | `check.progress` | `CleanupCheck` | a cleanup check moved forward or ended; `done`, `total`, `model_calls` and `cost_usd` grow, then `status` is `ready`, `failed` or `stale`. Rows are not carried; GET the check for them |
          *     | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
          *     | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
          *
@@ -1661,6 +1672,8 @@ export interface components {
             tokens: number;
             /** @description Cleanup: model cost so far. 0 for the other kinds */
             cost_usd: number;
+            /** @description Cleanup Sort: selected emails passed over because they were no longer where the check found them. 0 for the other kinds */
+            skipped: number;
             /** @description How many of the batch's own actions have each status. An undo batch has none of its own */
             actions: {
                 done: number;
@@ -1676,7 +1689,7 @@ export interface components {
             /** @description Actions that could not be undone: the email is gone, or its account is not connected */
             failed: number;
         };
-        CleanupRequest: {
+        CleanupCheckRequest: {
             /** Format: int64 */
             account_id: number;
             /** @description One folder of the account; left out = INBOX. There is no "all folders" */
@@ -1686,35 +1699,82 @@ export interface components {
              * @description Only mail received on or after this time's date; null = all of it
              */
             since?: number | null;
-            /** @description Only the newest N emails */
+            /** @description Only the newest N emails; capped at 2000 */
             limit?: number;
         };
-        CleanupPreview: {
+        CleanupRunRequest: {
+            /** Format: int64 */
+            account_id: number;
+            /** @description The check to sort; it must still be the account's current one */
+            check_id: string;
+            /** @description Row indices (CleanupCheckRow.index) of selectable rows the user unticked; omitted or empty sorts every selectable row */
+            exclude?: number[];
+        };
+        /** @description One real check of a mailbox, held in the daemon's memory until Sort uses it or it is discarded */
+        CleanupCheck: {
+            /** @description Changes with every new check of the account */
+            id: string;
+            /** Format: int64 */
+            account_id: number;
+            /** @description The folder checked */
+            folder: string;
+            /**
+             * Format: int64
+             * @description Only mail from this time on; null = all of it
+             */
+            since: number | null;
+            /** @description Only the newest N emails; null = no limit */
+            limit: number | null;
+            /**
+             * @description `running`: the check is still going (`done`/`total`). `ready`: through, `rows` present. `failed`: `error` says why. `stale`: the rules changed since; Sort is refused until a new check
+             * @enum {string}
+             */
+            status: "running" | "ready" | "failed" | "stale";
+            /** @description Emails checked so far */
+            done: number;
+            /** @description Emails the check will go through */
             total: number;
-            /** @description Biggest group first */
-            groups: {
-                /** @description Names the group, unique within a preview and the same from one preview to the next: `rule:<id>` for a rule, `sender:keep` or `sender:trash` for a sender rule without a rule, `none`, `model`, `review` */
-                key: string;
-                /**
-                 * @description `rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: only rules with an intent could take it and no decision model is set, so it would wait in Needs review
-                 * @enum {string}
-                 */
-                outcome: "rule" | "none" | "model" | "review";
-                /**
-                 * Format: int64
-                 * @description The rule, for outcome rule; null otherwise, and for a sender rule that keeps or blocks
-                 */
-                rule_id: number | null;
-                /** @description The rule's name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty for the other outcomes */
-                rule_name: string;
-                count: number;
-                /** @description The newest emails of the group */
-                samples: components["schemas"]["TestRow"][];
-            }[];
-            /** @description The count of the model group */
-            estimated_model_calls: number;
-            /** @description Those calls times the average cost of a live decision so far; 0 until there is history */
-            estimated_cost_usd: number;
+            /** @description Model calls made so far */
+            model_calls: number;
+            /** @description Model tokens so far */
+            tokens: number;
+            /** @description Real model cost so far */
+            cost_usd: number;
+            /** @description Why the check failed; empty otherwise */
+            error: string;
+            /** @description One per checked email, newest first; present when ready or stale, empty otherwise */
+            rows: components["schemas"]["CleanupCheckRow"][];
+        };
+        /** @description One checked email and how the real flow settled it */
+        CleanupCheckRow: {
+            /** @description Its position in rows; name it in CleanupRunRequest.exclude to untick it */
+            index: number;
+            from: string;
+            subject: string;
+            /** Format: int64 */
+            received_at: number | null;
+            /** @description Where the email was when checked */
+            folder: string;
+            /** Format: int64 */
+            uid: number;
+            /** Format: int64 */
+            uidvalidity: number;
+            stage: components["schemas"]["Stage"];
+            /**
+             * Format: int64
+             * @description The rule that took it; null for a sender keep/block, Needs review and left-alone rows
+             */
+            rule_id: number | null;
+            /** @description The rule's name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty where nothing took it */
+            rule_name: string;
+            /** @description What would be done; empty for review and left-alone rows */
+            actions: components["schemas"]["RuleAction"][];
+            /** @description How sure the model was, 0..1; null where no model was asked */
+            confidence: number | null;
+            /** @description Whether the row can be ticked for Sort: a rule settled it with an action and it would not wait in Needs review. Ticked by default */
+            selectable: boolean;
+            /** @description One sentence saying how it was settled */
+            reason: string;
         };
         /** @description The gallery holds eight: newsletters, receipts, login codes, cold sales, travel, social notifications, bank statements, calendar invites */
         Template: {
@@ -1727,7 +1787,7 @@ export interface components {
             provider: string;
             model: string;
             /** @enum {string} */
-            purpose: "decide" | "escalate" | "compose" | "test";
+            purpose: "decide" | "escalate" | "compose" | "test" | "cleanup";
             calls: number;
             tokens_in: number;
             tokens_out: number;
@@ -1809,7 +1869,7 @@ export interface components {
                     provider: string;
                     model: string;
                     /** @enum {string} */
-                    purpose: "decide" | "escalate" | "compose" | "test";
+                    purpose: "decide" | "escalate" | "compose" | "test" | "cleanup";
                     calls: number;
                     cost_usd: number;
                 }[];
@@ -3169,7 +3229,33 @@ export interface operations {
             409: components["responses"]["Conflict"];
         };
     };
-    previewCleanup: {
+    getCleanupCheck: {
+        parameters: {
+            query: {
+                account_id: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current check, or null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        check: components["schemas"]["CleanupCheck"] | null;
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    startCleanupCheck: {
         parameters: {
             query?: never;
             header?: never;
@@ -3178,17 +3264,19 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CleanupRequest"];
+                "application/json": components["schemas"]["CleanupCheckRequest"];
             };
         };
         responses: {
-            /** @description The preview */
-            200: {
+            /** @description Started */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CleanupPreview"];
+                    "application/json": {
+                        check: components["schemas"]["CleanupCheck"];
+                    };
                 };
             };
             400: components["responses"]["Invalid"];
@@ -3196,6 +3284,29 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
+        };
+    };
+    discardCleanupCheck: {
+        parameters: {
+            query: {
+                account_id: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discarded (or there was none) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
         };
     };
     runCleanup: {
@@ -3207,7 +3318,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CleanupRequest"];
+                "application/json": components["schemas"]["CleanupRunRequest"];
             };
         };
         responses: {

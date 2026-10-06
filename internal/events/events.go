@@ -13,6 +13,7 @@ const (
 	ActionUndone     = "action.undone"     // Data: store.Action
 	AccountStatus    = "account.status"    // Data: store.Account
 	BatchProgress    = "batch.progress"
+	CheckProgress    = "check.progress" // a cleanup check moved forward or ended; Data: worker.CheckState (rows omitted)
 	RulesChanged     = "rules.changed"
 	UsageUpdated     = "usage.updated" // Data: nil
 )

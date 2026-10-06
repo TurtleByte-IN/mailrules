@@ -137,7 +137,7 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 }
 
 // AddUsage adds model calls to the day's cost-ledger row for that provider,
-// model and purpose (decide | escalate | compose | test), creating it if needed.
+// model and purpose (decide | escalate | compose | test | cleanup), creating it if needed.
 func (s *Store) AddUsage(ctx context.Context, day, provider, model, purpose string, calls, tokensIn, tokensOut int, costUSD float64) error {
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO usage_daily (day, provider, model, purpose, calls, tokens_in, tokens_out, cost_usd)
