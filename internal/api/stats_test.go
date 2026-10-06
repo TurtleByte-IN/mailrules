@@ -224,7 +224,17 @@ func TestStatsMath(t *testing.T) {
 			t.Errorf("summary%s = since %v counts %v free %v cost %v, %d models, top %q; want %+v", tc.query, got["since"], counts,
 				got["decided_without_model"], got["cost_usd"], len(got["calls_by_model"].([]any)), top, tc)
 		}
-		if acct := got["accounts"].([]any)[0].(map[string]any); acct["status"] != "live" || id(acct["account_id"]) != 1 || acct["label"] != "me@example.test" {
+		went := got["went"].(map[string]any)
+		if sum := went["sorted"].(float64) + went["inbox"].(float64) + went["review"].(float64) + went["trashed"].(float64); sum != counts["processed"] {
+			t.Errorf("summary%s: went %v adds up to %v, want processed %v", tc.query, went, sum, counts["processed"])
+		}
+		if went["sorted"].(float64)+went["trashed"].(float64) != counts["sorted"] {
+			t.Errorf("summary%s: went %v does not agree with counts %v", tc.query, went, counts)
+		}
+		if _, ok := got["quiet_rules"].(float64); !ok {
+			t.Errorf("summary%s: quiet_rules missing", tc.query)
+		}
+		if acct := got["accounts"].([]any)[0].(map[string]any); acct["status"] != "live" || id(acct["account_id"]) != 1 || acct["label"] != "me@example.test" || acct["preset"] == "" || acct["username"] == "" || acct["folder_count"].(float64) < 1 {
 			t.Errorf("account health = %v", acct)
 		}
 	}

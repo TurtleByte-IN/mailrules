@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -908,7 +908,7 @@ paths:
     get:
       tags: [Stats]
       operationId: statsSummary
-      summary: Counts, cost and account health for the Activity tiles
+      summary: Counts, cost and account health for the Overview screen and the Activity tiles
       description: |
         A range starts on a UTC day boundary, today included: `day` is today, `week` the
         last 7 days, `month` the last 30. An email is counted once, by its latest decision.
@@ -1710,7 +1710,7 @@ components:
         cost_usd: { type: number }
     StatsSummary:
       type: object
-      required: [range, since, counts, decided_without_model, cost_usd, calls_by_model, top_rules, accounts]
+      required: [range, since, counts, went, decided_without_model, cost_usd, calls_by_model, top_rules, quiet_rules, accounts]
       properties:
         range: { type: string, enum: [day, week, month] }
         since: { type: integer, format: int64, description: Start of the range }
@@ -1722,6 +1722,16 @@ components:
             sorted: { type: integer, description: 'Of those, a rule or sender rule was applied (or recorded, in dry-run)' }
             trashed: { type: integer, description: 'Emails with a trash action from the range that is in effect (or recorded, in dry-run)' }
             review: { type: integer, description: Waiting in Needs review now }
+        went:
+          type: object
+          description: Where the processed emails ended up, for the Overview bar. The four add up to `counts.processed`
+          required: [sorted, inbox, review, trashed]
+          properties:
+            sorted: { type: integer, description: A rule was applied and it did not trash the email }
+            inbox: { type: integer, description: 'Left in the inbox: no rule matched, or the email could not be handled' }
+            review: { type: integer, description: 'Of the processed emails, those waiting in Needs review' }
+            trashed: { type: integer, description: A rule was applied and it trashed the email }
+        quiet_rules: { type: integer, description: Enabled rules applied to no email in the range }
         decided_without_model: { type: number, minimum: 0, maximum: 1, description: 'Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed' }
         cost_usd: { type: number }
         calls_by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' } }
@@ -1739,10 +1749,13 @@ components:
           type: array
           items:
             type: object
-            required: [account_id, label, status, last_event_at, last_error]
+            required: [account_id, label, preset, username, folder_count, status, last_event_at, last_error]
             properties:
               account_id: { type: integer, format: int64 }
               label: { type: string }
+              preset: { type: string, description: 'icloud | fastmail | yahoo | zoho | generic' }
+              username: { type: string }
+              folder_count: { type: integer }
               status: { $ref: '#/components/schemas/AccountStatus' }
               last_event_at: { type: [integer, 'null'], format: int64 }
               last_error: { type: string }

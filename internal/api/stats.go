@@ -85,6 +85,11 @@ func (s *server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
+	quiet, err := s.store.QuietRules(ctx, uid, since.Unix())
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
 	models, _, cost := byModel(ledger)
 	free := 0.0
 	if totals.Processed > 0 {
@@ -96,12 +101,19 @@ func (s *server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	health := make([]map[string]any, len(accounts))
 	for i, a := range accounts {
-		health[i] = map[string]any{"account_id": a.ID, "label": a.Label, "status": a.Status, "last_event_at": ts(a.LastEventAt), "last_error": a.LastError}
+		folders, err := s.store.Folders(ctx, a.ID)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		health[i] = map[string]any{"account_id": a.ID, "label": a.Label, "preset": a.Preset, "username": a.Username, "folder_count": len(folders),
+			"status": a.Status, "last_event_at": ts(a.LastEventAt), "last_error": a.LastError}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"range": name, "since": since.Unix(),
 		"counts":                map[string]int{"processed": totals.Processed, "sorted": totals.Sorted, "trashed": totals.Trashed, "review": review},
-		"decided_without_model": free, "cost_usd": cost, "calls_by_model": models, "top_rules": topRules, "accounts": health,
+		"went":                  map[string]int{"sorted": totals.WentSorted, "inbox": totals.WentNowhere, "review": totals.WentReview, "trashed": totals.WentTrash},
+		"decided_without_model": free, "cost_usd": cost, "calls_by_model": models, "top_rules": topRules, "quiet_rules": quiet, "accounts": health,
 	})
 }
 

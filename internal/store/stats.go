@@ -60,21 +60,43 @@ type Totals struct {
 	Sorted       int // of those, a rule or sender rule was applied (or recorded, in dry-run)
 	WithoutModel int // of those, settled without asking a model
 	Trashed      int // emails with a trash action that is in effect (or recorded, in dry-run)
+
+	// Where the processed emails ended up; the four add up to Processed.
+	WentSorted  int // a rule was applied and it did not trash the email
+	WentTrash   int // a rule was applied and it trashed the email
+	WentReview  int // waiting in Needs review
+	WentNowhere int // left in the inbox: no rule matched, or it could not be handled
 }
 
 // StatsTotals counts the user's emails decided since `since`.
 func (s *Store) StatsTotals(ctx context.Context, userID, since int64) (Totals, error) {
 	var t Totals
+	const trash = `x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2`
 	err := s.db.QueryRowContext(ctx,
 		latest+`SELECT COUNT(*), COALESCE(SUM(state = 'acted'), 0), COALESCE(SUM(model = ''), 0),
 		          (SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN accounts a ON a.id = x.account_id
-		           WHERE a.user_id = ?1 AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2)
+		           WHERE a.user_id = ?1 AND `+trash+`),
+		          COALESCE(SUM(state = 'acted' AND EXISTS (SELECT 1 FROM actions x WHERE x.message_id = latest.message_id AND `+trash+`)), 0),
+		          COALESCE(SUM(state = 'review'), 0), COALESCE(SUM(state NOT IN ('acted', 'review')), 0)
 		        FROM latest`, userID, since).
-		Scan(&t.Processed, &t.Sorted, &t.WithoutModel, &t.Trashed)
+		Scan(&t.Processed, &t.Sorted, &t.WithoutModel, &t.Trashed, &t.WentTrash, &t.WentReview, &t.WentNowhere)
 	if err != nil {
 		return Totals{}, fmt.Errorf("stats totals: %w", err)
 	}
+	t.WentSorted = t.Sorted - t.WentTrash
 	return t, nil
+}
+
+// QuietRules counts the user's enabled rules that were applied to no email since `since`.
+func (s *Store) QuietRules(ctx context.Context, userID, since int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		latest+`SELECT COUNT(*) FROM rules WHERE user_id = ?1 AND enabled = 1
+		        AND id NOT IN (SELECT rule_id FROM latest WHERE rule_id IS NOT NULL AND state = 'acted')`, userID, since).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("quiet rules: %w", err)
+	}
+	return n, nil
 }
 
 // RuleUse is what one rule did, or cost. RuleID is 0 with a name for a rule that has been
