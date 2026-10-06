@@ -4,6 +4,7 @@
   import { clock, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import {
+    acted,
     check,
     cleanup,
     discard,
@@ -67,7 +68,9 @@
     if (pageIndex >= pageCount) pageIndex = 0;
   });
   const ticked = (r: CleanupCheckRow) => r.selectable && !cleanup.excluded.has(r.index);
-  const confidencePct = (c: number | null) => (c === null ? '' : Math.round(c * 100) + '%');
+  // Only where a rule took the email, or it waits in Needs review, is the model's confidence about a rule worth showing; a left-alone row's is not.
+  const confidencePct = (r: CleanupCheckRow) => (r.confidence === null || !(r.selectable || r.review) ? '' : Math.round(r.confidence * 100) + '%');
+  const actionText = (r: CleanupCheckRow) => (r.review ? 'Needs review' : r.selectable ? actionsText(r.actions) : '—');
 
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
 
@@ -89,7 +92,7 @@
       <div class="h-3 bg-ink" style:width="{pct}%"></div>
     </div>
     <div class="text-[13px] text-nav">
-      {b.done.toLocaleString()} of {(b.total ?? 0).toLocaleString()} sorted · {pct}%{b.skipped ? ' · ' + b.skipped.toLocaleString() + ' skipped' : ''} · {b.tokens.toLocaleString()} tokens · {money(b.cost_usd)}
+      {acted(b).toLocaleString()} of {(b.total ?? 0).toLocaleString()} sorted · {pct}%{b.skipped ? ' · ' + b.skipped.toLocaleString() + ' skipped' : ''} · {b.tokens.toLocaleString()} tokens · {money(b.cost_usd)}
     </div>
   </div>
 {/snippet}
@@ -149,7 +152,7 @@
     {/if}
 
     {#if showTable}
-      <div class="flex flex-col gap-3">
+      <div class="flex min-w-0 flex-col gap-3">
         {#if cleanup.phase === 'stale'}
           <p role="alert" class="rounded bg-trash-bg px-3 py-2 text-[13px] text-trash">
             These results are out of date: the rules changed since this check. Check again before sorting.
@@ -173,14 +176,22 @@
           <span class="text-[13px] text-secondary">{selectedCount().toLocaleString()} selected of {rows.length.toLocaleString()}</span>
         </div>
 
-        <table class="w-full text-[13px]">
+        <table class="w-full table-fixed text-[13px]">
+          <colgroup>
+            <col class="w-8" />
+            <col class="w-[20%]" />
+            <col />
+            <col class="w-[16%]" />
+            <col class="w-[16%]" />
+            <col class="w-[88px]" />
+          </colgroup>
           <thead>
             <tr class="border-b border-line-divider text-left text-muted">
-              <th class="w-8 py-2"><span class="sr-only">Selected</span></th>
-              <th class="py-2 font-medium">From</th>
-              <th class="py-2 font-medium">Subject</th>
-              <th class="py-2 font-medium">Rule</th>
-              <th class="py-2 font-medium">Action</th>
+              <th class="py-2"><span class="sr-only">Selected</span></th>
+              <th class="py-2 pr-2 font-medium">From</th>
+              <th class="py-2 pr-2 font-medium">Subject</th>
+              <th class="py-2 pr-2 font-medium">Rule</th>
+              <th class="py-2 pr-2 font-medium">Action</th>
               <th class="py-2 text-right font-medium">Confidence</th>
             </tr>
           </thead>
@@ -197,16 +208,16 @@
                     onchange={() => toggleRow(r.index)}
                   />
                 </td>
-                <td class="truncate py-2 font-mono">{r.from}</td>
-                <td class="py-2">
-                  <div class="truncate">{r.subject}</div>
+                <td class="truncate py-2 pr-2 font-mono" title={r.from}>{r.from}</td>
+                <td class="py-2 pr-2">
+                  <div class="truncate" title={r.subject}>{r.subject}</div>
                   {#if !r.selectable && r.reason}
-                    <div class="text-[12px] text-muted">{r.reason}</div>
+                    <div class="break-words text-[12px] text-muted">{r.reason}</div>
                   {/if}
                 </td>
-                <td class="py-2">{r.rule_name || '—'}</td>
-                <td class="py-2">{r.selectable ? actionsText(r.actions) : '—'}</td>
-                <td class="py-2 text-right font-mono">{confidencePct(r.confidence)}</td>
+                <td class="truncate py-2 pr-2" title={r.rule_name}>{r.rule_name || '—'}</td>
+                <td class="truncate py-2 pr-2" title={actionText(r)}>{actionText(r)}</td>
+                <td class="py-2 text-right font-mono">{confidencePct(r)}</td>
               </tr>
             {/each}
           </tbody>

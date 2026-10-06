@@ -311,13 +311,16 @@ subscribe('check.progress', onCheckProgress);
 /** The tail that names emails passed over because they moved since the check; empty when none did. */
 const skippedTail = (b: cleanupApi.Batch) => (b.skipped > 0 ? ', ' + b.skipped.toLocaleString() + ' skipped (no longer in the folder)' : '');
 
+/** Emails a Sort actually acted on: `done` counts every row handled, those passed over because they moved included. */
+export const acted = (b: cleanupApi.Batch) => Math.max(0, b.done - b.skipped);
+
 /** How a finished sort went. Cleanup honours dry-run, and then nothing was moved. */
 export const outcome = (b: cleanupApi.Batch) =>
   b.status === 'failed'
-    ? 'Cleanup was cut short after ' + b.done.toLocaleString() + ' emails. What it did can be undone as one batch below.'
+    ? 'Cleanup was cut short after ' + acted(b).toLocaleString() + ' emails' + skippedTail(b) + '. What it did can be undone as one batch below.'
     : b.actions.dry_run
-      ? 'Dry run: ' + b.done.toLocaleString() + ' emails checked, nothing moved' + skippedTail(b) + '.'
-      : 'Cleanup done: ' + b.done.toLocaleString() + ' emails sorted' + skippedTail(b) + '. Undo it as one batch below.';
+      ? 'Dry run: ' + acted(b).toLocaleString() + ' emails checked, nothing moved' + skippedTail(b) + '.'
+      : 'Cleanup done: ' + acted(b).toLocaleString() + ' emails sorted' + skippedTail(b) + '. Undo it as one batch below.';
 
 // Mirrors the daemon's store.UndoDays (internal/store/retention.go): a batch created more
 // than this many days ago is refused whole with 409 too_old.

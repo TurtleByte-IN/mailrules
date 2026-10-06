@@ -241,11 +241,11 @@ checked:
 		t.Errorf("decider row = %v", r)
 	}
 	// Review: a model confidence, but not selectable and no action.
-	if r := byStage["review"][0]; r["selectable"].(bool) || r["confidence"].(float64) != 0.4 || len(r["actions"].([]any)) != 0 {
+	if r := byStage["review"][0]; r["selectable"].(bool) || r["review"] != true || r["confidence"].(float64) != 0.4 || len(r["actions"].([]any)) != 0 {
 		t.Errorf("review row = %v", r)
 	}
 	// None: no model, not selectable, no rule.
-	if r := byStage["none"][0]; r["selectable"].(bool) || r["rule_id"] != nil || r["rule_name"] != "" || r["confidence"] != nil ||
+	if r := byStage["none"][0]; r["selectable"].(bool) || r["review"] != false || r["rule_id"] != nil || r["rule_name"] != "" || r["confidence"] != nil ||
 		len(r["actions"].([]any)) != 0 || r["reason"] != "No rule matched" {
 		t.Errorf("none row = %v", r)
 	}

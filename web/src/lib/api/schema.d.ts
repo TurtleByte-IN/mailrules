@@ -1652,7 +1652,7 @@ export interface components {
             status: "running" | "done" | "failed" | "undone";
             /** @description How many items it set out to handle; null when not counted up front (live). For a cleanup, the emails selected */
             total: number | null;
-            /** @description How many it has handled; for an undo batch, how many actions were undone */
+            /** @description How many it has handled; for an undo batch, how many actions were undone. For a cleanup Sort it includes the emails passed over (`skipped`), so the emails acted on are `done - skipped` */
             done: number;
             /** Format: int64 */
             created_at: number;
@@ -1769,10 +1769,12 @@ export interface components {
             rule_name: string;
             /** @description What would be done; empty for review and left-alone rows */
             actions: components["schemas"]["RuleAction"][];
-            /** @description How sure the model was, 0..1; null where no model was asked */
+            /** @description How sure the model was, 0..1; null where no model was asked. Meaningful only where a rule took the email or it is `review`; for a left-alone row the model answered "no rule" and it is 0 */
             confidence: number | null;
             /** @description Whether the row can be ticked for Sort: a rule settled it with an action and it would not wait in Needs review. Ticked by default */
             selectable: boolean;
+            /** @description The email would wait in Needs review: below the act-when-sure threshold, or no decision model is set. Not selectable */
+            review: boolean;
             /** @description One sentence saying how it was settled */
             reason: string;
         };

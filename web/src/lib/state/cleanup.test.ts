@@ -45,6 +45,7 @@ const row = (over: Partial<CleanupCheckRow> = {}): CleanupCheckRow => ({
   actions: [{ type: 'move', folder: 'Newsletters' }],
   confidence: 1,
   selectable: true,
+  review: false,
   reason: '',
   ...over,
 });
@@ -70,7 +71,7 @@ const readyCheck = check({
   done: 412,
   model_calls: 80,
   cost_usd: 0.01,
-  rows: [row({ index: 0, uid: 1 }), row({ index: 1, uid: 2 }), row({ index: 2, uid: 3, selectable: false, actions: [], rule_name: '', rule_id: null, confidence: null, reason: 'Needs review' })],
+  rows: [row({ index: 0, uid: 1 }), row({ index: 1, uid: 2 }), row({ index: 2, uid: 3, selectable: false, review: true, actions: [], rule_name: '', rule_id: null, confidence: null, reason: 'Needs review' })],
 });
 
 const CHECK = 'GET /api/cleanup/check?account_id=7';
@@ -300,10 +301,11 @@ it('discard throws the check away and returns to idle', async () => {
 
 it.each([
   ['sorted', finished, 'Cleanup done: 412 emails sorted. Undo it as one batch below.'],
-  ['sorted with skipped', batch({ status: 'done', done: 7, actions: { done: 7, dry_run: 0, failed: 0, undone: 0 }, skipped: 3 }), 'Cleanup done: 7 emails sorted, 3 skipped (no longer in the folder). Undo it as one batch below.'],
+  ['sorted with skipped', batch({ status: 'done', done: 7, actions: { done: 7, dry_run: 0, failed: 0, undone: 0 }, skipped: 3 }), 'Cleanup done: 4 emails sorted, 3 skipped (no longer in the folder). Undo it as one batch below.'],
   ['dry run', batch({ status: 'done', done: 412, actions: { done: 0, dry_run: 310, failed: 0, undone: 0 } }), 'Dry run: 412 emails checked, nothing moved.'],
-  ['dry run with skipped', batch({ status: 'done', done: 5, actions: { done: 0, dry_run: 5, failed: 0, undone: 0 }, skipped: 2 }), 'Dry run: 5 emails checked, nothing moved, 2 skipped (no longer in the folder).'],
+  ['dry run with skipped', batch({ status: 'done', done: 5, actions: { done: 0, dry_run: 5, failed: 0, undone: 0 }, skipped: 2 }), 'Dry run: 3 emails checked, nothing moved, 2 skipped (no longer in the folder).'],
   ['failed', batch({ status: 'failed', done: 90 }), 'Cleanup was cut short after 90 emails. What it did can be undone as one batch below.'],
+  ['failed with skipped', batch({ status: 'failed', done: 90, skipped: 4 }), 'Cleanup was cut short after 86 emails, 4 skipped (no longer in the folder). What it did can be undone as one batch below.'],
 ])('outcome: %s', (_name, b, text) => expect(m.outcome(b)).toBe(text));
 
 it('done → idle when the batch is undone', async () => {

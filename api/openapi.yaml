@@ -1803,7 +1803,7 @@ components:
         kind: { type: string, enum: [live, cleanup, review, correction, undo], description: '`live` is one per UTC day of live processing, so "undo today" is one batch undo' }
         status: { type: string, enum: [running, done, failed, undone], description: 'A cleanup is `running` until it has been through its emails, then `done`; `failed` when it was cut short (what it did stays, and can be undone)' }
         total: { type: [integer, 'null'], description: 'How many items it set out to handle; null when not counted up front (live). For a cleanup, the emails selected' }
-        done: { type: integer, description: 'How many it has handled; for an undo batch, how many actions were undone' }
+        done: { type: integer, description: 'How many it has handled; for an undo batch, how many actions were undone. For a cleanup Sort it includes the emails passed over (`skipped`), so the emails acted on are `done - skipped`' }
         created_at: { type: integer, format: int64 }
         account_id: { type: [integer, 'null'], format: int64, description: 'Cleanup: the mailbox it sorted. null for the other kinds, and once that account is deleted' }
         folder: { type: string, description: 'Cleanup: the folder it sorted. Empty for the other kinds' }
@@ -1866,7 +1866,7 @@ components:
     CleanupCheckRow:
       type: object
       description: One checked email and how the real flow settled it
-      required: [index, from, subject, received_at, folder, uid, uidvalidity, stage, rule_id, rule_name, actions, confidence, selectable, reason]
+      required: [index, from, subject, received_at, folder, uid, uidvalidity, stage, rule_id, rule_name, actions, confidence, selectable, review, reason]
       properties:
         index: { type: integer, description: 'Its position in rows; name it in CleanupRunRequest.exclude to untick it' }
         from: { type: string }
@@ -1879,8 +1879,9 @@ components:
         rule_id: { type: [integer, 'null'], format: int64, description: 'The rule that took it; null for a sender keep/block, Needs review and left-alone rows' }
         rule_name: { type: string, description: 'The rule''s name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty where nothing took it' }
         actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' }, description: What would be done; empty for review and left-alone rows }
-        confidence: { type: [number, 'null'], description: 'How sure the model was, 0..1; null where no model was asked' }
+        confidence: { type: [number, 'null'], description: 'How sure the model was, 0..1; null where no model was asked. Meaningful only where a rule took the email or it is `review`; for a left-alone row the model answered "no rule" and it is 0' }
         selectable: { type: boolean, description: 'Whether the row can be ticked for Sort: a rule settled it with an action and it would not wait in Needs review. Ticked by default' }
+        review: { type: boolean, description: 'The email would wait in Needs review: below the act-when-sure threshold, or no decision model is set. Not selectable' }
         reason: { type: string, description: One sentence saying how it was settled, or why it cannot be ticked }
     Template:
       type: object

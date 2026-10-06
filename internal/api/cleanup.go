@@ -316,6 +316,7 @@ type checkRowJSON struct {
 	Actions     []rules.Action `json:"actions"`
 	Confidence  *float64       `json:"confidence"` // null where no model was asked
 	Selectable  bool           `json:"selectable"`
+	Review      bool           `json:"review"` // it would wait in Needs review
 	Reason      string         `json:"reason"`
 }
 
@@ -347,7 +348,7 @@ func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 		o := row.Outcome
 		j := checkRowJSON{Index: i, From: row.From, Subject: row.Subject, Folder: row.Ref.Folder, UID: row.Ref.UID,
 			UIDValidity: row.Ref.UIDValidity, Stage: string(o.Stage), RuleName: o.RuleName,
-			Actions: append([]rules.Action{}, o.Actions...), Selectable: selectableRow(row), Reason: o.Reason}
+			Actions: append([]rules.Action{}, o.Actions...), Selectable: selectableRow(row), Review: o.Review, Reason: o.Reason}
 		if row.ReceivedAt != 0 {
 			at := row.ReceivedAt
 			j.ReceivedAt = &at

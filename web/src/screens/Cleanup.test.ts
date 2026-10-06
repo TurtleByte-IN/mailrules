@@ -43,6 +43,7 @@ const checkRow = (over: Partial<CleanupCheckRow> = {}): CleanupCheckRow => ({
   actions: [{ type: 'move', folder: 'Newsletters' }],
   confidence: 1,
   selectable: true,
+  review: false,
   reason: '',
   ...over,
 });
@@ -131,7 +132,8 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
         rows: [
           checkRow({ index: 0, from: 'news@substack.com', subject: 'This week in Go', rule_name: 'Newsletters', confidence: 1 }),
           checkRow({ index: 1, from: 'ping@acme.io', subject: 'Nudge', rule_name: 'Cold sales', actions: [{ type: 'archive' }], confidence: 0.82, stage: 'decider', rule_id: null }),
-          checkRow({ index: 2, from: 'hr@firm.com', subject: 'Offer', selectable: false, actions: [], rule_name: '', rule_id: null, confidence: null, reason: 'Waiting in Needs review' }),
+          checkRow({ index: 2, from: 'hr@firm.com', subject: 'Offer', selectable: false, review: true, stage: 'decider', actions: [], rule_name: 'Offers', rule_id: 9, confidence: 0.5, reason: 'Waiting in Needs review' }),
+          checkRow({ index: 3, from: 'pal@home.org', subject: 'Lunch?', selectable: false, stage: 'none', actions: [], rule_name: '', rule_id: null, confidence: 0, reason: 'No rule matched' }),
         ],
       }),
     },
@@ -149,8 +151,17 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
   expect(review.disabled).toBe(true);
   expect(screen.getByText('Waiting in Needs review')).toBeTruthy();
 
-  expect(screen.getByText('2 selected of 3')).toBeTruthy();
+  expect(screen.getByText('2 selected of 4')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Sort 2 selected' })).toBeTruthy();
+
+  // A Needs-review row is named so in the Action cell and shows how sure the model was; a left-alone row shows no confidence at all.
+  const cells = (name: string) => within(screen.getByRole('checkbox', { name }).closest('tr') as HTMLElement).getAllByRole('cell');
+  const offer = cells('Sort hr@firm.com · Offer');
+  expect(offer[4].textContent).toBe('Needs review');
+  expect(offer[5].textContent).toBe('50%');
+  const lunch = cells('Sort pal@home.org · Lunch?');
+  expect(lunch[4].textContent).toBe('—');
+  expect(lunch[5].textContent).toBe('');
 
   // Returning to the page shows the same restored rows.
   render(Cleanup);
@@ -270,8 +281,8 @@ it('reports the skipped count in the toast after a sort finishes', async () => {
   await fireEvent.click(await screen.findByRole('button', { name: 'Sort 2 selected' }));
   await screen.findByRole('progressbar', { name: 'Cleanup progress' });
 
-  dispatch('batch.progress', batch({ id: 9, status: 'done', done: 7, total: 2, skipped: 3, actions: { done: 7, dry_run: 0, failed: 0, undone: 0 } }));
-  await vi.waitFor(() => expect(toast.text).toBe('Cleanup done: 7 emails sorted, 3 skipped (no longer in the folder). Undo it as one batch below.'));
+  dispatch('batch.progress', batch({ id: 9, status: 'done', done: 7, total: 7, skipped: 3, actions: { done: 7, dry_run: 0, failed: 0, undone: 0 } }));
+  await vi.waitFor(() => expect(toast.text).toBe('Cleanup done: 4 emails sorted, 3 skipped (no longer in the folder). Undo it as one batch below.'));
 });
 
 it('past runs render with their scope, counts and Undo; Show more follows the cursor', async () => {
