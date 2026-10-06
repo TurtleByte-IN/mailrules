@@ -1,0 +1,54 @@
+# Release builds: linux and macOS on amd64 and arm64, checksums, and a Homebrew cask.
+# Nothing has been released with this file yet. Check it with `goreleaser check`, and try
+# it without publishing with `goreleaser release --snapshot --clean`.
+version: 2
+project_name: mailrules
+
+before:
+  hooks:
+    # Builds web/ and copies it to internal/web/dist/app so the UI is embedded (see Makefile).
+    - make web
+
+builds:
+  - main: ./cmd/mailrules
+    binary: mailrules
+    env:
+      - CGO_ENABLED=0 # the SQLite driver is pure Go
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -X main.version={{ .Version }} # the same variable the Makefile sets
+
+archives:
+  - formats: [tar.gz]
+    files:
+      - README.md
+      - deploy/mailrules.service
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: TurtleByte-IN
+    name: mailrules
+
+# The tap repository does not exist yet. Publishing to it needs a token that can push to
+# it, given to the release job as HOMEBREW_TAP_TOKEN.
+homebrew_casks:
+  - name: mailrules
+    binaries: [mailrules]
+    homepage: https://github.com/TurtleByte-IN/mailrules
+    description: Sorts incoming email over IMAP with rules written in plain English
+    repository:
+      owner: TurtleByte-IN
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    hooks:
+      post:
+        # The binaries are not signed or notarized, so macOS would quarantine them.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mailrules"]
+          end

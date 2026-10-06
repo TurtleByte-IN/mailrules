@@ -22,6 +22,7 @@ const (
 // Batch kinds and statuses, as stored in batches.
 const (
 	BatchLive       = "live"
+	BatchCleanup    = "cleanup"
 	BatchCorrection = "correction"
 	BatchUndo       = "undo"
 
@@ -219,6 +220,99 @@ type Batch struct {
 	Total     int    // how many items the batch set out to handle; 0 = not counted (live)
 	Done      int    // how many it has handled
 	CreatedAt int64
+
+	// What a cleanup batch sorted, and what its model calls have cost so far. Zero for
+	// the other kinds.
+	AccountID int64
+	Folder    string
+	Since     int64 // only mail received from this time on; 0 = all of it
+	Tokens    int   // model tokens, in and out
+	CostUSD   float64
+}
+
+const batchCols = `id, kind, status, COALESCE(total, 0), done, created_at,
+	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd`
+
+func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
+	var b Batch
+	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD)
+	return b, err
+}
+
+// CreateCleanupBatch opens the batch of one cleanup run over total emails, running.
+func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder string, since int64, total int, now int64) (Batch, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO batches (kind, status, total, account_id, folder, since, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		BatchCleanup, BatchRunning, total, accountID, folder, null(since), now)
+	if err != nil {
+		return Batch{}, fmt.Errorf("create cleanup batch: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return s.Batch(ctx, id)
+}
+
+// AddBatchProgress records that a cleanup batch handled more emails and what their model
+// calls cost.
+func (s *Store) AddBatchProgress(ctx context.Context, id int64, done, tokens int, costUSD float64) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET done = done + ?, tokens = tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`,
+		done, tokens, costUSD, id); err != nil {
+		return fmt.Errorf("add batch progress: %w", err)
+	}
+	return nil
+}
+
+// FailRunningBatches marks every batch still running as failed. The daemon calls it at
+// startup: a batch that was running when the daemon stopped will never finish.
+func (s *Store) FailRunningBatches(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET status = ? WHERE status = ?`, BatchFailed, BatchRunning); err != nil {
+		return fmt.Errorf("fail running batches: %w", err)
+	}
+	return nil
+}
+
+// Batches lists batches, newest first: of one kind, or of every kind when kind is empty.
+// before is the cursor (only batches with a smaller id; 0 = from the newest).
+func (s *Store) Batches(ctx context.Context, kind string, before int64, limit int) ([]Batch, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+batchCols+` FROM batches WHERE (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`, kind, before, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list batches: %w", err)
+	}
+	defer rows.Close()
+	var out []Batch
+	for rows.Next() {
+		b, err := scanBatch(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list batches: %w", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list batches: %w", err)
+	}
+	return out, nil
+}
+
+// BatchActionCounts counts a batch's own actions by status.
+func (s *Store) BatchActionCounts(ctx context.Context, batchID int64) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM actions WHERE batch_id = ? GROUP BY status`, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("count batch actions: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{ActionDone: 0, ActionDryRun: 0, ActionFailed: 0, ActionUndone: 0}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, fmt.Errorf("count batch actions: %w", err)
+		}
+		out[status] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count batch actions: %w", err)
+	}
+	return out, nil
 }
 
 // CreateBatch opens a batch and returns its id.
@@ -233,9 +327,7 @@ func (s *Store) CreateBatch(ctx context.Context, kind, status string, now int64)
 
 // Batch returns one batch, or ErrNotFound.
 func (s *Store) Batch(ctx context.Context, id int64) (Batch, error) {
-	b := Batch{ID: id}
-	err := s.db.QueryRowContext(ctx, `SELECT kind, status, COALESCE(total, 0), done, created_at FROM batches WHERE id = ?`, id).
-		Scan(&b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt)
+	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Batch{}, ErrNotFound
 	}

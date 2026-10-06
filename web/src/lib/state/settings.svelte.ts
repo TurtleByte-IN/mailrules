@@ -13,6 +13,8 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     escalate_below: 0,
     min_confidence: 0,
     retention_days: 0,
+    openai_base_url: '',
+    ollama_url: '',
     keys: { openrouter_api_key: false, cloudflare_account_id: false, cloudflare_api_token: false, anthropic_api_key: false, openai_api_key: false },
     server: { version: '', data_dir: '', listen: '', mode: 'selfhost' },
     features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },

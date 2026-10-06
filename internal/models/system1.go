@@ -85,6 +85,12 @@ type s1Response struct {
 }
 
 func (s *system1) Decide(ctx context.Context, req DecideRequest) (Decision, Usage, error) {
+	d, _, u, err := s.DecideSpread(ctx, req)
+	return d, u, err
+}
+
+// DecideSpread implements Spreader: the decision, and the probability of every option offered.
+func (s *system1) DecideSpread(ctx context.Context, req DecideRequest) (Decision, map[int64]float64, Usage, error) {
 	u := Usage{Provider: s.provider, Model: s.model}
 	criteria := map[string]string{s1None: "None of these"}
 	ids := map[string]int64{s1None: 0}
@@ -113,12 +119,12 @@ func (s *system1) Decide(ctx context.Context, req DecideRequest) (Decision, Usag
 	})
 	u.Latency = time.Since(start)
 	if err != nil {
-		return Decision{}, u, err
+		return Decision{}, nil, u, err
 	}
 	resp := env.s1Response
 	if len(env.Result) > 0 && string(env.Result) != "null" {
 		if err := json.Unmarshal(env.Result, &resp); err != nil {
-			return Decision{}, u, fmt.Errorf("%s: %w: result is not the expected JSON", s.name, ErrBadOutput)
+			return Decision{}, nil, u, fmt.Errorf("%s: %w: result is not the expected JSON", s.name, ErrBadOutput)
 		}
 	}
 
@@ -130,7 +136,7 @@ func (s *system1) Decide(ctx context.Context, req DecideRequest) (Decision, Usag
 	}
 	ans, ok := resp.Answers[s1Question]
 	if !ok || ans.Choice == "" {
-		return Decision{}, u, fmt.Errorf("%s: %w: no answer to the question", s.name, ErrBadOutput)
+		return Decision{}, nil, u, fmt.Errorf("%s: %w: no answer to the question", s.name, ErrBadOutput)
 	}
 	id, ok := ids[ans.Choice]
 	if !ok {
@@ -138,5 +144,11 @@ func (s *system1) Decide(ctx context.Context, req DecideRequest) (Decision, Usag
 	}
 	// Confidence is the probability of the chosen option (backend plan), not
 	// the provider's "confidence" field, which measures how peaked the spread is.
-	return allow(req.Candidates, Decision{RuleID: id, Confidence: ans.Probabilities[ans.Choice]}), u, nil
+	spread := map[int64]float64{}
+	for key, p := range ans.Probabilities {
+		if ruleID, offered := ids[key]; offered { // an option we did not offer is not a candidate
+			spread[ruleID] = p
+		}
+	}
+	return allow(req.Candidates, Decision{RuleID: id, Confidence: ans.Probabilities[ans.Choice]}), spread, u, nil
 }

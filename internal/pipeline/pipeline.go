@@ -53,6 +53,15 @@ type Pipeline struct {
 	// Live, when set, supplies Router and MinConfidence afresh for every message, so a
 	// change made in Settings needs no restart (settings.Settings.Live).
 	Live func(ctx context.Context) (router *models.Router, minConfidence float64)
+	// Override returns the router for a rule's own model (rules.Rule.Model), or nil when
+	// that model cannot be used (settings.Settings.RouterFor). nil = rules' models are ignored.
+	Override func(ctx context.Context, spec string) *models.Router
+
+	// Batch is the batch the actions belong to. 0 = the day's live batch; a cleanup run
+	// sets its own, so the whole run can be undone as one.
+	Batch int64
+	// Spent, when set, is told what each model decision cost: a cleanup run shows the total.
+	Spent func(tokens int, costUSD float64)
 
 	Now func() time.Time // nil = time.Now
 	// Rediscover re-runs folder discovery. It is called once when a step fails because a
@@ -83,6 +92,18 @@ func (p *Pipeline) Process(ctx context.Context, ref mail.MsgRef) error {
 		}
 	}
 	return p.Store.AdvanceFolder(ctx, ref)
+}
+
+// Sort runs one message of existing mail through the same steps as new mail: cleanup's
+// way in. Unlike Process it does not look at whether the message was seen before (the
+// rules may have changed since, or dry-run been switched off), and it leaves the folder's
+// watch position alone.
+func (p *Pipeline) Sort(ctx context.Context, ref mail.MsgRef) error {
+	m, _, err := p.Store.IngestMessage(ctx, ref, p.now().Unix())
+	if err != nil {
+		return err
+	}
+	return p.run(ctx, m)
 }
 
 // RetryDue is the retry job: it re-runs every failed message of the account whose wait is
@@ -168,54 +189,31 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	if err != nil {
 		return err
 	}
-	names := map[int64]string{}
-	for _, r := range rs {
-		names[r.ID] = r.Name
-	}
-	router, minConfidence := p.Router, p.MinConfidence
+	d := Decider{Router: p.Router, Override: p.Override, MinConfidence: p.MinConfidence, Now: now,
+		Examples: Corrections(p.Store, p.Account.UserID)}
 	if p.Live != nil {
-		router, minConfidence = p.Live(ctx)
+		d.Router, d.MinConfidence = p.Live(ctx)
 	}
-	ev := rules.Evaluate(*sum, rs, senders, rules.Options{MinConfidence: minConfidence, Now: now})
-
-	var res rules.Result
-	switch {
-	case ev.Final != nil:
-		res = *ev.Final
-		dec.Reason = localReason(res, names)
-	case router == nil:
-		res = rules.Result{Stage: rules.StageNone, Review: true}
-		dec.Reason = ReasonNoModel
-	default:
-		req := models.DecideRequest{Email: *sum}
-		for _, r := range ev.Candidates {
-			req.Candidates = append(req.Candidates, models.Candidate{RuleID: r.ID, Name: r.Name, Intent: r.Intent, Exceptions: r.Exceptions.Text()})
+	out, err := d.Settle(ctx, *sum, rs, senders)
+	if err != nil {
+		return err
+	}
+	res := out.Result
+	dec.Reason, dec.RuleName, dec.Probabilities = out.Reason, out.RuleName, out.Probabilities
+	if res.SenderRuleID != 0 {
+		if err := p.Store.HitSenderRule(ctx, res.SenderRuleID); err != nil {
+			return err
 		}
-		routed, err := router.Route(ctx, req)
-		if err != nil {
-			return fmt.Errorf("decide: %w", err)
-		}
+	}
+	if out.Asked {
 		p.Hub.Publish(events.UsageUpdated, nil)
-		res = ev.Resolve(routed.RuleID, routed.Confidence)
-		dec.Reason = routed.Reason
-		if res.Stage == rules.StageCondition {
-			dec.Reason += fmt.Sprintf("; the default rule %q applied", names[res.RuleID])
+		u := out.Usage
+		if p.Spent != nil {
+			p.Spent(u.TokensIn+u.TokensOut, u.CostUSD)
 		}
-		used := routed.Primary
-		if routed.Fallback != nil {
-			used = *routed.Fallback
-			used.TokensIn += routed.Primary.TokensIn
-			used.TokensOut += routed.Primary.TokensOut
-			used.CostUSD += routed.Primary.CostUSD
-			used.Latency += routed.Primary.Latency
-			if res.Stage == rules.StageDecider {
-				res.Stage = "fallback" // the stage only the pipeline knows (see rules.Stage)
-			}
-		}
-		dec.Model, dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = used.Model, used.TokensIn, used.TokensOut, used.CostUSD, used.Latency.Milliseconds()
+		dec.Model, dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = u.Model, u.TokensIn, u.TokensOut, u.CostUSD, u.Latency.Milliseconds()
 	}
 	dec.Stage, dec.RuleID, dec.RuleVersion, dec.Confidence = string(res.Stage), res.RuleID, res.RuleVersion, res.Confidence
-	dec.RuleName = names[res.RuleID]
 	if err := p.finish(ctx, m, dec, res); err != nil {
 		return err
 	}
@@ -248,9 +246,12 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 	}
 	if p.Exec != nil && len(acts) > 0 {
 		// Live processing shares one batch per day, so "undo today" is one batch undo.
-		batch, err := p.Store.LiveBatch(ctx, p.now())
-		if err != nil {
-			return err
+		batch := p.Batch
+		if batch == 0 {
+			var err error
+			if batch, err = p.Store.LiveBatch(ctx, p.now()); err != nil {
+				return err
+			}
 		}
 		switch _, err := p.Exec.Apply(ctx, rec, acts, batch); {
 		case err == nil:
@@ -269,32 +270,20 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 	return nil
 }
 
-// localReason words a result no model was asked about.
-func localReason(res rules.Result, names map[int64]string) string {
-	switch {
-	case res.Stage == rules.StageNone:
-		return "No rule matched"
-	case res.Stage == rules.StageSender && res.RuleID == 0:
-		return "Sender rule: " + res.Actions[0].Type // keep, or trash for a blocked sender
-	case res.Stage == rules.StageSender:
-		return fmt.Sprintf("Sender rule: %q", names[res.RuleID])
-	}
-	return fmt.Sprintf("Matched %q by its conditions", names[res.RuleID])
-}
-
 // fill copies what is kept of a parsed email onto its row. The body is not: only its
 // first snippetChars characters.
 func fill(m *store.Message, s *message.Summary, raw *message.Raw) {
 	if ids := s.Headers["Message-Id"]; len(ids) > 0 {
 		m.MessageID = trimAngles(ids[0])
 	}
-	m.FromAddr, m.FromDomain, m.ToAddrs, m.Subject, m.ListID = s.From, s.FromDomain, s.To, s.Subject, s.ListID
+	m.FromAddr, m.FromName, m.FromDomain, m.ToAddrs, m.Subject, m.ListID = s.From, s.FromName, s.FromDomain, s.To, s.Subject, s.ListID
 	m.Snippet = s.Body
 	if r := []rune(s.Body); len(r) > snippetChars {
 		m.Snippet = string(r[:snippetChars])
 	}
 	m.ReceivedAt, m.HasAttachment, m.Size = s.ReceivedAt.Unix(), s.HasAttachment, raw.Size
-	m.Signals = store.Signals{Bulk: s.IsBulk, Noreply: s.IsNoreply, Contact: s.IsContact, RepliedBefore: s.RepliedBefore, DMARC: s.DMARC}
+	m.Signals = store.Signals{Bulk: s.IsBulk, Noreply: s.IsNoreply, Contact: s.IsContact, RepliedBefore: s.RepliedBefore, DMARC: s.DMARC,
+		ListUnsubscribe: len(s.Headers["List-Unsubscribe"]) > 0}
 }
 
 func trimAngles(id string) string {

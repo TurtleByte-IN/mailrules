@@ -24,8 +24,8 @@ export const detail = (over: Partial<MessageDetail> = {}): MessageDetail => ({
   ...item(), to: ['me@icloud.com'], list_id: '', size: 2048, signals: { bulk: false, noreply: false, is_contact: false, replied_before: false, dmarc: 'pass' },
   folder: 'INBOX', current_folder: 'Jobs', attempts: 0, next_attempt_at: null,
   trace: [
-    { kind: 'decider', label: 'Decision model', detail: 'Recruiter outreach', rule_id: 3, rule_name: 'Recruiters', confidence: 0.91, model: 'jev', tokens_in: 400, tokens_out: 12, cost_usd: 0.00002, latency_ms: 380, status: '', at: 1000, active: true },
-    { kind: 'action', label: 'Action', detail: 'Moved to Jobs', rule_id: null, rule_name: '', confidence: null, model: '', tokens_in: 0, tokens_out: 0, cost_usd: 0, latency_ms: 0, status: 'done', at: 1000, active: false },
+    { kind: 'decider', label: 'Decision model', detail: 'Recruiter outreach', rule_id: 3, rule_name: 'Recruiters', confidence: 0.91, model: 'jev', tokens_in: 400, tokens_out: 12, cost_usd: 0.00002, latency_ms: 380, status: '', at: 1000, active: true, candidates: [] },
+    { kind: 'action', label: 'Action', detail: 'Moved to Jobs', rule_id: null, rule_name: '', confidence: null, model: '', tokens_in: 0, tokens_out: 0, cost_usd: 0, latency_ms: 0, status: 'done', at: 1000, active: false, candidates: [] },
   ],
   ...over,
 });

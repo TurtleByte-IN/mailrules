@@ -22,10 +22,10 @@ func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dry_run": v.DryRun, "decider": v.Decider, "decider_model": v.DeciderModel, "fallback_model": v.FallbackModel,
 		"composer_model": v.ComposerModel, "escalate_below": v.EscalateBelow, "min_confidence": v.MinConfidence,
-		"retention_days": v.RetentionDays,
-		"keys":           v.Keys, // which provider keys are set; never the keys
-		"server":         map[string]string{"version": s.Version, "data_dir": env.DataDir, "listen": env.Listen, "mode": env.Mode},
-		"features":       features,
+		"retention_days": v.RetentionDays, "openai_base_url": v.OpenAIBaseURL, "ollama_url": v.OllamaURL,
+		"keys":     v.Keys, // which provider keys are set; never the keys
+		"server":   map[string]string{"version": s.Version, "data_dir": env.DataDir, "listen": env.Listen, "mode": env.Mode},
+		"features": features,
 	})
 }
 
@@ -36,7 +36,7 @@ func (s *server) handleSettingsPatch(w http.ResponseWriter, r *http.Request) {
 	if _, ok := readPatch(w, r, map[string]any{
 		"dry_run": &p.DryRun, "decider": &p.Decider, "decider_model": &p.DeciderModel, "fallback_model": &p.FallbackModel,
 		"composer_model": &p.ComposerModel, "escalate_below": &p.EscalateBelow, "min_confidence": &p.MinConfidence,
-		"retention_days": &p.RetentionDays, "keys": &p.Keys,
+		"retention_days": &p.RetentionDays, "openai_base_url": &p.OpenAIBaseURL, "ollama_url": &p.OllamaURL, "keys": &p.Keys,
 	}); !ok {
 		return
 	}

@@ -854,3 +854,40 @@ func TestPercentile(t *testing.T) {
 		}
 	}
 }
+
+// The decision models say how likely every option was; a generative model does not. The
+// router keeps that spread next to the answer, also when the fallback answers.
+func TestSpreadOfTheDecisionModels(t *testing.T) {
+	for _, a := range adapters {
+		t.Run(a.name, func(t *testing.T) {
+			url, _ := fakeProvider(t, reply{200, a.ok})
+			sp, ok := a.build(url, testDeps()).(Spreader)
+			if system1 := a.name == "jev" || a.name == "clef"; ok != system1 {
+				t.Fatalf("is a Spreader: %v, want %v", ok, system1)
+			}
+			if !ok {
+				return
+			}
+			d, spread, _, err := sp.DecideSpread(t.Context(), testRequest)
+			if err != nil || d.RuleID != 12 || len(spread) != 3 || spread[12] != 0.93 || spread[15] != 0.05 || spread[0] != 0.02 {
+				t.Errorf("decision %+v, spread %v, err %v", d, spread, err)
+			}
+		})
+	}
+	// An option the model made up is not a candidate, so it is not in the spread either.
+	url, _ := fakeProvider(t, reply{200, adapters[0].outOfList})
+	if _, spread, _, err := adapters[0].build(url, testDeps()).(Spreader).DecideSpread(t.Context(), testRequest); err != nil || len(spread) != 0 {
+		t.Errorf("spread of an out-of-list answer = %v, %v", spread, err)
+	}
+
+	primary := &Fake{NameValue: "jev", Spread: map[int64]float64{12: 0.6, 15: 0.4}, DecideFunc: func(DecideRequest) (Decision, Usage, error) {
+		return Decision{RuleID: 12, Confidence: 0.6}, Usage{}, nil
+	}}
+	fallback := &Fake{NameValue: "haiku", DecideFunc: func(DecideRequest) (Decision, Usage, error) {
+		return Decision{RuleID: 15, Confidence: 0.9}, Usage{}, nil
+	}}
+	res, err := (&Router{Primary: primary, Fallback: fallback, EscalateBelow: 0.75}).Route(t.Context(), testRequest)
+	if err != nil || res.RuleID != 15 || !res.Escalated || res.Probabilities[12] != 0.6 || len(res.Probabilities) != 2 {
+		t.Errorf("routed = %+v, %v", res, err)
+	}
+}

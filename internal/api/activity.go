@@ -238,6 +238,35 @@ type traceStep struct {
 	Status     string   `json:"status"` // an action's status; empty for other kinds
 	At         int64    `json:"at"`
 	Active     bool     `json:"active"` // the step that settled where the email is now
+	// Candidates is what the decision model gave each rule it chose between, likeliest
+	// first; empty when it gives no such spread, and for steps that are not a decision.
+	Candidates []candidateJSON `json:"candidates"`
+}
+
+type candidateJSON struct {
+	RuleID      *int64  `json:"rule_id"` // null = none of the rules
+	RuleName    string  `json:"rule_name"`
+	Probability float64 `json:"probability"`
+}
+
+// candidates lists a decision's per-rule probabilities, likeliest first.
+func (s *server) candidates(ctx context.Context, userID int64, d store.Decision) []candidateJSON {
+	out := make([]candidateJSON, 0, len(d.Probabilities))
+	if len(d.Probabilities) == 0 {
+		return out
+	}
+	names := map[int64]string{}
+	rs, _ := s.store.Rules(ctx, userID) // without the names the ids still say which rule
+	for _, r := range rs {
+		names[r.ID] = r.Name
+	}
+	for id, p := range d.Probabilities {
+		out = append(out, candidateJSON{RuleID: ts(id), RuleName: names[id], Probability: p})
+	}
+	slices.SortFunc(out, func(a, b candidateJSON) int {
+		return cmp.Or(cmp.Compare(b.Probability, a.Probability), cmp.Compare(a.RuleName, b.RuleName))
+	})
+	return out
 }
 
 type messageJSON struct {
@@ -278,7 +307,7 @@ func actionDetail(a store.Action) string {
 
 // trace lays out, oldest first, every decision made for a message, every action taken on
 // it and every correction the user made.
-func (s *server) trace(ctx context.Context, row store.ActivityRow) ([]traceStep, error) {
+func (s *server) trace(ctx context.Context, userID int64, row store.ActivityRow) ([]traceStep, error) {
 	decisions, err := s.store.MessageDecisions(ctx, row.Message.ID)
 	if err != nil {
 		return nil, err
@@ -291,17 +320,19 @@ func (s *server) trace(ctx context.Context, row store.ActivityRow) ([]traceStep,
 	for _, d := range decisions {
 		dj := toDecisionJSON(d)
 		step := traceStep{Kind: d.Stage, Label: stageLabels[d.Stage], Detail: d.Reason, RuleID: dj.RuleID, RuleName: dj.RuleName,
-			Model: d.Model, TokensIn: d.TokensIn, TokensOut: d.TokensOut, CostUSD: d.CostUSD, LatencyMS: d.LatencyMS, At: d.CreatedAt}
+			Model: d.Model, TokensIn: d.TokensIn, TokensOut: d.TokensOut, CostUSD: d.CostUSD, LatencyMS: d.LatencyMS, At: d.CreatedAt,
+			Candidates: s.candidates(ctx, userID, d)}
 		if d.Stage != "none" || d.Model != "" {
 			step.Confidence = &d.Confidence
 		}
 		steps = append(steps, step)
 	}
 	for _, a := range row.Actions {
-		steps = append(steps, traceStep{Kind: "action", Label: "Action", Detail: actionDetail(a), Status: a.Status, At: a.CreatedAt})
+		steps = append(steps, traceStep{Kind: "action", Label: "Action", Detail: actionDetail(a), Status: a.Status, At: a.CreatedAt, Candidates: []candidateJSON{}})
 	}
 	for _, c := range corrections {
-		step := traceStep{Kind: "correction", Label: "Your correction", Detail: "Kept in the inbox", RuleID: ts(c.RightRuleID), At: c.CreatedAt}
+		step := traceStep{Kind: "correction", Label: "Your correction", Detail: "Kept in the inbox", RuleID: ts(c.RightRuleID), At: c.CreatedAt,
+			Candidates: []candidateJSON{}}
 		if c.RightRuleID != 0 {
 			step.RuleName = c.RightRule
 			step.Detail = "You chose " + c.RightRule
@@ -329,7 +360,7 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err, "message")
 		return
 	}
-	trace, err := s.trace(r.Context(), row)
+	trace, err := s.trace(r.Context(), user(r).ID, row)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -429,18 +460,25 @@ type batchJSON struct {
 	Done      int            `json:"done"`
 	CreatedAt int64          `json:"created_at"`
 	Actions   map[string]int `json:"actions"` // how many of the batch's own actions have each status
+	// What a cleanup batch sorted and what its model calls have cost so far; null, empty
+	// and zero for the other kinds.
+	AccountID *int64  `json:"account_id"`
+	Folder    string  `json:"folder"`
+	Since     *int64  `json:"since"`
+	Tokens    int     `json:"tokens"`
+	CostUSD   float64 `json:"cost_usd"`
 }
 
 // batchJSON adds the status counts of the batch's actions.
-// ponytail: reads every action of the batch to count them; a day of live mail is a few
-// thousand rows. Move to SELECT status, COUNT(*) GROUP BY if a batch page gets slow.
 func (s *server) batchJSON(ctx context.Context, b store.Batch) (batchJSON, error) {
 	out := batchJSON{ID: b.ID, Kind: b.Kind, Status: b.Status, Total: ts(int64(b.Total)), Done: b.Done, CreatedAt: b.CreatedAt,
-		Actions: map[string]int{store.ActionDone: 0, store.ActionDryRun: 0, store.ActionFailed: 0, store.ActionUndone: 0}}
-	acts, err := s.store.BatchActions(ctx, b.ID)
-	for _, a := range acts {
-		out.Actions[a.Status]++
+		AccountID: ts(b.AccountID), Folder: b.Folder, Since: ts(b.Since), Tokens: b.Tokens, CostUSD: b.CostUSD}
+	if b.Kind == store.BatchCleanup {
+		total := int64(b.Total) // counted up front, so 0 means an empty selection
+		out.Total = &total
 	}
+	var err error
+	out.Actions, err = s.store.BatchActionCounts(ctx, b.ID)
 	return out, err
 }
 

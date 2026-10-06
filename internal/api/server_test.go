@@ -90,8 +90,45 @@ func TestHealthz(t *testing.T) {
 	if r := c.do(http.MethodGet, "/healthz", ""); r.status != http.StatusOK {
 		t.Fatalf("healthz = %d", r.status)
 	}
-	if r := c.do(http.MethodGet, "/nope", ""); r.status != http.StatusNotFound {
-		t.Fatalf("unknown path = %d", r.status)
+}
+
+// The embedded UI answers every path the API and the ops endpoints do not claim, and
+// never one of theirs.
+func TestUIAndAPIShareTheRouter(t *testing.T) {
+	c, _ := newClient(t)
+	home := c.do(http.MethodGet, "/", "")
+	if home.status != http.StatusOK || !strings.HasPrefix(home.header.Get("Content-Type"), "text/html") {
+		t.Fatalf("GET / = %d %q, want the UI's index.html", home.status, home.header.Get("Content-Type"))
+	}
+	if got := home.header.Get("Content-Security-Policy"); got != "default-src 'self'" {
+		t.Errorf("GET / Content-Security-Policy = %q", got)
+	}
+	if got := home.header.Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("GET / Cache-Control = %q, want no-cache", got)
+	}
+	// A client-side route gets the same page.
+	if r := c.do(http.MethodGet, "/rules/12", ""); r.status != http.StatusOK || string(r.raw) != string(home.raw) {
+		t.Errorf("GET /rules/12 = %d, want index.html", r.status)
+	}
+	// The API still answers JSON, for a real endpoint and for one that does not exist.
+	if r := c.do(http.MethodGet, "/api/auth/me", ""); r.status != http.StatusUnauthorized || r.body.Error.Code != "setup_required" {
+		t.Errorf("GET /api/auth/me = %d %q, want 401 setup_required", r.status, r.body.Error.Code)
+	}
+	for _, path := range []string{"/api/nope", "/api/", "/api/rules/1/nope"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			r := c.do(method, path, "")
+			if r.status != http.StatusNotFound || r.body.Error.Code != "not_found" || r.header.Get("Content-Type") != "application/json" {
+				t.Errorf("%s %s = %d %q %q, want a JSON 404", method, path, r.status, r.header.Get("Content-Type"), r.raw)
+			}
+		}
+	}
+	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
+		if r := c.do(http.MethodGet, path, ""); r.status != http.StatusOK || strings.HasPrefix(r.header.Get("Content-Type"), "text/html") {
+			t.Errorf("GET %s = %d %q, want the ops endpoint", path, r.status, r.header.Get("Content-Type"))
+		}
+		if r := c.do(http.MethodPost, path, ""); r.status != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s = %d, want 405", path, r.status)
+		}
 	}
 }
 

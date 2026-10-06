@@ -19,6 +19,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
+	"github.com/TurtleByte-IN/mailrules/internal/web"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
@@ -31,10 +32,14 @@ type Options struct {
 	Hub      *events.Hub        // the SSE stream's source; nil = a private hub nothing publishes to
 	Exec     *actions.Exec      // undo and corrections: the only way this package changes a mailbox
 	Settings *settings.Settings // the settings the user changes at runtime
+	Models   ModelSource        // the models the composer and tester use; nil = Settings
 	Master   []byte             // seals account passwords
 	Metrics  *telemetry.Metrics // nil = a private registry
 	Version  string             // shown in GET /api/settings
 
+	// Cleanup starts sorting an account's existing mail in the background and returns the
+	// run's batch (worker.Manager.Cleanup).
+	Cleanup func(ctx context.Context, c worker.Cleanup) (store.Batch, error)
 	// Connect logs in to a mail server with credentials that are not stored yet, trying
 	// the usernames the preset allows, and returns the connection with the username that worked.
 	Connect func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error)
@@ -58,7 +63,6 @@ type route struct {
 	method, path string
 	handler      http.HandlerFunc
 	public       bool // reachable without a session
-	planned      bool // contract only: answers 501 until its milestone (x-status: planned in the spec)
 }
 
 // routes is the single list of endpoints; a test keeps it in step with api/openapi.yaml.
@@ -67,14 +71,11 @@ func (s *server) routes() []route {
 	on := func(method, path string, h http.HandlerFunc) route {
 		return route{method: method, path: path, handler: h}
 	}
-	later := func(method, path string) route {
-		return route{method: method, path: path, handler: notImplemented, planned: true}
-	}
 	return []route{
-		{post, "/api/auth/setup", s.handleSetup, true, false},
-		{post, "/api/auth/login", s.handleLogin, true, false},
-		{post, "/api/auth/logout", s.handleLogout, true, false},
-		{get, "/api/auth/me", s.handleMe, true, false},
+		{post, "/api/auth/setup", s.handleSetup, true},
+		{post, "/api/auth/login", s.handleLogin, true},
+		{post, "/api/auth/logout", s.handleLogout, true},
+		{get, "/api/auth/me", s.handleMe, true},
 
 		on(get, "/api/presets", s.handlePresets),
 		on(post, "/api/accounts/test", s.handleAccountTest),
@@ -87,21 +88,21 @@ func (s *server) routes() []route {
 		on(get, "/api/accounts/{id}/folders", s.handleAccountFolders),
 
 		on(get, "/api/rules", s.handleRules),
-		later(post, "/api/rules/compose"), // M8
-		later(post, "/api/rules/batch"),   // M8
+		on(post, "/api/rules/compose", s.handleCompose),
+		on(post, "/api/rules/batch", s.handleRulesBatch),
 		on(post, "/api/rules/reorder", s.handleRulesReorder),
-		later(post, "/api/rules/test"), // M8
+		on(post, "/api/rules/test", s.handleRulesTest),
 		on(get, "/api/rules/export", s.handleRulesExport),
 		on(post, "/api/rules/import", s.handleRulesImport),
 		on(get, "/api/rules/{id}", s.handleRule),
 		on(patch, "/api/rules/{id}", s.handleRulePatch),
 		on(del, "/api/rules/{id}", s.handleRuleDelete),
-		later(post, "/api/rules/{id}/compose"), // M8
+		on(post, "/api/rules/{id}/compose", s.handleRecompose),
 		on(post, "/api/rules/{id}/undo", s.handleRuleUndo),
 
-		later(get, "/api/senders"),                // M9
-		later(put, "/api/senders/{type}/{value}"), // M9
-		later(del, "/api/senders/{type}/{value}"), // M9
+		on(get, "/api/senders", s.handleSenders),
+		on(put, "/api/senders/{type}/{value}", s.handleSenderPut),
+		on(del, "/api/senders/{type}/{value}", s.handleSenderDelete),
 
 		on(get, "/api/activity", s.handleActivity),
 		on(get, "/api/messages/{id}", s.handleMessage),
@@ -110,14 +111,15 @@ func (s *server) routes() []route {
 		on(post, "/api/review/{message_id}/resolve", s.handleReviewResolve),
 		on(post, "/api/actions/undo", s.handleUndoSince),
 		on(post, "/api/actions/{id}/undo", s.handleActionUndo),
+		on(get, "/api/batches", s.handleBatches),
 		on(get, "/api/batches/{id}", s.handleBatch),
 		on(post, "/api/batches/{id}/undo", s.handleBatchUndo),
 
-		later(post, "/api/cleanup/preview"), // M9
-		later(post, "/api/cleanup/run"),     // M9
-		later(get, "/api/templates"),        // M9
-		later(get, "/api/stats/summary"),    // M9
-		later(get, "/api/stats/usage"),      // M9
+		on(post, "/api/cleanup/preview", s.handleCleanupPreview),
+		on(post, "/api/cleanup/run", s.handleCleanupRun),
+		on(get, "/api/templates", s.handleTemplates),
+		on(get, "/api/stats/summary", s.handleStatsSummary),
+		on(get, "/api/stats/usage", s.handleStatsUsage),
 
 		on(get, "/api/settings", s.handleSettings),
 		on(patch, "/api/settings", s.handleSettingsPatch),
@@ -158,6 +160,10 @@ func NewHandler(o Options) http.Handler {
 		}
 		mux.Handle(r.method+" "+r.path, s.csrf(h))
 	}
+	// Everything else under /api/ is a JSON 404, so a mistyped endpoint never gets the UI's
+	// index.html. The UI takes what is left; the patterns above are more specific and win.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { notFound(w, "endpoint") })
+	mux.Handle("/", web.Handler())
 	return s.harden(mux)
 }
 
@@ -197,10 +203,6 @@ func (s *server) harden(next http.Handler) http.Handler {
 		}
 		s.Metrics.ObserveHTTP(r.Method, pattern, sw.status, time.Since(start))
 	})
-}
-
-func notImplemented(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "This part of MailRules is not built yet.", "")
 }
 
 type apiError struct {
@@ -293,11 +295,15 @@ func user(r *http.Request) store.User {
 
 // fail answers for an error from the store or the executor.
 func fail(w http.ResponseWriter, r *http.Request, err error, what string) {
+	var noFolder *actions.NoFolderError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		notFound(w, what)
 	case errors.Is(err, actions.ErrGone):
 		writeError(w, http.StatusConflict, "message_gone", "The message was moved or deleted outside MailRules, so this cannot be undone.", "")
+	case errors.As(err, &noFolder):
+		writeError(w, http.StatusUnprocessableEntity, "no_special_folder", "This mail account has no "+noFolder.Role+
+			" folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.", "")
 	case errors.Is(err, worker.ErrNotConnected):
 		writeError(w, http.StatusConflict, "account_offline", "The mail account is not connected right now. Try again once it is live.", "")
 	case isMailError(err):

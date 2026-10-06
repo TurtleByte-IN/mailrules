@@ -117,6 +117,10 @@ func (r Rule) Validate() error {
 	return nil
 }
 
+// FolderProblem says what is wrong with a folder name a rule would move mail to, or ""
+// when it is fine. It is the check a move action's folder gets.
+func FolderProblem(name string) string { return folderProblem(Action{Type: ActMove, Folder: name}) }
+
 func folderProblem(a Action) string {
 	if a.Type != ActMove {
 		if a.Folder != "" {

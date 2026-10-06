@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
@@ -205,6 +206,14 @@ func (s *Store) SenderRules(ctx context.Context, userID int64) ([]rules.SenderRu
 	return out, nil
 }
 
+// HitSenderRule counts one more email settled by a sender rule.
+func (s *Store) HitSenderRule(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE sender_rules SET hits = hits + 1 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("count sender rule hit: %w", err)
+	}
+	return nil
+}
+
 // DeleteSenderRule removes a sender's verdict; deleting a missing one is not an error.
 func (s *Store) DeleteSenderRule(ctx context.Context, userID int64, matchType, value string) error {
 	if _, err := s.db.ExecContext(ctx,
@@ -282,6 +291,56 @@ func (s *Store) ReorderRules(ctx context.Context, userID int64, ids []int64) err
 		return fmt.Errorf("reorder rules: %w", err)
 	}
 	return nil
+}
+
+// NewRule is a rule to create and where in the priority order to put it.
+type NewRule struct {
+	Rule     rules.Rule
+	Position *int // 0 = first; nil, or past the end = last
+}
+
+// CreateRules inserts rules in one transaction and returns them as saved, in the order
+// given. Each lands at its position in the priority order, or at the end; the priorities of
+// all the user's rules are then renumbered from 1, which is not an edit, so versions stay.
+// The caller validates the rules first.
+func (s *Store) CreateRules(ctx context.Context, userID int64, added []NewRule, now int64) ([]rules.Rule, error) {
+	existing, err := s.Rules(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	order := make([]int64, 0, len(existing)+len(added))
+	for _, r := range existing {
+		order = append(order, r.ID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create rules: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	out := make([]rules.Rule, len(added))
+	for i, n := range added {
+		n.Rule.UserID = userID
+		if out[i], err = createRule(ctx, tx, n.Rule, now); err != nil {
+			return nil, err
+		}
+		at := len(order)
+		if n.Position != nil {
+			at = min(max(*n.Position, 0), len(order))
+		}
+		order = slices.Insert(order, at, out[i].ID)
+	}
+	for i, id := range order {
+		if _, err := tx.ExecContext(ctx, `UPDATE rules SET priority = ? WHERE id = ?`, i+1, id); err != nil {
+			return nil, fmt.Errorf("create rules: %w", err)
+		}
+		if j := slices.IndexFunc(out, func(r rules.Rule) bool { return r.ID == id }); j >= 0 {
+			out[j].Priority = i + 1
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("create rules: %w", err)
+	}
+	return out, nil
 }
 
 // ImportRules stores the rules of a YAML file in one transaction. A rule whose name is

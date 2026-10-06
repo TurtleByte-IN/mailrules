@@ -21,15 +21,20 @@ const batch = (over: Partial<Batch> = {}): Batch => ({
   done: 0,
   created_at: NOW,
   actions: { done: 0, dry_run: 0, failed: 0, undone: 0 },
+  account_id: 2,
+  folder: 'INBOX',
+  since: null,
+  tokens: 0,
+  cost_usd: 0,
   ...over,
 });
 const finished = batch({ status: 'done', done: 412, actions: { done: 310, dry_run: 0, failed: 0, undone: 0 } });
 const previewed: Preview = {
   total: 412,
   groups: [
-    { outcome: 'rule', rule_id: 5, rule_name: 'Newsletters', count: 298 },
-    { outcome: 'none', rule_id: null, rule_name: '', count: 102 },
-    { outcome: 'review', rule_id: null, rule_name: '', count: 12 },
+    { outcome: 'rule', rule_id: 5, rule_name: 'Newsletters', count: 298, samples: [] },
+    { outcome: 'none', rule_id: null, rule_name: '', count: 102, samples: [] },
+    { outcome: 'review', rule_id: null, rule_name: '', count: 12, samples: [] },
   ],
   estimated_model_calls: 80,
   estimated_cost_usd: 0.01,

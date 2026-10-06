@@ -19,3 +19,16 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: make check
       - run: make vuln
+      # `make check` already ran the web app's own checks; this is the build and embed a release does.
+      - run: make build
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Built, never pushed. The container must come up with a read-only root filesystem.
+      - run: docker build -f deploy/Dockerfile -t mailrules:ci .
+      - run: |
+          docker run -d --name mailrules --read-only --tmpfs /tmp -p 127.0.0.1:8080:8080 mailrules:ci
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          docker logs mailrules; exit 1

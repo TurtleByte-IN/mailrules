@@ -238,6 +238,15 @@ func (s *Store) SaveFolders(ctx context.Context, accountID int64, folders []Fold
 	return nil
 }
 
+// AddFolder records a folder MailRules itself just created on the server, so it shows up
+// before the next folder discovery. A folder already on record is left as it is.
+func (s *Store) AddFolder(ctx context.Context, accountID int64, name string) error {
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO folders (account_id, name) VALUES (?, ?)`, accountID, name); err != nil {
+		return fmt.Errorf("add folder: %w", err)
+	}
+	return nil
+}
+
 const folderCols = `account_id, name, COALESCE(delimiter, ''), COALESCE(special_use, ''), COALESCE(uidvalidity, 0), last_uid`
 
 func scanFolder(row interface{ Scan(...any) error }) (Folder, error) {

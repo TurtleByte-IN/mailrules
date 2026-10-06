@@ -7,6 +7,8 @@ const SECRET = 'sk-ant-secret-123';
 
 // GET /api/settings from a fresh daemon.
 const fresh = (): Settings => ({
+  openai_base_url: '',
+  ollama_url: '',
   dry_run: true,
   decider: 'jev',
   decider_model: '',

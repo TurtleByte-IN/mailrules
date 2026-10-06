@@ -25,6 +25,19 @@ type Router struct {
 	EscalateBelow float64
 	Usage         UsageStore       // nil = do not record
 	Now           func() time.Time // nil = time.Now
+	// Purpose, when set, is the ledger purpose of every call ("test" for the rule tester);
+	// empty records the primary's calls as "decide" and the fallback's as "escalate".
+	Purpose string
+}
+
+// For returns a copy of the router whose calls are recorded under purpose.
+func (r *Router) For(purpose string) *Router {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.Purpose = purpose
+	return &c
 }
 
 // Result is a routed decision with what each model call cost.
@@ -34,6 +47,10 @@ type Result struct {
 	Primary     Usage  // always set
 	Fallback    *Usage // set when the fallback answered
 	FallbackErr error  // set when the fallback was asked and failed; Decision is then the primary's
+	// Probabilities is what the primary gave each candidate, by rule id (0 = none of
+	// them), when it is a Spreader; nil otherwise. It stays the primary's when the
+	// fallback answers: it is why the fallback was asked.
+	Probabilities map[int64]float64
 }
 
 // Name reports the primary decider's name.
@@ -61,12 +78,20 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 	}
 	primaryReq := req
 	primaryReq.Examples = nil // few-shot examples are for the fallback only
-	d, u, err := r.Primary.Decide(ctx, primaryReq)
+	var d Decision
+	var u Usage
+	var spread map[int64]float64
+	var err error
+	if sp, ok := r.Primary.(Spreader); ok {
+		d, spread, u, err = sp.DecideSpread(ctx, primaryReq)
+	} else {
+		d, u, err = r.Primary.Decide(ctx, primaryReq)
+	}
 	if err != nil {
 		return Result{Primary: u}, fmt.Errorf("primary decider %s: %w", r.Primary.Name(), err)
 	}
 	r.record(ctx, "decide", u)
-	res := Result{Decision: allow(req.Candidates, d), Primary: u}
+	res := Result{Decision: allow(req.Candidates, d), Primary: u, Probabilities: spread}
 	if r.Fallback == nil || res.Confidence >= r.EscalateBelow {
 		return res, nil
 	}
@@ -90,6 +115,9 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 func (r *Router) record(ctx context.Context, purpose string, u Usage) {
 	if r.Usage == nil {
 		return
+	}
+	if r.Purpose != "" {
+		purpose = r.Purpose
 	}
 	now := time.Now
 	if r.Now != nil {

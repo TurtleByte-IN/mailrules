@@ -1,5 +1,6 @@
 data/
 bin/
 web/dist/
+internal/web/dist/app/
 web/node_modules/
 .DS_Store

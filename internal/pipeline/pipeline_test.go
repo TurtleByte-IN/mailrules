@@ -3,7 +3,9 @@ package pipeline
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -651,5 +653,160 @@ func TestReviewTagAndRetryWithTheExecutor(t *testing.T) {
 	if m := row.Message; m.State != store.StateError || m.NextAttemptAt != 0 || row.Actions[0].Status != store.ActionFailed ||
 		!strings.Contains(row.Actions[0].Error, "unsupported capability") {
 		t.Errorf("unsupported move: %+v, actions %+v", m, row.Actions)
+	}
+}
+
+// A rule may name its own model: an email is decided by the model of its highest-priority
+// candidate that names one, and by the default when that model cannot be used.
+func TestRuleModelOverride(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.receipts.Model = "clef:clef-flash"
+	if err := e.st.UpdateRule(ctx, e.receipts, 2); err != nil {
+		t.Fatal(err)
+	}
+	own := &models.Fake{NameValue: "clef", DecideFunc: func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{RuleID: e.receipts.ID, Confidence: 0.9}, models.Usage{Provider: "cloudflare", Model: "clef-flash", TokensIn: 50, CostUSD: 0.0002}, nil
+	}}
+	var asked []string
+	usable := true
+	e.p.Override = func(_ context.Context, spec string) *models.Router {
+		asked = append(asked, spec)
+		if !usable {
+			return nil
+		}
+		return &models.Router{Primary: own, Usage: e.st}
+	}
+	e.primary.DecideFunc = answer(e.food.ID, 0.9)
+
+	row := e.process("billing@vendor.example", "invoice 1")
+	if d := row.Decision; d.RuleID != e.receipts.ID || d.Model != "clef-flash" || d.Stage != "decider" || len(e.primary.Requests()) != 0 || !slices.Equal(asked, []string{"clef:clef-flash"}) {
+		t.Fatalf("decision = %+v; the default was asked %d times; override asked for %v", d, len(e.primary.Requests()), asked)
+	}
+	// Both candidates were put to the rule's model, not only the rule that named it.
+	if req := own.Requests()[0]; len(req.Candidates) != 2 {
+		t.Errorf("candidates = %+v", req.Candidates)
+	}
+	// Mail that the rule is no candidate for never reaches its model.
+	e.process("hello@news.example", "weekly issue")
+	if len(own.Requests()) != 1 {
+		t.Errorf("the rule's model was asked about mail a condition settled")
+	}
+	// The rule's model cannot be used (its key was removed): the default decides.
+	usable = false
+	if d := e.process("billing@vendor.example", "invoice 2").Decision; d.RuleID != e.food.ID || d.Model != "primary-1" {
+		t.Errorf("fallback to the default: %+v", d)
+	}
+	// With no default model either, the rule's own model alone is enough.
+	usable, e.p.Router = true, nil
+	if d := e.process("billing@vendor.example", "invoice 3").Decision; d.RuleID != e.receipts.ID || d.Model != "clef-flash" {
+		t.Errorf("only the rule's model is set: %+v", d)
+	}
+}
+
+// When the decision model is unsure, the fallback is shown the user's corrections, the
+// ones most like this email first, and what the decision model thought of each candidate
+// is kept with the decision.
+func TestFallbackSeesCorrectionsAndTheSpreadIsKept(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.primary.DecideFunc = answer(e.food.ID, 0.95)
+	corrected := func(from, subject string, right int64) {
+		row := e.process(from, subject)
+		ex, _ := json.Marshal(message.Summary{From: from, FromDomain: from[strings.IndexByte(from, '@')+1:], Subject: subject})
+		e.now = e.now.Add(time.Minute)
+		if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
+			RightRuleID: right, Example: string(ex), CreatedAt: e.now.Unix()}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	corrected("someone@elsewhere.example", "unrelated", e.receipts.ID)
+	corrected("billing@vendor.example", "same domain", e.receipts.ID)
+	corrected("orders@vendor.example", "same sender", 0) // the user kept it in the inbox
+	corrected("other@elsewhere.example", "newest unrelated", e.food.ID)
+
+	e.primary.DecideFunc = answer(e.food.ID, 0.5) // unsure: escalate
+	e.primary.Spread = map[int64]float64{e.food.ID: 0.5, e.receipts.ID: 0.3, 0: 0.2}
+	e.fallback.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{RuleID: e.receipts.ID, Confidence: 0.9}, models.Usage{Provider: "fake", Model: "fallback-1"}, nil
+	}
+	row := e.process("orders@vendor.example", "invoice 9")
+	var shown []string
+	for _, ex := range e.fallback.Requests()[0].Examples {
+		shown = append(shown, fmt.Sprint(ex.Email.Subject, "→", ex.RightRuleID))
+	}
+	want := []string{"same sender→0", fmt.Sprint("same domain→", e.receipts.ID), fmt.Sprint("newest unrelated→", e.food.ID), fmt.Sprint("unrelated→", e.receipts.ID)}
+	if !slices.Equal(shown, want) {
+		t.Errorf("examples shown to the fallback = %v, want %v", shown, want)
+	}
+	if last := e.primary.Requests()[len(e.primary.Requests())-1]; len(last.Examples) != 0 {
+		t.Errorf("the decision model was shown %d examples; they are for the fallback only", len(last.Examples))
+	}
+	if d := row.Decision; d.Stage != "fallback" || d.RuleID != e.receipts.ID || len(d.Probabilities) != 3 || d.Probabilities[e.food.ID] != 0.5 || d.Probabilities[0] != 0.2 {
+		t.Errorf("decision = %+v", d)
+	}
+	// A decision no model spread came with stores none.
+	e.primary.Spread = nil
+	if d := e.process("hello@news.example", "weekly issue").Decision; d.Probabilities != nil {
+		t.Errorf("a condition's decision has probabilities: %+v", d)
+	}
+}
+
+// Cleanup sorts mail that is already there through the same steps as new mail: into its own
+// batch, again even if it was seen before, and without moving the folder's watch position.
+func TestSortExistingMail(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.primary.DecideFunc = answer(e.food.ID, 0.95)
+	ref := e.deliver("orders@swiggy.example", "order 1")
+	batch, err := e.st.CreateCleanupBatch(ctx, e.p.Account.ID, "INBOX", 0, 1, e.now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := *e.p
+	p.Batch = batch.ID
+	var tokens int
+	var cost float64
+	p.Spent = func(t int, c float64) { tokens, cost = tokens+t, cost+c }
+	x := e.withExecutor(true) // dry-run first
+	p.Exec = x
+	if err := p.Sort(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	if row := e.row(ref); len(row.Actions) != 1 || row.Actions[0].Status != store.ActionDryRun || row.Actions[0].BatchID != batch.ID || tokens != 105 || cost != 0.001 {
+		t.Fatalf("dry-run sort: %+v, %d tokens, %v USD", row.Actions, tokens, cost)
+	}
+	if _, err := e.st.Folder(ctx, e.p.Account.ID, "INBOX"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("sorting existing mail moved the watch position: %v", err)
+	}
+	// Live: the same email is decided afresh and moved, though it was seen before.
+	if err := e.st.SetDryRun(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Sort(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	row := e.row(ref)
+	if len(row.Actions) != 2 || row.Actions[1].Status != store.ActionDone || row.Actions[1].BatchID != batch.ID || row.Message.Location().Folder != "Food" {
+		t.Fatalf("live sort: %+v in %s", row.Actions, row.Message.Location().Folder)
+	}
+	if ds, _ := e.st.MessageDecisions(ctx, row.Message.ID); len(ds) != 2 {
+		t.Errorf("%d decisions, want one per run", len(ds))
+	}
+	// New mail still goes to the day's live batch.
+	if live := e.process("orders@swiggy.example", "order 2"); live.Actions[0].BatchID == batch.ID {
+		t.Error("new mail landed in the cleanup batch")
+	}
+
+	// A sender rule that settles an email counts the hit.
+	sr, err := e.st.PutSenderRule(ctx, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: "swiggy.example", Verdict: rules.VerdictKeep, Source: "user"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.process("orders@swiggy.example", "order 3")
+	e.process("offers@mail.swiggy.example", "order 4")
+	e.process("hello@news.example", "weekly issue")
+	if srs, _ := e.st.SenderRules(ctx, e.user.ID); len(srs) != 1 || srs[0].ID != sr.ID || srs[0].Hits != 2 {
+		t.Errorf("sender rules = %+v, want 2 hits", srs)
 	}
 }

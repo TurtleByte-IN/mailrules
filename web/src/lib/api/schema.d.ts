@@ -227,8 +227,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Turn free text into validated draft rules (M8)
-         * @description Nothing is saved. Each draft comes back validated and tested against the account's last 200 messages.
+         * Turn free text into validated draft rules
+         * @description Nothing is saved. Each draft comes back validated: what is wrong with one is in its
+         *     `errors`, and the request still answers 200. The drafts without errors are then
+         *     tested together, in the order given, on the last 200 messages of the account's
+         *     watched folder (model calls recorded with purpose `test`; the composer's own call
+         *     with purpose `compose`), and each gets `match_count` and up to 5 `samples`. With no
+         *     account connected nothing is tested. Needs a generative model: 409
+         *     `no_composer_model` until an Anthropic key is set in Settings.
          */
         post: operations["composeRules"];
         delete?: never;
@@ -247,8 +253,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Save approved drafts as rules, in one transaction (M8)
-         * @description Re-validates every rule, creates `new_folders` on the server, and inserts the rules at the end or at `position`. This is the only endpoint that creates rules besides import.
+         * Save rules, in one transaction
+         * @description How every rule is created besides import: approved composer drafts, a rule built by
+         *     hand in the condition builder, a template. It needs no model. Every rule is
+         *     validated before anything is done, so one bad rule saves none. `new_folders` are
+         *     then created on the rule's account (every connected account for a rule with
+         *     `account_id` null), and the rules inserted at the end or at `position`. Folders are
+         *     not created while dry-run is on or the account is offline; the first live move
+         *     creates a missing folder.
          */
         post: operations["createRules"];
         delete?: never;
@@ -284,10 +296,16 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Run saved or draft rules over recent mail without acting (M8)
-         * @description Never touches the mailbox. Model usage is recorded with purpose `test`. With `limit`
-         *     up to 200 the answer is one JSON body. Above that it is a `text/event-stream`:
-         *     `progress` events carrying `TestProgress`, then one `done` event carrying `TestResult`.
+         * Run saved or draft rules over recent mail without acting
+         * @description Never touches the mailbox: mail is read with BODY.PEEK and stays unread and where it
+         *     is. Decides exactly as live processing does (sender rules, conditions, the decision
+         *     model, each rule's own `model`). Model usage is recorded with purpose `test`. Rules
+         *     with an intent need a decision model: 409 `no_composer_model` when none is set;
+         *     condition-only rules are tested without one. With `limit` up to 200 the answer is
+         *     one JSON body. Above that it is a `text/event-stream`: `progress` events carrying
+         *     `TestProgress` (one per 25 emails), then one `done` event carrying `TestResult`, or,
+         *     if the run fails midway, one `error` event carrying `ErrorBody` (code `test_failed`).
+         *     A run that fails before the first email is answered as plain JSON.
          */
         post: operations["testRules"];
         delete?: never;
@@ -378,8 +396,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Re-optimize one rule from its original wording plus new text (M8)
-         * @description Returns a single draft to replace the rule. Nothing is saved; save it with PATCH.
+         * Re-optimize one rule from its original wording plus new text
+         * @description Returns a single draft to replace the rule, validated and tested like a composed one. Nothing is saved; save it with PATCH.
          */
         post: operations["recomposeRule"];
         delete?: never;
@@ -420,7 +438,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Senders by volume, with how each is routed (M9) */
+        /**
+         * Senders by volume, with how each is routed
+         * @description Every address mail was seen from in the last 30 days, every address that has a sender
+         *     rule even if it has been quiet, and every domain that has a sender rule (counted over
+         *     its addresses). `source=learned` lists the rules MailRules learned by itself,
+         *     `source=user` the ones the user set. The cursor is an offset into the sorted list.
+         */
         get: operations["listSenders"];
         put?: never;
         post?: never;
@@ -442,10 +466,13 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Set how a sender is routed (M9) */
+        /**
+         * Set how a sender is routed
+         * @description Stores a sender rule of source `user`, replacing whatever the sender had, a learned rule included. Mail from the sender is then settled without a model; `hits` counts it.
+         */
         put: operations["putSender"];
         post?: never;
-        /** Remove a sender rule, user-made or learned (M9) */
+        /** Remove a sender rule, user-made or learned */
         delete: operations["deleteSender"];
         options?: never;
         head?: never;
@@ -604,6 +631,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Past batches, newest first
+         * @description The Cleanup screen lists `kind=cleanup` as its "batches you can undo"; undo one with `POST /api/batches/{id}/undo`.
+         */
+        get: operations["listBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/batches/{id}": {
         parameters: {
             query?: never;
@@ -654,7 +701,17 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Count what a cleanup run would do, per rule, without acting (M9) */
+        /**
+         * Count what a cleanup run would do, per rule, without acting
+         * @description Reads the selected mail (BODY.PEEK) and groups it by what the run would do, with up
+         *     to 5 sample emails per group. No model is asked: what sender rules and conditions
+         *     settle is counted under its rule (`rule`) or as left alone (`none`); the emails that
+         *     rules with an intent compete for are one group, `model`, which is also
+         *     `estimated_model_calls`; with no decision model set they are `review` instead.
+         *     `estimated_cost_usd` is those calls times what a live decision has cost on average
+         *     so far (0 until there is history). The answer comes in one response, so a very large
+         *     folder takes a while: give `limit`.
+         */
         post: operations["previewCleanup"];
         delete?: never;
         options?: never;
@@ -672,8 +729,16 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Sort existing mail with the current rules, as one undoable batch (M9)
-         * @description Answers at once with the batch; progress arrives as `batch.progress` events and from `GET /api/batches/{id}`. Honours dry-run.
+         * Sort existing mail with the current rules, as one undoable batch
+         * @description Answers at once with the batch (kind `cleanup`, status `running`, `total` the emails
+         *     selected). The run goes on in the background, oldest email first, through the same
+         *     pipeline and executor as new mail: about a hundred `batch.progress` events carry
+         *     `done`, `total`, `tokens` and `cost_usd` as they grow, and `GET /api/batches/{id}`
+         *     says the same. It ends `done`, or `failed` if the account disconnects or the daemon
+         *     stops. Every email of the selection is decided afresh, also one MailRules has seen
+         *     before. Honours dry-run: the actions are then recorded as `dry_run` and nothing
+         *     moves. Undo the whole run with `POST /api/batches/{id}/undo`. One run per account
+         *     at a time.
          */
         post: operations["runCleanup"];
         delete?: never;
@@ -690,7 +755,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The rule template gallery (M9)
+         * The rule template gallery
          * @description Each template carries a ready rule; add it by sending that rule to `/api/rules/batch`.
          */
         get: operations["listTemplates"];
@@ -709,7 +774,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Counts, cost and account health for the Activity tiles (M9) */
+        /**
+         * Counts, cost and account health for the Activity tiles
+         * @description A range starts on a UTC day boundary, today included: `day` is today, `week` the
+         *     last 7 days, `month` the last 30. An email is counted once, by its latest decision.
+         */
         get: operations["statsSummary"];
         put?: never;
         post?: never;
@@ -726,7 +795,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Model calls and cost by day, rule and model for the Usage screen (M9) */
+        /**
+         * Model calls and cost by day, rule and model for the Usage screen
+         * @description `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
+         *     every model call under its purpose (decide, escalate, compose, test). `by_rule` comes
+         *     from the decisions, which know which rule a call was for, so it leaves out composing
+         *     and testing and its costs add up to less than `cost_usd`.
+         */
         get: operations["statsUsage"];
         put?: never;
         post?: never;
@@ -778,7 +853,7 @@ export interface paths {
          *     | `message.review` | `ActivityItem` | an email went to Needs review |
          *     | `action.undone` | `MessageAction` | one action was undone (a batch undo sends one per action) |
          *     | `account.status` | `Account` | an account's status changed, or it was edited |
-         *     | `batch.progress` | `Batch` | a cleanup batch moved forward (M9) |
+         *     | `batch.progress` | `Batch` | a cleanup run moved forward or ended; `done`, `tokens` and `cost_usd` are its running totals |
          *     | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
          *     | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
          *
@@ -1010,7 +1085,7 @@ export interface components {
             priority: number;
             /** @description Also applies after another rule matched; condition-only */
             stack: boolean;
-            /** @description Per-rule decider override; empty = the default */
+            /** @description Per-rule decider override: a decider name (jev, clef, anthropic) or name:model (clef:clef-flash, ollama:llama3.2; openai and ollama always need the model); empty = the default. An email is decided by the model of its highest-priority candidate rule that names one. A model that cannot be used (its key is not set) falls back to the default */
             model: string;
             /** @description null = the default threshold */
             min_confidence: number | null;
@@ -1056,7 +1131,7 @@ export interface components {
             min_confidence?: number | null;
             enabled?: boolean;
         };
-        /** @description A rule as the client sends it when creating one (M8). The same validation as RulePatch. */
+        /** @description A rule as the client sends it when creating or testing one. The same validation as RulePatch. */
         RuleInput: {
             name: string;
             said?: string;
@@ -1111,7 +1186,7 @@ export interface components {
                 path: string;
                 message: string;
             }[];
-            /** @description How many of the account's last 200 emails it would match */
+            /** @description How many of the account's last 200 emails it would take, the drafts being tested together in order. 0 for a draft with errors, for a draft with an intent while no decision model is set, and when no account is connected */
             match_count: number;
             samples: components["schemas"]["TestRow"][];
         };
@@ -1150,7 +1225,7 @@ export interface components {
             rule_name: string;
             confidence: number;
             reason: string;
-            /** @description Below the threshold; it would go to Needs review */
+            /** @description Below the threshold; it would go to Needs review. Always present */
             review?: boolean;
             /** @description What it would do */
             actions: components["schemas"]["RuleAction"][];
@@ -1171,12 +1246,13 @@ export interface components {
             type: "address" | "domain";
             /** @description Lower-case address or domain */
             value: string;
-            /** @description Display name from the latest email; may be empty */
+            /** @description The From display name of the newest email from this address; empty when it had none, and for a domain */
             name: string;
-            /** @description Emails seen from this sender in the last 30 days */
+            /** @description Emails MailRules has seen from this sender in the last 30 days; for a domain, from all its addresses */
             messages: number;
             /** Format: int64 */
             last_seen_at: number | null;
+            /** @description At least one of those emails carried a List-Unsubscribe header. Unsubscribing itself is not built (features.unsubscribe) */
             has_list_unsubscribe: boolean;
             /**
              * @description null = no sender rule; the rules decide
@@ -1198,7 +1274,7 @@ export interface components {
             verdict: "route" | "keep" | "block";
             /**
              * Format: int64
-             * @description Required for route
+             * @description Required for route; ignored otherwise
              */
             rule_id?: number;
         };
@@ -1358,6 +1434,17 @@ export interface components {
             at: number;
             /** @description The step that settled where the email is now */
             active: boolean;
+            /** @description What the decision model (Jev, Clef) gave each rule it chose between, likeliest first. Empty when the model gives no such spread (a generative model), when none was asked, and for steps that are not a decision */
+            candidates: {
+                /**
+                 * Format: int64
+                 * @description null = none of the rules
+                 */
+                rule_id: number | null;
+                /** @description The rule's name now; empty for none */
+                rule_name: string;
+                probability: number;
+            }[];
         };
         MessageDetail: components["schemas"]["ActivityItem"] & {
             to: string[];
@@ -1403,14 +1490,33 @@ export interface components {
              * @enum {string}
              */
             kind: "live" | "cleanup" | "review" | "correction" | "undo";
-            /** @enum {string} */
+            /**
+             * @description A cleanup is `running` until it has been through its emails, then `done`; `failed` when it was cut short (what it did stays, and can be undone)
+             * @enum {string}
+             */
             status: "running" | "done" | "failed" | "undone";
-            /** @description How many items it set out to handle; null when not counted up front (live) */
+            /** @description How many items it set out to handle; null when not counted up front (live). For a cleanup, the emails selected */
             total: number | null;
-            /** @description How many it has handled; for an undo batch */
+            /** @description How many it has handled; for an undo batch, how many actions were undone */
             done: number;
             /** Format: int64 */
             created_at: number;
+            /**
+             * Format: int64
+             * @description Cleanup: the mailbox it sorted. null for the other kinds, and once that account is deleted
+             */
+            account_id: number | null;
+            /** @description Cleanup: the folder it sorted. Empty for the other kinds */
+            folder: string;
+            /**
+             * Format: int64
+             * @description Cleanup: only mail received from this time on; null = all of it
+             */
+            since: number | null;
+            /** @description Cleanup: model tokens used so far, in and out. 0 for the other kinds */
+            tokens: number;
+            /** @description Cleanup: model cost so far. 0 for the other kinds */
+            cost_usd: number;
             /** @description How many of the batch's own actions have each status. An undo batch has none of its own */
             actions: {
                 done: number;
@@ -1429,11 +1535,14 @@ export interface components {
         CleanupRequest: {
             /** Format: int64 */
             account_id: number;
-            /** @default INBOX */
+            /**
+             * @description One folder of the account. There is no "all folders"
+             * @default INBOX
+             */
             folder: string;
             /**
              * Format: int64
-             * @description Only mail received at or after this time; null = all of it
+             * @description Only mail received on or after this time's date; null = all of it
              */
             since?: number | null;
             /** @description Only the newest N emails */
@@ -1441,17 +1550,30 @@ export interface components {
         };
         CleanupPreview: {
             total: number;
+            /** @description Biggest group first */
             groups: {
-                /** @enum {string} */
-                outcome: "rule" | "none" | "review";
-                /** Format: int64 */
+                /**
+                 * @description `rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: it needs the model and none is set, so it would wait in Needs review
+                 * @enum {string}
+                 */
+                outcome: "rule" | "none" | "model" | "review";
+                /**
+                 * Format: int64
+                 * @description The rule, for outcome rule; null otherwise, and for a sender rule that keeps or blocks
+                 */
                 rule_id: number | null;
+                /** @description The rule's name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty for the other outcomes */
                 rule_name: string;
                 count: number;
+                /** @description The newest emails of the group */
+                samples: components["schemas"]["TestRow"][];
             }[];
+            /** @description The count of the model group */
             estimated_model_calls: number;
+            /** @description Those calls times the average cost of a live decision so far; 0 until there is history */
             estimated_cost_usd: number;
         };
+        /** @description The gallery holds eight: newsletters, receipts, login codes, cold sales, travel, social notifications, bank statements, calendar invites */
         Template: {
             id: string;
             name: string;
@@ -1477,17 +1599,20 @@ export interface components {
              */
             since: number;
             counts: {
+                /** @description Emails decided in the range */
                 processed: number;
-                /** @description A rule was applied */
+                /** @description Of those, a rule or sender rule was applied (or recorded, in dry-run) */
                 sorted: number;
+                /** @description Emails with a trash action from the range that is in effect (or recorded, in dry-run) */
                 trashed: number;
                 /** @description Waiting in Needs review now */
                 review: number;
             };
-            /** @description Share of emails settled by sender rules or conditions alone */
+            /** @description Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed */
             decided_without_model: number;
             cost_usd: number;
             calls_by_model: components["schemas"]["ModelUsage"][];
+            /** @description The five rules applied to the most emails, most first */
             top_rules: {
                 /** Format: int64 */
                 rule_id: number | null;
@@ -1513,7 +1638,7 @@ export interface components {
             emails: number;
             calls: number;
             cost_usd: number;
-            /** @description One entry per UTC day, oldest first */
+            /** @description One entry per UTC day of the range, oldest first, the days without a call too (their `models` is empty) */
             days: {
                 /** Format: date */
                 day: string;
@@ -1529,6 +1654,7 @@ export interface components {
                 rule_id: number | null;
                 rule_name: string;
                 emails: number;
+                /** @description Decisions a model was asked for */
                 calls: number;
                 cost_usd: number;
             }[];
@@ -1566,6 +1692,10 @@ export interface components {
             min_confidence: number;
             /** @description How long message snippets are kept */
             retention_days: number;
+            /** @description The OpenAI-compatible endpoint the openai decider talks to; empty = api.openai.com. Not a secret */
+            openai_base_url: string;
+            /** @description The Ollama server the ollama decider talks to, e.g. http://localhost:11434; empty = not set. Not a secret */
+            ollama_url: string;
             keys: components["schemas"]["ProviderKeys"];
             readonly server: {
                 version: string;
@@ -1594,6 +1724,10 @@ export interface components {
             escalate_below?: number;
             min_confidence?: number;
             retention_days?: number;
+            /** @description An http or https URL. An empty string removes the stored value */
+            openai_base_url?: string;
+            /** @description An http or https URL. An empty string removes the stored value */
+            ollama_url?: string;
             /** @description Provider keys to store. An empty string removes the stored key, which puts the environment's back in force */
             keys?: {
                 openrouter_api_key?: string;
@@ -1701,8 +1835,13 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description `not_implemented`: the contract for a later milestone; mock it until then */
-        NotImplemented: {
+        /**
+         * @description The request is understood but cannot be carried out on this mail account.
+         *     `no_special_folder`: the right rule archives, trashes or junks, and the account has no
+         *     folder the server marks for that use (MailRules never guesses one). What had been done
+         *     to the email before was already undone; the correction itself was not recorded.
+         */
+        Unprocessable: {
             headers: {
                 [name: string]: unknown;
             };
@@ -2108,7 +2247,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
-            501: components["responses"]["NotImplemented"];
+            409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };
     };
@@ -2139,7 +2278,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
-            501: components["responses"]["NotImplemented"];
+            502: components["responses"]["Upstream"];
         };
     };
     reorderRules: {
@@ -2199,7 +2338,7 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             409: components["responses"]["Conflict"];
-            501: components["responses"]["NotImplemented"];
+            502: components["responses"]["Upstream"];
         };
     };
     exportRules: {
@@ -2360,7 +2499,7 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
-            501: components["responses"]["NotImplemented"];
+            409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };
     };
@@ -2425,7 +2564,6 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            501: components["responses"]["NotImplemented"];
         };
     };
     putSender: {
@@ -2459,7 +2597,6 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
-            501: components["responses"]["NotImplemented"];
         };
     };
     deleteSender: {
@@ -2482,9 +2619,9 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
-            501: components["responses"]["NotImplemented"];
         };
     };
     listActivity: {
@@ -2578,6 +2715,7 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
             502: components["responses"]["Upstream"];
         };
     };
@@ -2637,6 +2775,7 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
             502: components["responses"]["Upstream"];
         };
     };
@@ -2693,6 +2832,37 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
+        };
+    };
+    listBatches: {
+        parameters: {
+            query?: {
+                /** @description Only batches of this kind */
+                kind?: "live" | "cleanup" | "review" | "correction" | "undo";
+                /** @description The `next_cursor` of the previous page */
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Batch"][];
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
         };
     };
     getBatch: {
@@ -2772,7 +2942,7 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             409: components["responses"]["Conflict"];
-            501: components["responses"]["NotImplemented"];
+            502: components["responses"]["Upstream"];
         };
     };
     runCleanup: {
@@ -2803,7 +2973,7 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             409: components["responses"]["Conflict"];
-            501: components["responses"]["NotImplemented"];
+            502: components["responses"]["Upstream"];
         };
     };
     listTemplates: {
@@ -2827,7 +2997,6 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
-            501: components["responses"]["NotImplemented"];
         };
     };
     statsSummary: {
@@ -2852,7 +3021,6 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            501: components["responses"]["NotImplemented"];
         };
     };
     statsUsage: {
@@ -2877,7 +3045,6 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            501: components["responses"]["NotImplemented"];
         };
     };
     getSettings: {

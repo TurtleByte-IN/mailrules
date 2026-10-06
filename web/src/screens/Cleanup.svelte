@@ -13,8 +13,8 @@
   });
 
   const ranges: Record<Scope['range'], string> = { '30': 'Last 30 days', '90': 'Last 90 days', '365': 'Last year', all: 'All time' };
-  const fill: Record<Group['outcome'], string> = { rule: 'bg-ink', none: 'bg-line-input', review: 'bg-review' };
-  const groupName = (g: Group) => (g.outcome === 'rule' ? g.rule_name : g.outcome === 'review' ? 'Needs review' : 'Left where it is');
+  const fill: Record<Group['outcome'], string> = { rule: 'bg-ink', none: 'bg-line-input', model: 'bg-secondary', review: 'bg-review' };
+  const groupName = (g: Group) => (g.outcome === 'rule' ? g.rule_name : g.outcome === 'review' ? 'Needs review' : g.outcome === 'model' ? 'For the model to decide' : 'Left where it is');
 
   // Archive goes by a different name on every server; the mailbox's folder list knows which.
   const archive = $derived(cleanup.folders.find((f) => f.special_use === '\\Archive')?.name);

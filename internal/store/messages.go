@@ -28,6 +28,8 @@ type Signals struct {
 	Contact       bool   `json:"is_contact"`
 	RepliedBefore bool   `json:"replied_before"`
 	DMARC         string `json:"dmarc"`
+	// ListUnsubscribe is set when the email carries a List-Unsubscribe header.
+	ListUnsubscribe bool `json:"list_unsubscribe"`
 }
 
 // Message is one row of messages: what is kept of an email. The body never is.
@@ -39,6 +41,7 @@ type Message struct {
 	UID           uint32
 	MessageID     string // RFC 5322 Message-ID, without angle brackets
 	FromAddr      string
+	FromName      string // the From display name; may be empty
 	FromDomain    string
 	ToAddrs       []string
 	Subject       string
@@ -72,12 +75,12 @@ const messageCols = `m.id, m.account_id, m.folder, m.uidvalidity, m.uid, COALESC
 	COALESCE(m.from_addr, ''), COALESCE(m.from_domain, ''), COALESCE(m.to_addrs, '[]'), COALESCE(m.subject, ''),
 	COALESCE(m.snippet, ''), COALESCE(m.received_at, 0), COALESCE(m.list_id, ''), m.has_attachment, COALESCE(m.size, 0),
 	COALESCE(m.signals, '{}'), m.state, m.attempts, COALESCE(m.next_attempt_at, 0), m.created_at,
-	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0)`
+	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0), COALESCE(m.from_name, '')`
 
 func messageDest(m *Message, to, signals *string) []any {
 	return []any{&m.ID, &m.AccountID, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.FromAddr, &m.FromDomain, to,
 		&m.Subject, &m.Snippet, &m.ReceivedAt, &m.ListID, &m.HasAttachment, &m.Size, signals, &m.State, &m.Attempts,
-		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID}
+		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName}
 }
 
 func (m *Message) decode(to, signals string) error {
@@ -150,10 +153,10 @@ func (s *Store) SaveMessageSummary(ctx context.Context, m Message) error {
 		return fmt.Errorf("encode signals: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE messages SET message_id = ?, from_addr = ?, from_domain = ?, to_addrs = ?, subject = ?, snippet = ?,
+		`UPDATE messages SET message_id = ?, from_addr = ?, from_name = ?, from_domain = ?, to_addrs = ?, subject = ?, snippet = ?,
 		                     received_at = ?, list_id = ?, has_attachment = ?, size = ?, signals = ?
 		 WHERE id = ?`,
-		null(m.MessageID), m.FromAddr, m.FromDomain, string(to), m.Subject, m.Snippet,
+		null(m.MessageID), m.FromAddr, null(m.FromName), m.FromDomain, string(to), m.Subject, m.Snippet,
 		m.ReceivedAt, null(m.ListID), m.HasAttachment, m.Size, string(signals), m.ID); err != nil {
 		return fmt.Errorf("save message summary: %w", err)
 	}
@@ -225,17 +228,31 @@ type Decision struct {
 	CostUSD     float64
 	LatencyMS   int64
 	CreatedAt   int64
+	// Probabilities is what the decision model gave each candidate rule, by rule id, with
+	// 0 for "none of these". nil when the model gives no such spread, or none was asked.
+	Probabilities map[int64]float64
 }
 
 // The columns tolerate a missing row, so a LEFT JOIN scans into a zero Decision.
 const decisionCols = `COALESCE(d.id, 0), COALESCE(d.message_id, 0), COALESCE(d.stage, ''), COALESCE(d.rule_id, 0),
 	COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, ''),
 	COALESCE(d.rule_version, 0), COALESCE(d.confidence, 0), COALESCE(d.reason, ''), COALESCE(d.model, ''),
-	COALESCE(d.tokens_in, 0), COALESCE(d.tokens_out, 0), COALESCE(d.cost_usd, 0), COALESCE(d.latency_ms, 0), COALESCE(d.created_at, 0)`
+	COALESCE(d.tokens_in, 0), COALESCE(d.tokens_out, 0), COALESCE(d.cost_usd, 0), COALESCE(d.latency_ms, 0), COALESCE(d.created_at, 0),
+	COALESCE(d.probabilities, '')`
+
+// probabilities scans decisions.probabilities, a JSON object keyed by rule id.
+type probabilities map[int64]float64
+
+func (p *probabilities) Scan(v any) error {
+	if s, _ := v.(string); s != "" {
+		return json.Unmarshal([]byte(s), p)
+	}
+	return nil
+}
 
 func decisionDest(d *Decision) []any {
 	return []any{&d.ID, &d.MessageID, &d.Stage, &d.RuleID, &d.RuleName, &d.RuleVersion, &d.Confidence, &d.Reason, &d.Model,
-		&d.TokensIn, &d.TokensOut, &d.CostUSD, &d.LatencyMS, &d.CreatedAt}
+		&d.TokensIn, &d.TokensOut, &d.CostUSD, &d.LatencyMS, &d.CreatedAt, (*probabilities)(&d.Probabilities)}
 }
 
 // AddDecision records a decision and moves its message to state in one transaction, and
@@ -246,12 +263,20 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 		return 0, fmt.Errorf("add decision: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	var probs any
+	if len(d.Probabilities) > 0 {
+		b, err := json.Marshal(d.Probabilities)
+		if err != nil {
+			return 0, fmt.Errorf("encode probabilities: %w", err)
+		}
+		probs = string(b)
+	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO decisions (message_id, stage, rule_id, rule_name, rule_version, confidence, reason, model,
-		                        tokens_in, tokens_out, cost_usd, latency_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                        tokens_in, tokens_out, cost_usd, latency_ms, created_at, probabilities)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.MessageID, d.Stage, null(d.RuleID), null(d.RuleName), null(d.RuleVersion), d.Confidence, d.Reason, null(d.Model),
-		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt)
+		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt, probs)
 	if err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
 	}
@@ -349,14 +374,15 @@ type SenderDecision struct {
 	Corrected  bool // the user corrected that message afterwards
 }
 
-// RecentSenderDecisions returns the newest n decisions for mail from one address across
-// the user's accounts, newest first.
+// RecentSenderDecisions returns the decisions of the newest n decided emails from one
+// address across the user's accounts, newest first. An email decided more than once (a
+// retry, a cleanup run) counts once, by its latest decision.
 func (s *Store) RecentSenderDecisions(ctx context.Context, userID int64, address string, n int) ([]SenderDecision, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.stage, COALESCE(d.rule_id, 0), COALESCE(d.confidence, 0),
 		        EXISTS (SELECT 1 FROM corrections c WHERE c.message_id = m.id)
 		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN accounts a ON a.id = m.account_id
-		 WHERE a.user_id = ? AND m.from_addr = ?
+		 WHERE a.user_id = ? AND m.from_addr = ? AND d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
 		 ORDER BY d.id DESC LIMIT ?`, userID, address, n)
 	if err != nil {
 		return nil, fmt.Errorf("list sender decisions: %w", err)
@@ -450,6 +476,31 @@ func (s *Store) AddCorrection(ctx context.Context, userID int64, c Correction, a
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	return id, nil
+}
+
+// Corrections lists the user's newest corrections, newest first, with the example each
+// stored: the pool few-shot retrieval ranks.
+func (s *Store) Corrections(ctx context.Context, userID int64, limit int) ([]Correction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.id, c.message_id, COALESCE(c.wrong_rule_id, 0), COALESCE(c.right_rule_id, 0), c.example, c.created_at
+		 FROM corrections c JOIN messages m ON m.id = c.message_id JOIN accounts a ON a.id = m.account_id
+		 WHERE a.user_id = ? ORDER BY c.id DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list corrections: %w", err)
+	}
+	defer rows.Close()
+	var out []Correction
+	for rows.Next() {
+		var c Correction
+		if err := rows.Scan(&c.ID, &c.MessageID, &c.WrongRuleID, &c.RightRuleID, &c.Example, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("list corrections: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list corrections: %w", err)
+	}
+	return out, nil
 }
 
 // MessageDecisions lists every decision made for a message, oldest first. A message has
