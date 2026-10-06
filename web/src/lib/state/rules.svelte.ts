@@ -1,3 +1,4 @@
+import { subscribe } from '../api/events';
 import * as rulesApi from '../api/rules';
 import { flash } from './toast.svelte';
 
@@ -65,3 +66,6 @@ export async function importFile(file: Blob) {
 
 /** Undoes what the rule did since midnight, local time. */
 export const undoToday = (id: number) => rulesApi.undo(id, Math.floor(new Date().setHours(0, 0, 0, 0) / 1000));
+
+// Another tab, the CLI or an import changed the rules.
+subscribe('rules.changed', load);

@@ -1,7 +1,8 @@
 <script lang="ts">
   import Router, { link, router } from 'svelte-spa-router';
+  import { close as closeEvents, open as openEvents } from './lib/api/events';
   import Toggle from './lib/components/Toggle.svelte';
-  import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
+  import { accounts, load as loadAccounts, statuses } from './lib/state/accounts.svelte';
   import { auth, logout, start } from './lib/state/auth.svelte';
   import { badges } from './lib/state/badges.svelte';
   import { load as loadReview } from './lib/state/review.svelte';
@@ -15,10 +16,13 @@
 
   $effect(() => {
     if (auth.status === 'in') {
+      openEvents();
       loadAccounts();
       loadRules();
       loadReview();
       loadSettings();
+    } else {
+      closeEvents();
     }
   });
 
@@ -61,15 +65,15 @@
         <div class="label">Mailboxes</div>
         {#each accounts.list as a (a.id)}
           <div class="flex items-center gap-2">
-            <span class="size-2 rounded-full {a.status === 'live' ? 'bg-live' : a.status === 'error' ? 'bg-trash' : 'bg-warn-strong'}"></span>
-            <span class="min-w-0 flex-1 truncate font-mono text-xs">{a.email}</span>
-            <span class="text-xs text-muted capitalize">{a.status}</span>
+            <span class="size-2 rounded-full {statuses[a.status].dot}"></span>
+            <span class="min-w-0 flex-1 truncate font-mono text-xs">{a.label}</span>
+            <span class="text-xs text-muted">{statuses[a.status].label}</span>
           </div>
         {/each}
         <div class="border-t border-line-divider"></div>
         <div class="flex items-center justify-between">
           <span>Dry-run</span>
-          <Toggle on={settings.value.dryRun} label="Dry-run" onchange={toggleDryRun} />
+          <Toggle on={settings.value.dry_run} label="Dry-run" onchange={toggleDryRun} />
         </div>
         <div class="flex items-center justify-between gap-2">
           <span class="min-w-0 truncate text-xs text-muted">{auth.user?.email}</span>
@@ -80,10 +84,7 @@
 
     <main class="min-w-0 flex-[999_1_480px] p-6">
       <div class="mx-auto flex max-w-[1280px] flex-col gap-[22px]">
-        <div role="status" class="rounded-md border border-line-card bg-neutral px-4 py-3">
-          <strong>Demo data.</strong> Sign-in is real. Everything else on these screens is sample data until the daemon serves it.
-        </div>
-        {#if settings.value.dryRun}
+        {#if settings.value.dry_run}
           <div role="status" class="flex flex-wrap items-center justify-between gap-2.5 rounded-md border border-warn-line bg-warn-bg px-4 py-3 text-warn">
             <span><strong>Dry-run is on.</strong> MailRules logs what it would do but doesn't touch your mailbox.</span>
             <button type="button" class="min-h-9 rounded border border-warn-strong bg-surface px-3 font-semibold text-warn" onclick={toggleDryRun}>Go live</button>

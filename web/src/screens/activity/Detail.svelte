@@ -11,7 +11,7 @@
 
   let correctTo = $state('keep');
   let always = $state(false);
-  const account = $derived(accounts.list.find((a) => String(a.id) === String(message.account_id))?.email);
+  const account = $derived(accounts.list.find((a) => String(a.id) === String(message.account_id))?.label);
 
   // What a decision step picked and what it cost: "Recruiters 0.91 · 412 tokens · $0.0001 · 380 ms".
   const meta = (s: TraceStep) =>

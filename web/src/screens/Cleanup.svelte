@@ -26,7 +26,7 @@
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
 
   const scopeLabel = (s: Scope | null) =>
-    s ? [accounts.list.find((a) => String(a.id) === s.accountId)?.email, folderName(s.folder), ranges[s.range].toLowerCase()].join(' · ') : '';
+    s ? [accounts.list.find((a) => String(a.id) === s.accountId)?.label, folderName(s.folder), ranges[s.range].toLowerCase()].join(' · ') : '';
   const actions = (b: Batch) => b.actions.done + b.actions.dry_run + b.actions.failed + b.actions.undone;
   const statusName = (b: Batch) => (b.status === 'undone' ? 'Undone' : b.status === 'failed' ? 'Failed' : 'Done');
 </script>
@@ -46,7 +46,7 @@
           <span class="text-[13px] font-semibold">Mailbox</span>
           <select class="field h-11 px-2.5" disabled={running} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
             {#each accounts.list as a (a.id)}
-              <option value={String(a.id)}>{a.email}</option>
+              <option value={String(a.id)}>{a.label}</option>
             {/each}
           </select>
         </label>

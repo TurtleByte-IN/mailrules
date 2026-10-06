@@ -29,23 +29,25 @@ function csrfToken(): string {
   return hit ? decodeURIComponent(hit.slice(CSRF_COOKIE.length + 1)) : '';
 }
 
-export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+/**
+ * One request to the daemon with the CSRF header; resolves with the response when it is 2xx
+ * and throws ApiError otherwise. For bodies that are not JSON (YAML, a stream); JSON calls use api().
+ */
+export async function request(method: string, path: string, headers: Record<string, string> = {}, body?: BodyInit): Promise<Response> {
   if (method !== 'GET') headers['X-CSRF-Token'] = csrfToken();
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
-
-  const res = await fetch('/api' + path, {
-    method,
-    headers,
-    credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-
-  if (res.ok) return (res.status === 204 ? undefined : await res.json()) as T;
+  const res = await fetch('/api' + path, { method, headers, credentials: 'same-origin', body });
+  if (res.ok) return res;
 
   const err = (await res.json().catch(() => null))?.error;
   if (res.status === 401) onUnauthorized(err?.code ?? 'unauthenticated');
   throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path);
+}
+
+export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await request(method, path, headers, body === undefined ? undefined : JSON.stringify(body));
+  return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
 /** True when the daemon has the route in its contract but has not built it yet (501). */

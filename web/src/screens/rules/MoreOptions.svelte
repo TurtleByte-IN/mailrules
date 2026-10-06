@@ -11,7 +11,7 @@
   <select id="{id}-acct" class="field flex-[1_1_180px] px-2.5" value={String(value.account_id ?? '')} onchange={(e) => onchange({ account_id: e.currentTarget.value ? Number(e.currentTarget.value) : null })}>
     <option value="">All mailboxes</option>
     {#each accounts.list as a (a.id)}
-      <option value={String(a.id)}>{a.email}</option>
+      <option value={String(a.id)}>{a.label}</option>
     {/each}
   </select>
 </div>

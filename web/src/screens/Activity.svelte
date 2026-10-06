@@ -113,7 +113,7 @@
           <select class="field" bind:value={activity.filter.account} onchange={load}>
             <option value="">All mailboxes</option>
             {#each accounts.list as a (a.id)}
-              <option value={String(a.id)}>{a.email}</option>
+              <option value={String(a.id)}>{a.label}</option>
             {/each}
           </select>
         </label>

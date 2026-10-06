@@ -28,7 +28,7 @@
   let imported = $state<{ ok: boolean; text: string } | null>(null);
 
   const fail = (e: unknown) => flash((e as Error).message);
-  const only = (r: rulesApi.Rule) => accounts.list.find((a) => String(a.id) === String(r.account_id))?.email;
+  const only = (r: rulesApi.Rule) => accounts.list.find((a) => String(a.id) === String(r.account_id))?.label;
 
   function select(id: number) {
     selectedId = id;

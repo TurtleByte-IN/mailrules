@@ -2,97 +2,107 @@
 
 Stand-in for the tracker until MailRules has a team in Linear. One entry per topic. Each entry says who has to act, where it stands, and the question still open with a recommendation. When a question settles, write the answer into the entry and move it to Settled; when the tracker exists, move every open entry there and delete this file.
 
-## Open
+## Open: product (Tilak)
 
 ### 1. Dashboard screen exists in the PRD but not in the prototype
 
-- **For:** product (Tilak)
-- **Stands:** `docs/prd.md` → Frontend lists a Dashboard (P1): counts for today, account health, cost today, top rules. The prototype has no Dashboard and has a Usage screen the PRD table does not list. The web UI follows the prototype, so Usage is built and Dashboard is not.
-- **Question:** Is Dashboard still wanted? Recommendation: no; Activity already opens on today's mail and Usage carries cost. Cost of being wrong: one more screen to design and build later, nothing to undo.
+- **Stands:** `docs/prd.md` → Frontend lists a Dashboard (P1). The prototype has none and has a Usage screen the PRD table does not list. The web UI follows the prototype.
+- **Question:** Is Dashboard still wanted? Recommendation: no; Activity opens on today's mail and Usage carries cost. Cost of being wrong: one more screen to build later, nothing to undo.
 
 ### 2. Rule tester and Templates are separate screens in the PRD, embedded in the prototype
 
-- **For:** product (Tilak)
-- **Stands:** The PRD lists Rule tester and Templates as screens. The prototype puts the tester inside the rule editor and templates inside Add rules. The web UI follows the prototype.
-- **Question:** Should the PRD table be corrected to match? Recommendation: yes, edit the PRD. Cost of being wrong: none; it is a doc edit.
+- **Stands:** The prototype puts the tester inside the rule editor and templates inside Add rules. The web UI follows the prototype.
+- **Question:** Correct the PRD table to match? Recommendation: yes. Cost of being wrong: none; it is a doc edit.
 
-### 3. Backend plan layout still places the OpenAPI spec under `internal/api`
+### 3. Wording written where the prototype has none
 
-- **For:** backend
-- **Stands:** The spec lives at `api/openapi.yaml` and `docs/backend-plan.md` → HTTP API says so. The layout block in the same file still annotates `internal/api/` with "OpenAPI spec".
-- **Question:** none. Remove the two words from the layout comment.
-
-### 4. Web UI is built on demo data ahead of the API; shapes need the backend's review
-
-- **For:** backend (M7, M8, M9)
-- **Stands:** Only the auth paths are in `api/openapi.yaml`. Every other screen calls functions in `web/src/lib/api/<resource>.ts` that return in-memory demo data. Each file starts with a `// DEMO:` comment naming the endpoints it stands in for, and its exported types are the shape the UI needs.
-- **Old shape:** none; these endpoints have no contract yet.
-- **New shape:** the exported interfaces in those files.
-- **What breaks if ignored:** nothing fails at build time. When an endpoint ships with a different shape, the screen for it must be reworked at wiring time, and until then the UI shows sample mail that is not the user's.
-- **Question:** When M7 writes the spec, does it start from these shapes or from the data model alone? Recommendation: read the UI's types first and deviate on purpose, with a note here per deviation. Cost of being wrong: per-screen rework in the UI.
-
-### 5. The binary does not serve the UI yet
-
-- **For:** backend (M10)
-- **Stands:** `web/dist` builds, but `internal/web` with `go:embed` is M10's. Until then the UI runs only from the Vite dev server (`make dev`).
-- **Question:** none.
-
-### 6. "Undo the last hour" needs an undo across all rules
-
-- **For:** backend (M7)
-- **Stands:** Activity has one button that undoes every action from the last hour. The backend plan only has `POST /api/rules/{id}/undo?since=`, which is per rule. The demo function takes the rule as optional.
-- **Question:** Add an all-rules form, or should the UI loop over rules? Recommendation: one endpoint without the rule id, so the undo is one batch and one audit entry. Cost of being wrong: the UI loops and a failure half way leaves a partial undo.
-
-### 7. Cleanup needs a list of past batches
-
-- **For:** backend (M9)
-- **Stands:** The Cleanup screen lists past batches with Undo. The backend plan has `GET /api/batches/{id}` only. The demo has a `list()`. The screen also shows tokens and cost per batch, which the `batches` table does not hold.
-- **Question:** Add `GET /api/batches` and carry tokens and cost on a batch? Recommendation: yes to both. Cost of being wrong: the list and the cost line come out of the screen.
-
-### 8. The stats endpoint's range values are cut off in the backend plan
-
-- **For:** backend
-- **Stands:** In `docs/backend-plan.md` → HTTP API the Stats row breaks at a `|` inside the cell: it reads `GET /api/stats/summary?range=day` and stops. Usage therefore asks for no range and shows this month. The Usage screen also shows a monthly budget (`$5.00` in the prototype) that the plan does not define.
-- **Question:** What are the range values, and where does the budget come from? No recommendation; the UI adapts to either.
-
-### 9. Activity's three "today" tiles are not built
-
-- **For:** backend (M9), then web
-- **Stands:** The prototype shows Sorted today, Decided without a model, and Model cost today above the feed, with hard-coded numbers. The stats stand-in only has month totals, so the tiles were left out rather than filled with invented figures. The Needs review tile is built.
-- **Question:** none. Build them when the stats endpoint has a day range.
-
-### 10. Wording written where the prototype has none
-
-- **For:** product (Tilak)
 - **Stands:** These strings are in the UI and were not in the prototype. Each needs a yes or a rewrite.
-  - Mailboxes row actions and toasts: "Test", "Reconnect", "Remove", "<email> reconnected", "<email> removed".
-  - Remove confirmation: "Remove <email>? MailRules forgets its password, activity and undo history. Nothing in the mailbox changes."
-  - Settings keys section: "Model API keys", "Set", "Not set", "Save", "Replace", "<label> saved".
-  - Mailboxes: "last event <date>, <time>", "No mailbox connected yet."
-  - Activity filters: "Sorted", "Trashed", "No rule", "Needs review", "No activity matches these filters."
-  - Dictation: "This browser has no speech recognition, so dictation is off. Type your rules instead." and "The microphone is blocked for this page. Allow it in the browser, or type your rules instead."
+  - Mailboxes: "Reconnect", "Pause", "Resume", "Remove", "Reconnecting <label>", "<label> removed", "since <date>, <time>", "No mailbox connected yet.", "Starter rules you picked", "<label> is live. Starter rules could not be added yet.", status labels "Connecting", "Live", "Reconnecting", "Paused", "Sign-in failed", "Error".
+  - Remove confirmation: "Remove <label>? MailRules deletes its password, folder list, contacts, activity, undo history and the rules that apply only to this mailbox. Nothing in the mailbox changes."
+  - Settings: "Model API keys", "Set", "Not set", "Save", "Replace", "Remove", "Decision model name", "Fallback model", "Rule composer model", "Act at 0.80 or above", the OpenAI-compatible decider option and its note, the Cloudflare and OpenAI key labels.
+  - Activity: filter labels "Sorted", "Trashed", "No rule", "Needs review"; "No activity matches these filters."; "Nothing sorted yet. New mail shows up here as it arrives."; "Load more"; " (dry run)" after an outcome that was only recorded; "Failed: <error>"; "; N could not be undone".
+  - Rules: "No rules yet.", "Import rules", "Export rules", "Act when sure above your default".
+  - Add rules: "Until then, add rules with Import rules on the Rules screen."; the two dictation fallbacks ("This browser has no speech recognition, so dictation is off. Type your rules instead." and "The microphone is blocked for this page. Allow it in the browser, or type your rules instead.").
+  - Senders, Cleanup, Usage: "Most recent first", "No senders found.", "Show more", "Left where it is", "Dry run: N emails checked, nothing moved.", "Cleanup failed after N emails…", "since <date>", "decision model N · fallback M".
+  - Everywhere: "<thing> is not available yet. This daemon does not have that part built. Nothing was changed."
 - **Question:** Approve or rewrite each. Recommendation: approve; they follow the prototype's voice. Cost of being wrong: a string edit.
 
-### 11. Places the UI follows the backend plan instead of the prototype
+### 4. Places the real data changed what the prototype shows
 
-- **For:** product (Tilak), for awareness
-- **Stands:** Where the two disagreed on data, the UI took the backend plan's shape and kept the prototype's wording on screen.
-  - Rules are a condition tree with an exceptions tree and an actions list; the "unless" sentence is generated, so it reads "unless I've replied to the sender".
-  - The builder has no "does not contain" operator; the backend operator list has no negated contains.
-  - The threshold is 0 to 1 (shown as 0.75), not 50 to 95.
-  - The decider id for Haiku is `anthropic`; the label stays "Claude Haiku 4.5".
-  - Usage's cost tile is computed from the per-model costs and shows $0.27; the prototype's $0.47 does not match its own per-model figures.
-  - A row waiting for review shows a Review link in the decision panel, not the correction form.
-  - Dictation adds to the text already typed; the prototype replaced it.
-  - Clef can be chosen but has no field for the Cloudflare account id and token; the prototype has no copy for them.
-- **Question:** Any of these to reverse? Recommendation: none. Cost of being wrong: per-item rework in one screen.
+- **Stands:** The UI shows what the contract returns and leaves out what it does not.
+  - Feed rows and review cards show the sender's address, not a display name.
+  - "Always do this for…" names the sender's address; the daemon stores the sender rule by address, and the prototype promised the domain.
+  - The "Sorted" filter includes trashed mail; the contract cannot ask for acted-on-but-not-trashed.
+  - Review cards no longer prefill a rule idea, and a draft's question has no answer buttons; the contract carries neither.
+  - A review answer and a correction both read "you · corrected".
+  - Settings: the fallback is a model-name field, not a checkbox; retention is a number of days, not 7/30/90; the threshold is 0 to 1.
+  - Mailboxes: no Test button on a connected mailbox, no "Gmail and Outlook, coming soon" tile, no preview counts in the connect wizard.
+  - Senders: no "% opened", no "least opened" sort, no reason on a learned rule.
+  - Cleanup: no list of past batches, no sample emails in the preview, no tokens or cost while running, no all-folders run.
+  - Usage: no budget line.
+  - The builder has no "does not contain" operator.
+- **Question:** Which of these should come back? Each one is a backend change first (see entry 8). Recommendation: sender display name, past batches and the review rule idea. Cost of being wrong: per-item work in one screen.
 
-### 12. Not built because the prototype shows no control or the data is another screen's
+## Open: web
 
-- **For:** web
-- **Stands:** Rule YAML import and export, and re-optimizing an existing rule, have endpoints in the backend plan but no control in the prototype. "Undo what it did today" on a rule and the "Learned from your corrections" footer under the rule list are in the prototype but belong to Activity and Senders data. Activity's feed is one page with filters applied in the browser; cursor pagination comes with the real endpoint. The remaining first-run steps (model and key) and the "Open first-run setup" button in Settings are not built.
-- **Question:** Which of these are wanted for the first release? Recommendation: pagination with M7; the rest after. Cost of being wrong: a missing convenience, nothing destructive.
+### 5. Not built in the UI although the daemon supports it
+
+- **Stands:**
+  - Changing a connected mailbox's app password, label or watched folder (`PATCH /api/accounts/{id}`). Consequence: a mailbox in "Sign-in failed" can only be removed and added again.
+  - Choosing the TLS mode for "Other IMAP server"; STARTTLS-only servers cannot be connected from the wizard.
+  - Re-optimizing an existing rule (`POST /api/rules/{id}/compose`): the API function exists, the prototype has no control for it.
+  - Remaining first-run steps (model and key) after the account step; Settings covers both.
+  - A refused save in the condition builder is shown as a toast, not on the row it names.
+  - With a filter on, a new live email is not added to the feed until reload.
+  - `Settings.features` from the daemon is not read; P2 flags are compile-time in `web/src/lib/features.ts`.
+- **Question:** Which are needed for the first release? Recommendation: the mailbox password change and the TLS choice. Cost of being wrong: users with a changed app password or a STARTTLS server are stuck.
+
+### 6. Not yet seen with real mail
+
+- **Stands:** No mailbox was connected during the build. The feed row, decision trace, correction, undo of a real action, the `account.status` and `message.processed` events, a successful connection test and a mailbox going live are covered only by tests with payloads shaped from the contract. Rules, settings, import and export, reorder, the dry-run switch and live refresh on `rules.changed` were exercised against a running daemon.
+- **Question:** none. Connect a test mailbox in dry-run and walk Activity, Needs review and Mailboxes once.
+
+### 7. No screen-level tests
+
+- **Stands:** Mounting a component under Vitest fails ("mount(...) is not available on the server") because the test config resolves Svelte's server build. Logic is tested through state modules. Adding `svelteTesting()` from `@testing-library/svelte/vite` to `web/vite.config.ts` would allow render tests.
+- **Question:** Add render tests? Recommendation: yes, for the 501 and load-error states of each screen. Cost of being wrong: a markup regression in those states goes unseen.
+
+## Open: backend
+
+### 8. Gaps in the contract the UI ran into
+
+- **Stands:** Each of these removed or weakened something on screen.
+  - No `GET /api/batches`: a cleanup cannot be undone, or a running one found again, after a page reload. `Batch` carries no scope, tokens or cost.
+  - No single call to undo everything done to one email; the row's Undo makes one call per action and a failure midway leaves it half undone. `UndoResult` returns counts only, so the UI refetches the feed.
+  - `ActivityItem` has no sender display name and no outcome sentence; nothing tells a review answer from a correction; `always_for_sender` is by address.
+  - Activity filters cannot express "sorted but not trashed"; the UI maps "Sorted" to `status=acted` and "No rule" to `stage=none`, which needs confirming.
+  - The event stream takes no filters, so a filtered feed cannot stay live.
+  - No route tests a stored account's connection. `Account.last_event_at` is when the status last changed, which the name hides. `Preset` has no wording for the secret ("App-specific password").
+  - `fallback_model: ""` means off and nothing restores the environment default; `ProviderKeys` cannot tell a stored key from an environment key, so Remove may leave it "Set".
+  - `RuleDraft` has a `question` but no options and no way to answer, and no `account_id`, `stack` or `model`. `TestRequest.account_id` is required, so a fresh install cannot test a rule. The test stream has no error event. `Rule.model` accepts any string.
+  - `Sender` has no read rate and no reason for a learned rule; it is unclear whether the list returns address rows, domain rows or both. There is no unsubscribe route.
+  - `CleanupPreview.groups` has no sample emails or destination; `CleanupRequest.folder` is one folder.
+  - `StatsUsage` has no budget; `days[].models` has no purpose; `range=month` does not say calendar month or 30 days.
+  - Error messages start with the raw field path ("min_confidence: a rule that…"), which reads oddly beside the field.
+- **Question:** Which of these does M8/M9 take? Recommendation: `GET /api/batches`, undo-per-email and the sender display name first; they are the ones a user notices. Cost of being wrong: the matching line in entry 4 stays as it is.
+
+### 9. Generated types mark defaulted request fields as required
+
+- **Stands:** `openapi-typescript` turns a request property with a `default` (`AccountInput.watch_folder`, `RuleInput.stack`, `RuleInput.enabled`, `TestRequest.folder`, `TestRequest.limit`) into a required field. The UI works around it with derived types in `web/src/lib/api/accounts.ts` and `rules.ts`.
+- **Question:** Drop the defaults from request schemas, or pass `--default-non-nullable=false` in `gen:api`? Recommendation: the flag; it is one line on the web side. Cost of being wrong: response fields with defaults become optional in the types.
+
+### 10. Backend plan layout still places the OpenAPI spec under `internal/api`
+
+- **Stands:** The spec lives at `api/openapi.yaml`. The layout block in `docs/backend-plan.md` still annotates `internal/api/` with "OpenAPI spec".
+- **Question:** none. Remove the two words.
+
+### 11. The binary does not serve the UI yet
+
+- **Stands:** `web/dist` builds, but `internal/web` with `go:embed` is M10's. Until then the UI runs from the Vite dev server (`make dev`).
+- **Question:** none.
 
 ## Settled
 
-Nothing yet.
+- **Undo the last hour across all rules.** The contract has `POST /api/actions/undo?since=`; the UI uses it.
+- **Stats range values.** The contract defines them; Activity's tiles and Usage call the stats routes and wait on M9.
+- **Demo data shapes.** Gone: every screen takes its types from the contract.

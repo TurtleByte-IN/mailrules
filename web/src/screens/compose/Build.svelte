@@ -160,7 +160,7 @@
 
   <aside aria-label="Rule preview" class="card flex min-w-0 flex-[2_1_300px] flex-col gap-3.5 p-[18px]">
     <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">In plain words</div>
-    <p class="text-[15px] leading-[1.55]">{english(b, accounts.list.find((a) => String(a.id) === String(b.account_id))?.email)}</p>
+    <p class="text-[15px] leading-[1.55]">{english(b, accounts.list.find((a) => String(a.id) === String(b.account_id))?.label)}</p>
     <div class="flex flex-wrap gap-1.5">
       {#each filled(b) as r}
         <span class="rounded bg-neutral px-2 py-1 font-mono text-[12.5px] text-ink-soft">{condText(toCondition(r))}</span>
