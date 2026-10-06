@@ -25,6 +25,19 @@ type Router struct {
 	EscalateBelow float64
 	Usage         UsageStore       // nil = do not record
 	Now           func() time.Time // nil = time.Now
+	// Purpose, when set, is the ledger purpose of every call ("test" for the rule tester);
+	// empty records the primary's calls as "decide" and the fallback's as "escalate".
+	Purpose string
+}
+
+// For returns a copy of the router whose calls are recorded under purpose.
+func (r *Router) For(purpose string) *Router {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.Purpose = purpose
+	return &c
 }
 
 // Result is a routed decision with what each model call cost.
@@ -90,6 +103,9 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 func (r *Router) record(ctx context.Context, purpose string, u Usage) {
 	if r.Usage == nil {
 		return
+	}
+	if r.Purpose != "" {
+		purpose = r.Purpose
 	}
 	now := time.Now
 	if r.Now != nil {

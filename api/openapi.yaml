@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -28,9 +28,9 @@ info:
     **Not built yet**
 
     Operations marked `x-status: planned` are the contract for a later backend milestone
-    (M8: rule composer and tester; M9: senders, cleanup, templates, stats). Until then the
-    daemon answers them 501 `not_implemented`, after the session and CSRF checks. Their
-    schemas may still gain fields when they are built; the UI mocks them meanwhile.
+    (M9: senders, cleanup, templates, stats). Until then the daemon answers them 501
+    `not_implemented`, after the session and CSRF checks. Their schemas may still gain
+    fields when they are built; the UI mocks them meanwhile.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -296,9 +296,15 @@ paths:
     post:
       tags: [Rules]
       operationId: composeRules
-      x-status: planned
-      summary: Turn free text into validated draft rules (M8)
-      description: Nothing is saved. Each draft comes back validated and tested against the account's last 200 messages.
+      summary: Turn free text into validated draft rules
+      description: |
+        Nothing is saved. Each draft comes back validated: what is wrong with one is in its
+        `errors`, and the request still answers 200. The drafts without errors are then
+        tested together, in the order given, on the last 200 messages of the account's
+        watched folder (model calls recorded with purpose `test`; the composer's own call
+        with purpose `compose`), and each gets `match_count` and up to 5 `samples`. With no
+        account connected nothing is tested. Needs a generative model: 409
+        `no_composer_model` until an Anthropic key is set in Settings.
       requestBody:
         required: true
         content:
@@ -313,15 +319,21 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: text | account_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '502': { $ref: '#/components/responses/Upstream' } # model_error, model_not_configured
+        '409': { $ref: '#/components/responses/Conflict' } # no_composer_model
+        '502': { $ref: '#/components/responses/Upstream' } # model_error
   /api/rules/batch:
     post:
       tags: [Rules]
       operationId: createRules
-      x-status: planned
-      summary: Save approved drafts as rules, in one transaction (M8)
-      description: Re-validates every rule, creates `new_folders` on the server, and inserts the rules at the end or at `position`. This is the only endpoint that creates rules besides import.
+      summary: Save rules, in one transaction
+      description: |
+        How every rule is created besides import: approved composer drafts, a rule built by
+        hand in the condition builder, a template. It needs no model. Every rule is
+        validated before anything is done, so one bad rule saves none. `new_folders` are
+        then created on the rule's account (every connected account for a rule with
+        `account_id` null), and the rules inserted at the end or at `position`. Folders are
+        not created while dry-run is on or the account is offline; the first live move
+        creates a missing folder.
       requestBody:
         required: true
         content:
@@ -337,10 +349,10 @@ paths:
                 required: [items]
                 properties:
                   items: { type: array, items: { $ref: '#/components/schemas/Rule' } }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path: rules[0].conditions.all[0].op), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path: rules[0].conditions.all[0].op | rules[0].model | rules[0].new_folders[0]), invalid_input (path: rules | rules[0] for a field of the wrong type or an unknown one | rules[0].account_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
+        '502': { $ref: '#/components/responses/Upstream' } # mailbox_error: a folder could not be created; nothing was saved
   /api/rules/reorder:
     post:
       tags: [Rules]
@@ -372,12 +384,17 @@ paths:
     post:
       tags: [Rules]
       operationId: testRules
-      x-status: planned
-      summary: Run saved or draft rules over recent mail without acting (M8)
+      summary: Run saved or draft rules over recent mail without acting
       description: |
-        Never touches the mailbox. Model usage is recorded with purpose `test`. With `limit`
-        up to 200 the answer is one JSON body. Above that it is a `text/event-stream`:
-        `progress` events carrying `TestProgress`, then one `done` event carrying `TestResult`.
+        Never touches the mailbox: mail is read with BODY.PEEK and stays unread and where it
+        is. Decides exactly as live processing does (sender rules, conditions, the decision
+        model, each rule's own `model`). Model usage is recorded with purpose `test`. Rules
+        with an intent need a decision model: 409 `no_composer_model` when none is set;
+        condition-only rules are tested without one. With `limit` up to 200 the answer is
+        one JSON body. Above that it is a `text/event-stream`: `progress` events carrying
+        `TestProgress` (one per 25 emails), then one `done` event carrying `TestResult`, or,
+        if the run fails midway, one `error` event carrying `ErrorBody` (code `test_failed`).
+        A run that fails before the first email is answered as plain JSON.
       requestBody:
         required: true
         content:
@@ -390,12 +407,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TestResult' }
             text/event-stream:
-              schema: { type: string, description: '`progress` events (TestProgress), then `done` (TestResult)' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_ids | account_id | folder | limit), rule_invalid, invalid_json
+              schema: { type: string, description: '`progress` events (TestProgress), then `done` (TestResult) or `error` (ErrorBody)' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_ids | account_id | folder | limit | rules[0]), rule_invalid (path: rules[0]...), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
-        '409': { $ref: '#/components/responses/Conflict' } # account_offline
-        '501': { $ref: '#/components/responses/NotImplemented' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_offline, no_composer_model
+        '502': { $ref: '#/components/responses/Upstream' } # model_error, mailbox_error
   /api/rules/export:
     get:
       tags: [Rules]
@@ -465,7 +482,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuleEnvelope' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path e.g. conditions.all[0].op), invalid_input (path: a field of the wrong type, or account_id), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path e.g. conditions.all[0].op, or model), invalid_input (path: a field of the wrong type, or account_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -485,9 +502,8 @@ paths:
     post:
       tags: [Rules]
       operationId: recomposeRule
-      x-status: planned
-      summary: Re-optimize one rule from its original wording plus new text (M8)
-      description: Returns a single draft to replace the rule. Nothing is saved; save it with PATCH.
+      summary: Re-optimize one rule from its original wording plus new text
+      description: Returns a single draft to replace the rule, validated and tested like a composed one. Nothing is saved; save it with PATCH.
       requestBody:
         required: true
         content:
@@ -512,8 +528,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '502': { $ref: '#/components/responses/Upstream' } # model_error, model_not_configured
+        '409': { $ref: '#/components/responses/Conflict' } # no_composer_model
+        '502': { $ref: '#/components/responses/Upstream' } # model_error
   /api/rules/{id}/undo:
     parameters:
       - { $ref: '#/components/parameters/Id' }
@@ -918,7 +934,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Settings' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | keys.<name>), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | openai_base_url | ollama_url | keys.<name>), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
   /api/events:
@@ -1228,7 +1244,7 @@ components:
         actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
         priority: { type: integer, description: Lower runs first }
         stack: { type: boolean, description: Also applies after another rule matched; condition-only }
-        model: { type: string, description: Per-rule decider override; empty = the default }
+        model: { type: string, description: 'Per-rule decider override: a decider name (jev, clef, anthropic) or name:model (clef:clef-flash, ollama:llama3.2; openai and ollama always need the model); empty = the default. An email is decided by the model of its highest-priority candidate rule that names one. A model that cannot be used (its key is not set) falls back to the default' }
         min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1, description: null = the default threshold }
         enabled: { type: boolean }
         version: { type: integer, description: Goes up by one with every edit }
@@ -1276,7 +1292,7 @@ components:
       type: object
       required: [name, actions]
       additionalProperties: false
-      description: A rule as the client sends it when creating one (M8). The same validation as RulePatch.
+      description: A rule as the client sends it when creating or testing one. The same validation as RulePatch.
       properties:
         name: { type: string }
         said: { type: string }
@@ -1329,7 +1345,7 @@ components:
             properties:
               path: { type: string }
               message: { type: string }
-        match_count: { type: integer, description: How many of the account's last 200 emails it would match }
+        match_count: { type: integer, description: 'How many of the account''s last 200 emails it would take, the drafts being tested together in order. 0 for a draft with errors, for a draft with an intent while no decision model is set, and when no account is connected' }
         samples: { type: array, maxItems: 5, items: { $ref: '#/components/schemas/TestRow' } }
     ComposeResult:
       type: object
@@ -1366,7 +1382,7 @@ components:
         rule_name: { type: string }
         confidence: { type: number }
         reason: { type: string }
-        review: { type: boolean, description: Below the threshold; it would go to Needs review }
+        review: { type: boolean, description: Below the threshold; it would go to Needs review. Always present }
         actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' }, description: What it would do }
     TestProgress:
       type: object
@@ -1721,7 +1737,7 @@ components:
         openai_api_key: { type: boolean, description: An OpenAI-compatible endpoint }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, keys, server, features]
+      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, openai_base_url, ollama_url, keys, server, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged and no mailbox is changed }
         decider: { $ref: '#/components/schemas/Decider' }
@@ -1731,6 +1747,8 @@ components:
         escalate_below: { type: number, minimum: 0, maximum: 1, description: Decider confidence below this asks the fallback }
         min_confidence: { type: number, minimum: 0, maximum: 1, description: Default act threshold; a rule may set its own }
         retention_days: { type: integer, minimum: 1, maximum: 3650, description: How long message snippets are kept }
+        openai_base_url: { type: string, description: 'The OpenAI-compatible endpoint the openai decider talks to; empty = api.openai.com. Not a secret' }
+        ollama_url: { type: string, description: 'The Ollama server the ollama decider talks to, e.g. http://localhost:11434; empty = not set. Not a secret' }
         keys: { $ref: '#/components/schemas/ProviderKeys' }
         server:
           type: object
@@ -1766,6 +1784,8 @@ components:
         escalate_below: { type: number, minimum: 0, maximum: 1 }
         min_confidence: { type: number, minimum: 0, maximum: 1 }
         retention_days: { type: integer, minimum: 1, maximum: 3650 }
+        openai_base_url: { type: string, description: An http or https URL. An empty string removes the stored value, which puts the environment's back in force }
+        ollama_url: { type: string, description: An http or https URL. An empty string removes the stored value, which puts the environment's back in force }
         keys:
           type: object
           writeOnly: true

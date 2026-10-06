@@ -17,13 +17,20 @@ The contract is `api/openapi.yaml` (OpenAPI 3.1). It lists every endpoint with i
 
 ## What is not built yet
 
-Operations marked `x-status: planned` in the contract belong to a later backend milestone: the rule composer and tester (M8), and senders, cleanup, templates and stats (M9). They are served so the contract and the route table stay equal, and answer 501 with code `not_implemented` after the session and CSRF checks.
+Operations marked `x-status: planned` in the contract belong to a later backend milestone: senders, cleanup, templates and stats (M9). They are served so the contract and the route table stay equal, and answer 501 with code `not_implemented` after the session and CSRF checks.
 
-One consequence until M8: `POST /api/rules/batch` is the endpoint that creates rules from the UI, so today rules are created by importing a YAML file (`POST /api/rules/import`, or `mailrules rules import <file>`).
+## Creating, composing and testing rules
+
+- **Create.** `POST /api/rules/batch` saves one rule or many in one transaction: a rule built by hand from conditions, a template, or composer drafts the user approved. It needs no model. Every rule is validated first, so one bad rule saves none; the error's `path` is `rules[1].conditions.all[0].op`. `new_folders` are created on the mail server, except in dry-run and on an offline account, where the first live move creates the folder. `position` drops a rule into the priority order (0 is first); without it the rule goes last.
+- **Compose.** `POST /api/rules/compose` turns free text into draft rules and saves nothing. Each draft is a card: the rule, `new_folders`, at most one `question`, `conflicts` with existing rules, `errors`, and `match_count` with up to five `samples` from the account's last 200 emails. A draft with `errors` cannot be saved as it is; the request still answers 200. Send the cards the user approves to `/api/rules/batch`.
+- **Re-optimize.** `POST /api/rules/{id}/compose` returns one draft to replace a rule, from its original wording plus new text. Save it with `PATCH /api/rules/{id}`.
+- **Test.** `POST /api/rules/test` runs rules over an account's newest mail and reports, per email, the rule, stage, confidence, reason and the actions it would take. It only reads: mail stays unread and where it is, and nothing is recorded but the model calls. `rule_ids` tests those saved rules on their own (switched on, without the sender rules); `rules` tests drafts as if saved after the others; with neither, the saved rule set runs as it is. Up to `limit` 200 the answer is one JSON body. Above that (to 2,000) it is an event stream: `progress` events (`{"done", "total"}`, one per 25 emails), then one `done` event with the result, or one `error` event if the run fails midway.
+- **Models.** The composer needs a generative model, and testing a rule that has an intent needs a decision model. With none set the answer is 409 `no_composer_model`, with a message to show; condition-only rules are created and tested without any model. A model that fails is 502 `model_error`.
+- **A rule's own model.** `model` on a rule is a decider spec: `jev`, `clef`, `anthropic`, or `name:model` such as `clef:clef-flash` or `ollama:llama3.2`. Empty means the default. An email is decided by the model of its highest-priority candidate rule that names one.
 
 ## Settings and provider keys
 
-`GET /api/settings` returns the settings in force. The environment variables in `docs/backend-plan.md` → Configuration are the defaults; whatever is saved through `PATCH /api/settings` lies over them and wins. Provider keys saved this way are stored in the `settings` table encrypted under the master key. Sending a key as an empty string removes the stored one, which puts the environment's back in force.
+`GET /api/settings` returns the settings in force. `openai_base_url` and `ollama_url` are plain settings, readable and writable, so every decider can be set up in the browser; an empty string removes the stored value. The environment variables in `docs/backend-plan.md` → Configuration are the defaults; whatever is saved through `PATCH /api/settings` lies over them and wins. Provider keys saved this way are stored in the `settings` table encrypted under the master key. Sending a key as an empty string removes the stored one, which puts the environment's back in force.
 
 Nothing needs a restart: the dry-run switch is read before every action, and the decider, its models, the thresholds and the keys are read for every email.
 
@@ -119,6 +126,12 @@ json PATCH "/api/rules/$first" 400 -d '{"actions":[]}' | grep -q '"path":"action
 reversed="$(echo "$ids" | sort -rn | paste -sd, -)"
 json POST /api/rules/reorder 200 -d "{\"ids\":[$reversed]}" >/dev/null
 call GET /api/rules/export 200 | grep -q 'id: Newsletters'
+
+# 5b. Create a rule by hand: no model is needed. One invalid rule in a batch saves none.
+json POST /api/rules/batch 201 -d '{"rules":[{"name":"Login codes","conditions":{"field":"subject","op":"contains_any","value":["code","OTP"]},"actions":[{"type":"keep"},{"type":"flag"}],"position":0}]}' | grep -q '"priority":1'
+json POST /api/rules/batch 400 -d '{"rules":[{"name":"Fine","intent":"Receipts","actions":[{"type":"keep"}]},{"name":"Bad","intent":"x","actions":[]}]}' | grep -q '"path":"rules\[1\].actions"'
+#     The composer needs a generative model; without a key it says so.
+json POST /api/rules/compose 409 -d '{"text":"Put Swiggy in Food"}' | grep -q no_composer_model
 
 # 6. Live events: open the stream, change a rule, see the event arrive.
 curl -sS -N --max-time 3 -b "$JAR" "$BASE/api/events" >"$JAR.events" 2>/dev/null &

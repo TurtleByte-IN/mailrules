@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
@@ -142,9 +144,13 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rule.Name = strings.TrimSpace(rule.Name)
+	rule.Name, rule.Model = strings.TrimSpace(rule.Name), strings.TrimSpace(rule.Model)
 	if err := rule.Validate(); err != nil {
 		ruleInvalid(w, err)
+		return
+	}
+	if err := settings.CheckModel(rule.Model); err != nil {
+		writeError(w, http.StatusBadRequest, "rule_invalid", "model: "+err.Error(), "model")
 		return
 	}
 	if err := s.store.UpdateRule(r.Context(), rule, s.now().Unix()); err != nil {
@@ -218,6 +224,12 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		ruleInvalid(w, err)
 		return
+	}
+	for _, rule := range f.Rules {
+		if err := settings.CheckModel(rule.Model); err != nil {
+			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("rule %q: model: %v", rule.Name, err), "model")
+			return
+		}
 	}
 	created, updated, err := s.store.ImportRules(r.Context(), user(r).ID, f.Rules, s.now().Unix())
 	if err != nil {

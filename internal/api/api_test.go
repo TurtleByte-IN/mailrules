@@ -37,8 +37,34 @@ type env struct {
 	mgr        *worker.Manager
 	sett       *settings.Settings
 	decider    *models.Fake
-	connectErr error // makes the next logins fail
+	noDecider  bool                    // no decision model is set
+	own        map[string]*models.Fake // deciders that rules may name as their own model
+	gen        *models.Fake            // the composer's model; nil = none is set
+	connectErr error                   // makes the next logins fail
 	doc        map[string]any
+}
+
+// Live, RouterFor and Composer make env the daemon's source of models (ModelSource), with
+// scripted fakes in place of the providers.
+func (e *env) Live(context.Context) (*models.Router, float64) {
+	if e.noDecider {
+		return nil, 0.75
+	}
+	return &models.Router{Primary: e.decider, Usage: e.st, Now: e.ck.now}, 0.75
+}
+
+func (e *env) RouterFor(_ context.Context, spec string) *models.Router {
+	if d := e.own[spec]; d != nil {
+		return &models.Router{Primary: d, Usage: e.st, Now: e.ck.now}
+	}
+	return nil
+}
+
+func (e *env) Composer(context.Context) (models.Generator, error) {
+	if e.gen == nil {
+		return nil, settings.ErrNoComposer
+	}
+	return e.gen, nil
 }
 
 func newEnv(t *testing.T) *env {
@@ -70,16 +96,13 @@ func newEnv(t *testing.T) *env {
 	start := func(acct store.Account) {
 		e.mgr.Start(runCtx, &worker.Supervisor{
 			Account: acct, Store: e.st, Hub: e.hub,
-			Open: func(context.Context) (mail.Mailbox, error) { return e.mb, nil },
-			Pipeline: pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now,
-				Live: func(context.Context) (*models.Router, float64) {
-					return &models.Router{Primary: e.decider, Usage: e.st, Now: e.ck.now}, 0.75
-				}},
+			Open:       func(context.Context) (mail.Mailbox, error) { return e.mb, nil },
+			Pipeline:   pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now, Live: e.Live, Override: e.RouterFor},
 			BackoffMin: time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 		})
 	}
 	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(Options{
-		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Master: master, Version: "test",
+		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Models: e, Master: master, Version: "test",
 		Connect: func(_ context.Context, acct store.Account, _ string) (mail.Mailbox, string, error) {
 			if e.connectErr != nil {
 				return nil, "", e.connectErr
@@ -237,8 +260,8 @@ func TestPlannedRoutesAnswer501(t *testing.T) {
 			e.refuse(r.method, fill.Replace(r.path), "{}", http.StatusNotImplemented, "not_implemented", "")
 		}
 	}
-	if n != 12 {
-		t.Errorf("%d planned routes; the M8 and M9 endpoints are 12", n)
+	if n != 8 {
+		t.Errorf("%d planned routes; the M9 endpoints are 8", n)
 	}
 }
 

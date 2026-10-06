@@ -108,25 +108,51 @@ func kindOps(k kind) []string {
 	}
 }
 
+// fields is the one list of condition fields: validation, the matcher and the field list
+// shown to the rule composer all read it. header:<Name> is the only field not in it.
+var fields = []struct {
+	name string
+	kind kind
+}{
+	{"from", kindStr}, {"to", kindStr}, {"cc", kindStr}, {"delivered_to", kindStr}, {"from_domain", kindStr},
+	{"subject", kindStr}, {"body", kindStr}, {"list_id", kindStr}, {"attachment_ext", kindStr},
+	{"has_attachment", kindBool}, {"is_contact", kindBool}, {"replied_before", kindBool}, {"is_bulk", kindBool}, {"is_noreply", kindBool},
+	{"size_kb", kindNum}, {"age_days", kindNum}, {"dmarc", kindEnum}, {"account", kindID},
+}
+
 // fieldKind returns the kind of a known field.
 func fieldKind(field string) (kind, bool) {
-	switch field {
-	case "from", "to", "cc", "delivered_to", "from_domain", "subject", "body", "list_id", "attachment_ext":
-		return kindStr, true
-	case "has_attachment", "is_contact", "replied_before", "is_bulk", "is_noreply":
-		return kindBool, true
-	case "size_kb", "age_days":
-		return kindNum, true
-	case "dmarc":
-		return kindEnum, true
-	case "account":
-		return kindID, true
+	for _, f := range fields {
+		if f.name == field {
+			return f.kind, true
+		}
 	}
 	if name, ok := strings.CutPrefix(field, "header:"); ok && name != "" {
 		return kindStr, true
 	}
 	return 0, false
 }
+
+// Field describes one condition field for whoever writes conditions: the rule composer's
+// prompt is built from this list.
+type Field struct {
+	Name string
+	Type string   // string | boolean | number | pass, fail or none | account id
+	Ops  []string // the operators it accepts
+}
+
+// Fields lists every condition field with its type and operators, header:<Name> last.
+func Fields() []Field {
+	types := map[kind]string{kindStr: "string", kindBool: "boolean", kindNum: "number", kindEnum: "pass, fail or none", kindID: "account id"}
+	out := make([]Field, 0, len(fields)+1)
+	for _, f := range fields {
+		out = append(out, Field{f.name, types[f.kind], kindOps(f.kind)})
+	}
+	return append(out, Field{"header:<Name>", types[kindStr], kindOps(kindStr)})
+}
+
+// ActionTypes lists the action types a rule may name.
+func ActionTypes() []string { return slices.Clone(actionTypes) }
 
 // strField returns a string field's values, lower-cased, without empties.
 func strField(field string, e *message.Summary) []string {

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -72,6 +73,8 @@ type View struct {
 	EscalateBelow float64
 	MinConfidence float64
 	RetentionDays int
+	OpenAIBaseURL string // an OpenAI-compatible endpoint; empty = api.openai.com
+	OllamaURL     string // a local Ollama server
 	Keys          map[string]bool
 }
 
@@ -86,6 +89,8 @@ type Patch struct {
 	EscalateBelow *float64
 	MinConfidence *float64
 	RetentionDays *int
+	OpenAIBaseURL *string // empty removes the stored value, which puts the environment's back in force
+	OllamaURL     *string // likewise
 	Keys          map[string]string
 }
 
@@ -96,12 +101,17 @@ type Settings struct {
 	Env    *config.Config // the defaults
 	Deps   models.Deps    // shared by every router built here
 
-	mu     sync.Mutex
-	print  string // the stored settings the cached router was built from
-	built  bool
-	router *models.Router
-	minCon float64
+	mu        sync.Mutex
+	print     string // the stored settings the cached routers were built from
+	built     bool
+	cfg       config.Config // the configuration in force when the routers were built
+	router    *models.Router
+	overrides map[string]*models.Router // per-rule model overrides, by decider spec; nil = cannot be built
+	minCon    float64
 }
+
+// ErrNoComposer means no generative model is configured for the rule composer.
+var ErrNoComposer = errors.New("no generative model is configured for the rule composer")
 
 // aad binds a key's ciphertext to its name, so rows cannot be swapped.
 func aad(name string) int64 {
@@ -150,6 +160,7 @@ func (s *Settings) effective(rows map[string]string) (config.Config, int, error)
 		"dry_run": &cfg.DryRun, "decider": &cfg.Decider, "decider_model": &cfg.DeciderModel,
 		"fallback_model": &cfg.FallbackModel, "composer_model": &cfg.ComposerModel,
 		"escalate_below": &cfg.EscalateBelow, "min_confidence": &cfg.MinConfidence, "retention_days": &retention,
+		"openai_base_url": &cfg.OpenAIBaseURL, "ollama_url": &cfg.OllamaURL,
 	} {
 		if v, ok := rows[key]; ok {
 			if err := json.Unmarshal([]byte(v), dst); err != nil {
@@ -184,7 +195,7 @@ func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
 func view(cfg config.Config, retention int) View {
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
 		ComposerModel: cfg.ComposerModel, EscalateBelow: cfg.EscalateBelow, MinConfidence: cfg.MinConfidence,
-		RetentionDays: retention, Keys: map[string]bool{}}
+		RetentionDays: retention, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL, Keys: map[string]bool{}}
 	for name, field := range keyFields {
 		v.Keys[name] = *field(&cfg) != ""
 	}
@@ -246,6 +257,25 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 	if p.RetentionDays != nil {
 		retention = *p.RetentionDays
 		put("retention_days", retention)
+	}
+	for key, f := range map[string]struct {
+		in       *string
+		dst, env *string
+	}{
+		"openai_base_url": {p.OpenAIBaseURL, &cfg.OpenAIBaseURL, &s.Env.OpenAIBaseURL},
+		"ollama_url":      {p.OllamaURL, &cfg.OllamaURL, &s.Env.OllamaURL},
+	} {
+		if f.in == nil {
+			continue
+		}
+		if *f.dst = strings.TrimSpace(*f.in); *f.dst == "" {
+			set[key], *f.dst = nil, *f.env
+			continue
+		}
+		if u, err := url.Parse(*f.dst); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return &Invalid{key, "must be an http or https URL"}
+		}
+		put(key, *f.dst)
 	}
 	for name, value := range p.Keys {
 		if keyFields[name] == nil {
@@ -315,7 +345,7 @@ func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfiden
 		slog.WarnContext(ctx, "stored settings cannot be used; mail that needs a model waits in Needs review", "error", err.Error())
 		cfg = *s.Env
 	}
-	s.router = nil
+	s.router, s.overrides, s.cfg = nil, map[string]*models.Router{}, cfg
 	if ready := cfg.DeciderReady(); ready != nil {
 		slog.WarnContext(ctx, "no decision model yet; new mail that needs one waits in Needs review until it is set", "missing", ready.Error())
 	} else if s.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.Deps, s.Store); err != nil {
@@ -324,4 +354,56 @@ func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfiden
 	}
 	s.print, s.built, s.minCon = b.String(), true, cfg.MinConfidence
 	return s.router, s.minCon
+}
+
+// CheckModel says whether a rule's model override is a decider this daemon knows: empty
+// (the default), a decider name, or name:model. openai and ollama have no default model.
+func CheckModel(spec string) error {
+	if spec == "" {
+		return nil
+	}
+	name, model, _ := strings.Cut(spec, ":")
+	if !slices.Contains(Deciders, name) {
+		return fmt.Errorf("the model must be empty, or one of %s, optionally followed by :model", strings.Join(Deciders, ", "))
+	}
+	if (name == "openai" || name == "ollama") && model == "" {
+		return fmt.Errorf("%s has no default model: write it as %s:<model>", name, name)
+	}
+	return nil
+}
+
+// RouterFor returns the router for a rule's model override (a decider spec, see
+// CheckModel), built from the settings in force and kept until they change. It is nil
+// when that decider cannot be used, for example because its key is not set; the caller
+// then decides with the default router. pipeline.Pipeline.Override is this method.
+func (s *Settings) RouterFor(ctx context.Context, spec string) *models.Router {
+	s.Live(ctx) // rebuilds, and forgets the overrides, when a stored setting changed
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.overrides[spec]; ok {
+		return r
+	}
+	r, err := models.NewRouter(&s.cfg, spec, s.Deps, s.Store)
+	if err != nil {
+		slog.WarnContext(ctx, "a rule's model cannot be used; the default decides instead", "model", spec, "error", err.Error())
+		r = nil
+	}
+	if s.overrides == nil {
+		s.overrides = map[string]*models.Router{}
+	}
+	s.overrides[spec] = r
+	return r
+}
+
+// Composer returns the generative model the rule composer writes rules with:
+// composer_model on Anthropic. It is ErrNoComposer until an Anthropic key is set.
+func (s *Settings) Composer(ctx context.Context) (models.Generator, error) {
+	cfg, err := s.Effective(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.AnthropicAPIKey == "" || cfg.ComposerModel == "" {
+		return nil, ErrNoComposer
+	}
+	return models.NewAnthropic("", cfg.AnthropicAPIKey, cfg.ComposerModel, s.Deps), nil
 }

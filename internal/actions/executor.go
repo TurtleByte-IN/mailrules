@@ -193,6 +193,29 @@ func (x *Exec) roleFolder(ctx context.Context, accountID int64, role string) (st
 	return "", fmt.Errorf("no %s folder", strings.TrimPrefix(role, `\`))
 }
 
+// EnsureFolders creates folders on an account's server, ahead of the rules that will move
+// mail into them. It is a mailbox change like any other: in dry-run it does nothing, and
+// the first live move creates the folder then.
+func (x *Exec) EnsureFolders(ctx context.Context, accountID int64, names []string) error {
+	dry, err := x.Store.DryRun(ctx, x.DryRunDefault)
+	if err != nil || dry || len(names) == 0 {
+		return err
+	}
+	mb, err := x.Accounts.Mailbox(accountID)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := mb.EnsureFolder(ctx, name); err != nil {
+			return fmt.Errorf("create folder %q: %w", name, err)
+		}
+		if err := x.Store.AddFolder(context.WithoutCancel(ctx), accountID, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Undo reverses one action: a move goes back to the folder it came from, a flag change
 // goes back to what the before snapshot says. Undoing an action that is already undone,
 // or that never changed the mailbox (dry-run, failed), does nothing. When the message is

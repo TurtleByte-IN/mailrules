@@ -149,7 +149,7 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	start := func(acct store.Account) {
 		supervisors.Start(ctx, &worker.Supervisor{
 			Account: acct, Store: st, Hub: hub, Open: openAccount(st, master, acct),
-			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
+			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
 		})
 	}
 	for _, acct := range accounts {

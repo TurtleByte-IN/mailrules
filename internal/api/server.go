@@ -31,6 +31,7 @@ type Options struct {
 	Hub      *events.Hub        // the SSE stream's source; nil = a private hub nothing publishes to
 	Exec     *actions.Exec      // undo and corrections: the only way this package changes a mailbox
 	Settings *settings.Settings // the settings the user changes at runtime
+	Models   ModelSource        // the models the composer and tester use; nil = Settings
 	Master   []byte             // seals account passwords
 	Metrics  *telemetry.Metrics // nil = a private registry
 	Version  string             // shown in GET /api/settings
@@ -87,16 +88,16 @@ func (s *server) routes() []route {
 		on(get, "/api/accounts/{id}/folders", s.handleAccountFolders),
 
 		on(get, "/api/rules", s.handleRules),
-		later(post, "/api/rules/compose"), // M8
-		later(post, "/api/rules/batch"),   // M8
+		on(post, "/api/rules/compose", s.handleCompose),
+		on(post, "/api/rules/batch", s.handleRulesBatch),
 		on(post, "/api/rules/reorder", s.handleRulesReorder),
-		later(post, "/api/rules/test"), // M8
+		on(post, "/api/rules/test", s.handleRulesTest),
 		on(get, "/api/rules/export", s.handleRulesExport),
 		on(post, "/api/rules/import", s.handleRulesImport),
 		on(get, "/api/rules/{id}", s.handleRule),
 		on(patch, "/api/rules/{id}", s.handleRulePatch),
 		on(del, "/api/rules/{id}", s.handleRuleDelete),
-		later(post, "/api/rules/{id}/compose"), // M8
+		on(post, "/api/rules/{id}/compose", s.handleRecompose),
 		on(post, "/api/rules/{id}/undo", s.handleRuleUndo),
 
 		later(get, "/api/senders"),                // M9

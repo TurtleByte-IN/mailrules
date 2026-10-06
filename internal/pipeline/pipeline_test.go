@@ -653,3 +653,51 @@ func TestReviewTagAndRetryWithTheExecutor(t *testing.T) {
 		t.Errorf("unsupported move: %+v, actions %+v", m, row.Actions)
 	}
 }
+
+// A rule may name its own model: an email is decided by the model of its highest-priority
+// candidate that names one, and by the default when that model cannot be used.
+func TestRuleModelOverride(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.receipts.Model = "clef:clef-flash"
+	if err := e.st.UpdateRule(ctx, e.receipts, 2); err != nil {
+		t.Fatal(err)
+	}
+	own := &models.Fake{NameValue: "clef", DecideFunc: func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{RuleID: e.receipts.ID, Confidence: 0.9}, models.Usage{Provider: "cloudflare", Model: "clef-flash", TokensIn: 50, CostUSD: 0.0002}, nil
+	}}
+	var asked []string
+	usable := true
+	e.p.Override = func(_ context.Context, spec string) *models.Router {
+		asked = append(asked, spec)
+		if !usable {
+			return nil
+		}
+		return &models.Router{Primary: own, Usage: e.st}
+	}
+	e.primary.DecideFunc = answer(e.food.ID, 0.9)
+
+	row := e.process("billing@vendor.example", "invoice 1")
+	if d := row.Decision; d.RuleID != e.receipts.ID || d.Model != "clef-flash" || d.Stage != "decider" || len(e.primary.Requests()) != 0 || !slices.Equal(asked, []string{"clef:clef-flash"}) {
+		t.Fatalf("decision = %+v; the default was asked %d times; override asked for %v", d, len(e.primary.Requests()), asked)
+	}
+	// Both candidates were put to the rule's model, not only the rule that named it.
+	if req := own.Requests()[0]; len(req.Candidates) != 2 {
+		t.Errorf("candidates = %+v", req.Candidates)
+	}
+	// Mail that the rule is no candidate for never reaches its model.
+	e.process("hello@news.example", "weekly issue")
+	if len(own.Requests()) != 1 {
+		t.Errorf("the rule's model was asked about mail a condition settled")
+	}
+	// The rule's model cannot be used (its key was removed): the default decides.
+	usable = false
+	if d := e.process("billing@vendor.example", "invoice 2").Decision; d.RuleID != e.food.ID || d.Model != "primary-1" {
+		t.Errorf("fallback to the default: %+v", d)
+	}
+	// With no default model either, the rule's own model alone is enough.
+	usable, e.p.Router = true, nil
+	if d := e.process("billing@vendor.example", "invoice 3").Decision; d.RuleID != e.receipts.ID || d.Model != "clef-flash" {
+		t.Errorf("only the rule's model is set: %+v", d)
+	}
+}
