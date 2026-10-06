@@ -14,6 +14,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/api"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 )
@@ -92,7 +93,13 @@ func serve(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 
-	srv := &http.Server{Addr: cfg.Listen, Handler: api.NewHandler(), ReadHeaderTimeout: 10 * time.Second}
+	// Loaded here so a bad key stops startup; account credentials use it from M2.
+	if _, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir); err != nil {
+		return err
+	}
+
+	handler := api.NewHandler(api.Options{Store: store.New(db), SecureCookies: !cfg.ListensLocally()})
+	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	slog.Info("listening", "listen", cfg.Listen, "version", version, "dry_run", cfg.DryRun)

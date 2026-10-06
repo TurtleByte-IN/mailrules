@@ -1,0 +1,97 @@
+package crypto
+
+import (
+	"bytes"
+	"encoding/base64"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func key(b byte) []byte { return bytes.Repeat([]byte{b}, keyLen) }
+
+func TestSealOpen(t *testing.T) {
+	master := key(1)
+	secret, dek, err := Seal(master, 7, []byte("abcd-efgh-ijkl-mnop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(secret, []byte("abcd")) {
+		t.Fatal("ciphertext contains plaintext")
+	}
+	got, err := Open(master, 7, secret, dek)
+	if err != nil || string(got) != "abcd-efgh-ijkl-mnop" {
+		t.Fatalf("round trip: %q, %v", got, err)
+	}
+
+	otherSecret, otherDek, _ := Seal(master, 8, []byte("other"))
+	flipped := append([]byte(nil), secret...)
+	flipped[len(flipped)-1] ^= 1
+	fails := []struct {
+		name        string
+		master      []byte
+		row         int64
+		secret, dek []byte
+	}{
+		{"wrong row id", master, 8, secret, dek},
+		{"secret swapped from another row", master, 7, otherSecret, dek},
+		{"data key swapped from another row", master, 7, secret, otherDek},
+		{"whole row swapped", master, 7, otherSecret, otherDek},
+		{"wrong master key", key(2), 7, secret, dek},
+		{"tampered ciphertext", master, 7, flipped, dek},
+		{"truncated", master, 7, secret[:4], dek},
+	}
+	for _, tt := range fails {
+		if _, err := Open(tt.master, tt.row, tt.secret, tt.dek); !errors.Is(err, ErrDecrypt) {
+			t.Errorf("%s: want ErrDecrypt, got %v", tt.name, err)
+		}
+	}
+}
+
+func TestLoadMasterKey(t *testing.T) {
+	dir := t.TempDir()
+	generated, err := LoadMasterKey("", "", dir)
+	if err != nil || len(generated) != keyLen {
+		t.Fatalf("generate: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "master.key"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("master.key mode: %v %v", info, err)
+	}
+	again, err := LoadMasterKey("", "", dir)
+	if err != nil || !bytes.Equal(generated, again) {
+		t.Fatal("second load did not reuse the generated key")
+	}
+
+	fromEnv, err := LoadMasterKey(base64.StdEncoding.EncodeToString(key(9)), "", dir)
+	if err != nil || !bytes.Equal(fromEnv, key(9)) {
+		t.Fatalf("env value: %v", err)
+	}
+	for _, bad := range []string{"not base64!", base64.StdEncoding.EncodeToString([]byte("short"))} {
+		if _, err := LoadMasterKey(bad, "", dir); err == nil {
+			t.Errorf("accepted bad key %q", bad)
+		}
+	}
+	if _, err := LoadMasterKey("", filepath.Join(dir, "missing.key"), dir); err == nil {
+		t.Error("a named key file that is missing must be an error, not a fresh key")
+	}
+}
+
+func TestPassword(t *testing.T) {
+	hash, err := HashPassword("correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyPassword(hash, "correct horse battery") {
+		t.Error("right password rejected")
+	}
+	if VerifyPassword(hash, "correct horse batterz") {
+		t.Error("wrong password accepted")
+	}
+	for _, bad := range []string{"", "plain", "$argon2i$v=19$m=1,t=1,p=1$c2FsdA$aGFzaA", "$argon2id$v=19$m=1,t=1,p=1$!!$aGFzaA"} {
+		if VerifyPassword(bad, "x") {
+			t.Errorf("malformed hash %q accepted", bad)
+		}
+	}
+}

@@ -9,6 +9,9 @@ linters:
   exclusions:
     presets:
       - std-error-handling # unchecked Close on defer
+    rules:
+      - path: _test\.go
+        linters: [gosec]
 formatters:
   enable:
     - gofmt

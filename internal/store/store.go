@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -15,7 +14,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 
-//go:embed migrations
+//go:embed migrations/*.sql
 var migrations embed.FS
 
 // Open opens (creating if needed) the database in dataDir, in WAL mode.
@@ -43,9 +42,6 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("load migrations: %w", err)
 	}
 	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
-	if errors.Is(err, goose.ErrNoMigrations) {
-		return nil // nothing to apply until 0001_init.sql exists (M1)
-	}
 	if err != nil {
 		return fmt.Errorf("load migrations: %w", err)
 	}
