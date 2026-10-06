@@ -197,7 +197,7 @@ const (
 	OutcomeRule   = "rule"   // a rule or sender rule applies, settled without a model
 	OutcomeNone   = "none"   // no rule matches: the email stays where it is
 	OutcomeModel  = "model"  // rules with an intent are in play: the decision model decides during the run
-	OutcomeReview = "review" // it needs the decision model and none is set: it would wait in Needs review
+	OutcomeReview = "review" // only rules with an intent could take it and no decision model is set: it would wait in Needs review
 )
 
 // Group is the emails of a cleanup preview that share an outcome. Its JSON is one entry
@@ -244,16 +244,17 @@ func (t Tester) Preview(ctx context.Context, rs []rules.Rule, senders []rules.Se
 		if sum == nil {
 			return nil
 		}
-		// Settle with no model at all: it answers "review" exactly for the mail that needs one.
+		// Settle with no model at all: it says NoModel exactly for the mail that needs one,
+		// and what becomes of that mail while none is set.
 		out, err := pipeline.Decider{MinConfidence: t.Decider.MinConfidence, Now: t.Decider.Now}.Settle(ctx, *sum, rs, senders)
 		if err != nil {
 			return err
 		}
 		k := key{OutcomeRule, out.RuleID, out.RuleName}
 		switch {
-		case out.Review && t.Decider.Router != nil:
+		case out.NoModel && t.Decider.Router != nil:
 			k = key{outcome: OutcomeModel}
-			out.Result, out.Reason = rules.Result{Stage: rules.StageDecider}, "The decision model decides this during the run"
+			out.Result, out.RuleName, out.Reason = rules.Result{Stage: rules.StageDecider}, "", "The decision model decides this during the run"
 		case out.Review:
 			k = key{outcome: OutcomeReview}
 		case out.Stage == rules.StageNone:

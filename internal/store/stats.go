@@ -57,7 +57,7 @@ const latest = `WITH latest AS (
 // Totals are the counts of the stats tiles.
 type Totals struct {
 	Processed    int // emails decided
-	Sorted       int // of those, a rule or sender rule was applied (or recorded, in dry-run)
+	Sorted       int // of those, a rule or sender rule was applied (or recorded, in dry-run) and not undone since
 	WithoutModel int // of those, settled without asking a model
 	Trashed      int // emails with a trash action that is in effect (or recorded, in dry-run)
 
@@ -65,25 +65,28 @@ type Totals struct {
 	WentSorted  int // a rule was applied and it did not trash the email
 	WentTrash   int // a rule was applied and it trashed the email
 	WentReview  int // waiting in Needs review
-	WentNowhere int // left in the inbox: no rule matched, or it could not be handled
+	WentNowhere int // left in the inbox: no rule matched, it could not be handled, or all that was done to it was undone
 }
 
 // StatsTotals counts the user's emails decided since `since`.
 func (s *Store) StatsTotals(ctx context.Context, userID, since int64) (Totals, error) {
 	var t Totals
+	// In effect: done, or recorded in dry-run. An email whose actions were all undone is
+	// back where it was, so it no longer counts as sorted.
 	const trash = `x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2`
+	const sorted = `state = 'acted' AND EXISTS (SELECT 1 FROM actions x WHERE x.message_id = latest.message_id AND x.kind <> 'review' AND x.status IN ('done', 'dry_run'))`
 	err := s.db.QueryRowContext(ctx,
-		latest+`SELECT COUNT(*), COALESCE(SUM(state = 'acted'), 0), COALESCE(SUM(model = ''), 0),
+		latest+`SELECT COUNT(*), COALESCE(SUM(`+sorted+`), 0), COALESCE(SUM(model = ''), 0),
 		          (SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN accounts a ON a.id = x.account_id
 		           WHERE a.user_id = ?1 AND `+trash+`),
 		          COALESCE(SUM(state = 'acted' AND EXISTS (SELECT 1 FROM actions x WHERE x.message_id = latest.message_id AND `+trash+`)), 0),
-		          COALESCE(SUM(state = 'review'), 0), COALESCE(SUM(state NOT IN ('acted', 'review')), 0)
+		          COALESCE(SUM(state = 'review'), 0)
 		        FROM latest`, userID, since).
-		Scan(&t.Processed, &t.Sorted, &t.WithoutModel, &t.Trashed, &t.WentTrash, &t.WentReview, &t.WentNowhere)
+		Scan(&t.Processed, &t.Sorted, &t.WithoutModel, &t.Trashed, &t.WentTrash, &t.WentReview)
 	if err != nil {
 		return Totals{}, fmt.Errorf("stats totals: %w", err)
 	}
-	t.WentSorted = t.Sorted - t.WentTrash
+	t.WentSorted, t.WentNowhere = t.Sorted-t.WentTrash, t.Processed-t.Sorted-t.WentReview
 	return t, nil
 }
 

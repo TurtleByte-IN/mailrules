@@ -710,7 +710,9 @@ export interface paths {
          *     to 5 sample emails per group. No model is asked: what sender rules and conditions
          *     settle is counted under its rule (`rule`) or as left alone (`none`); the emails that
          *     rules with an intent compete for are one group, `model`, which is also
-         *     `estimated_model_calls`; with no decision model set they are `review` instead.
+         *     `estimated_model_calls`. With no decision model set, rules with an intent are passed
+         *     over, as in live processing: an email a condition-only rule below them takes is
+         *     counted under that rule, and only what nothing else takes is `review`.
          *     `estimated_cost_usd` is those calls times what a live decision has cost on average
          *     so far (0 until there is history). The answer comes in one response, so a very large
          *     folder takes a while: give `limit`.
@@ -1282,7 +1284,7 @@ export interface components {
             rule_id?: number;
         };
         /**
-         * @description Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule
+         * @description Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule. While no decision model is set, rules with an intent are passed over: a condition-only rule below them still applies (`condition`), and an email only they could take waits in Needs review with the reason "No decision model is set"
          * @enum {string}
          */
         Stage: "sender" | "condition" | "decider" | "fallback" | "none";
@@ -1556,7 +1558,7 @@ export interface components {
             /** @description Biggest group first */
             groups: {
                 /**
-                 * @description `rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: it needs the model and none is set, so it would wait in Needs review
+                 * @description `rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: only rules with an intent could take it and no decision model is set, so it would wait in Needs review
                  * @enum {string}
                  */
                 outcome: "rule" | "none" | "model" | "review";
@@ -1604,7 +1606,7 @@ export interface components {
             counts: {
                 /** @description Emails decided in the range */
                 processed: number;
-                /** @description Of those, a rule or sender rule was applied (or recorded, in dry-run) */
+                /** @description Of those, a rule or sender rule was applied (or recorded, in dry-run) and at least one of its actions is still in effect. An email whose actions were all undone is not counted */
                 sorted: number;
                 /** @description Emails with a trash action from the range that is in effect (or recorded, in dry-run) */
                 trashed: number;
@@ -1613,13 +1615,13 @@ export interface components {
             };
             /** @description Where the processed emails ended up, for the Overview bar. The four add up to `counts.processed` */
             went: {
-                /** @description A rule was applied and it did not trash the email */
+                /** @description A rule was applied, is still in effect (not undone) and did not trash the email */
                 sorted: number;
-                /** @description Left in the inbox: no rule matched, or the email could not be handled */
+                /** @description Left in the inbox: no rule matched, the email could not be handled, or everything done to it was undone */
                 inbox: number;
                 /** @description Of the processed emails, those waiting in Needs review */
                 review: number;
-                /** @description A rule was applied and it trashed the email */
+                /** @description A rule was applied and it trashed the email, and that is still in effect (not undone) */
                 trashed: number;
             };
             /** @description Enabled rules applied to no email in the range */
@@ -1656,7 +1658,7 @@ export interface components {
             since: number;
             /** @description Emails decided in the range, whatever came of them. The base of `without_model` */
             processed: number;
-            /** @description Of the processed emails, those a rule or sender rule was applied to (sorted) */
+            /** @description Of the processed emails, those a rule or sender rule was applied to and not undone since (sorted) */
             emails: number;
             calls: number;
             cost_usd: number;

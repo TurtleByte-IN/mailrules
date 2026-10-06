@@ -46,11 +46,14 @@ func Corrections(st *store.Store, userID int64) func(ctx context.Context, email 
 // Outcome is what was settled for one email.
 type Outcome struct {
 	rules.Result
-	RuleName string       // the name of Result.RuleID; empty when there is none
-	Reason   string       // one sentence saying why
-	Asked    bool         // a model was asked
-	Calls    int          // how many model calls that took: 2 when the fallback answered too
-	Usage    models.Usage // what asking cost, over both models when the fallback answered
+	RuleName string // the name of Result.RuleID; empty when there is none
+	Reason   string // one sentence saying why
+	Asked    bool   // a model was asked
+	// NoModel: rules with an intent were in play and no model could be asked, so they were
+	// passed over. With a model set, this is an email the model would have decided.
+	NoModel bool
+	Calls   int          // how many model calls that took: 2 when the fallback answered too
+	Usage   models.Usage // what asking cost, over both models when the fallback answered
 	// Probabilities is what the decision model gave each candidate, by rule id (0 = none
 	// of them); nil when it gives none.
 	Probabilities map[int64]float64
@@ -82,7 +85,14 @@ func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rul
 		}
 	}
 	if router == nil {
-		return Outcome{Result: rules.Result{Stage: rules.StageNone, Review: true}, Reason: ReasonNoModel}, nil
+		// No model to ask: the rules with an intent are passed over, as if the model had
+		// picked none of them, so the condition-only rule below them (or a stacking rule)
+		// still applies. Only an email that nothing else takes waits in Needs review.
+		res := ev.Resolve(0, 0)
+		if res.Stage == rules.StageNone {
+			return Outcome{Result: rules.Result{Stage: rules.StageNone, Review: true}, Reason: ReasonNoModel, NoModel: true}, nil
+		}
+		return Outcome{Result: res, RuleName: names[res.RuleID], Reason: localReason(res, names), NoModel: true}, nil
 	}
 	if router.Fallback != nil && d.Examples != nil { // only the fallback is shown examples
 		req.Examples = d.Examples(ctx, sum, ids)

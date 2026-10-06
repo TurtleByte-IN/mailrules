@@ -230,6 +230,23 @@ func TestProcessEndToEnd(t *testing.T) {
 			wantReason: ReasonNoModel, wantEvent: events.MessageReview,
 		},
 		{
+			// MAI-23: the rules with an intent sit above it and cannot be decided, so they are
+			// passed over and the condition rule below them applies.
+			name: "no decision model: a condition rule below the intent rules still acts", from: "orders@swiggy.example",
+			setup: func(e *env) {
+				e.p.Router = nil
+				var err error
+				e.reading, err = e.st.CreateRule(e.t.Context(), rules.Rule{UserID: e.user.ID, Name: "Orders", Priority: 9, Enabled: true,
+					Conditions: rules.Cond{Field: "from_domain", Op: rules.OpEq, Value: "swiggy.example"},
+					Actions:    []rules.Action{{Type: rules.ActMove, Folder: "Orders"}}}, 1)
+				if err != nil {
+					e.t.Fatal(err)
+				}
+			},
+			wantStage: "condition", wantRule: func(e *env) int64 { return e.reading.ID }, wantState: store.StateActed,
+			wantApplied: []string{"move:Orders"}, wantReason: `Matched "Orders" by its conditions`, wantEvent: events.MessageProcessed,
+		},
+		{
 			name: "no decision model: condition-only rules still act", from: "weekly@news.example",
 			setup:     func(e *env) { e.p.Router = nil },
 			wantStage: "condition", wantRule: func(e *env) int64 { return e.reading.ID }, wantState: store.StateActed,

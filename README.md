@@ -36,7 +36,7 @@ To run it as a service on Linux, `deploy/mailrules.service` is a hardened system
 ## First run
 
 1. **Create the admin account.** The first visit asks for an email address and a password of at least 12 characters. This is the only account; it protects the UI and the API.
-2. **Set a model key.** The default decision model is Jev through OpenRouter (`OPENROUTER_API_KEY`), with Claude Haiku as the fallback and rule composer (`ANTHROPIC_API_KEY`). Until a key is set, mail that needs a model waits in Needs review; rules made only of conditions work without any model.
+2. **Set a model key.** The default decision model is Jev through OpenRouter (`OPENROUTER_API_KEY`), with Claude Haiku as the fallback and rule composer (`ANTHROPIC_API_KEY`). Rules made only of conditions work without any model, wherever they sit in the order. Until a key is set, rules that need a model are passed over, and mail that only such a rule could take waits in Needs review.
 3. **Add a mail account.** Pick your provider and enter an app-specific password, not your main password. iCloud and Fastmail both require one.
 4. **Write a rule,** watch the activity feed, and correct what it gets wrong.
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -835,7 +835,9 @@ paths:
         to 5 sample emails per group. No model is asked: what sender rules and conditions
         settle is counted under its rule (`rule`) or as left alone (`none`); the emails that
         rules with an intent compete for are one group, `model`, which is also
-        `estimated_model_calls`; with no decision model set they are `review` instead.
+        `estimated_model_calls`. With no decision model set, rules with an intent are passed
+        over, as in live processing: an email a condition-only rule below them takes is
+        counted under that rule, and only what nothing else takes is `review`.
         `estimated_cost_usd` is those calls times what a live decision has cost on average
         so far (0 until there is history). The answer comes in one response, so a very large
         folder takes a while: give `limit`.
@@ -1469,7 +1471,7 @@ components:
     Stage:
       type: string
       enum: [sender, condition, decider, fallback, none]
-      description: 'Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule'
+      description: 'Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule. While no decision model is set, rules with an intent are passed over: a condition-only rule below them still applies (`condition`), and an email only they could take waits in Needs review with the reason "No decision model is set"'
     MessageState:
       type: string
       enum: [new, decided, acted, review, skipped, error]
@@ -1683,7 +1685,7 @@ components:
               outcome:
                 type: string
                 enum: [rule, none, model, review]
-                description: '`rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: it needs the model and none is set, so it would wait in Needs review'
+                description: '`rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: only rules with an intent could take it and no decision model is set, so it would wait in Needs review'
               rule_id: { type: [integer, 'null'], format: int64, description: 'The rule, for outcome rule; null otherwise, and for a sender rule that keeps or blocks' }
               rule_name: { type: string, description: 'The rule''s name; "Sender rule: keep" or "Sender rule: trash" for a sender rule without a rule; empty for the other outcomes' }
               count: { type: integer }
@@ -1722,7 +1724,7 @@ components:
           required: [processed, sorted, trashed, review]
           properties:
             processed: { type: integer, description: Emails decided in the range }
-            sorted: { type: integer, description: 'Of those, a rule or sender rule was applied (or recorded, in dry-run)' }
+            sorted: { type: integer, description: 'Of those, a rule or sender rule was applied (or recorded, in dry-run) and at least one of its actions is still in effect. An email whose actions were all undone is not counted' }
             trashed: { type: integer, description: 'Emails with a trash action from the range that is in effect (or recorded, in dry-run)' }
             review: { type: integer, description: Waiting in Needs review now }
         went:
@@ -1730,10 +1732,10 @@ components:
           description: Where the processed emails ended up, for the Overview bar. The four add up to `counts.processed`
           required: [sorted, inbox, review, trashed]
           properties:
-            sorted: { type: integer, description: A rule was applied and it did not trash the email }
-            inbox: { type: integer, description: 'Left in the inbox: no rule matched, or the email could not be handled' }
+            sorted: { type: integer, description: 'A rule was applied, is still in effect (not undone) and did not trash the email' }
+            inbox: { type: integer, description: 'Left in the inbox: no rule matched, the email could not be handled, or everything done to it was undone' }
             review: { type: integer, description: 'Of the processed emails, those waiting in Needs review' }
-            trashed: { type: integer, description: A rule was applied and it trashed the email }
+            trashed: { type: integer, description: 'A rule was applied and it trashed the email, and that is still in effect (not undone)' }
         quiet_rules: { type: integer, description: Enabled rules applied to no email in the range }
         decided_without_model: { type: number, minimum: 0, maximum: 1, description: 'Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed' }
         cost_usd: { type: number }
@@ -1769,7 +1771,7 @@ components:
         range: { type: string, enum: [month] }
         since: { type: integer, format: int64 }
         processed: { type: integer, description: 'Emails decided in the range, whatever came of them. The base of `without_model`' }
-        emails: { type: integer, description: 'Of the processed emails, those a rule or sender rule was applied to (sorted)' }
+        emails: { type: integer, description: 'Of the processed emails, those a rule or sender rule was applied to and not undone since (sorted)' }
         calls: { type: integer }
         cost_usd: { type: number }
         days:

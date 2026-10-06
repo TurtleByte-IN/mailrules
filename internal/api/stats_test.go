@@ -163,6 +163,11 @@ func TestStatsMath(t *testing.T) {
 			Model: model, TokensIn: 100, TokensOut: 10, CostUSD: cost, CreatedAt: at.Unix()}, state); err != nil {
 			t.Fatal(err)
 		}
+		if state == store.StateActed { // a sorted email has an action in effect
+			if _, err := e.st.InsertAction(ctx, store.Action{MessageID: m.ID, AccountID: 1, Kind: "read", Status: store.ActionDone, CreatedAt: at.Unix()}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		return m
 	}
 	usage := func(at time.Time, provider, model, purpose string, calls int, cost float64) {
@@ -189,6 +194,9 @@ func TestStatsMath(t *testing.T) {
 	twice := decided(day(20), store.StateDecided, "decider", 1, "jev-1", 0.004)
 	if _, err := e.st.AddDecision(ctx, store.Decision{MessageID: twice.ID, Stage: "fallback", RuleID: 2, RuleName: "Reading", Confidence: 0.9,
 		Model: "claude-haiku-4-5", CostUSD: 0.01, CreatedAt: day(20).Unix()}, store.StateActed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.InsertAction(ctx, store.Action{MessageID: twice.ID, AccountID: 1, Kind: "move", Status: store.ActionDone, CreatedAt: day(20).Unix()}); err != nil {
 		t.Fatal(err)
 	}
 	usage(day(20), "openrouter", "jev-1", "decide", 2, 0.005)
@@ -338,5 +346,75 @@ func TestUsageFreeShareIsOverProcessed(t *testing.T) {
 	}
 	if u["without_model"].(float64) > u["processed"].(float64) {
 		t.Errorf("without_model %v is more than processed %v", u["without_model"], u["processed"])
+	}
+}
+
+// MAI-23: with no decision model, a rule with an intent is passed over and the condition
+// rule below it applies. Only mail that nothing but the intent rule could take waits in
+// Needs review. Live processing and the cleanup preview agree.
+func TestConditionRuleBelowAnIntentRuleWithoutAModel(t *testing.T) {
+	e := newEnv(t)
+	e.noDecider = true
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[
+		{"name":"Newsletters","intent":"Newsletters and promotions","actions":[{"type":"move","folder":"Reading"}]},
+		{"name":"Food","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"}]}]}`, http.StatusCreated)
+
+	e.deliver("noreply@swiggy.in", "order one")
+	if d := e.item("order one", "acted")["decision"].(map[string]any); d["stage"] != "condition" || d["rule_name"] != "Food" || e.folderOf("order one") != "Food" {
+		t.Errorf("the condition rule below the AI rule did not fire: %v, in %q", d, e.folderOf("order one"))
+	}
+	e.deliver("friend@example.org", "lunch")
+	if d := e.item("lunch", "review")["decision"].(map[string]any); d["reason"] != "No decision model is set" || e.folderOf("lunch") != "INBOX" {
+		t.Errorf("mail only the AI rule could take = %v, in %q", d, e.folderOf("lunch"))
+	}
+
+	// The preview says the same of mail that is already there.
+	e.mb.AddFolder("Old", "")
+	e.mb.Deliver("Old", "From: noreply@swiggy.in\r\nSubject: old order\r\n\r\nbody\r\n")
+	e.mb.Deliver("Old", "From: friend@example.org\r\nSubject: old lunch\r\n\r\nbody\r\n")
+	got := map[string]any{}
+	for _, g := range e.call(http.MethodPost, "/api/cleanup/preview", `{"account_id":1,"folder":"Old"}`, http.StatusOK)["groups"].([]any) {
+		g := g.(map[string]any)
+		got[fmt.Sprint(g["outcome"], ":", g["rule_name"])] = g["count"]
+	}
+	if len(got) != 2 || got["rule:Food"] != float64(1) || got["review:"] != float64(1) {
+		t.Errorf("preview groups = %v, want one under Food and one for review", got)
+	}
+	// With a model set, the same two emails are the model's to decide: the intent rule is
+	// above the condition rule for both.
+	e.noDecider = false
+	prev := e.call(http.MethodPost, "/api/cleanup/preview", `{"account_id":1,"folder":"Old"}`, http.StatusOK)
+	if g := prev["groups"].([]any); len(g) != 1 || g[0].(map[string]any)["outcome"] != "model" || prev["estimated_model_calls"] != float64(2) {
+		t.Errorf("preview with a model = %v", prev)
+	}
+}
+
+// MAI-23: after everything done today was undone, the Overview must not still say "Sorted":
+// an email whose actions were all undone counts as left in the inbox.
+func TestUndoneEmailsAreNotCountedAsSorted(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[
+		{"name":"Food","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"},{"type":"read"}]},
+		{"name":"Junk","conditions":{"field":"from_domain","op":"eq","value":"junk.example"},"actions":[{"type":"trash"}]}]}`, http.StatusCreated)
+	for i := range 3 {
+		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
+		e.item(fmt.Sprintf("order %d", i), "acted")
+	}
+	e.deliver("spam@junk.example", "win big")
+	e.item("win big", "acted")
+	summary := func() (counts, went map[string]any) {
+		s := e.call(http.MethodGet, "/api/stats/summary", "", http.StatusOK)
+		conform(t, e.doc, "StatsSummary", s)
+		return s["counts"].(map[string]any), s["went"].(map[string]any)
+	}
+	if c, w := summary(); c["sorted"] != float64(4) || c["trashed"] != float64(1) || w["sorted"] != float64(3) || w["trashed"] != float64(1) || w["inbox"] != float64(0) {
+		t.Fatalf("before the undo: counts %v, went %v", c, w)
+	}
+	e.call(http.MethodPost, fmt.Sprintf("/api/actions/undo?since=%d", e.ck.now().Unix()-3600), "", http.StatusOK)
+	if c, w := summary(); c["processed"] != float64(4) || c["sorted"] != float64(0) || c["trashed"] != float64(0) ||
+		w["sorted"] != float64(0) || w["trashed"] != float64(0) || w["inbox"] != float64(4) || w["review"] != float64(0) {
+		t.Errorf("after everything was undone: counts %v, went %v; want nothing sorted and 4 in the inbox", c, w)
 	}
 }
