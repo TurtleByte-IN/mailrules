@@ -7,6 +7,7 @@
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import MoreOptions from './rules/MoreOptions.svelte';
+  import Rewrite from './rules/Rewrite.svelte';
   import { actionsText, condText, extrasText, kind, summary, treeWords } from './rules/text';
 
   // Add rules sends people back here with the rule they just saved selected.
@@ -30,8 +31,12 @@
   const fail = (e: unknown) => flash((e as Error).message);
   const only = (r: rulesApi.Rule) => accounts.list.find((a) => String(a.id) === String(r.account_id))?.label;
 
+  // The rule whose Rewrite with AI box is open.
+  let rewriting = $state(0);
+
   function select(id: number) {
     selectedId = id;
+    rewriting = 0;
     result = null;
     refused = null;
   }
@@ -286,6 +291,7 @@
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <a href="#/compose?edit={sel.id}" class="btn-primary">Edit conditions</a>
+          <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
           <button type="button" class="btn font-semibold" disabled={testing} onclick={test}>{testing ? 'Testing on last 200 emails…' : 'Test on last 200 emails'}</button>
           <button type="button" class="btn" onclick={undo}>Undo what it did today</button>
           <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash" onclick={del}>Delete rule</button>
@@ -300,5 +306,10 @@
       </aside>
     {/if}
   </div>
+  {#if sel && rewriting === sel.id}
+    {#key sel.id}
+      <Rewrite rule={sel} onclose={() => (rewriting = 0)} />
+    {/key}
+  {/if}
   {/if}
 </div>
