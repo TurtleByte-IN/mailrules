@@ -17,6 +17,8 @@ export type UndoResult = S['UndoResult'];
 // empty condition. Walk the tree when the composer or an imported file starts nesting them.
 export const leaves = (t: Condition): Condition[] => t.all ?? t.any ?? (t.field ? [t] : []);
 export const isTrash = (actions: Action[]) => actions.some((a) => a.type === 'trash');
+/** A test the daemon will not run as things stand; its message says what to do, so it is shown where the result would be. */
+export const testRefused = (e: unknown): e is ApiError => e instanceof ApiError && (e.code === 'no_composer_model' || e.code === 'account_offline');
 
 export const list = async () => (await api<S['RuleList']>('GET', '/rules')).items;
 export const patch = async (id: number, p: RulePatch) => (await api<S['RuleEnvelope']>('PATCH', `/rules/${id}`, p)).rule;
@@ -45,7 +47,7 @@ export const importYaml = async (file: Blob): Promise<ImportResult> =>
 /**
  * Runs saved (`rule_ids`) or draft (`rules`) rules over the account's recent mail without acting.
  * Up to 200 emails the daemon answers in one body; above that it streams, and `onProgress`
- * is called as it goes.
+ * is called as it goes. A run that fails midway throws the error the stream carried.
  */
 export async function test(req: Omit<S['TestRequest'], 'folder'>, onProgress?: (p: TestProgress) => void): Promise<TestResult> {
   const res = await request('POST', '/rules/test', { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, JSON.stringify(req));
@@ -64,6 +66,10 @@ export async function test(req: Omit<S['TestRequest'], 'folder'>, onProgress?: (
       const data = /^data: ?(.*)$/m.exec(frame)?.[1];
       if (event === 'done') return JSON.parse(data!);
       if (event === 'progress') onProgress?.(JSON.parse(data!));
+      if (event === 'error') {
+        const { error }: S['ErrorBody'] = JSON.parse(data!);
+        throw new ApiError(502, error.code, error.message, error.path);
+      }
     }
   }
 }

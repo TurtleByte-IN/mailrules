@@ -1,8 +1,7 @@
 <script lang="ts">
   import { router } from 'svelte-spa-router';
-  import { ApiError, notBuilt } from '../lib/api/client';
+  import { ApiError } from '../lib/api/client';
   import * as rulesApi from '../lib/api/rules';
-  import NotBuilt from '../lib/components/NotBuilt.svelte';
   import { confidence, day } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
@@ -16,8 +15,9 @@
 
   let dragId = $state(0);
   let testing = $state(false);
-  let result = $state('');
-  let testNotBuilt = $state(false);
+  // The last test: `ok` is false for one the daemon would not run, and `text` is empty when
+  // there is no mailbox to test on.
+  let result = $state<{ text: string; ok: boolean } | null>(null);
   // The slider's value while it is being dragged; saved on release.
   let thr = $state<number | null>(null);
   const sure = $derived(thr ?? sel?.min_confidence ?? null);
@@ -32,8 +32,7 @@
 
   function select(id: number) {
     selectedId = id;
-    result = '';
-    testNotBuilt = false;
+    result = null;
     refused = null;
   }
 
@@ -65,19 +64,21 @@
 
   async function test() {
     const account = sel.account_id ?? accounts.list[0]?.id;
-    if (account === undefined) return flash('Connect a mailbox first: a test runs on its recent mail');
+    if (account === undefined) return void (result = { text: '', ok: false });
     testing = true;
-    result = '';
-    testNotBuilt = false;
+    result = null;
     try {
       const t = await rulesApi.test({ account_id: Number(account), rule_ids: [sel.id], limit: 200 });
-      result =
-        `Matched ${t.matched} of your last ${t.tested} emails. ` +
-        (t.model_calls
-          ? `${t.model_calls} went to the decision model; ${t.results.filter((r) => r.review).length} below your threshold would go to review.`
-          : 'Decided by conditions alone: no model calls.');
+      result = {
+        ok: true,
+        text:
+          `Matched ${t.matched} of your last ${t.tested} emails. ` +
+          (t.model_calls
+            ? `${t.model_calls} went to the decision model; ${t.results.filter((r) => r.review).length} below your threshold would go to review.`
+            : 'Decided by conditions alone: no model calls.'),
+      };
     } catch (e) {
-      if (notBuilt(e)) testNotBuilt = true;
+      if (rulesApi.testRefused(e)) result = { text: e.message, ok: false };
       else fail(e);
     } finally {
       testing = false;
@@ -102,7 +103,7 @@
     const { id, name } = sel;
     try {
       await remove(id);
-      result = '';
+      result = null;
       flash(name + ' deleted');
     } catch (e) {
       fail(e);
@@ -289,10 +290,12 @@
           <button type="button" class="btn" onclick={undo}>Undo what it did today</button>
           <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash" onclick={del}>Delete rule</button>
         </div>
-        {#if testNotBuilt}
-          <NotBuilt what="Testing a rule" />
+        {#if result?.ok}
+          <div role="status" class="rounded bg-selected p-3 text-[13px]">{result.text}</div>
+        {:else if result?.text}
+          <div role="alert" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{result.text}</div>
         {:else if result}
-          <div role="status" class="rounded bg-selected p-3 text-[13px]">{result}</div>
+          <div role="status" class="rounded bg-selected p-3 text-[13px]"><a href="#/accounts" class="font-semibold underline">Connect a mailbox</a> to test rules.</div>
         {/if}
       </aside>
     {/if}
