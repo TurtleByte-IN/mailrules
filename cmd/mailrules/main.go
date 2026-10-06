@@ -12,10 +12,10 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/api"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
@@ -41,6 +41,8 @@ const usage = `usage: mailrules <command> [flags]
   eval      measure decider accuracy on labeled mail:
             eval --labels testdata/labeled.jsonl --decider jev,clef:clef-flash
   rules     validate a rules file, or test it over .eml files
+  dry-run   on | off: switch the global dry-run; with no argument, show it.
+            While it is on, decisions are logged and no mailbox is changed.
   version   print the version
 `
 
@@ -80,6 +82,8 @@ func run(args []string) error {
 		return eval(ctx, args[1:], os.Stdout)
 	case "rules":
 		return rulesCmd(args[1:], os.Stdout)
+	case "dry-run":
+		return dryRunCmd(ctx, args[1:], os.Getenv, os.Stdout)
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {
@@ -137,25 +141,31 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	}
 	hub := events.NewHub()
 	ctx, stopAll := context.WithCancel(ctx)
-	var supervisors sync.WaitGroup
+	supervisors := &worker.Manager{}
 	defer supervisors.Wait()
 	defer stopAll() // runs first, so Wait returns even when the HTTP server is what failed
+	// The executor is the one place that changes a mailbox. The HTTP layer (M7) will call
+	// its Undo, UndoBatch and Correct.
+	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
 	for _, acct := range accounts {
 		if acct.Status == worker.StatusPaused {
 			continue
 		}
-		sup := &worker.Supervisor{
+		supervisors.Start(ctx, &worker.Supervisor{
 			Account: acct, Store: st, Hub: hub, Open: openAccount(st, master, acct),
-			Pipeline: pipeline.Pipeline{Store: st, Router: router, Hub: hub, MinConfidence: cfg.MinConfidence, BodyChars: cfg.BodyChars},
-		}
-		supervisors.Go(func() { sup.Run(ctx) })
+			Pipeline: pipeline.Pipeline{Store: st, Router: router, Exec: exec, Hub: hub, MinConfidence: cfg.MinConfidence, BodyChars: cfg.BodyChars},
+		})
+	}
+	dryRun, err := st.DryRun(ctx, cfg.DryRun)
+	if err != nil {
+		return err
 	}
 
 	handler := api.NewHandler(api.Options{Store: st, SecureCookies: !cfg.ListensLocally()})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("listening", "listen", cfg.Listen, "version", version, "dry_run", cfg.DryRun)
+	slog.Info("listening", "listen", cfg.Listen, "version", version, "dry_run", dryRun, "accounts", len(accounts))
 
 	select {
 	case err := <-errc:
@@ -168,6 +178,38 @@ func serve(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("shut down http server: %w", err)
 	}
 	return nil
+}
+
+// dryRunCmd shows or sets the global dry-run switch. It lives in the database, so a
+// running daemon follows it from its next action on.
+func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, out io.Writer) error {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "on" && args[0] != "off") {
+		return errors.New("usage: mailrules dry-run [on|off]")
+	}
+	cfg, err := config.Load(nil, getenv)
+	if err != nil {
+		return err
+	}
+	db, err := store.Open(ctx, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := store.Migrate(ctx, db); err != nil {
+		return err
+	}
+	st := store.New(db)
+	if len(args) == 1 {
+		if err := st.SetDryRun(ctx, args[0] == "on"); err != nil {
+			return err
+		}
+	}
+	on, err := st.DryRun(ctx, cfg.DryRun)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "dry-run is %s\n", map[bool]string{true: "on: decisions are logged, no mailbox is changed", false: "off: rules change mailboxes"}[on])
+	return err
 }
 
 // openAccount returns how a supervisor connects to an account. The password is decrypted

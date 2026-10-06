@@ -230,21 +230,27 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 	}
 	rec := actions.DecisionRecord{DecisionID: dec.ID, MessageID: m.ID, Ref: m.Location()}
 	state, event := store.StateSkipped, events.MessageProcessed
+	var acts []rules.Action
 	switch {
 	case res.Review:
 		state, event = store.StateReview, events.MessageReview
-		if p.Exec != nil {
-			// The keyword only helps mail clients show the message; review works without it.
-			if _, err := p.Exec.Apply(ctx, rec, []rules.Action{{Type: actions.KindReview}}, 0); err != nil {
-				slog.WarnContext(ctx, "could not tag a message for review", "account", m.AccountID, "message", m.ID, "error", err.Error())
-			}
-		}
+		acts = []rules.Action{{Type: actions.KindReview}}
 	case len(res.Actions) > 0:
-		state = store.StateActed
-		if p.Exec != nil {
-			if _, err := p.Exec.Apply(ctx, rec, res.Actions, 0); err != nil {
-				return fmt.Errorf("apply: %w", err)
-			}
+		state, acts = store.StateActed, res.Actions
+	}
+	if p.Exec != nil && len(acts) > 0 {
+		// Live processing shares one batch per day, so "undo today" is one batch undo.
+		batch, err := p.Store.LiveBatch(ctx, p.now())
+		if err != nil {
+			return err
+		}
+		switch _, err := p.Exec.Apply(ctx, rec, acts, batch); {
+		case err == nil:
+		case res.Review:
+			// The keyword only helps mail clients show the message; review works without it.
+			slog.WarnContext(ctx, "could not tag a message for review", "account", m.AccountID, "message", m.ID, "error", err.Error())
+		default:
+			return fmt.Errorf("apply: %w", err)
 		}
 	}
 	if err := p.Store.SetMessageState(ctx, m.ID, state, m.Attempts, 0); err != nil {

@@ -52,22 +52,32 @@ type Message struct {
 	Attempts      int   // retries made after a failure
 	NextAttemptAt int64 // 0 = not waiting for the retry job
 	CreatedAt     int64
+
+	// Where the executor last left the message; zero while it is still where it arrived.
+	CurFolder      string
+	CurUIDValidity uint32
+	CurUID         uint32
 }
 
-// Location is where the message is on the server.
+// Location is where the message is on the server, as far as MailRules knows: where the
+// executor last left it, or else where it arrived.
 func (m Message) Location() mail.MsgRef {
+	if m.CurUID != 0 {
+		return mail.MsgRef{AccountID: m.AccountID, Folder: m.CurFolder, UIDValidity: m.CurUIDValidity, UID: m.CurUID}
+	}
 	return mail.MsgRef{AccountID: m.AccountID, Folder: m.Folder, UIDValidity: m.UIDValidity, UID: m.UID}
 }
 
 const messageCols = `m.id, m.account_id, m.folder, m.uidvalidity, m.uid, COALESCE(m.message_id, ''),
 	COALESCE(m.from_addr, ''), COALESCE(m.from_domain, ''), COALESCE(m.to_addrs, '[]'), COALESCE(m.subject, ''),
 	COALESCE(m.snippet, ''), COALESCE(m.received_at, 0), COALESCE(m.list_id, ''), m.has_attachment, COALESCE(m.size, 0),
-	COALESCE(m.signals, '{}'), m.state, m.attempts, COALESCE(m.next_attempt_at, 0), m.created_at`
+	COALESCE(m.signals, '{}'), m.state, m.attempts, COALESCE(m.next_attempt_at, 0), m.created_at,
+	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0)`
 
 func messageDest(m *Message, to, signals *string) []any {
 	return []any{&m.ID, &m.AccountID, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.FromAddr, &m.FromDomain, to,
 		&m.Subject, &m.Snippet, &m.ReceivedAt, &m.ListID, &m.HasAttachment, &m.Size, signals, &m.State, &m.Attempts,
-		&m.NextAttemptAt, &m.CreatedAt}
+		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID}
 }
 
 func (m *Message) decode(to, signals string) error {
@@ -88,8 +98,19 @@ func scanMessage(row interface{ Scan(...any) error }) (Message, error) {
 
 // IngestMessage records that a message arrived, once. fresh is false when the row was
 // already there (the watcher repeats a message after a crash); the stored row is returned
-// either way.
+// either way. A known message that the executor itself put at ref (an undo back into the
+// watched folder gets a new UID) is not new mail either: its existing row is returned.
 func (s *Store) IngestMessage(ctx context.Context, ref mail.MsgRef, now int64) (m Message, fresh bool, err error) {
+	m, err = scanMessage(s.db.QueryRowContext(ctx,
+		`SELECT `+messageCols+` FROM messages m
+		 WHERE m.account_id = ? AND m.cur_folder = ? AND m.cur_uidvalidity = ? AND m.cur_uid = ?`,
+		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID))
+	if err == nil {
+		return m, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Message{}, false, fmt.Errorf("ingest message: %w", err)
+	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO messages (account_id, folder, uidvalidity, uid, created_at) VALUES (?, ?, ?, ?, ?)`,
 		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID, now)
@@ -252,10 +273,12 @@ type ActivityFilter struct {
 	Limit     int    // 0 = 50
 }
 
-// ActivityRow is a message with its latest decision; Decision is nil until one is made.
+// ActivityRow is a message with its latest decision and every action taken on it, oldest
+// first; Decision is nil until one is made.
 type ActivityRow struct {
 	Message  Message
 	Decision *Decision
+	Actions  []Action
 }
 
 // Activity lists messages, newest first, each with its latest decision.
@@ -292,6 +315,12 @@ func (s *Store) Activity(ctx context.Context, f ActivityFilter) ([]ActivityRow, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list activity: %w", err)
+	}
+	// ponytail: one query per row for its actions; pages are at most 100 rows. Join if it shows up in a profile.
+	for i := range out {
+		if out[i].Actions, err = s.MessageActions(ctx, out[i].Message.ID); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -416,37 +445,4 @@ func (s *Store) AddCorrection(ctx context.Context, userID int64, c Correction, a
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	return id, nil
-}
-
-// Action statuses, as stored in actions.status.
-const (
-	ActionDone   = "done"
-	ActionDryRun = "dry_run"
-	ActionFailed = "failed"
-	ActionUndone = "undone"
-)
-
-// Snapshot is the JSON in actions.before and actions.after: where a message was and
-// which flags it had.
-type Snapshot struct {
-	Folder      string   `json:"folder"`
-	UIDValidity uint32   `json:"uidvalidity"`
-	UID         uint32   `json:"uid"`
-	Flags       []string `json:"flags"`
-}
-
-// Action is one row of actions: one step taken (or, in dry-run, not taken) on a message.
-type Action struct {
-	ID         int64
-	DecisionID int64 // 0 = none
-	BatchID    int64 // 0 = none
-	AccountID  int64
-	Kind       string // move | trash | archive | junk | flag | unflag | read | unread | keep | review
-	Folder     string // params.folder: the destination of a move
-	Before     Snapshot
-	After      *Snapshot // nil until the action is done
-	Status     string
-	Error      string
-	CreatedAt  int64
-	UndoneAt   int64
 }

@@ -82,11 +82,15 @@ CREATE TABLE messages (
   state          TEXT NOT NULL DEFAULT 'new', -- new | decided | acted | review | skipped | error
   attempts       INTEGER NOT NULL DEFAULT 0, -- retries made after a failure
   next_attempt_at INTEGER,                  -- when the retry job runs it again; NULL = not waiting
+  cur_folder     TEXT,                      -- where the executor last left it (a move, or an undo);
+  cur_uidvalidity INTEGER,                  --   NULL = still where it arrived. Mail showing up at
+  cur_uid        INTEGER,                   --   this place in the watch folder is not new mail
   created_at     INTEGER NOT NULL,
   UNIQUE (account_id, folder, uidvalidity, uid)
 );
 CREATE INDEX messages_msgid ON messages(account_id, message_id);
 CREATE INDEX messages_state ON messages(state, created_at);
+CREATE INDEX messages_current ON messages(account_id, cur_folder, cur_uid);
 
 CREATE TABLE decisions (
   id          INTEGER PRIMARY KEY,
@@ -114,8 +118,9 @@ CREATE TABLE actions (
   id          INTEGER PRIMARY KEY,
   decision_id INTEGER REFERENCES decisions(id),
   batch_id    INTEGER REFERENCES batches(id),
+  message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  kind        TEXT NOT NULL,                -- move | trash | archive | junk | flag | unflag | read | unread | keep
+  kind        TEXT NOT NULL,                -- move | trash | archive | junk | flag | unflag | read | unread | keep | review
   params      TEXT,                         -- JSON, e.g. {"folder":"Food"}
   before      TEXT NOT NULL,                -- JSON {folder, uidvalidity, uid, flags[]}
   after       TEXT,                         -- JSON {folder, uidvalidity, uid, flags[]}
@@ -125,6 +130,7 @@ CREATE TABLE actions (
   undone_at   INTEGER
 );
 CREATE INDEX actions_batch ON actions(batch_id);
+CREATE INDEX actions_message ON actions(message_id);
 
 CREATE TABLE corrections (
   id            INTEGER PRIMARY KEY,

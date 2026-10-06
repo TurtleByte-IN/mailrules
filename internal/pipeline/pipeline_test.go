@@ -546,3 +546,110 @@ func TestLearnedSenderRule(t *testing.T) {
 		t.Errorf("user sender rule not used: %+v", row.Decision)
 	}
 }
+
+// oneBox is the executor's view of the test account.
+type oneBox struct{ mb mail.Mailbox }
+
+func (o oneBox) Mailbox(int64) (mail.Mailbox, error) { return o.mb, nil }
+func (oneBox) Lock(int64) func()                     { return func() {} }
+
+// withExecutor swaps the recording fake for the real executor, live or in dry-run.
+func (e *env) withExecutor(dryRun bool) *actions.Exec {
+	x := &actions.Exec{Store: e.st, Accounts: oneBox{e.mb}, Hub: e.p.Hub, DryRunDefault: dryRun, Now: func() time.Time { return e.now }}
+	e.p.Exec = x
+	return x
+}
+
+func TestLiveProcessingWithTheExecutor(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	x := e.withExecutor(false)
+	e.primary.DecideFunc = answer(e.food.ID, 0.9)
+
+	row := e.process("orders@swiggy.example", "order 1")
+	if loc := row.Message.Location(); loc.Folder != "Food" || len(row.Actions) != 1 || row.Actions[0].Status != store.ActionDone ||
+		row.Actions[0].DecisionID != row.Decision.ID || row.Actions[0].BatchID == 0 {
+		t.Fatalf("after processing: at %+v, actions %+v", loc, row.Actions)
+	}
+	// Every action of the day shares one live batch; the next day gets its own.
+	day1 := row.Actions[0].BatchID
+	if b, _ := e.st.Batch(ctx, day1); b.Kind != store.BatchLive {
+		t.Errorf("batch = %+v", b)
+	}
+	if again := e.process("orders@swiggy.example", "order 2"); again.Actions[0].BatchID != day1 {
+		t.Errorf("second message of the day is in batch %d, want %d", again.Actions[0].BatchID, day1)
+	}
+
+	// "Undo today": the mail comes back to the inbox under a new UID, and the watcher
+	// reports that UID. It is the same message, not new mail, and must not be sorted again.
+	if n, err := x.UndoBatch(ctx, day1); n != 2 || err != nil {
+		t.Fatalf("UndoBatch = %d, %v", n, err)
+	}
+	back, _ := e.st.Message(ctx, row.Message.ID)
+	if back.Location().Folder != "INBOX" || back.Location().UID == row.Message.UID {
+		t.Fatalf("after undo the message is at %+v", back.Location())
+	}
+	calls := len(e.primary.Requests())
+	if err := e.p.Process(ctx, back.Location()); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := e.st.Activity(ctx, store.ActivityFilter{})
+	if after, _ := e.st.Message(ctx, row.Message.ID); len(all) != 2 || len(e.primary.Requests()) != calls || after.Location() != back.Location() {
+		t.Errorf("undone mail was treated as new: %d messages, %d new model calls, now at %+v", len(all), len(e.primary.Requests())-calls, after.Location())
+	}
+	if f, _ := e.st.Folder(ctx, back.AccountID, "INBOX"); f.LastUID != back.Location().UID {
+		t.Errorf("last_uid = %d, want %d", f.LastUID, back.Location().UID)
+	}
+
+	// Later mail the same day starts a new batch (the first is undone), and so does the next day.
+	third := e.process("orders@swiggy.example", "order 3")
+	e.now = e.now.Add(24 * time.Hour)
+	fourth := e.process("orders@swiggy.example", "order 4")
+	if a, b := third.Actions[0].BatchID, fourth.Actions[0].BatchID; a == day1 || b == a || b == day1 {
+		t.Errorf("batches: day one %d, after its undo %d, next day %d", day1, a, b)
+	}
+}
+
+func TestReviewTagAndRetryWithTheExecutor(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.withExecutor(false)
+	e.fallback.DecideFunc = answer(e.food.ID, 0.5)
+	e.primary.DecideFunc = answer(e.food.ID, 0.5)
+
+	// Live: a message in review gets the keyword, as an action that can be undone.
+	row := e.process("orders@swiggy.example", "order 1")
+	flags, _ := e.mb.Flags(ctx, row.Message.Location())
+	if row.Message.State != store.StateReview || !slices.Equal(flags, []string{actions.ReviewKeyword}) ||
+		len(row.Actions) != 1 || row.Actions[0].Kind != actions.KindReview || row.Actions[0].Status != store.ActionDone {
+		t.Errorf("review live: state %s, flags %v, actions %+v", row.Message.State, flags, row.Actions)
+	}
+
+	// Dry-run: never.
+	if err := e.st.SetDryRun(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	row = e.process("orders@swiggy.example", "order 2")
+	flags, _ = e.mb.Flags(ctx, row.Message.Location())
+	if row.Message.State != store.StateReview || len(flags) != 0 || row.Actions[0].Status != store.ActionDryRun {
+		t.Errorf("review in dry-run: state %s, flags %v, actions %+v", row.Message.State, flags, row.Actions)
+	}
+	// And a rule's actions are recorded, not run.
+	e.primary.DecideFunc = answer(e.food.ID, 0.9)
+	row = e.process("orders@swiggy.example", "order 3")
+	if row.Message.State != store.StateActed || row.Message.Location().Folder != "INBOX" || row.Actions[0].Status != store.ActionDryRun || row.Actions[0].Folder != "Food" {
+		t.Errorf("dry-run: %+v, actions %+v", row.Message, row.Actions)
+	}
+
+	// Live again, on a server that cannot move: the action fails, is recorded as failed
+	// and is not retried.
+	if err := e.st.SetDryRun(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	e.mb.Caps = mail.Caps{}
+	row = e.process("orders@swiggy.example", "order 4")
+	if m := row.Message; m.State != store.StateError || m.NextAttemptAt != 0 || row.Actions[0].Status != store.ActionFailed ||
+		!strings.Contains(row.Actions[0].Error, "unsupported capability") {
+		t.Errorf("unsupported move: %+v, actions %+v", m, row.Actions)
+	}
+}

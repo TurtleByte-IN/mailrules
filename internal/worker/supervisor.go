@@ -49,6 +49,7 @@ type Supervisor struct {
 	mu     sync.Mutex
 	mb     mail.Mailbox
 	status string
+	work   sync.Mutex // held while one message (or one retry run) is processed; see Manager.Lock
 }
 
 // Mailbox returns the account's open connection, or nil while it is not connected.
@@ -218,11 +219,17 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 			}
 			// A message whose outcome could not be recorded must not be passed over: end
 			// the session, and the next one watches again from the stored position.
-			if err := p.Process(procCtx, nm.Ref); err != nil && procCtx.Err() == nil {
+			s.work.Lock()
+			err := p.Process(procCtx, nm.Ref)
+			s.work.Unlock()
+			if err != nil && procCtx.Err() == nil {
 				return err
 			}
 		case <-retry.C:
-			if _, err := p.RetryDue(procCtx); err != nil && procCtx.Err() == nil {
+			s.work.Lock()
+			_, err := p.RetryDue(procCtx)
+			s.work.Unlock()
+			if err != nil && procCtx.Err() == nil {
 				slog.ErrorContext(ctx, "the retry job failed", "account", s.Account.ID, "error", err.Error())
 			}
 		case <-rescan.C:
