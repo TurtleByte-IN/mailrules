@@ -12,15 +12,22 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/api"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
+	"github.com/TurtleByte-IN/mailrules/internal/events"
+	"github.com/TurtleByte-IN/mailrules/internal/mail"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/imap"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
+	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -94,10 +101,6 @@ func serve(ctx context.Context, cfg *config.Config) error {
 		slog.Warn("web UI is reachable from other machines; put it behind a reverse proxy with TLS", "listen", cfg.Listen)
 	}
 
-	if err := cfg.DeciderReady(); err != nil {
-		slog.Warn("no decision model yet; new mail waits in Needs review until one is set", "missing", err.Error())
-	}
-
 	db, err := store.Open(ctx, cfg.DataDir)
 	if err != nil {
 		return err
@@ -106,13 +109,49 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	if err := store.Migrate(ctx, db); err != nil {
 		return err
 	}
-
-	// Loaded here so a bad key stops startup; the account watchers that use it start in M5.
-	if _, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir); err != nil {
+	st := store.New(db)
+	master, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir)
+	if err != nil {
 		return err
 	}
 
-	handler := api.NewHandler(api.Options{Store: store.New(db), SecureCookies: !cfg.ListensLocally()})
+	var router *models.Router // nil = mail that needs a model waits in Needs review
+	if err := cfg.DeciderReady(); err != nil {
+		slog.Warn("no decision model yet; new mail that needs one waits in Needs review until it is set", "missing", err.Error())
+	} else {
+		prices, err := models.LoadPrices(cfg.PricesFile)
+		if err != nil {
+			return err
+		}
+		deps := models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}
+		if router, err = models.NewRouter(cfg, cfg.DeciderSpec(), deps, st); err != nil {
+			return err
+		}
+	}
+
+	// One supervisor per account. They stop with ctx and get a few seconds to finish
+	// queued mail; the database closes only after they have.
+	accounts, err := st.Accounts(ctx)
+	if err != nil {
+		return err
+	}
+	hub := events.NewHub()
+	ctx, stopAll := context.WithCancel(ctx)
+	var supervisors sync.WaitGroup
+	defer supervisors.Wait()
+	defer stopAll() // runs first, so Wait returns even when the HTTP server is what failed
+	for _, acct := range accounts {
+		if acct.Status == worker.StatusPaused {
+			continue
+		}
+		sup := &worker.Supervisor{
+			Account: acct, Store: st, Hub: hub, Open: openAccount(st, master, acct),
+			Pipeline: pipeline.Pipeline{Store: st, Router: router, Hub: hub, MinConfidence: cfg.MinConfidence, BodyChars: cfg.BodyChars},
+		}
+		supervisors.Go(func() { sup.Run(ctx) })
+	}
+
+	handler := api.NewHandler(api.Options{Store: st, SecureCookies: !cfg.ListensLocally()})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -131,6 +170,26 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+// openAccount returns how a supervisor connects to an account. The password is decrypted
+// for each connection and kept nowhere else.
+func openAccount(st *store.Store, master []byte, acct store.Account) func(context.Context) (mail.Mailbox, error) {
+	return func(ctx context.Context) (mail.Mailbox, error) {
+		password, err := st.AccountSecret(ctx, master, acct.ID)
+		if err != nil {
+			return nil, err
+		}
+		preset, _ := presets.Get(acct.Preset)
+		mb, err := imap.Open(ctx, imap.Config{
+			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+			Username: acct.Username, Password: password, Preset: preset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return mb, nil
+	}
+}
+
 // eval runs each named decider over a labeled file and prints its report.
 // Settings come from the environment; nothing is written to the database.
 func eval(ctx context.Context, args []string, out io.Writer) error {
@@ -143,7 +202,7 @@ func eval(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	labelsPath := fs.String("labels", "testdata/labeled.jsonl", "labeled emails and their rule set")
-	deciders := fs.String("decider", cfg.Decider, "comma-separated deciders, each name or name:model")
+	deciders := fs.String("decider", cfg.DeciderSpec(), "comma-separated deciders, each name or name:model")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

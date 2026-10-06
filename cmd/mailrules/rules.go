@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"mime"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -97,61 +95,25 @@ func testRules(rs []rules.Rule, files []string, out io.Writer) error {
 	return tw.Flush()
 }
 
-// summaryFromEML reads an .eml fixture into the type the matcher runs on.
-// ponytail: headers only, through net/mail. The body is taken as plain text
-// (no MIME decoding, no HTML-to-text), attachments are not detected and the
-// contact signals stay false. Swap this for the internal/message parser once
-// that milestone lands.
+// summaryFromEML reads an .eml file through the same parser as live mail.
+// ponytail: attachments come from the server's BODYSTRUCTURE, which a file does not have,
+// so has_attachment and attachment_ext never match here; the contact signals stay false
+// because there is no account.
 func summaryFromEML(path string) (message.Summary, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- fixture directory named on the command line
 	if err != nil {
 		return message.Summary{}, fmt.Errorf("read email: %w", err)
 	}
-	m, err := mail.ReadMessage(bytes.NewReader(data))
+	// Raw.Header and Raw.Text are read back to back, so the whole file can go in one.
+	e, err := message.Parse(&message.Raw{Header: data, Size: int64(len(data))}, 0, 2000) // the BODY_CHARS default
 	if err != nil {
 		return message.Summary{}, fmt.Errorf("parse %s: %w", path, err)
 	}
-	h := m.Header
-	body, _ := io.ReadAll(io.LimitReader(m.Body, 2000)) // the BODY_CHARS default
-	addrs := func(key string) []string {
-		list, _ := h.AddressList(key)
-		out := make([]string, 0, len(list))
-		for _, a := range list {
-			out = append(out, strings.ToLower(a.Address))
-		}
-		return out
+	if e.From == "" {
+		return message.Summary{}, fmt.Errorf("parse %s: not an email: it has no From header", path)
 	}
-
-	e := message.Summary{
-		To:          addrs("To"),
-		Cc:          addrs("Cc"),
-		DeliveredTo: addrs("Delivered-To"),
-		Body:        string(body),
-		Headers:     h,
-		SizeKB:      float64(len(data)) / 1024,
-		DMARC:       "none",
+	if dates := e.Headers["Date"]; len(dates) > 0 {
+		e.ReceivedAt, _ = mail.ParseDate(dates[0]) // a file has no server arrival time
 	}
-	if from, err := mail.ParseAddress(h.Get("From")); err == nil {
-		e.From, e.FromName = strings.ToLower(from.Address), from.Name
-		local, domain, _ := strings.Cut(e.From, "@")
-		e.FromDomain = domain
-		e.IsNoreply = strings.Contains(strings.NewReplacer("-", "", "_", "", ".", "").Replace(local), "noreply")
-	}
-	if e.Subject, err = new(mime.WordDecoder).DecodeHeader(h.Get("Subject")); err != nil {
-		e.Subject = h.Get("Subject")
-	}
-	e.ReceivedAt, _ = h.Date()
-	if _, id, ok := strings.Cut(h.Get("List-Id"), "<"); ok {
-		e.ListID = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(id), ">"))
-	}
-	precedence := strings.ToLower(h.Get("Precedence"))
-	e.IsBulk = h.Get("List-Unsubscribe") != "" || precedence == "bulk" || precedence == "list"
-	if _, v, ok := strings.Cut(strings.ToLower(h.Get("Authentication-Results")), "dmarc="); ok {
-		if strings.HasPrefix(v, "pass") {
-			e.DMARC = "pass"
-		} else if strings.HasPrefix(v, "fail") {
-			e.DMARC = "fail"
-		}
-	}
-	return e, nil
+	return *e, nil
 }

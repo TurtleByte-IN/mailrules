@@ -75,12 +75,17 @@ func RenderEmail(e message.Summary) string {
 	return b.String()
 }
 
-// ruleText renders a candidate the way every provider sees it.
+// ruleText renders a candidate the way every provider sees it:
+// "name: intent (unless: exceptions)".
 func ruleText(c Candidate) string {
-	if c.Exceptions == "" {
-		return c.Intent
+	s := c.Intent
+	if c.Name != "" {
+		s = c.Name + ": " + s
 	}
-	return c.Intent + " (unless: " + c.Exceptions + ")"
+	if c.Exceptions != "" {
+		s += " (unless: " + c.Exceptions + ")"
+	}
+	return s
 }
 
 // decidePrompt builds the generative-model prompt for one decision: the system
@@ -139,7 +144,7 @@ func decidePrompt(req DecideRequest) (system, user string, schema json.RawMessag
 func reasonFor(cands []Candidate, d Decision) string {
 	for _, c := range cands {
 		if c.RuleID == d.RuleID {
-			return fmt.Sprintf("Matched rule %d: %s (%.2f)", c.RuleID, c.Intent, d.Confidence)
+			return fmt.Sprintf("Matched %q: %s (%.2f)", c.Name, c.Intent, d.Confidence)
 		}
 	}
 	return fmt.Sprintf("No rule matched (%.2f)", d.Confidence)

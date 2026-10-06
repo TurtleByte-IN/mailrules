@@ -20,6 +20,7 @@ type Config struct {
 	DryRun        bool
 
 	Decider          string
+	DeciderModel     string
 	FallbackModel    string
 	ComposerModel    string
 	EscalateBelow    float64
@@ -64,6 +65,7 @@ func Load(args []string, getenv func(string) string) (*Config, error) {
 	fs.BoolVar(&c.DryRun, flagName("MAILRULES_DRY_RUN"), true, "log decisions without changing mailboxes (env MAILRULES_DRY_RUN)")
 	envs = append(envs, "MAILRULES_DRY_RUN")
 	str(&c.Decider, "MAILRULES_DECIDER", "jev", "jev, clef, anthropic, openai or ollama")
+	str(&c.DeciderModel, "MAILRULES_DECIDER_MODEL", "", "the decider's model; empty = the provider's default (openai and ollama have none)")
 	str(&c.FallbackModel, "MAILRULES_FALLBACK_MODEL", "claude-haiku-4-5", "model used when the decider is unsure; empty disables escalation")
 	str(&c.ComposerModel, "MAILRULES_COMPOSER_MODEL", "claude-haiku-4-5", "generative model for the rule composer")
 	fs.Float64Var(&c.EscalateBelow, flagName("MAILRULES_ESCALATE_BELOW"), 0.75, "decider confidence below this escalates (env MAILRULES_ESCALATE_BELOW)")
@@ -117,6 +119,9 @@ func (c *Config) Validate() error {
 	default:
 		bad("MAILRULES_DECIDER=%q must be jev, clef, anthropic, openai or ollama", c.Decider)
 	}
+	if (c.Decider == "openai" || c.Decider == "ollama") && c.DeciderModel == "" {
+		bad("MAILRULES_DECIDER=%s needs MAILRULES_DECIDER_MODEL: that provider has no default model", c.Decider)
+	}
 	if c.EscalateBelow < 0 || c.EscalateBelow > 1 {
 		bad("MAILRULES_ESCALATE_BELOW=%v must be between 0 and 1", c.EscalateBelow)
 	}
@@ -135,6 +140,14 @@ func (c *Config) Validate() error {
 		bad("LOG_LEVEL=%q must be debug, info, warn or error", c.LogLevel)
 	}
 	return errors.Join(errs...)
+}
+
+// DeciderSpec is the decider as models.NewRouter takes it: "name" or "name:model".
+func (c *Config) DeciderSpec() string {
+	if c.DeciderModel == "" {
+		return c.Decider
+	}
+	return c.Decider + ":" + c.DeciderModel
 }
 
 // DeciderReady reports what the chosen decider still needs before it can run.

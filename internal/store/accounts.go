@@ -182,33 +182,16 @@ func (s *Store) SetAccountCapabilities(ctx context.Context, id int64, capabiliti
 	return nil
 }
 
-// DeleteAccount wipes an account with its secret, folders, contacts, messages, decisions
-// and actions in one transaction. Rules scoped to the account are not touched, so the
-// delete fails while any exist.
+// DeleteAccount wipes an account with its secret, folders, contacts, messages, decisions,
+// actions, corrections and the rules scoped to it. Every one of those references the
+// account with ON DELETE CASCADE, so the one statement is the whole transaction.
 func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("delete account: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	// These two have no ON DELETE CASCADE; folders, contacts, messages and decisions do.
-	for _, q := range []string{
-		`DELETE FROM actions WHERE account_id = ?`,
-		`DELETE FROM corrections WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, id); err != nil {
-			return fmt.Errorf("delete account: %w", err)
-		}
-	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("delete account: %w", err)
 	}
 	return nil
 }

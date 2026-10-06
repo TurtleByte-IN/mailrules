@@ -48,7 +48,7 @@ CREATE TABLE folders (
 CREATE TABLE rules (
   id             INTEGER PRIMARY KEY,
   user_id        INTEGER NOT NULL REFERENCES users(id),
-  account_id     INTEGER REFERENCES accounts(id),  -- NULL = all accounts
+  account_id     INTEGER REFERENCES accounts(id) ON DELETE CASCADE,  -- NULL = all accounts
   name           TEXT NOT NULL,
   said           TEXT,                      -- user's original wording
   intent         TEXT,                      -- optimized plain-English intent; NULL = condition-only
@@ -80,6 +80,8 @@ CREATE TABLE messages (
   size           INTEGER,
   signals        TEXT,                      -- JSON: bulk, noreply, dmarc, replied_before ...
   state          TEXT NOT NULL DEFAULT 'new', -- new | decided | acted | review | skipped | error
+  attempts       INTEGER NOT NULL DEFAULT 0, -- retries made after a failure
+  next_attempt_at INTEGER,                  -- when the retry job runs it again; NULL = not waiting
   created_at     INTEGER NOT NULL,
   UNIQUE (account_id, folder, uidvalidity, uid)
 );
@@ -90,7 +92,7 @@ CREATE TABLE decisions (
   id          INTEGER PRIMARY KEY,
   message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   stage       TEXT NOT NULL,                -- sender | condition | decider | fallback | none
-  rule_id     INTEGER REFERENCES rules(id),
+  rule_id     INTEGER REFERENCES rules(id) ON DELETE SET NULL,
   rule_version INTEGER,
   confidence  REAL,
   reason      TEXT,
@@ -112,7 +114,7 @@ CREATE TABLE actions (
   id          INTEGER PRIMARY KEY,
   decision_id INTEGER REFERENCES decisions(id),
   batch_id    INTEGER REFERENCES batches(id),
-  account_id  INTEGER NOT NULL,
+  account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   kind        TEXT NOT NULL,                -- move | trash | archive | junk | flag | unflag | read | unread | keep
   params      TEXT,                         -- JSON, e.g. {"folder":"Food"}
   before      TEXT NOT NULL,                -- JSON {folder, uidvalidity, uid, flags[]}
@@ -126,9 +128,9 @@ CREATE INDEX actions_batch ON actions(batch_id);
 
 CREATE TABLE corrections (
   id            INTEGER PRIMARY KEY,
-  message_id    INTEGER NOT NULL REFERENCES messages(id),
-  wrong_rule_id INTEGER REFERENCES rules(id),
-  right_rule_id INTEGER REFERENCES rules(id),  -- NULL = keep in inbox
+  message_id    INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  wrong_rule_id INTEGER REFERENCES rules(id) ON DELETE SET NULL,
+  right_rule_id INTEGER REFERENCES rules(id) ON DELETE SET NULL,  -- NULL = keep in inbox
   example       TEXT NOT NULL,              -- JSON summary used as a few-shot example
   created_at    INTEGER NOT NULL
 );
@@ -138,7 +140,7 @@ CREATE TABLE sender_rules (
   user_id    INTEGER NOT NULL REFERENCES users(id),
   match_type TEXT NOT NULL,                 -- address | domain
   value      TEXT NOT NULL,
-  rule_id    INTEGER REFERENCES rules(id),  -- route to this rule's actions
+  rule_id    INTEGER REFERENCES rules(id) ON DELETE CASCADE,  -- route to this rule's actions
   verdict    TEXT NOT NULL,                 -- route | keep | block
   source     TEXT NOT NULL,                 -- user | learned
   hits       INTEGER NOT NULL DEFAULT 0,

@@ -38,8 +38,8 @@ var testEmail = message.Summary{
 var testRequest = DecideRequest{
 	Email: testEmail,
 	Candidates: []Candidate{
-		{RuleID: 12, Intent: "Food delivery order updates", Exceptions: "it is a promotion"},
-		{RuleID: 15, Intent: "Invoices and receipts"},
+		{RuleID: 12, Name: "Food", Intent: "Food delivery order updates", Exceptions: "it is a promotion"},
+		{RuleID: 15, Name: "Receipts", Intent: "Invoices and receipts"},
 	},
 	Examples: []learn.Example{
 		{Email: message.Summary{From: "billing@brightgrid.example", FromDomain: "brightgrid.example", Subject: "Your bill", Body: "Bill attached.", HasAttachment: true}, RightRuleID: 15},
@@ -434,7 +434,7 @@ func TestAllow(t *testing.T) {
 		{"confidence clamped high", Decision{12, 1.7, "r"}, Decision{12, 1, "r"}},
 		{"confidence clamped low", Decision{12, -1, "r"}, Decision{12, 0, "r"}},
 		{"NaN confidence", Decision{12, math.NaN(), "r"}, Decision{12, 0, "r"}},
-		{"reason synthesized", Decision{12, 0.93, ""}, Decision{12, 0.93, "Matched rule 12: Food delivery order updates (0.93)"}},
+		{"reason synthesized", Decision{12, 0.93, ""}, Decision{12, 0.93, `Matched "Food": Food delivery order updates (0.93)`}},
 		{"none reason synthesized", Decision{0, 0.5, " "}, Decision{0, 0.5, "No rule matched (0.50)"}},
 		{"reason cut to 140", Decision{12, 0.9, strings.Repeat("é", 200)}, Decision{12, 0.9, strings.Repeat("é", 140)}},
 	}
@@ -460,7 +460,7 @@ func TestLLMDeciderWithFakeGenerator(t *testing.T) {
 	if err != nil || d != (Decision{15, 0.8, "A bill."}) {
 		t.Fatalf("decision = %+v, %v", d, err)
 	}
-	if !strings.Contains(system, untrustedLine) || !strings.Contains(system, `<rule id="12">Food delivery order updates (unless: it is a promotion)</rule>`) {
+	if !strings.Contains(system, untrustedLine) || !strings.Contains(system, `<rule id="12">Food: Food delivery order updates (unless: it is a promotion)</rule>`) {
 		t.Errorf("system prompt lacks the untrusted-data line or a rule:\n%s", system)
 	}
 	if strings.Contains(system, "<email>\n") {

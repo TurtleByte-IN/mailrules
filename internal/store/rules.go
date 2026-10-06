@@ -137,27 +137,15 @@ func (s *Store) Rules(ctx context.Context, userID int64) ([]rules.Rule, error) {
 	return out, nil
 }
 
-// DeleteRule removes a rule and the sender rules that route to it. It fails
-// once decisions or corrections reference the rule, because the schema keeps
-// that history; switch such a rule off instead.
+// DeleteRule removes a rule. The schema takes the sender rules that route to it along
+// (ON DELETE CASCADE) and keeps its decisions and corrections, with their rule set to NULL.
 func (s *Store) DeleteRule(ctx context.Context, userID, id int64) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("delete rule: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM sender_rules WHERE rule_id = ? AND user_id = ?`, id, userID); err != nil {
-		return fmt.Errorf("delete rule: %w", err)
-	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM rules WHERE id = ? AND user_id = ?`, id, userID)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM rules WHERE id = ? AND user_id = ?`, id, userID)
 	if err != nil {
 		return fmt.Errorf("delete rule: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("delete rule: %w", err)
 	}
 	return nil
 }

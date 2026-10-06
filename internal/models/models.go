@@ -40,6 +40,7 @@ func (e *StatusError) Is(target error) bool {
 // Candidate is one intent rule the email might match.
 type Candidate struct {
 	RuleID     int64
+	Name       string // the rule's name, shown to models and in the synthesized reason
 	Intent     string // plain-English intent
 	Exceptions string // rendered "unless" text, may be empty
 }

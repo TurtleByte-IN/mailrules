@@ -121,7 +121,7 @@ func Evaluate(ctx context.Context, r *Router, l *Labels) Report {
 	cands := make([]Candidate, 0, len(l.Rules))
 	for _, rule := range l.Rules {
 		names[rule.ID] = rule.Name
-		cands = append(cands, Candidate{RuleID: rule.ID, Intent: rule.Intent, Exceptions: rule.Exceptions})
+		cands = append(cands, Candidate{RuleID: rule.ID, Name: rule.Name, Intent: rule.Intent, Exceptions: rule.Exceptions})
 	}
 	for _, e := range l.Emails {
 		res, err := r.Route(ctx, DecideRequest{Email: e.Email, Candidates: cands})

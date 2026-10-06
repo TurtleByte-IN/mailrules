@@ -59,6 +59,9 @@ func TestValidate(t *testing.T) {
 		{"both master keys", map[string]string{"MAILRULES_MASTER_KEY": "a", "MAILRULES_MASTER_KEY_FILE": "b"}, []string{"only one of"}},
 		{"bad log level", map[string]string{"LOG_LEVEL": "loud"}, []string{"LOG_LEVEL"}},
 		{"empty fallback disables escalation", map[string]string{"MAILRULES_FALLBACK_MODEL": ""}, nil},
+		{"openai needs a model", map[string]string{"MAILRULES_DECIDER": "openai"}, []string{"MAILRULES_DECIDER=openai needs MAILRULES_DECIDER_MODEL"}},
+		{"ollama needs a model", map[string]string{"MAILRULES_DECIDER": "ollama"}, []string{"MAILRULES_DECIDER=ollama needs MAILRULES_DECIDER_MODEL"}},
+		{"ollama with a model", map[string]string{"MAILRULES_DECIDER": "ollama", "MAILRULES_DECIDER_MODEL": "llama3.2"}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -128,5 +131,15 @@ func TestListensLocally(t *testing.T) {
 		if got := (&Config{Listen: addr}).ListensLocally(); got != want {
 			t.Errorf("%s: got %v want %v", addr, got, want)
 		}
+	}
+}
+
+func TestDeciderSpec(t *testing.T) {
+	c, _ := Load([]string{"--decider-model", "clef-flash"}, env(map[string]string{"MAILRULES_DECIDER": "clef"}))
+	if got := c.DeciderSpec(); got != "clef:clef-flash" {
+		t.Errorf("spec = %q", got)
+	}
+	if c, _ = Load(nil, env(nil)); c.DeciderSpec() != "jev" {
+		t.Errorf("default spec = %q", c.DeciderSpec())
 	}
 }
