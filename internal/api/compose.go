@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
@@ -46,6 +47,9 @@ func noModel(w http.ResponseWriter) {
 
 // modelFail answers for an error from the composer or the tester.
 func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
+	if clientGone(w, r) {
+		return
+	}
 	switch {
 	case errors.Is(err, settings.ErrNoComposer):
 		noModel(w)
@@ -119,13 +123,20 @@ func (s *server) compose(w http.ResponseWriter, r *http.Request, text string, ac
 		return composer.Output{}, false
 	}
 	c := composer.Composer{Store: s.store, Gen: gen, Now: s.now, BodyChars: s.Settings.Env.BodyChars}
+	began := time.Now()
+	slog.InfoContext(r.Context(), "compose started", "account", accountID, "reoptimize", rule != nil, "text_chars", len([]rune(text)))
 	out, err := c.Compose(r.Context(), composer.Request{UserID: user(r).ID, Text: strings.TrimSpace(text), Rule: rule,
 		Account: acct, Mailbox: mb, Decider: s.testDecider(r)})
 	s.Hub.Publish(events.UsageUpdated, nil)
 	if err != nil {
+		if r.Context().Err() == nil {
+			slog.WarnContext(r.Context(), "compose failed", "account", accountID, "duration_ms", time.Since(began).Milliseconds(), "error", err.Error())
+		}
 		s.modelFail(w, r, err)
 		return composer.Output{}, false
 	}
+	slog.InfoContext(r.Context(), "compose finished", "account", accountID, "drafts", len(out.Drafts), "unparsed", len(out.Unparsed),
+		"duration_ms", time.Since(began).Milliseconds())
 	return out, true
 }
 
@@ -296,13 +307,25 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"items": items})
 }
 
-// progressEvery is how many tested messages pass between two progress events.
-const progressEvery = 25
+// progressSteps is about how many progress events a test sends, however many emails it
+// reads: a 20-email run reports every email, a 2,000-email run every 20th.
+const progressSteps = 100
+
+// wantsStream reports whether the client asked for an event stream: its Accept header
+// names text/event-stream. A client that does not gets one JSON body.
+func wantsStream(r *http.Request) bool {
+	for _, part := range strings.Split(strings.Join(r.Header.Values("Accept"), ","), ",") {
+		if mediaType, _, _ := strings.Cut(part, ";"); strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream") {
+			return true
+		}
+	}
+	return false
+}
 
 // handleRulesTest runs saved or draft rules over an account's recent mail and reports
-// what each email would get. It reads the mailbox and changes nothing. Up to
-// composer.DefaultLimit messages the answer is one JSON body; above that it is an event
-// stream of progress events, then the result.
+// what each email would get. It reads the mailbox and changes nothing. A client that
+// accepts text/event-stream gets progress events, from 0 of N once the mail is listed,
+// then the result; any other client gets the result as one JSON body.
 func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		AccountID int64             `json:"account_id"`
@@ -387,19 +410,13 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t := composer.Tester{Store: s.store, Mailbox: mb, AccountID: acct.ID, Decider: decider, BodyChars: s.Settings.Env.BodyChars}
-	if limit <= composer.DefaultLimit {
-		res, err := t.Run(ctx, set, senders, in.Folder, limit, nil)
-		s.testDone(res)
-		if err != nil {
-			s.modelFail(w, r, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, res)
-		return
-	}
+	stream := wantsStream(r)
+	began := time.Now()
+	slog.InfoContext(ctx, "rule test started", "account", acct.ID, "folder", in.Folder, "limit", limit,
+		"rules", len(set), "sender_rules", len(senders), "stream", stream)
 
-	// A long run streams. The headers go out with the first event, so a run that fails
-	// before any message was tested (no such folder) is still answered as plain JSON.
+	// The headers of a stream go out with the first event, so a run that fails before the
+	// mail is listed (no such folder) is still answered as plain JSON.
 	rc := http.NewResponseController(w)
 	started := false
 	send := func(event string, v any) {
@@ -414,26 +431,46 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 		_ = rc.Flush()
 	}
-	res, err := t.Run(ctx, set, senders, in.Folder, limit, func(done, total int) {
-		if done%progressEvery == 0 || done == total {
-			send("progress", map[string]int{"done": done, "total": total})
+	var seen composer.Progress
+	tenth := -1
+	res, err := t.Run(ctx, set, senders, in.Folder, limit, func(p composer.Progress) {
+		seen = p
+		if stream && (p.Done%max(1, p.Total/progressSteps) == 0 || p.Done == p.Total) {
+			send("progress", map[string]int{"done": p.Done, "total": p.Total, "model_calls": p.ModelCalls})
+		}
+		if at := p.Done * 10 / max(1, p.Total); at != tenth {
+			tenth = at
+			slog.DebugContext(ctx, "rule test progress", "account", acct.ID, "done", p.Done, "total", p.Total, "model_calls", p.ModelCalls,
+				"duration_ms", time.Since(began).Milliseconds())
 		}
 	})
-	s.testDone(res)
+	if seen.ModelCalls > 0 {
+		s.Hub.Publish(events.UsageUpdated, nil) // the stats screens may show the calls the test booked
+	}
+	took := time.Since(began).Milliseconds()
 	switch {
 	case err == nil:
-		send("done", res)
-	case !started:
-		s.modelFail(w, r, err)
+		slog.InfoContext(ctx, "rule test finished", "account", acct.ID, "folder", in.Folder, "limit", limit, "rules", len(set),
+			"tested", res.Tested, "matched", res.Matched, "model_calls", res.ModelCalls, "cost_usd", res.CostUSD, "duration_ms", took)
+		if stream {
+			send("done", res)
+		} else {
+			writeJSON(w, http.StatusOK, res)
+		}
+	case ctx.Err() != nil: // the client dropped the request, and nobody is left to answer
+		slog.InfoContext(ctx, fmt.Sprintf("rule test cancelled by the client after %d of %d", seen.Done, seen.Total),
+			"account", acct.ID, "folder", in.Folder, "limit", limit, "done", seen.Done, "total", seen.Total,
+			"model_calls", seen.ModelCalls, "duration_ms", took)
+		if !started {
+			w.WriteHeader(statusClientClosed)
+		}
 	default:
-		slog.WarnContext(ctx, "a rule test failed midway", "account", acct.ID, "error", err.Error())
-		send("error", map[string]apiError{"error": {Code: "test_failed", Message: "The test stopped: the mail server or the AI model failed. Try again."}})
-	}
-}
-
-// testDone tells the stats screens that a test may have recorded model calls.
-func (s *server) testDone(res composer.Result) {
-	if res.ModelCalls > 0 {
-		s.Hub.Publish(events.UsageUpdated, nil)
+		slog.WarnContext(ctx, "rule test failed", "account", acct.ID, "folder", in.Folder, "limit", limit, "done", seen.Done,
+			"total", seen.Total, "model_calls", seen.ModelCalls, "duration_ms", took, "error", err.Error())
+		if started {
+			send("error", map[string]apiError{"error": {Code: "test_failed", Message: "The test stopped: the mail server or the AI model failed. Try again."}})
+		} else {
+			s.modelFail(w, r, err)
+		}
 	}
 }

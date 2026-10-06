@@ -17,6 +17,8 @@ export interface Scope {
 
 export const cleanup = $state<{
   phase: Phase;
+  /** A preview is being counted: the daemon reads every email of the selection and reports nothing until it is through. */
+  previewing: boolean;
   scope: Scope;
   /** Folders of the chosen mailbox. */
   folders: cleanupApi.Folder[];
@@ -33,6 +35,7 @@ export const cleanup = $state<{
   error: string;
 }>({
   phase: 'idle',
+  previewing: false,
   scope: { accountId: '', folder: 'INBOX', range: '90' },
   folders: [],
   preview: null,
@@ -102,6 +105,7 @@ export function setScope(patch: Partial<Scope>) {
   }
   cleanup.preview = null;
   cleanup.request = null;
+  cleanup.previewing = false;
   cleanup.phase = 'idle';
 }
 
@@ -109,6 +113,7 @@ export async function preview() {
   if (cleanup.phase === 'running') return;
   const at = edits;
   const request = toRequest(cleanup.scope);
+  cleanup.previewing = true;
   try {
     const p = await cleanupApi.preview(request);
     if (at !== edits) return;
@@ -117,6 +122,9 @@ export async function preview() {
     cleanup.phase = 'previewed';
   } catch (e) {
     fail(e);
+  } finally {
+    // An answer for a scope that has since changed leaves the flag to the preview that replaced it.
+    if (at === edits) cleanup.previewing = false;
   }
 }
 
@@ -142,6 +150,7 @@ export async function run() {
 function follow(b: cleanupApi.Batch) {
   // A preview still on its way must not land on a run.
   edits++;
+  cleanup.previewing = false;
   cleanup.phase = 'running';
   cleanup.batch = b;
   // batch.progress moves the bar; the poll covers a stream that is closed or missed an event.

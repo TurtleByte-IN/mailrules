@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError } from './client';
-import { exportYaml, importYaml, test, testRefused, undo, type TestResult } from './rules';
+import { exportYaml, importYaml, limitRefused, test, testRefused, undo, TEST_LIMIT, type TestResult } from './rules';
 
 function respond(status: number, body: BodyInit | null, type = 'application/json') {
   const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(body, { status, headers: { 'Content-Type': type } }));
@@ -51,15 +51,31 @@ it('reads a test answered in one body', async () => {
   expect(f.mock.calls[0][1].body).toBe('{"account_id":1,"rule_ids":[4],"limit":200}');
 });
 
+it('asks for an event stream, so the daemon reports progress at any size', async () => {
+  const f = respond(200, JSON.stringify(done));
+  await test({ account_id: 1, limit: 20 });
+  expect(f.mock.calls[0][1].headers).toMatchObject({ Accept: 'application/json, text/event-stream' });
+});
+
 it('follows a streamed test: progress events, then the result', async () => {
   // Cut mid-frame, the way a network delivers it.
-  const stream = `event: progress\ndata: {"done":100,"total":500}\n\nevent: progress\ndata: {"done":500,"total":500}\n\nevent: done\ndata: ${JSON.stringify(done)}\n\n`;
+  const stream = `event: progress\ndata: {"done":0,"total":500,"model_calls":0}\n\nevent: progress\ndata: {"done":500,"total":500,"model_calls":3}\n\nevent: done\ndata: ${JSON.stringify(done)}\n\n`;
   const chunks = [stream.slice(0, 30), stream.slice(30, 95), stream.slice(95)].map((c) => new TextEncoder().encode(c));
   respond(200, new ReadableStream({ start: (c) => (chunks.forEach((x) => c.enqueue(x)), c.close()) }), 'text/event-stream');
   const progress = vi.fn();
 
   expect(await test({ account_id: 1, limit: 500 }, progress)).toEqual(done);
-  expect(progress.mock.calls).toEqual([[{ done: 100, total: 500 }], [{ done: 500, total: 500 }]]);
+  expect(progress.mock.calls).toEqual([[{ done: 0, total: 500, model_calls: 0 }], [{ done: 500, total: 500, model_calls: 3 }]]);
+});
+
+it('throws a refused number as the daemon says it, whatever the client accepts', async () => {
+  const message = `The limit must be between 1 and ${TEST_LIMIT.max}.`;
+  respond(400, JSON.stringify({ error: { code: 'invalid_input', message, path: 'limit' } }));
+  const thrown = await test({ account_id: 1, limit: 9999 }).catch((e) => e);
+  expect(thrown).toMatchObject({ status: 400, message });
+  expect(limitRefused(thrown)).toBe(true);
+  expect(limitRefused(new ApiError(400, 'invalid_input', 'x', 'folder'))).toBe(false);
+  expect(limitRefused(new Error('x'))).toBe(false);
 });
 
 it('fails a streamed test that ends without a result', async () => {

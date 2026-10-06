@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,17 @@ func (r reply) object(t *testing.T) map[string]any {
 
 func (c *client) do(method, path, body string) reply {
 	c.t.Helper()
-	req := httptest.NewRequestWithContext(c.t.Context(), method, path, strings.NewReader(body))
+	return c.send(c.t.Context(), method, path, body, nil)
+}
+
+// send is do with a request context of its own (cancel it to play a client that drops the
+// request) and extra request headers.
+func (c *client) send(ctx context.Context, method, path, body string, header http.Header) reply {
+	c.t.Helper()
+	req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
+	for name, values := range header {
+		req.Header[name] = values
+	}
 	for name, value := range c.cookies {
 		req.AddCookie(&http.Cookie{Name: name, Value: value})
 	}

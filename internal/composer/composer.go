@@ -129,7 +129,7 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 	system, user, schema := prompt(req.Text, existing, folders, req.Rule)
 
 	var raw json.RawMessage
-	usage, err := c.Gen.Generate(ctx, system, user, schema, &raw)
+	usage, err := c.Gen.Generate(models.WithPurpose(ctx, "compose"), system, user, schema, &raw)
 	now := time.Now
 	if c.Now != nil {
 		now = c.Now

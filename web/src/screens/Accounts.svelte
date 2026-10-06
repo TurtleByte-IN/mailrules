@@ -148,7 +148,7 @@
               </label>
               <span class="flex flex-[1_1_100%] justify-end gap-2">
                 <button type="button" class="btn" onclick={closeEdit}>Cancel</button>
-                <button class="btn-primary" disabled={form.busy}>Save</button>
+                <button class="btn-primary" disabled={form.busy}>{form.busy ? 'Saving…' : 'Save'}</button>
               </span>
             </form>
           {:else}

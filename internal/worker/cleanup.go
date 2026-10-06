@@ -78,6 +78,7 @@ func (m *Manager) Cleanup(ctx context.Context, c Cleanup) (store.Batch, error) {
 		return store.Batch{}, err
 	}
 	started = true
+	slog.InfoContext(ctx, "cleanup started", "account", c.AccountID, "batch", batch.ID, "folder", c.Folder, "limit", c.Limit, "messages", len(refs))
 	m.wg.Go(func() {
 		defer finish()
 		s.cleanup(r.ctx, mb, batch.ID, refs)
@@ -93,11 +94,17 @@ func (s *Supervisor) cleanup(ctx context.Context, mb mail.Mailbox, batchID int64
 	p.Rediscover = func(ctx context.Context) error { return s.discover(ctx, mb) }
 	var handled, tokens int
 	var cost float64
+	began := time.Now()
+	var total struct { // what the whole run did; the counters above are cleared at each report
+		handled, tokens int
+		cost            float64
+	}
 	p.Spent = func(t int, c float64) { tokens, cost = tokens+t, cost+c }
 
 	// What the run did must be on record even while the daemon stops.
 	recCtx := context.WithoutCancel(ctx)
 	report := func(status string) {
+		total.handled, total.tokens, total.cost = total.handled+handled, total.tokens+tokens, total.cost+cost
 		err := s.Store.AddBatchProgress(recCtx, batchID, handled, tokens, cost)
 		handled, tokens, cost = 0, 0, 0
 		if status != "" {
@@ -109,6 +116,10 @@ func (s *Supervisor) cleanup(ctx context.Context, mb mail.Mailbox, batchID int64
 			return
 		}
 		s.Hub.Publish(events.BatchProgress, b)
+		if status != "" {
+			slog.InfoContext(ctx, "cleanup finished", "account", s.Account.ID, "batch", batchID, "status", status, "handled", total.handled,
+				"of", len(refs), "tokens", total.tokens, "cost_usd", total.cost, "duration_ms", time.Since(began).Milliseconds())
+		}
 	}
 	// About a hundred progress events per run, however long it is: the event stream keeps
 	// only the last 200 events for everyone.

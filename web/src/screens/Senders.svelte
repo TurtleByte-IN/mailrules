@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Waiting from '../lib/components/Waiting.svelte';
   import { features } from '../lib/features';
   import type { Sender, Sort } from '../lib/api/senders';
   import { rules } from '../lib/state/rules.svelte';
@@ -24,6 +25,8 @@
       <span>{senders.error}</span>
       <button type="button" class="btn" onclick={load}>Retry</button>
     </div>
+  {:else if senders.status === 'loading'}
+    <Waiting text="Loading your senders" />
   {:else if senders.status === 'ready'}
     <div class="flex flex-wrap gap-2">
       <label class="field flex max-w-[420px] flex-[1_1_260px] items-center gap-2 text-muted focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-signal">

@@ -96,7 +96,7 @@ func (a *Anthropic) Generate(ctx context.Context, system, user string, schema js
 
 	var resp *anthropic.Message
 	start := time.Now()
-	err = a.deps.Caller.Do(ctx, func(ctx context.Context) error {
+	err = a.deps.Caller.Do(ctx, Call{"anthropic", a.model}, func(ctx context.Context) error {
 		var err error
 		resp, err = a.client.Messages.New(ctx, params)
 		var apiErr *anthropic.Error
@@ -171,7 +171,7 @@ func (o *OpenAI) Generate(ctx context.Context, system, user string, schema json.
 
 	var resp *openai.ChatCompletion
 	start := time.Now()
-	err = o.deps.Caller.Do(ctx, func(ctx context.Context) error {
+	err = o.deps.Caller.Do(ctx, Call{"openai", o.model}, func(ctx context.Context) error {
 		var err error
 		resp, err = o.client.Chat.Completions.New(ctx, params)
 		var apiErr *openai.Error
@@ -235,7 +235,7 @@ func (o *Ollama) Generate(ctx context.Context, system, user string, schema json.
 		EvalCount       int           `json:"eval_count"`
 	}
 	start := time.Now()
-	err := o.deps.Caller.Do(ctx, func(ctx context.Context) error {
+	err := o.deps.Caller.Do(ctx, Call{"ollama", o.model}, func(ctx context.Context) error {
 		return postJSON(ctx, o.deps.client(), "ollama", o.url, nil, body, &resp)
 	})
 	u.Latency = time.Since(start)

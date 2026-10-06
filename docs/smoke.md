@@ -38,12 +38,13 @@ Switch dry-run off in Settings [`PATCH /api/settings {"dry_run": false}`, or `ma
   - [ ] Each was acted on once (one move per message in the action log).
 - [ ] **Revoked password.** Revoke the app password at the provider. Within a few minutes the account shows the auth-failed state (`auth_failed`) and stops: the log shows no further login attempts.
   - [ ] Entering a new app password and reconnecting brings it back to Live [`PATCH /api/accounts/{id} {"password": "..."}`, then `POST /api/accounts/{id}/reconnect`], and mail that arrived meanwhile is processed once.
+- [ ] **Rule test.** In Rules, test a rule on 20 emails, then on 200. "N of M emails tested" moves from the first second, the mail stays unread and where it was, and with `LOG_LEVEL=debug` the log has `rule test started` and `rule test finished` (tested, matched, model calls, duration), one `model call` line per attempt and the mail server's list and fetch times. Reload the page in the middle of a test: the log says `rule test cancelled by the client after N of M` at INFO, and there is no ERROR line.
 - [ ] **Cleanup run, live.** Preview, then run a cleanup on a folder with a known number of messages. Progress moves, the batch finishes, and the messages are where the preview said they would go.
 - [ ] **Cleanup undo.** Undo the whole batch [`POST /api/batches/{id}/undo`]. Every message is back in its original folder with its original flags.
 
 ## 4. Afterwards
 
-- [ ] The log contains no password, no API key and no email body (search it for the app password and for a phrase from a test mail).
+- [ ] The log, run at `LOG_LEVEL=debug`, contains no password, no API key and no email body, subject or sender (search it for the app password and for a phrase and the address of a test mail).
 - [ ] Deleting the account removes it and its history [`DELETE /api/accounts/{id}`].
 - [ ] Revoke the test app passwords.
 

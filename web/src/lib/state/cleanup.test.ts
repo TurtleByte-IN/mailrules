@@ -118,6 +118,26 @@ it('a preview that answers after the scope changed is dropped', async () => {
   expect(m.cleanup.preview).toBeNull();
 });
 
+it('a preview is counting from the request until the answer, and a replaced one leaves the flag to its successor', async () => {
+  const answers: (() => void)[] = [];
+  const hold = () => new Promise<Response>((resolve) => answers.push(() => resolve(new Response(JSON.stringify(previewed), { status: 200 }))));
+  fetchMock.mockImplementationOnce(hold).mockImplementationOnce(hold);
+  expect(m.cleanup.previewing).toBe(false);
+  const first = m.preview();
+  expect(m.cleanup.previewing).toBe(true);
+  m.setScope({ range: '90' });
+  expect(m.cleanup.previewing).toBe(false); // the scope it counts for is gone
+  const second = m.preview();
+  expect(m.cleanup.previewing).toBe(true);
+  answers[0]();
+  await first; // the stale answer must not clear the new count's flag
+  expect(m.cleanup.previewing).toBe(true);
+  answers[1]();
+  await second;
+  expect(m.cleanup.previewing).toBe(false);
+  expect(m.cleanup.phase).toBe('previewed');
+});
+
 it('previewed → running → done, by polling the batch', async () => {
   await m.preview();
   // The run must match the preview the user saw, however long they looked at it.

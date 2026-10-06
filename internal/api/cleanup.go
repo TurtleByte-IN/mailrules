@@ -3,6 +3,7 @@ package api
 import (
 	_ "embed"
 	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -76,11 +77,18 @@ func (s *server) handleCleanupPreview(w http.ResponseWriter, r *http.Request) {
 	router, minConfidence := s.modelSource().Live(ctx)
 	t := composer.Tester{Store: s.store, Mailbox: mb, AccountID: c.AccountID, BodyChars: s.Settings.Env.BodyChars}
 	t.Decider.Router, t.Decider.MinConfidence, t.Decider.Now = router, minConfidence, s.now()
+	began := time.Now()
+	slog.InfoContext(ctx, "cleanup preview started", "account", c.AccountID, "folder", c.Folder, "limit", c.Limit, "rules", len(rs))
 	p, err := t.Preview(ctx, rs, senders, c.Folder, c.Since, c.Limit)
 	if err != nil {
+		if ctx.Err() == nil {
+			slog.WarnContext(ctx, "cleanup preview failed", "account", c.AccountID, "folder", c.Folder, "duration_ms", time.Since(began).Milliseconds(), "error", err.Error())
+		}
 		s.modelFail(w, r, err)
 		return
 	}
+	slog.InfoContext(ctx, "cleanup preview finished", "account", c.AccountID, "folder", c.Folder, "limit", c.Limit, "rules", len(rs),
+		"total", p.Total, "groups", len(p.Groups), "model_calls", p.ModelCalls, "duration_ms", time.Since(began).Milliseconds())
 	each, err := s.store.DecideCost(ctx)
 	if err != nil {
 		internalError(w, r, err)

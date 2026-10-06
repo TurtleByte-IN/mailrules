@@ -3,6 +3,7 @@
   import { ApiError } from '../../lib/api/client';
   import { recompose, type Draft } from '../../lib/api/compose';
   import type { Rule, RulePatch } from '../../lib/api/rules';
+  import Waiting from '../../lib/components/Waiting.svelte';
   import { confidence } from '../../lib/format';
   import { edit } from '../../lib/state/rules.svelte';
   import { flash } from '../../lib/state/toast.svelte';
@@ -96,6 +97,9 @@
     {/snippet}
   </TextBox>
 
+  {#if busy}
+    <Waiting text="Asking the AI model to rewrite this rule" />
+  {/if}
   {#if needsModel}
     <div role="alert" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{needsModel} <a href="#/settings" class="font-semibold underline">Open Settings</a></div>
   {/if}

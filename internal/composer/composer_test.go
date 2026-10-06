@@ -8,9 +8,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,15 +362,25 @@ func TestTesterNeverTouchesTheMailbox(t *testing.T) {
 			Actions: []rules.Action{{Type: rules.ActMove, Folder: "Food"}, {Type: rules.ActRead}}},
 		{ID: -1, Name: "Reading", Enabled: true, Priority: 2, Intent: "Newsletters", Actions: []rules.Action{{Type: rules.ActTrash}}},
 	}
-	var calls []int
+	var steps []Progress
 	tester := Tester{Store: e.st, Mailbox: e.mb, AccountID: e.acct.ID, BodyChars: 2000,
 		Decider: pipeline.Decider{Router: decider(e.st), MinConfidence: 0.75, Now: time.Unix(1_800_000_000, 0)}}
-	res, err := tester.Run(ctx, rs, nil, "INBOX", 50, func(done, total int) { calls = append(calls, done*1000+total) })
+	res, err := tester.Run(ctx, rs, nil, "INBOX", 50, func(p Progress) { steps = append(steps, p) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Tested != 50 || res.Matched != 50 || res.ModelCalls != 25 || res.CostUSD < 0.0249 || len(calls) != 50 || calls[49] != 50*1000+50 {
-		t.Fatalf("result = tested %d matched %d calls %d, %d progress calls", res.Tested, res.Matched, res.ModelCalls, len(calls))
+	if res.Tested != 50 || res.Matched != 50 || res.ModelCalls != 25 || res.CostUSD < 0.0249 {
+		t.Fatalf("result = tested %d matched %d calls %d", res.Tested, res.Matched, res.ModelCalls)
+	}
+	// Progress opens with 0 of 50 once the mail is listed, then moves one email at a time
+	// to 50 of 50, and the model calls only ever grow to the total.
+	if len(steps) != 51 || steps[0] != (Progress{Total: 50}) || steps[50].Done != 50 || steps[50].ModelCalls != res.ModelCalls {
+		t.Fatalf("progress = %d steps, first %+v, last %+v", len(steps), steps[0], steps[len(steps)-1])
+	}
+	for i, p := range steps {
+		if p.Done != i || p.Total != 50 || (i > 0 && p.ModelCalls < steps[i-1].ModelCalls) {
+			t.Fatalf("step %d = %+v", i, p)
+		}
 	}
 	// Newest first; a saved rule is named by id, a draft by name only.
 	if r := res.Rows[0]; r.Subject != "Reading issue 29" || r.RuleID != nil || r.RuleName != "Reading" || r.Stage != "decider" || r.Actions[0].Type != "trash" {
@@ -411,3 +426,84 @@ var _ Reader = (interface {
 	Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error)
 	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, error)
 })(nil)
+
+// lagging is a Reader whose Fetch takes a while.
+type lagging struct {
+	Reader
+	lag time.Duration
+}
+
+func (l lagging) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error) {
+	time.Sleep(l.lag)
+	return l.Reader.Fetch(ctx, ref, maxBody)
+}
+
+// A test run at debug level says what it is doing, and none of it is the mail: not a
+// subject, a sender, a body, nor the key the model was called with.
+func TestTesterLogsNeverCarryMailOrKeys(t *testing.T) {
+	const (
+		key     = "sk-test-SECRET-4471"
+		subject = "Wire the quarterly-bonus-zeta payment"
+		sender  = "ceo.zeta@bigcorp-zeta.example"
+		body    = "The body of " + subject
+	)
+	e := newEnv(t)
+	for range 6 {
+		e.deliver(sender, subject)
+	}
+	// The decision model is a real adapter: Clef over HTTP, called with the key, the
+	// subject and the sender, and failing once so the retry is logged too.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if !bytes.Contains(raw, []byte(subject)) || r.Header.Get("Authorization") != "Bearer "+key {
+			http.Error(w, "the call lacks what this test is about", http.StatusBadRequest)
+			return
+		}
+		if hits.Add(1) == 1 {
+			http.Error(w, subject+sender, http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, `{"result":{"answers":{"rule":{"choice":"rule_1","probabilities":{"rule_1":0.97,"none":0.03}}},"usage":{"input_tokens":50,"output_tokens":0}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	caller := models.NewCaller(2)
+	caller.Sleep = func(context.Context, time.Duration) error { return nil }
+	router := (&models.Router{Usage: e.st, Primary: models.NewClef(srv.URL, "acct", key, "clef", models.Deps{Caller: caller, Prices: models.DefaultPrices()})}).For("test")
+
+	var out bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	oldSlow := slowFetch
+	slowFetch = time.Millisecond
+	t.Cleanup(func() { slowFetch = oldSlow })
+
+	rs := []rules.Rule{{ID: 1, Name: "Money", Enabled: true, Priority: 1, Intent: "Payment requests", Actions: []rules.Action{{Type: rules.ActFlag}}}}
+	tester := Tester{Store: e.st, Mailbox: lagging{e.mb, 5 * time.Millisecond}, AccountID: e.acct.ID, BodyChars: 2000,
+		Decider: pipeline.Decider{Router: router, MinConfidence: 0.75, Now: time.Unix(1_800_000_000, 0)}}
+	res, err := tester.Run(t.Context(), rs, nil, "INBOX", 6, func(Progress) {})
+	if err != nil || res.Tested != 6 || res.Matched != 6 {
+		t.Fatalf("run = %+v, %v", res, err)
+	}
+
+	log := out.String()
+	seen := map[string]bool{}
+	for line := range strings.SplitSeq(strings.TrimSpace(log), "\n") {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(line), &v); err != nil {
+			t.Fatalf("not a log line: %q", line)
+		}
+		seen[v["msg"].(string)] = true
+	}
+	for _, msg := range []string{"model call", "mail listed", "mail fetched", "slow mail fetch"} {
+		if !seen[msg] {
+			t.Errorf("no %q line at debug level; got %v", msg, seen)
+		}
+	}
+	for _, text := range []string{key, subject, "quarterly-bonus", sender, "bigcorp-zeta", body, "Bearer"} {
+		if strings.Contains(log, text) {
+			t.Errorf("the log contains %q:\n%s", text, log)
+		}
+	}
+}

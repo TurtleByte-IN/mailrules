@@ -340,7 +340,7 @@ func TestCallerTimeoutAndConcurrency(t *testing.T) {
 		c := NewCaller(1)
 		c.Timeout = 10 * time.Millisecond
 		calls := 0
-		err := c.Do(t.Context(), func(ctx context.Context) error {
+		err := c.Do(t.Context(), Call{}, func(ctx context.Context) error {
 			calls++
 			<-ctx.Done()
 			return ctx.Err()
@@ -356,7 +356,7 @@ func TestCallerTimeoutAndConcurrency(t *testing.T) {
 		if err := c.Sleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v, want canceled", err)
 		}
-		if err := c.Do(ctx, func(context.Context) error { return nil }); !errors.Is(err, context.Canceled) && err != nil {
+		if err := c.Do(ctx, Call{}, func(context.Context) error { return nil }); !errors.Is(err, context.Canceled) && err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -366,7 +366,7 @@ func TestCallerTimeoutAndConcurrency(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 12 {
 			wg.Go(func() {
-				_ = c.Do(t.Context(), func(context.Context) error {
+				_ = c.Do(t.Context(), Call{}, func(context.Context) error {
 					n := inFlight.Add(1)
 					for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
 					}

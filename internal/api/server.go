@@ -226,8 +226,27 @@ func writeError(w http.ResponseWriter, status int, code, message, path string) {
 	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Path: path}})
 }
 
+// statusClientClosed is what a request is counted as when the client dropped it before the
+// answer was ready (nginx's 499). Nobody receives it.
+const statusClientClosed = 499
+
+// clientGone reports whether the client dropped the request, which has then been logged
+// as a plain fact (not an error: nothing failed) and counted. Whatever failed after that
+// failed because the request was cancelled, so the caller has nothing more to answer.
+func clientGone(w http.ResponseWriter, r *http.Request) bool {
+	if r.Context().Err() == nil {
+		return false
+	}
+	slog.InfoContext(r.Context(), "request cancelled by the client", "method", r.Method, "path", r.URL.Path)
+	w.WriteHeader(statusClientClosed)
+	return true
+}
+
 // internalError logs the cause and tells the client nothing about it.
 func internalError(w http.ResponseWriter, r *http.Request, err error) {
+	if clientGone(w, r) {
+		return
+	}
 	slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err.Error())
 	writeError(w, http.StatusInternalServerError, "internal", "Something went wrong on the server.", "")
 }
@@ -298,6 +317,9 @@ func user(r *http.Request) store.User {
 
 // fail answers for an error from the store or the executor.
 func fail(w http.ResponseWriter, r *http.Request, err error, what string) {
+	if clientGone(w, r) {
+		return
+	}
 	var noFolder *actions.NoFolderError
 	switch {
 	case errors.Is(err, store.ErrNotFound):

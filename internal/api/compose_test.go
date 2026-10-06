@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -217,6 +221,62 @@ func TestComposeAndReoptimize(t *testing.T) {
 	e.refuse(http.MethodPost, "/api/rules/1/compose", `{"text":"x"}`, http.StatusConflict, "no_composer_model", "")
 }
 
+// sse posts like the web client does: it accepts a JSON body and an event stream.
+func (e *env) sse(path, body string) reply {
+	e.t.Helper()
+	return e.send(e.t.Context(), http.MethodPost, path, body, http.Header{"Accept": {"application/json, text/event-stream"}})
+}
+
+// logs is what the daemon logged, as JSON lines.
+type logs struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+// lines are the log lines so far, decoded.
+func (l *logs) lines(t *testing.T) []map[string]any {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(l.buf.String()), "\n") {
+		var v map[string]any
+		if line != "" && json.Unmarshal([]byte(line), &v) != nil {
+			t.Fatalf("not a log line: %q", line)
+		}
+		if v != nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// find returns the first line whose message starts with msg.
+func (l *logs) find(t *testing.T, msg string) map[string]any {
+	t.Helper()
+	for _, line := range l.lines(t) {
+		if m, _ := line["msg"].(string); strings.HasPrefix(m, msg) {
+			return line
+		}
+	}
+	return nil
+}
+
+// captureLogs makes the daemon log at level into the returned buffer until the test ends.
+func captureLogs(t *testing.T, level slog.Level) *logs {
+	t.Helper()
+	l, old := &logs{}, slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return l
+}
+
 // events splits an event-stream body into its events, name and JSON data.
 func streamEvents(t *testing.T, raw []byte) (names []string, data []map[string]any) {
 	t.Helper()
@@ -274,22 +334,20 @@ func TestRuleTester(t *testing.T) {
 	}
 	e.own = nil // that model cannot be used: the default decides
 
-	// Above 200 the answer is a stream: progress, then the result.
-	r := e.do(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":300}`)
+	// A client that accepts an event stream gets one at any size: progress from 0 of 300,
+	// then the result (TestRuleProgress goes through the sizes and the rest of the contract).
+	r := e.sse("/api/rules/test", `{"account_id":1,"limit":300}`)
 	if r.status != http.StatusOK || r.header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("stream = %d %s %s", r.status, r.header.Get("Content-Type"), r.raw)
 	}
 	names, data := streamEvents(t, r.raw)
-	if len(names) != 13 || names[0] != "progress" || names[12] != "done" || data[0]["done"] != float64(25) || data[11]["done"] != float64(300) || data[11]["total"] != float64(300) {
+	if last := len(names) - 1; names[0] != "progress" || names[last] != "done" || data[last]["tested"] != float64(300) || data[last]["model_calls"] != float64(150) {
 		t.Fatalf("stream events = %v", names)
 	}
-	conform(t, e.doc, "TestProgress", data[0])
-	conform(t, e.doc, "TestResult", data[12])
-	if data[12]["tested"] != float64(300) || data[12]["model_calls"] != float64(150) {
-		t.Errorf("done event = tested %v calls %v", data[12]["tested"], data[12]["model_calls"])
+	// A run that cannot start is plain JSON, whatever the client accepts.
+	if r := e.sse("/api/rules/test", `{"account_id":1,"limit":300,"folder":"Nope"}`); r.status != http.StatusBadRequest || r.header.Get("Content-Type") != "application/json" || r.body.Error.Path != "folder" {
+		t.Errorf("a refused run = %d %s %s", r.status, r.header.Get("Content-Type"), r.raw)
 	}
-	// A long run that cannot start is still answered as plain JSON.
-	e.refuse(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":300,"folder":"Nope"}`, http.StatusBadRequest, "invalid_input", "folder")
 
 	// The tester only read: every email is where it was, unread, and nothing was recorded
 	// about it. The calls it made are on the ledger as tests.
@@ -339,7 +397,7 @@ func TestRuleTester(t *testing.T) {
 		}
 		return bySubject("")(req)
 	}
-	names, data = streamEvents(t, e.do(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":300,"rule_ids":[1,2]}`).raw)
+	names, data = streamEvents(t, e.sse("/api/rules/test", `{"account_id":1,"limit":300,"rule_ids":[1,2]}`).raw)
 	if last := len(names) - 1; names[last] != "error" || data[last]["error"].(map[string]any)["code"] != "test_failed" {
 		t.Errorf("a stream that fails midway ends with %v %v", names[last], data[last])
 	}
@@ -406,4 +464,219 @@ func TestSettingsModelURLs(t *testing.T) {
 	if gen, err := e.sett.Composer(t.Context()); err != nil || gen == nil {
 		t.Errorf("composer with a key: %v", err)
 	}
+}
+
+// Progress comes at every size: 0 of N as soon as the mail is listed, then about a
+// hundred steps at most, the last of them N of N, then the result.
+func TestRuleTestProgress(t *testing.T) {
+	e := newEnv(t)
+	for i := range 150 {
+		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
+		e.deliver("hello@news.example", fmt.Sprintf("Reading issue %d", i))
+	}
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/import", rulesYAML, http.StatusOK)
+	e.decider.DecideFunc = bySubject("The subject says ")
+
+	for _, c := range []struct {
+		name   string
+		limit  int
+		events int // progress events
+		step   int
+	}{
+		{"a handful", 5, 6, 1},
+		{"a quick look", 20, 21, 1},
+		{"below the old streaming size", 150, 151, 1},
+		{"the old one-body size", 200, 101, 2},
+		{"a long run", 300, 101, 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := e.sse("/api/rules/test", fmt.Sprintf(`{"account_id":1,"limit":%d}`, c.limit))
+			if r.status != http.StatusOK || r.header.Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("answer = %d %s", r.status, r.header.Get("Content-Type"))
+			}
+			names, data := streamEvents(t, r.raw)
+			n := len(names) - 1 // the last event is the result
+			if n != c.events || names[n] != "done" {
+				t.Fatalf("%d events ending in %q, want %d progress events then done", len(names), names[n], c.events)
+			}
+			prevDone, prevCalls := -c.step, 0.0
+			for i, v := range data[:n] {
+				conform(t, e.doc, "TestProgress", v)
+				done, calls := v["done"].(float64), v["model_calls"].(float64)
+				if names[i] != "progress" || v["total"] != float64(c.limit) || int(done) != prevDone+c.step && int(done) != c.limit || calls < prevCalls {
+					t.Fatalf("event %d = %s %v after done %d", i, names[i], v, prevDone)
+				}
+				prevDone, prevCalls = int(done), calls
+			}
+			if data[0]["done"] != float64(0) || data[n-1]["done"] != float64(c.limit) || data[n-1]["model_calls"] != data[n]["model_calls"] {
+				t.Errorf("progress runs from %v to %v (%v calls), the result has %v calls", data[0]["done"], data[n-1]["done"], data[n-1]["model_calls"], data[n]["model_calls"])
+			}
+			conform(t, e.doc, "TestResult", data[n])
+			if data[n]["tested"] != float64(c.limit) {
+				t.Errorf("tested = %v, want %d", data[n]["tested"], c.limit)
+			}
+		})
+	}
+
+	t.Run("one body for a client that does not accept a stream", func(t *testing.T) {
+		for _, accept := range []string{"", "application/json", "*/*", "text/plain, application/json;q=0.9"} {
+			h := http.Header{}
+			if accept != "" {
+				h.Set("Accept", accept)
+			}
+			for _, limit := range []int{20, 300} {
+				r := e.send(t.Context(), http.MethodPost, "/api/rules/test", fmt.Sprintf(`{"account_id":1,"limit":%d}`, limit), h)
+				if r.status != http.StatusOK || r.header.Get("Content-Type") != "application/json" || r.object(t)["tested"] != float64(limit) {
+					t.Errorf("Accept %q, limit %d = %d %s", accept, limit, r.status, r.header.Get("Content-Type"))
+				}
+			}
+		}
+		for _, accept := range []string{"text/event-stream", "application/json, text/event-stream;q=0.5", "Text/Event-Stream"} {
+			r := e.send(t.Context(), http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":3}`, http.Header{"Accept": {accept}})
+			if r.header.Get("Content-Type") != "text/event-stream" {
+				t.Errorf("Accept %q = %s, want a stream", accept, r.header.Get("Content-Type"))
+			}
+		}
+	})
+
+	t.Run("a run that cannot start is JSON with its usual status", func(t *testing.T) {
+		for _, c := range []struct {
+			body, code, path string
+			status           int
+		}{
+			{`{"account_id":1,"limit":20,"folder":"Nope"}`, "invalid_input", "folder", http.StatusBadRequest},
+			{`{"account_id":1,"limit":2001}`, "invalid_input", "limit", http.StatusBadRequest},
+			{`{"account_id":9}`, "invalid_input", "account_id", http.StatusBadRequest},
+			{`{"account_id":1,"limit":0}`, "invalid_input", "limit", http.StatusBadRequest},
+		} {
+			r := e.sse("/api/rules/test", c.body)
+			if r.status != c.status || r.header.Get("Content-Type") != "application/json" || r.body.Error.Code != c.code || r.body.Error.Path != c.path {
+				t.Errorf("%s = %d %s %s", c.body, r.status, r.header.Get("Content-Type"), r.raw)
+			}
+		}
+		e.noDecider = true
+		defer func() { e.noDecider = false }()
+		r := e.sse("/api/rules/test", `{"account_id":1,"limit":20}`)
+		if r.status != http.StatusConflict || r.header.Get("Content-Type") != "application/json" || r.body.Error.Code != "no_composer_model" {
+			t.Errorf("no model = %d %s %s", r.status, r.header.Get("Content-Type"), r.raw)
+		}
+	})
+}
+
+// A test writes a start and a finish line with what it did; a failing one says so; a
+// client that drops the request is a plain fact, not an error.
+func TestRuleTestLogs(t *testing.T) {
+	e := newEnv(t)
+	for i := range 20 {
+		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
+		e.deliver("hello@news.example", fmt.Sprintf("Reading issue %d", i))
+	}
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/import", rulesYAML, http.StatusOK)
+	e.decider.DecideFunc = bySubject("The subject says ")
+
+	t.Run("start and finish", func(t *testing.T) {
+		l := captureLogs(t, slog.LevelDebug)
+		e.sse("/api/rules/test", `{"account_id":1,"limit":20,"folder":"INBOX"}`)
+		start, end := l.find(t, "rule test started"), l.find(t, "rule test finished")
+		if start == nil || end == nil || start["level"] != "INFO" || end["level"] != "INFO" {
+			t.Fatalf("start %v, finish %v", start, end)
+		}
+		if start["account"] != float64(1) || start["folder"] != "INBOX" || start["limit"] != float64(20) || start["rules"] != float64(2) || start["stream"] != true {
+			t.Errorf("start line = %v", start)
+		}
+		for key, want := range map[string]any{"account": float64(1), "folder": "INBOX", "limit": float64(20), "rules": float64(2),
+			"tested": float64(20), "matched": float64(20), "model_calls": float64(10)} {
+			if end[key] != want {
+				t.Errorf("finish line %s = %v, want %v", key, end[key], want)
+			}
+		}
+		if cost, _ := end["cost_usd"].(float64); cost < 0.0099 {
+			t.Errorf("finish line cost_usd = %v", end["cost_usd"])
+		}
+		if _, ok := end["duration_ms"].(float64); !ok {
+			t.Errorf("finish line has no duration_ms: %v", end)
+		}
+		if p := l.find(t, "rule test progress"); p == nil || p["level"] != "DEBUG" {
+			t.Errorf("no debug progress line: %v", p)
+		}
+		n := 0
+		for _, line := range l.lines(t) {
+			if line["msg"] == "rule test progress" {
+				n++
+			}
+		}
+		if n > 12 {
+			t.Errorf("%d progress lines for one run of 20: it should be about one per tenth", n)
+		}
+		if l.find(t, "mail listed") == nil || l.find(t, "mail fetched") == nil {
+			t.Error("the mail server reads are not logged")
+		}
+	})
+
+	t.Run("an info level run does not write the debug lines", func(t *testing.T) {
+		l := captureLogs(t, slog.LevelInfo)
+		e.call(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":5}`, http.StatusOK)
+		if l.find(t, "rule test finished") == nil || l.find(t, "rule test progress") != nil || l.find(t, "mail listed") != nil {
+			t.Errorf("lines = %v", l.lines(t))
+		}
+	})
+
+	t.Run("dropped by the client", func(t *testing.T) {
+		l := captureLogs(t, slog.LevelDebug)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var asked atomic.Int32
+		e.decider.DecideFunc = func(req models.DecideRequest) (models.Decision, models.Usage, error) {
+			if asked.Add(1) == 5 {
+				cancel() // the browser leaves after a few emails
+			}
+			return bySubject("")(req)
+		}
+		defer func() { e.decider.DecideFunc = bySubject("The subject says ") }()
+		r := e.send(ctx, http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":40}`, http.Header{"Accept": {"text/event-stream"}})
+		if r.status != http.StatusOK { // the 200 and the first events went out before it left
+			t.Errorf("status = %d", r.status)
+		}
+		line := l.find(t, "rule test cancelled by the client after ")
+		if line == nil || line["level"] != "INFO" {
+			t.Fatalf("no cancel line: %v", l.lines(t))
+		}
+		if total := line["total"]; total != float64(40) || line["done"].(float64) >= 40 || !strings.HasSuffix(line["msg"].(string), fmt.Sprintf(" of %d", 40)) {
+			t.Errorf("cancel line = %v", line)
+		}
+		for _, other := range l.lines(t) {
+			if other["level"] == "ERROR" || other["level"] == "WARN" || other["msg"] == "rule test finished" {
+				t.Errorf("a dropped request logged %v", other)
+			}
+		}
+	})
+
+	t.Run("dropped before the run began", func(t *testing.T) {
+		l := captureLogs(t, slog.LevelDebug)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		e.send(ctx, http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":40}`, http.Header{"Accept": {"text/event-stream"}})
+		if l.find(t, "request cancelled by the client") == nil && l.find(t, "rule test cancelled by the client after 0 of 0") == nil {
+			t.Errorf("lines = %v", l.lines(t))
+		}
+		for _, line := range l.lines(t) {
+			if line["level"] == "ERROR" {
+				t.Errorf("logged %v", line)
+			}
+		}
+	})
+
+	t.Run("a request that fails is not called cancelled", func(t *testing.T) {
+		l := captureLogs(t, slog.LevelInfo)
+		e.decider.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
+			return models.Decision{}, models.Usage{}, &models.StatusError{Provider: "fake", Code: 503}
+		}
+		defer func() { e.decider.DecideFunc = bySubject("The subject says ") }()
+		e.refuse(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":5}`, http.StatusBadGateway, "model_error", "")
+		if f := l.find(t, "rule test failed"); f == nil || f["level"] != "WARN" || l.find(t, "rule test cancelled") != nil {
+			t.Errorf("lines = %v", l.lines(t))
+		}
+	})
 }

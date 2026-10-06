@@ -78,14 +78,15 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 	}
 	primaryReq := req
 	primaryReq.Examples = nil // few-shot examples are for the fallback only
+	pctx := WithPurpose(ctx, r.purpose("decide"))
 	var d Decision
 	var u Usage
 	var spread map[int64]float64
 	var err error
 	if sp, ok := r.Primary.(Spreader); ok {
-		d, spread, u, err = sp.DecideSpread(ctx, primaryReq)
+		d, spread, u, err = sp.DecideSpread(pctx, primaryReq)
 	} else {
-		d, u, err = r.Primary.Decide(ctx, primaryReq)
+		d, u, err = r.Primary.Decide(pctx, primaryReq)
 	}
 	if err != nil {
 		return Result{Primary: u}, fmt.Errorf("primary decider %s: %w", r.Primary.Name(), err)
@@ -97,7 +98,7 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 	}
 
 	res.Escalated = true
-	fd, fu, err := r.Fallback.Decide(ctx, req)
+	fd, fu, err := r.Fallback.Decide(WithPurpose(ctx, r.purpose("escalate")), req)
 	if err != nil {
 		// Keep the primary's answer; its confidence is already below the
 		// escalation threshold, and the reason says nobody double-checked it.
@@ -111,14 +112,23 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 	return res, nil
 }
 
-// record writes one call to the ledger. A ledger failure must not lose a decision.
+// purpose is the ledger purpose of a call that would be recorded as def.
+func (r *Router) purpose(def string) string {
+	if r.Purpose != "" {
+		return r.Purpose
+	}
+	return def
+}
+
+// record writes one call to the ledger. A ledger failure must not lose a decision, and a
+// call that was made is paid for even if the caller has since gone, so a cancelled ctx
+// does not keep it off the ledger.
 func (r *Router) record(ctx context.Context, purpose string, u Usage) {
+	ctx = context.WithoutCancel(ctx)
 	if r.Usage == nil {
 		return
 	}
-	if r.Purpose != "" {
-		purpose = r.Purpose
-	}
+	purpose = r.purpose(purpose)
 	now := time.Now
 	if r.Now != nil {
 		now = r.Now

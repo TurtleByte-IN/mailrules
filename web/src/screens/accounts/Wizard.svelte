@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
   import { secretLabel, stepNames, Wizard } from './connect.svelte';
 
@@ -107,7 +108,9 @@
           {@render fieldError('password')}
         </label>
         <button class="btn min-h-11 font-semibold" disabled={w.test === 'testing'}>{w.testLabel}</button>
-        {#if w.test === 'ok' && w.result}
+        {#if w.test === 'testing'}
+          <Waiting text="Logging in to your mail server and listing its folders" />
+        {:else if w.test === 'ok' && w.result}
           <div role="status" class="rounded bg-selected px-3 py-2.5 text-[13px]">{testSummary(w.result)}</div>
         {:else if w.test === 'err' && !w.errorField}
           <div role="alert" class="rounded bg-trash-bg px-3 py-2.5 text-[13px] text-trash">{w.error}</div>
@@ -128,6 +131,9 @@
   {:else}
     <div class="flex flex-col gap-3">
       <h2>Starter rules you picked</h2>
+      {#if w.busy}
+        <Waiting text="Connecting your mailbox and saving the rules you picked" />
+      {/if}
       {#each chosen as t (t.id)}
         <div class="rounded-md border border-line-card px-3.5 py-3"><span class="font-semibold">{t.name}</span><span class="text-secondary"> · {t.desc}</span></div>
       {:else}

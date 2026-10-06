@@ -331,11 +331,18 @@ export interface paths {
          *     nothing else: no other saved rule and no sender rule takes part. Only a request that
          *     names neither tests the saved rule set as it is. A decision model is needed only when
          *     at least one of the tested rules has an intent: 409 `no_composer_model` when none is
-         *     set; condition-only rules are tested without one. With `limit` up to 200 the answer is
-         *     one JSON body. Above that it is a `text/event-stream`: `progress` events carrying
-         *     `TestProgress` (one per 25 emails), then one `done` event carrying `TestResult`, or,
-         *     if the run fails midway, one `error` event carrying `ErrorBody` (code `test_failed`).
-         *     A run that fails before the first email is answered as plain JSON.
+         *     set; condition-only rules are tested without one.
+         *
+         *     **Progress.** A client that sends `Accept: text/event-stream` (the web UI does) gets
+         *     a `text/event-stream`, whatever the `limit`: a `progress` event carrying
+         *     `TestProgress` as soon as the mail is listed (`done` 0 of `total`), then another
+         *     every `total / 100` emails (every email up to 199 of them) and at `total` of
+         *     `total`, then one `done` event carrying `TestResult`, or, if the run fails midway,
+         *     one `error` event carrying `ErrorBody` (code `test_failed`). Any other client gets
+         *     the `TestResult` as one JSON body. A run that fails before the mail is listed (no
+         *     such folder, no model, account offline, invalid input) is answered as plain JSON
+         *     with its usual status, whatever the client accepts. A client that drops the request
+         *     ends the run; the daemon logs that as cancelled, not as an error.
          */
         post: operations["testRules"];
         delete?: never;
@@ -1316,7 +1323,7 @@ export interface components {
             rules?: components["schemas"]["RuleInput"][];
             /** @description Left out = INBOX */
             folder?: string;
-            /** @description Left out = 200. Above 200 the answer is an event stream */
+            /** @description Left out = 200. The most the daemon allows is 2000; more is refused with `invalid_input` at `limit` */
             limit?: number;
         };
         TestRow: {
@@ -1339,8 +1346,12 @@ export interface components {
             actions: components["schemas"]["RuleAction"][];
         };
         TestProgress: {
+            /** @description Emails tested so far, or passed over because they are gone or cannot be read */
             done: number;
+            /** @description Emails the run goes through; known once the mail is listed, so the first event is 0 of `total` */
             total: number;
+            /** @description Model calls made so far */
+            model_calls: number;
         };
         TestResult: {
             results: components["schemas"]["TestRow"][];

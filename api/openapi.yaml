@@ -420,11 +420,18 @@ paths:
         nothing else: no other saved rule and no sender rule takes part. Only a request that
         names neither tests the saved rule set as it is. A decision model is needed only when
         at least one of the tested rules has an intent: 409 `no_composer_model` when none is
-        set; condition-only rules are tested without one. With `limit` up to 200 the answer is
-        one JSON body. Above that it is a `text/event-stream`: `progress` events carrying
-        `TestProgress` (one per 25 emails), then one `done` event carrying `TestResult`, or,
-        if the run fails midway, one `error` event carrying `ErrorBody` (code `test_failed`).
-        A run that fails before the first email is answered as plain JSON.
+        set; condition-only rules are tested without one.
+
+        **Progress.** A client that sends `Accept: text/event-stream` (the web UI does) gets
+        a `text/event-stream`, whatever the `limit`: a `progress` event carrying
+        `TestProgress` as soon as the mail is listed (`done` 0 of `total`), then another
+        every `total / 100` emails (every email up to 199 of them) and at `total` of
+        `total`, then one `done` event carrying `TestResult`, or, if the run fails midway,
+        one `error` event carrying `ErrorBody` (code `test_failed`). Any other client gets
+        the `TestResult` as one JSON body. A run that fails before the mail is listed (no
+        such folder, no model, account offline, invalid input) is answered as plain JSON
+        with its usual status, whatever the client accepts. A client that drops the request
+        ends the run; the daemon logs that as cancelled, not as an error.
       requestBody:
         required: true
         content:
@@ -1520,7 +1527,7 @@ components:
         rule_ids: { type: array, items: { type: integer, format: int64 }, description: 'Saved rules to test, each switched on, without the other saved rules and without the sender rules' }
         rules: { type: array, items: { $ref: '#/components/schemas/RuleInput' }, description: 'Draft rules to test, in the order given, after any saved rules named in `rule_ids`. The other saved rules take no part' }
         folder: { type: string, description: Left out = INBOX }
-        limit: { type: integer, minimum: 1, maximum: 2000, description: 'Left out = 200. Above 200 the answer is an event stream' }
+        limit: { type: integer, minimum: 1, maximum: 2000, description: 'Left out = 200. The most the daemon allows is 2000; more is refused with `invalid_input` at `limit`' }
     TestRow:
       type: object
       required: [from, subject, received_at, stage, rule_id, rule_name, confidence, reason, actions]
@@ -1537,10 +1544,11 @@ components:
         actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' }, description: What it would do }
     TestProgress:
       type: object
-      required: [done, total]
+      required: [done, total, model_calls]
       properties:
-        done: { type: integer }
-        total: { type: integer }
+        done: { type: integer, description: 'Emails tested so far, or passed over because they are gone or cannot be read' }
+        total: { type: integer, description: 'Emails the run goes through; known once the mail is listed, so the first event is 0 of `total`' }
+        model_calls: { type: integer, description: Model calls made so far }
     TestResult:
       type: object
       required: [results, tested, matched, model_calls, cost_usd]

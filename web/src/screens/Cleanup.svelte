@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Batch, Preview } from '../lib/api/cleanup';
+  import Waiting from '../lib/components/Waiting.svelte';
   import { clock, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { cleanup, load, more, noUndo, outcome, preview, run, setScope, undo, UNDO_DAYS, type Scope } from '../lib/state/cleanup.svelte';
@@ -23,6 +24,16 @@
   const folderName = (folder: string) => (folder === 'INBOX' ? 'Inbox' : folder === archive ? 'Archive' : folder);
 
   const running = $derived(cleanup.phase === 'running');
+  // The batch being undone; an undo moves every email of the run back, one by one, on the mail server.
+  let undoing = $state<Record<number, boolean>>({});
+  async function undoBatch(b: Batch) {
+    undoing[b.id] = true;
+    try {
+      await undo(b);
+    } finally {
+      undoing[b.id] = false;
+    }
+  }
   const total = $derived(cleanup.preview?.total ?? 0);
   const max = $derived(Math.max(1, ...(cleanup.preview?.groups.map((g) => g.count) ?? [])));
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
@@ -84,9 +95,12 @@
         </select>
       </label>
     </div>
-    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={running || !cleanup.scope.accountId} onclick={preview}>
-      {cleanup.preview ? 'Refresh preview' : 'Preview what would move'}
+    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={running || cleanup.previewing || !cleanup.scope.accountId} onclick={preview}>
+      {cleanup.previewing ? 'Counting…' : cleanup.preview ? 'Refresh preview' : 'Preview what would move'}
     </button>
+    {#if cleanup.previewing}
+      <Waiting text="Reading your mailbox and checking each email against your rules" />
+    {/if}
 
     {#if cleanup.preview}
       <div class="flex flex-col gap-2.5">
@@ -121,11 +135,13 @@
         </p>
         {#if running && cleanup.batch}
           {@render progress(cleanup.batch)}
+        {:else if running}
+          <Waiting text="Listing the emails to sort" />
         {/if}
         {#if settings.value.dry_run}
           <p class="text-[13px] text-secondary">Dry-run is on: this run records what it would do and moves nothing.</p>
         {/if}
-        <button type="button" class="btn-primary min-h-11 self-start px-[18px]" disabled={cleanup.phase !== 'previewed'} onclick={run}>
+        <button type="button" class="btn-primary min-h-11 self-start px-[18px]" disabled={cleanup.phase !== 'previewed' || cleanup.previewing} onclick={run}>
           {running ? 'Sorting…' : 'Sort ' + total.toLocaleString() + ' emails'}
         </button>
       </div>
@@ -146,6 +162,8 @@
         <span>{cleanup.error}</span>
         <button type="button" class="btn" onclick={load}>Retry</button>
       </div>
+    {:else if cleanup.status === 'loading'}
+      <div class="border-t border-line-divider px-[18px] py-3"><Waiting text="Loading past runs" /></div>
     {:else if cleanup.status === 'ready'}
       {#each cleanup.batches as b (b.id)}
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line-divider px-[18px] py-3">
@@ -159,7 +177,10 @@
             {#if why}
               <span class="text-[12.5px] text-muted">{why}</span>
             {:else}
-              <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" onclick={() => undo(b)}>Undo batch</button>
+              <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" disabled={undoing[b.id]} onclick={() => undoBatch(b)}>{undoing[b.id] ? 'Undoing…' : 'Undo batch'}</button>
+              {#if undoing[b.id]}
+                <div class="w-full"><Waiting text="Putting the emails back where they were" /></div>
+              {/if}
             {/if}
           {/if}
         </div>

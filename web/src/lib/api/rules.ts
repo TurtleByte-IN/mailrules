@@ -20,6 +20,17 @@ export const isTrash = (actions: Action[]) => actions.some((a) => a.type === 'tr
 /** A test the daemon will not run as things stand; its message says what to do, so it is shown where the result would be. */
 export const testRefused = (e: unknown): e is ApiError => e instanceof ApiError && (e.code === 'no_composer_model' || e.code === 'account_offline');
 
+/** The daemon refused the number of emails to test, and says why. */
+export const limitRefused = (e: unknown): e is ApiError => e instanceof ApiError && e.code === 'invalid_input' && e.path === 'limit';
+
+/**
+ * How many emails a test reads: what it reads when `limit` is left out, and the most the daemon allows
+ * (composer.DefaultLimit and composer.MaxLimit; `TestRequest.limit.maximum` in api/openapi.yaml).
+ * The generated types carry no numeric bounds, so the numbers are written here, once; a Go test
+ * (TestTestLimitsAgreeEverywhere) fails when they differ from the daemon's. The daemon still checks.
+ */
+export const TEST_LIMIT = { default: 200, max: 2000 } as const;
+
 export const list = async () => (await api<S['RuleList']>('GET', '/rules')).items;
 export const patch = async (id: number, p: RulePatch) => (await api<S['RuleEnvelope']>('PATCH', `/rules/${id}`, p)).rule;
 export const remove = (id: number) => api<void>('DELETE', `/rules/${id}`);
@@ -46,8 +57,10 @@ export const importYaml = async (file: Blob): Promise<ImportResult> =>
 
 /**
  * Runs saved (`rule_ids`) or draft (`rules`) rules over the account's recent mail without acting.
- * Up to 200 emails the daemon answers in one body; above that it streams, and `onProgress`
- * is called as it goes. A run that fails midway throws the error the stream carried.
+ * Asking for an event stream makes the daemon report progress at any size: `onProgress` is called
+ * with 0 of N once the mail is listed, then as it goes. A run that cannot start (no such folder, no
+ * model, a refused limit) is answered as plain JSON and throws as any request does; one that fails
+ * midway throws the error the stream carried.
  */
 export async function test(req: S['TestRequest'], onProgress?: (p: TestProgress) => void): Promise<TestResult> {
   const res = await request('POST', '/rules/test', { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, JSON.stringify(req));

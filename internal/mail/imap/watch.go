@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"time"
@@ -84,7 +85,8 @@ func (m *Mailbox) watchOnce(ctx context.Context, folder string, validity, lastUI
 	}
 	*validity = sel.UIDValidity
 
-	catchUp := func() error {
+	catchUp := func(after string) error {
+		began, queued := time.Now(), 0
 		// "n:*" always matches the newest message, even when its UID is below n; filter it out.
 		crit := &imap.SearchCriteria{UID: []imap.UIDSet{{imap.UIDRange{Start: imap.UID(*lastUID + 1), Stop: 0}}}}
 		data, err := c.UIDSearch(crit, nil).Wait()
@@ -101,13 +103,22 @@ func (m *Mailbox) watchOnce(ctx context.Context, folder string, validity, lastUI
 			select {
 			case out <- mail.NewMail{Ref: ref}:
 				*lastUID = uint32(uid)
+				queued++
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 		}
+		if queued > 0 { // the first pass of a connection is the catch-up for what arrived while it was down
+			lvl := slog.LevelDebug
+			if after == "connect" {
+				lvl = slog.LevelInfo
+			}
+			m.log.Log(ctx, lvl, "imap catch-up", "account", m.cfg.AccountID, "folder", folder, "after", after, "queued", queued,
+				"duration_ms", time.Since(began).Milliseconds())
+		}
 		return nil
 	}
-	if err := catchUp(); err != nil {
+	if err := catchUp("connect"); err != nil {
 		return err
 	}
 	connected()
@@ -141,7 +152,7 @@ func (m *Mailbox) watchOnce(ctx context.Context, folder string, validity, lastUI
 			case <-ctx.Done():
 			}
 		}
-		if err := catchUp(); err != nil {
+		if err := catchUp("wake"); err != nil {
 			return err
 		}
 	}

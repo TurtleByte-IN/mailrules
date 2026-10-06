@@ -156,6 +156,18 @@ it('tests first, then walks to the end and saves the mailbox', async () => {
   expect(toast.text).toBe('new@icloud.com is live');
 });
 
+it('says it is going live while the mailbox is being saved', async () => {
+  const w = await atGoLive();
+  let answer!: () => void;
+  fetchMock.mockImplementationOnce(() => new Promise((resolve) => (answer = () => resolve(new Response(JSON.stringify({ account: created }), { status: 201 })))));
+  const saved = w.next();
+  expect(w.busy).toBe(true);
+  expect(w.nextLabel).toBe('Going live…');
+  answer();
+  expect(await saved).toBe(true);
+  expect(w.nextLabel).toBe('Go live');
+});
+
 it('does not ask for starter rules when none is chosen', async () => {
   const w = await atGoLive();
   for (const t of w.templates) t.on = false;

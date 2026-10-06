@@ -114,7 +114,7 @@ func (s *system1) DecideSpread(ctx context.Context, req DecideRequest) (Decision
 		s1Response
 	}
 	start := time.Now()
-	err := s.deps.Caller.Do(ctx, func(ctx context.Context) error {
+	err := s.deps.Caller.Do(ctx, Call{s.provider, s.model}, func(ctx context.Context) error {
 		return postJSON(ctx, s.deps.client(), s.name, s.url, s.header, body, &env)
 	})
 	u.Latency = time.Since(start)

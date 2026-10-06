@@ -1,16 +1,51 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
+// logged is a log destination that can be read while the daemon's goroutines write to it.
+type logged struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logged) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+// lines are the lines whose message is msg.
+func (l *logged) lines(t *testing.T, msg string) []map[string]any {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(l.b.String()), "\n") {
+		var v map[string]any
+		if json.Unmarshal([]byte(line), &v) == nil && v["msg"] == msg {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func TestCleanupRun(t *testing.T) {
+	log, old := &logged{}, slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(log, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
 	e := newEnv(t)
 	ctx := t.Context()
 	id := e.sup.Account.ID
@@ -76,6 +111,20 @@ func TestCleanupRun(t *testing.T) {
 		t.Errorf("cut short = %+v", got)
 	}
 	m.Wait()
+	// Each run wrote a start line and a finish line with what it did.
+	started, finished := log.lines(t, "cleanup started"), log.lines(t, "cleanup finished")
+	if len(started) != 2 || len(finished) != 2 || started[0]["messages"] != float64(3) || started[0]["limit"] != float64(3) || started[0]["level"] != "INFO" {
+		t.Fatalf("start lines %v, finish lines %v", started, finished)
+	}
+	if f := finished[0]; f["status"] != store.BatchDone || f["handled"] != float64(3) || f["of"] != float64(3) || f["batch"] != started[0]["batch"] || f["level"] != "INFO" {
+		t.Errorf("finish line of the first run = %v", f)
+	}
+	if _, ok := finished[0]["duration_ms"].(float64); !ok {
+		t.Errorf("finish line has no duration_ms: %v", finished[0])
+	}
+	if f := finished[1]; f["status"] != store.BatchFailed || f["handled"] != float64(0) || f["of"] != float64(5) {
+		t.Errorf("finish line of the cut-short run = %v", f)
+	}
 	// What a daemon that stopped mid-run left behind is closed at the next start.
 	left, err := e.st.CreateCleanupBatch(ctx, id, "Old", 0, 9, 1)
 	if err != nil {

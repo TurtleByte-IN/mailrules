@@ -1,6 +1,7 @@
 <script lang="ts">
   import { push } from 'svelte-spa-router';
   import { sample } from '../../lib/api/compose';
+  import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts } from '../../lib/state/accounts.svelte';
   import { compose, optimize, savable, saveAll, type Draft } from '../../lib/state/compose.svelte';
   import { kind } from '../rules/text';
@@ -11,9 +12,15 @@
   // A refused save stays on its card until the card is changed or skipped.
   const change = (d: Draft, patch: Partial<Draft>) => Object.assign(d, patch, { refused: '', refusedName: false });
 
+  let saving = $state(false);
   async function save() {
-    const added = await saveAll();
-    if (added) push('/rules?id=' + added[0].id);
+    saving = true;
+    try {
+      const added = await saveAll();
+      if (added) push('/rules?id=' + added[0].id);
+    } finally {
+      saving = false;
+    }
   }
 </script>
 
@@ -27,6 +34,9 @@
     </TextBox>
   </section>
 
+  {#if compose.busy}
+    <Waiting text="Asking the AI model to draft your rules" />
+  {/if}
   {#if compose.needsModel}
     <div role="alert" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{compose.needsModel} <a href="#/settings" class="font-semibold underline">Open Settings</a></div>
   {/if}
@@ -38,8 +48,8 @@
       <div class="flex flex-wrap items-center justify-between gap-2.5">
         <h2>{compose.drafts.length}{compose.drafts.length === 1 ? ' rule found' : ' rules found'}. Check them before saving.</h2>
         <div class="flex gap-2">
-          <button type="button" class="btn" onclick={() => (compose.drafts = [])}>Discard</button>
-          <button type="button" class="btn-primary" onclick={save}>Save {keep}{keep === 1 ? ' rule' : ' rules'}</button>
+          <button type="button" class="btn" disabled={saving} onclick={() => (compose.drafts = [])}>Discard</button>
+          <button type="button" class="btn-primary" disabled={saving} onclick={save}>{saving ? 'Saving…' : `Save ${keep}${keep === 1 ? ' rule' : ' rules'}`}</button>
         </div>
       </div>
       {#each compose.drafts as d}

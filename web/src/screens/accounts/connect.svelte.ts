@@ -51,7 +51,7 @@ export class Wizard {
 
   get nextLabel() {
     const n = this.templates.filter((t) => t.on).length;
-    if (this.step === 3) return 'Go live';
+    if (this.step === 3) return this.busy ? 'Going live…' : 'Go live';
     if (this.step === 1 && this.test !== 'ok') return 'Test and continue';
     if (this.step === 2) return `Preview with ${n} ${n === 1 ? 'rule' : 'rules'}`;
     return 'Continue';

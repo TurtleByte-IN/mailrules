@@ -2,6 +2,8 @@
   import { router } from 'svelte-spa-router';
   import { ApiError } from '../lib/api/client';
   import * as rulesApi from '../lib/api/rules';
+  import TestRunner from '../lib/components/TestRunner.svelte';
+  import Waiting from '../lib/components/Waiting.svelte';
   import { confidence, day } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
@@ -15,7 +17,6 @@
   const sel = $derived(rules.list.find((r) => r.id === selectedId) ?? rules.list[0]);
 
   let dragId = $state(0);
-  let testing = $state(false);
   // The last test: `ok` is false for one the daemon would not run, and `text` is empty when
   // there is no mailbox to test on.
   let result = $state<{ text: string; ok: boolean } | null>(null);
@@ -27,6 +28,10 @@
   const editorFields = ['name', 'intent', 'account_id', 'stack', 'model', 'min_confidence'];
   let picker: HTMLInputElement;
   let imported = $state<{ ok: boolean; text: string } | null>(null);
+  // What the daemon is being waited on for, one thing at a time per control.
+  let importing = $state(false);
+  let exporting = $state(false);
+  let undoing = $state(false);
 
   const fail = (e: unknown) => flash((e as Error).message);
   const only = (r: rulesApi.Rule) => accounts.list.find((a) => String(a.id) === String(r.account_id))?.label;
@@ -67,13 +72,12 @@
     else e.currentTarget.value = sel.name;
   }
 
-  async function test() {
+  async function test(limit: number, onProgress: (p: rulesApi.TestProgress) => void) {
     const account = sel.account_id ?? accounts.list[0]?.id;
     if (account === undefined) return void (result = { text: '', ok: false });
-    testing = true;
     result = null;
     try {
-      const t = await rulesApi.test({ account_id: Number(account), rule_ids: [sel.id], limit: 200 });
+      const t = await rulesApi.test({ account_id: Number(account), rule_ids: [sel.id], limit }, onProgress);
       result = {
         ok: true,
         text:
@@ -83,15 +87,15 @@
             : 'Decided by conditions alone: no model calls.'),
       };
     } catch (e) {
+      if (rulesApi.limitRefused(e)) throw e; // shown beside the number
       if (rulesApi.testRefused(e)) result = { text: e.message, ok: false };
       else fail(e);
-    } finally {
-      testing = false;
     }
   }
 
   async function undo() {
     const { id, name } = sel;
+    undoing = true;
     try {
       const u = await undoToday(id);
       flash(
@@ -101,6 +105,8 @@
       );
     } catch (e) {
       fail(e);
+    } finally {
+      undoing = false;
     }
   }
 
@@ -116,6 +122,7 @@
   }
 
   async function exportRules() {
+    exporting = true;
     try {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(await rulesApi.exportYaml());
@@ -124,6 +131,8 @@
       URL.revokeObjectURL(a.href);
     } catch (e) {
       fail(e);
+    } finally {
+      exporting = false;
     }
   }
 
@@ -132,11 +141,15 @@
     // Cleared so picking the same file again after fixing it fires this again.
     e.currentTarget.value = '';
     if (!file) return;
+    importing = true;
+    imported = null;
     try {
       const r = await importFile(file);
       imported = { ok: true, text: `Imported ${file.name}: ${r.created} added, ${r.updated} updated.` };
     } catch (err) {
       imported = { ok: false, text: (err as Error).message };
+    } finally {
+      importing = false;
     }
   }
 </script>
@@ -160,11 +173,13 @@
   </header>
   <div class="-mt-1.5 flex flex-wrap gap-2">
     <a href="#/compose?mode=build" class="btn font-semibold">New condition rule</a>
-    <button type="button" class="btn font-semibold" onclick={() => picker.click()}>Import rules</button>
-    <button type="button" class="btn font-semibold" onclick={exportRules}>Export rules</button>
+    <button type="button" class="btn font-semibold" disabled={importing} onclick={() => picker.click()}>{importing ? 'Importing…' : 'Import rules'}</button>
+    <button type="button" class="btn font-semibold" disabled={exporting} onclick={exportRules}>{exporting ? 'Exporting…' : 'Export rules'}</button>
     <input bind:this={picker} type="file" accept=".yaml,.yml" hidden onchange={importRules} />
   </div>
-  {#if imported?.ok}
+  {#if importing}
+    <Waiting text="Checking and saving your rules file" />
+  {:else if imported?.ok}
     <div role="status" class="rounded bg-selected p-3 text-[13px]">{imported.text}</div>
   {:else if imported}
     <div role="alert" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] whitespace-pre-line text-warn">Nothing was imported. {imported.text}</div>
@@ -292,10 +307,13 @@
         <div class="flex flex-wrap items-center gap-2">
           <a href="#/compose?edit={sel.id}" class="btn-primary">Edit conditions</a>
           <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
-          <button type="button" class="btn font-semibold" disabled={testing} onclick={test}>{testing ? 'Testing on last 200 emails…' : 'Test on last 200 emails'}</button>
-          <button type="button" class="btn" onclick={undo}>Undo what it did today</button>
+          <TestRunner run={test} />
+          <button type="button" class="btn" disabled={undoing} onclick={undo}>{undoing ? 'Undoing…' : 'Undo what it did today'}</button>
           <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash" onclick={del}>Delete rule</button>
         </div>
+        {#if undoing}
+          <Waiting text="Putting the emails back where they were" />
+        {/if}
         {#if result?.ok}
           <div role="status" class="rounded bg-selected p-3 text-[13px]">{result.text}</div>
         {:else if result?.text}

@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/contacts"
@@ -36,6 +38,9 @@ const (
 	// are capped again, daemon-wide, by models.Caller.
 	workers = 8
 )
+
+// slowFetch is how long one message may take to read before the read is logged on its own.
+var slowFetch = 2 * time.Second
 
 // Tester runs rules over the newest mail of one folder and reports what each email would
 // get. Bodies are held in memory for the length of one message's evaluation only.
@@ -74,16 +79,40 @@ type Result struct {
 	CostUSD    float64 `json:"cost_usd"`
 }
 
+// Progress is how far a run has got. A run that finds no mail reports one 0 of 0.
+type Progress struct {
+	Done       int // messages tested or passed over
+	Total      int // messages the run will go through, known once the mail is listed
+	ModelCalls int // model calls made so far
+}
+
+// list reads the newest limit messages of folder, since a time, newest last, and
+// logs how long the mail server took.
+func (t Tester) list(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, error) {
+	start := time.Now()
+	refs, err := t.Mailbox.FetchSince(ctx, folder, since, limit)
+	slog.DebugContext(ctx, "mail listed", "account", t.AccountID, "folder", folder, "limit", limit, "messages", len(refs),
+		"duration_ms", time.Since(start).Milliseconds(), "ok", err == nil)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", folder, err)
+	}
+	return refs, nil
+}
+
 // Run evaluates rs (and the sender rules) against the newest limit messages of folder.
 // Rules with an id below 1 are drafts: they take part like saved rules and are reported
-// by name only. progress, when set, is called after every message, never concurrently.
+// by name only. progress, when set, is called once the mail is listed (0 done) and after
+// every message, never concurrently.
 // A message that is gone or unreadable by the time it is fetched is left out.
-func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, limit int, progress func(done, total int)) (Result, error) {
-	refs, err := t.Mailbox.FetchSince(ctx, folder, time.Time{}, limit)
+func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, limit int, progress func(Progress)) (Result, error) {
+	refs, err := t.list(ctx, folder, time.Time{}, limit)
 	if err != nil {
-		return Result{}, fmt.Errorf("list %s: %w", folder, err)
+		return Result{}, err
 	}
 	slices.Reverse(refs) // newest first
+	if progress != nil {
+		progress(Progress{Total: len(refs)})
+	}
 	var (
 		res  Result
 		mu   sync.Mutex
@@ -107,7 +136,7 @@ func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.Sender
 		res.CostUSD += out.Usage.CostUSD
 		done++
 		if progress != nil {
-			progress(done, len(refs))
+			progress(Progress{Done: done, Total: len(refs), ModelCalls: res.ModelCalls})
 		}
 		return nil
 	})
@@ -134,12 +163,14 @@ func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.Sender
 func (t Tester) each(ctx context.Context, refs []mail.MsgRef, work func(ctx context.Context, i int, sum *message.Summary) error) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	var reads readStats
+	defer func() { reads.log(ctx, t.AccountID) }()
 	var wg sync.WaitGroup
 	next := make(chan int)
 	for range min(workers, len(refs)) {
 		wg.Go(func() {
 			for i := range next {
-				sum, err := t.read(ctx, refs[i])
+				sum, err := t.read(ctx, refs[i], &reads)
 				if err == nil {
 					err = work(ctx, i, sum)
 				}
@@ -164,8 +195,14 @@ feed:
 
 // read fetches one message with BODY.PEEK and parses it. nil means it is gone or cannot
 // be read as an email.
-func (t Tester) read(ctx context.Context, ref mail.MsgRef) (*message.Summary, error) {
+func (t Tester) read(ctx context.Context, ref mail.MsgRef, stats *readStats) (*message.Summary, error) {
+	start := time.Now()
 	raw, err := t.Mailbox.Fetch(ctx, ref, 0)
+	took := time.Since(start)
+	stats.add(took)
+	if took >= slowFetch {
+		slog.DebugContext(ctx, "slow mail fetch", "account", t.AccountID, "folder", ref.Folder, "uid", ref.UID, "duration_ms", took.Milliseconds(), "ok", err == nil)
+	}
 	if errors.Is(err, mail.ErrNotFound) {
 		return nil, nil
 	}
@@ -177,6 +214,29 @@ func (t Tester) read(ctx context.Context, ref mail.MsgRef) (*message.Summary, er
 		return nil, nil
 	}
 	return sum, contacts.Fill(ctx, t.Store, sum)
+}
+
+// readStats adds up how long the mail server took to fetch the messages of one run.
+type readStats struct {
+	n, total, longest atomic.Int64 // fetches, and their nanoseconds in all and for the slowest
+}
+
+// add counts one fetch and keeps the longest.
+func (s *readStats) add(d time.Duration) {
+	s.n.Add(1)
+	s.total.Add(int64(d))
+	for cur := s.longest.Load(); int64(d) > cur && !s.longest.CompareAndSwap(cur, int64(d)); cur = s.longest.Load() {
+	}
+}
+
+// log writes the run's fetches as one debug line.
+func (s *readStats) log(ctx context.Context, account int64) {
+	n := s.n.Load()
+	if n == 0 {
+		return
+	}
+	slog.DebugContext(ctx, "mail fetched", "account", account, "fetches", n,
+		"total_ms", time.Duration(s.total.Load()).Milliseconds(), "slowest_ms", time.Duration(s.longest.Load()).Milliseconds())
 }
 
 // row shapes what was settled for one email.
@@ -227,9 +287,9 @@ type Preview struct {
 // what sender rules and conditions settle is counted under its rule, and the emails that
 // rules with an intent compete for are counted as the model calls the run will make.
 func (t Tester) Preview(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, since time.Time, limit int) (Preview, error) {
-	refs, err := t.Mailbox.FetchSince(ctx, folder, since, limit)
+	refs, err := t.list(ctx, folder, since, limit)
 	if err != nil {
-		return Preview{}, fmt.Errorf("list %s: %w", folder, err)
+		return Preview{}, err
 	}
 	slices.Reverse(refs) // newest first, so the samples are the newest
 	names := map[int64]string{}

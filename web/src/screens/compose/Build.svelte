@@ -2,6 +2,7 @@
   import { push } from 'svelte-spa-router';
   import { ApiError } from '../../lib/api/client';
   import * as rulesApi from '../../lib/api/rules';
+  import TestRunner from '../../lib/components/TestRunner.svelte';
   import { accounts } from '../../lib/state/accounts.svelte';
   import { add, edit, rules } from '../../lib/state/rules.svelte';
   import { flash } from '../../lib/state/toast.svelte';
@@ -14,7 +15,6 @@
 
   const start = () => (rule ? fromRule(rule) : emptyBuilder());
   let b = $state(start());
-  let testing = $state(false);
   // A test result is shown only for the form it was run on. `ok` is false for a test the daemon
   // would not run; `text` is empty when there is no mailbox to test on.
   let tested = $state({ form: '', text: '', ok: true });
@@ -36,14 +36,13 @@
     b.rows[i] = { field, op: opsFor(fields[field].type)[0][0], value: '' };
   }
 
-  async function test() {
+  async function test(limit: number, onProgress: (p: rulesApi.TestProgress) => void) {
     if (empty) return flash('Add a condition with a value, or say what the email is about');
     const account = b.account_id ?? accounts.list[0]?.id;
     if (account === undefined) return void (tested = { form, text: '', ok: false });
     const r = toRule(b);
-    testing = true;
     try {
-      const t = await rulesApi.test({ account_id: Number(account), rules: [{ ...r, enabled: true }], limit: 200 });
+      const t = await rulesApi.test({ account_id: Number(account), rules: [{ ...r, enabled: true }], limit }, onProgress);
       // A draft's rows carry its name and no rule id.
       const latest = t.results.filter((x) => x.rule_id === null && x.rule_name === r.name).sort((x, y) => (y.received_at ?? 0) - (x.received_at ?? 0))[0];
       tested = {
@@ -55,18 +54,19 @@
           (latest ? ` Latest: mail from ${latest.from}.` : ''),
       };
     } catch (e) {
+      if (rulesApi.limitRefused(e)) throw e; // shown beside the number
       if (rulesApi.testRefused(e)) tested = { form, text: e.message, ok: false };
       else flash((e as Error).message);
-    } finally {
-      testing = false;
     }
   }
 
+  let saving = $state(false);
   async function save() {
     if (empty) return flash('Add a condition with a value, or say what the email is about');
     if (b.action === 'move' && !b.folder.trim()) return flash('Choose a folder to move these emails to');
     const r = toRule(b);
     const id = b.editingId;
+    saving = true;
     try {
       const saved = id ? await edit(id, r) : (await add([{ ...r, said: 'Built with conditions', enabled: true }]))[0];
       flash(r.name + (id ? ' updated' : ' saved and live'));
@@ -76,6 +76,8 @@
       if (!at) return flash((e as Error).message);
       refused = { ...at, message: (e as Error).message, was: snapshot(at.part) };
       if (at.part === 'account_id' || at.part === 'stack') more = true;
+    } finally {
+      saving = false;
     }
   }
 </script>
@@ -175,8 +177,8 @@
       </div>
     </details>
     <div class="flex flex-wrap gap-2 border-t border-line-divider pt-3.5">
-      <button type="button" class="btn-primary min-h-11 px-[18px]" onclick={save}>{b.editingId ? 'Update rule' : 'Save rule'}</button>
-      <button type="button" class="btn min-h-11 px-4 font-semibold" disabled={testing} onclick={test}>{testing ? 'Testing on last 200 emails…' : 'Test on last 200 emails'}</button>
+      <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={saving} onclick={save}>{saving ? 'Saving…' : b.editingId ? 'Update rule' : 'Save rule'}</button>
+      <TestRunner run={test} tall buttonClass="btn min-h-11 px-4 font-semibold" />
       {#if b.editingId}
         <a href="#/rules?id={b.editingId}" class="inline-flex min-h-11 items-center px-3.5 text-secondary">Cancel</a>
       {:else}
