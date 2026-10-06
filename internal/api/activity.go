@@ -160,7 +160,7 @@ func (s *server) activityJSON(ctx context.Context, row store.ActivityRow) activi
 	}
 	for _, a := range row.Actions {
 		out.Actions = append(out.Actions, toActionJSON(a))
-		out.Undoable = out.Undoable || a.Status == store.ActionDone && a.Kind != actions.KindReview
+		out.Undoable = out.Undoable || a.Status == store.ActionDone && a.Kind != actions.KindReview && s.now().Unix()-a.CreatedAt <= store.UndoDays*24*3600
 	}
 	if slices.ContainsFunc(row.Actions, func(a store.Action) bool { return a.DecisionID == 0 }) {
 		if cs, err := s.store.MessageCorrections(ctx, m.ID); err == nil && len(cs) > 0 {
@@ -620,8 +620,13 @@ func (s *server) handleBatchUndo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.store.Batch(r.Context(), id); err != nil {
+	b, err := s.store.Batch(r.Context(), id)
+	if err != nil {
 		fail(w, r, err, "batch")
+		return
+	}
+	if s.now().Unix()-b.CreatedAt > store.UndoDays*24*3600 {
+		fail(w, r, actions.ErrTooOld, "batch")
 		return
 	}
 	undone, undoErr := s.Exec.UndoBatch(r.Context(), id)

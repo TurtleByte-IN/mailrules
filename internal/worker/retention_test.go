@@ -21,8 +21,9 @@ func TestRetentionJob(t *testing.T) {
 	job := Retention{Store: e.st, Days: func(context.Context) int { return days }, Now: func() time.Time { return now }}
 
 	uid := uint32(0)
-	// seen records an email first seen ago days back, with a snippet, a decision and one action.
-	seen := func(ago int, kind, status string) store.Message {
+	// seen records an email first seen ago days back, with a snippet, a decision and one
+	// action, made then too, or (acted) that many days back when it was sorted again later.
+	seen := func(ago int, kind, status string, acted ...int) store.Message {
 		t.Helper()
 		uid++
 		at := now.AddDate(0, 0, -ago).Unix()
@@ -38,22 +39,27 @@ func TestRetentionJob(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.st.InsertAction(ctx, store.Action{DecisionID: dec, MessageID: m.ID, AccountID: m.AccountID, Kind: kind, Status: status, CreatedAt: at}); err != nil {
+		did := at
+		if len(acted) > 0 {
+			did = now.AddDate(0, 0, -acted[0]).Unix()
+		}
+		if _, err := e.st.InsertAction(ctx, store.Action{DecisionID: dec, MessageID: m.ID, AccountID: m.AccountID, Kind: kind, Status: status, CreatedAt: did}); err != nil {
 			t.Fatal(err)
 		}
 		return m
 	}
 	fresh := seen(10, "move", store.ActionDone)
 	month := seen(40, "move", store.ActionDone)
-	oldUndoable := seen(200, "move", store.ActionDone)
+	oldUndoable := seen(200, "move", store.ActionDone, 10) // an old email a cleanup moved 10 days ago: still undoable
+	oldTooOld := seen(200, "move", store.ActionDone)       // moved 200 days ago: past the 30 days an undo is good for
 	oldDryRun := seen(200, "move", store.ActionDryRun)
 	oldUndone := seen(181, "move", store.ActionUndone)
 	oldReviewTag := seen(200, "review", store.ActionDone)
 	edge := seen(180, "move", store.ActionDryRun) // exactly 180 days: not yet older than that
 
 	blanked, deleted, err := job.Once(ctx)
-	if err != nil || blanked != 6 || deleted != 3 {
-		t.Fatalf("first run: blanked %d, deleted %d, %v; want 6 and 3", blanked, deleted, err)
+	if err != nil || blanked != 7 || deleted != 4 {
+		t.Fatalf("first run: blanked %d, deleted %d, %v; want 7 and 4", blanked, deleted, err)
 	}
 	snippet := func(m store.Message) string {
 		t.Helper()
@@ -66,7 +72,7 @@ func TestRetentionJob(t *testing.T) {
 	if snippet(fresh) == "" || snippet(month) != "" || snippet(oldUndoable) != "" || snippet(edge) != "" {
 		t.Errorf("snippets: fresh %q, 40 days %q, undoable %q", snippet(fresh), snippet(month), snippet(oldUndoable))
 	}
-	for _, m := range []store.Message{oldDryRun, oldUndone, oldReviewTag} {
+	for _, m := range []store.Message{oldTooOld, oldDryRun, oldUndone, oldReviewTag} {
 		if _, err := e.st.Message(ctx, m.ID); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("message %d is still there: %v", m.ID, err)
 		}
@@ -97,8 +103,8 @@ func TestRetentionJob(t *testing.T) {
 	}
 
 	// Run does the job at once and then on every tick, until it is stopped.
-	late := seen(400, "read", store.ActionDone)  // marked read by a rule: that can still be undone
-	stale := seen(400, "keep", store.ActionDone) // a recorded keep changed nothing: nothing to undo
+	late := seen(400, "read", store.ActionDone, 5) // marked read by a rule 5 days ago: that can still be undone
+	stale := seen(400, "keep", store.ActionDone)   // a recorded keep changed nothing: nothing to undo
 	runCtx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	job.Every = time.Millisecond

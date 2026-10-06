@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 )
 
@@ -372,5 +375,140 @@ func TestFailedCorrectionStillSendsItsEvents(t *testing.T) {
 	}
 	if it := e.item("order one", "acted"); it["outcome"] != "Failed: no Archive folder" || it["undoable"] != false || e.folderOf("order one") != "INBOX" {
 		t.Errorf("the row after the refused correction: outcome %q, undoable %v, in %q", it["outcome"], it["undoable"], e.folderOf("order one"))
+	}
+}
+
+// MAI-13: the small contract gaps, one by one.
+func TestContractGaps(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+
+	// Two rules cannot share a name: not within a batch, and not with a saved rule.
+	e.refuse(http.MethodPost, "/api/rules/batch", `{"rules":[`+foodRule+`,`+foodRule+`]}`, http.StatusBadRequest, "rule_invalid", "rules[1].name")
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[`+foodRule+`]}`, http.StatusCreated)
+	r := e.do(http.MethodPost, "/api/rules/batch", `{"rules":[{"name":"Other","intent":"x","actions":[{"type":"keep"}]},`+foodRule+`]}`)
+	if r.status != http.StatusBadRequest || r.body.Error.Path != "rules[1].name" || forAPerson(r.body.Error.Message, r.body.Error.Path) != "" || !strings.Contains(r.body.Error.Message, `"Food"`) {
+		t.Errorf("a name that is already saved = %d %q at %q", r.status, r.body.Error.Message, r.body.Error.Path)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM rules`); n != 1 {
+		t.Errorf("%d rules after two refused batches, want 1", n)
+	}
+	// A draft may be tested under the name of the rule it would replace.
+	e.call(http.MethodPost, "/api/rules/test", `{"account_id":1,"rules":[`+foodRule+`]}`, http.StatusOK)
+
+	// A provider says what it calls the secret the user pastes.
+	labels := map[string]any{}
+	for _, p := range e.call(http.MethodGet, "/api/presets", "", http.StatusOK)["items"].([]any) {
+		conform(t, e.doc, "Preset", p)
+		labels[p.(map[string]any)["name"].(string)] = p.(map[string]any)["secret_label"]
+	}
+	if labels["icloud"] != "App-specific password" || labels["fastmail"] != "App password" || labels["generic"] != "Password" {
+		t.Errorf("secret labels = %v", labels)
+	}
+
+	// last_event_at is the status change; last_mail_at is the mail.
+	acct := e.call(http.MethodGet, "/api/accounts/1", "", http.StatusOK)["account"].(map[string]any)
+	if acct["last_mail_at"] != nil || acct["last_event_at"] == nil {
+		t.Errorf("before any mail: last_mail_at %v, last_event_at %v", acct["last_mail_at"], acct["last_event_at"])
+	}
+	e.mb.Deliver("INBOX", "From: noreply@swiggy.in\r\nDate: Mon, 11 Jan 2027 10:00:00 +0000\r\nSubject: order one\r\nMessage-ID: <order-one@example.test>\r\n\r\nbody\r\n")
+	one := e.item("order one", "acted")
+	acct = e.call(http.MethodGet, "/api/accounts/1", "", http.StatusOK)["account"].(map[string]any)
+	conform(t, e.doc, "Account", acct)
+	if acct["last_mail_at"] != one["received_at"] || acct["last_mail_at"] == nil {
+		t.Errorf("last_mail_at = %v, want the email's received time %v", acct["last_mail_at"], one["received_at"])
+	}
+
+	// A stored account is checked on a connection of its own: the watcher is not restarted.
+	before, _ := e.st.Account(t.Context(), 1)
+	tested := e.call(http.MethodPost, "/api/accounts/1/test", "", http.StatusOK)
+	conform(t, e.doc, "AccountTestResult", tested)
+	if after, _ := e.st.Account(t.Context(), 1); tested["username"] != "me@example.test" || after.Status != "live" || after.LastEventAt != before.LastEventAt {
+		t.Errorf("stored account test = %v; status %q, last event %d (was %d)", tested, after.Status, after.LastEventAt, before.LastEventAt)
+	}
+	e.connectErr = fmt.Errorf("login: %w", mail.ErrAuth)
+	e.refuse(http.MethodPost, "/api/accounts/1/test", "", http.StatusUnprocessableEntity, "auth_failed", "password")
+	if after, _ := e.st.Account(t.Context(), 1); after.Status != "live" {
+		t.Errorf("a failed test changed the account's status to %q", after.Status)
+	}
+	e.connectErr = nil
+	e.refuse(http.MethodPost, "/api/accounts/9/test", "", http.StatusNotFound, "not_found", "")
+
+	// A cleanup preview's groups have keys that stay put.
+	e.mb.AddFolder("Old", "")
+	e.mb.Deliver("Old", "From: noreply@swiggy.in\r\nSubject: old order\r\n\r\nbody\r\n")
+	e.mb.Deliver("Old", "From: friend@example.org\r\nSubject: old lunch\r\n\r\nbody\r\n")
+	e.mb.Deliver("Old", "From: news@keep.example\r\nSubject: old news\r\n\r\nbody\r\n")
+	e.call(http.MethodPut, "/api/senders/domain/keep.example", `{"verdict":"keep"}`, http.StatusOK)
+	var keys []string
+	for _, g := range e.call(http.MethodPost, "/api/cleanup/preview", `{"account_id":1,"folder":"Old"}`, http.StatusOK)["groups"].([]any) {
+		keys = append(keys, g.(map[string]any)["key"].(string))
+	}
+	slices.Sort(keys)
+	if got := strings.Join(keys, " "); got != "none rule:1 sender:keep" {
+		t.Errorf("preview group keys = %q", got)
+	}
+
+	// A sender rule for an address with no mail has no name: the UI shows the address once.
+	e.call(http.MethodPut, "/api/senders/address/quiet@nowhere.example", `{"verdict":"keep"}`, http.StatusOK)
+	for _, s := range e.call(http.MethodGet, "/api/senders?source=user", "", http.StatusOK)["items"].([]any) {
+		if s := s.(map[string]any); s["value"] == "quiet@nowhere.example" && (s["name"] != "" || s["messages"] != float64(0)) {
+			t.Errorf("a sender with a rule and no mail = %v", s)
+		}
+	}
+
+	// Usage by day says what each model was used for.
+	if err := e.st.AddUsage(t.Context(), e.ck.now().UTC().Format(time.DateOnly), "anthropic", "claude-haiku-4-5", "escalate", 1, 100, 10, 0.01); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.AddUsage(t.Context(), e.ck.now().UTC().Format(time.DateOnly), "anthropic", "claude-haiku-4-5", "compose", 2, 100, 10, 0.02); err != nil {
+		t.Fatal(err)
+	}
+	usage := e.call(http.MethodGet, "/api/stats/usage", "", http.StatusOK)
+	conform(t, e.doc, "StatsUsage", usage)
+	days := usage["days"].([]any)
+	var purposes []string
+	for _, m := range days[len(days)-1].(map[string]any)["models"].([]any) {
+		purposes = append(purposes, m.(map[string]any)["purpose"].(string))
+	}
+	if got := strings.Join(purposes, " "); got != "compose escalate" {
+		t.Errorf("today's models by purpose = %q", got)
+	}
+}
+
+// MAI-13: what MailRules did stays undoable for 30 days, and not a day longer; and undoing
+// a batch that only ever recorded dry-run actions is a no-op.
+func TestUndoWindowAndDryRunBatches(t *testing.T) {
+	e := newEnv(t)
+	e.signIn() // dry-run is on
+	e.call(http.MethodPost, "/api/accounts", accountBody, http.StatusCreated)
+	e.live()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[`+foodRule+`]}`, http.StatusCreated)
+	e.deliver("noreply@swiggy.in", "dry order")
+	dry := e.item("dry order", "acted")
+	dryBatch := id(dry["actions"].([]any)[0].(map[string]any)["batch_id"])
+	res := e.call(http.MethodPost, fmt.Sprintf("/api/batches/%d/undo", dryBatch), "", http.StatusOK)
+	conform(t, e.doc, "UndoResult", res)
+	if b := res["batch"].(map[string]any); res["undone"] != float64(0) || res["failed"] != float64(0) || b["status"] != "done" || b["actions"].(map[string]any)["dry_run"] != float64(2) {
+		t.Errorf("undoing a dry-run batch = %v", res)
+	}
+
+	e.call(http.MethodPatch, "/api/settings", `{"dry_run":false}`, http.StatusOK)
+	e.deliver("noreply@swiggy.in", "order one")
+	one := e.item("order one", "acted")
+	move := one["actions"].([]any)[0].(map[string]any)
+	e.ck.t = e.ck.t.AddDate(0, 0, 29)
+	if e.item("order one", "acted")["undoable"] != true {
+		t.Error("an action 29 days old is no longer undoable")
+	}
+	e.ck.t = e.ck.t.AddDate(0, 0, 2) // 31 days on
+	if e.item("order one", "acted")["undoable"] != false {
+		t.Error("an action 31 days old still reads as undoable")
+	}
+	e.refuse(http.MethodPost, fmt.Sprintf("/api/actions/%d/undo", id(move["id"])), "", http.StatusConflict, "too_old", "")
+	e.refuse(http.MethodPost, fmt.Sprintf("/api/batches/%d/undo", id(move["batch_id"])), "", http.StatusConflict, "too_old", "")
+	e.refuse(http.MethodPost, fmt.Sprintf("/api/messages/%d/undo", id(one["id"])), "", http.StatusConflict, "too_old", "")
+	if since := e.call(http.MethodPost, "/api/actions/undo?since=1", "", http.StatusOK); since["undone"] != float64(0) || since["failed"] != float64(0) || e.folderOf("order one") != "Food" {
+		t.Errorf("undo since the beginning, 31 days on = %v; the email is in %q", since, e.folderOf("order one"))
 	}
 }

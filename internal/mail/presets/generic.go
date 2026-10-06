@@ -25,6 +25,8 @@ type Preset struct {
 	// when the server does not report the role itself. Matching ignores case.
 	Folders map[string][]string
 	HelpURL string // where the user creates an app password
+	// PasteLabel is what the provider calls the secret the user pastes into the wizard.
+	PasteLabel string
 	// LocalPartLogin: the server may want the part before "@" as the username.
 	LocalPartLogin bool
 }
@@ -48,11 +50,12 @@ func withCommon(own map[string][]string) map[string][]string {
 }
 
 var generic = Preset{
-	Name:    "generic",
-	Label:   "Other IMAP server",
-	Port:    993,
-	TLSMode: TLSImplicit,
-	Folders: withCommon(nil),
+	Name:       "generic",
+	Label:      "Other IMAP server",
+	Port:       993,
+	TLSMode:    TLSImplicit,
+	Folders:    withCommon(nil),
+	PasteLabel: "Password",
 }
 
 // All returns every preset, generic last.

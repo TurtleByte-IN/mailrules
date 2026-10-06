@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -203,6 +204,9 @@ const (
 // Group is the emails of a cleanup preview that share an outcome. Its JSON is one entry
 // of the contract's CleanupPreview.groups.
 type Group struct {
+	// Key names the group and stays the same from one preview to the next: "rule:<id>",
+	// "sender:keep" or "sender:trash" for a sender rule without a rule, "none", "model", "review".
+	Key      string `json:"key"`
 	Outcome  string `json:"outcome"`
 	RuleID   *int64 `json:"rule_id"`
 	RuleName string `json:"rule_name"` // for a sender rule without a rule: "Sender rule: keep" or "Sender rule: trash"
@@ -280,9 +284,12 @@ func (t Tester) Preview(ctx context.Context, rs []rules.Rule, senders []rules.Se
 		j, ok := at[k]
 		if !ok {
 			j, at[k] = len(p.Groups), len(p.Groups)
-			g := Group{Outcome: k.outcome, RuleName: k.name, Samples: []Row{}}
-			if k.rule > 0 {
-				g.RuleID = &k.rule
+			g := Group{Key: k.outcome, Outcome: k.outcome, RuleName: k.name, Samples: []Row{}}
+			switch {
+			case k.rule > 0:
+				g.RuleID, g.Key = &k.rule, fmt.Sprintf("rule:%d", k.rule)
+			case k.outcome == OutcomeRule: // a sender rule that keeps or blocks; its name is "Sender rule: keep"
+				g.Key = "sender:" + strings.TrimPrefix(k.name, "Sender rule: ")
 			}
 			p.Groups = append(p.Groups, g)
 		}

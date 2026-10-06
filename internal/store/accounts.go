@@ -365,3 +365,13 @@ func (s *Store) SetAccountSecret(ctx context.Context, master []byte, id int64, s
 	}
 	return nil
 }
+
+// LastMailAt is when the newest email MailRules has seen in an account arrived (its
+// received date, or when it was first seen if it carried none); 0 when it has seen none.
+func (s *Store) LastMailAt(ctx context.Context, accountID int64) (int64, error) {
+	var at sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(COALESCE(received_at, created_at)) FROM messages WHERE account_id = ?`, accountID).Scan(&at); err != nil {
+		return 0, fmt.Errorf("last mail of account %d: %w", accountID, err)
+	}
+	return at.Int64, nil
+}

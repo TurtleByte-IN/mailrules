@@ -27,6 +27,10 @@ func (e *NoFolderError) Error() string { return "no " + e.Role + " folder" }
 // MailRules left it. The HTTP layer answers 409 with this text.
 var ErrGone = errors.New("message was moved or deleted outside MailRules")
 
+// ErrTooOld means an action was made more than store.UndoDays ago and can no longer be
+// undone. The HTTP layer answers 409 too_old.
+var ErrTooOld = errors.New("the action is too old to undo")
+
 // Accounts is how the executor reaches a mail account (worker.Manager implements it).
 type Accounts interface {
 	// Mailbox returns the account's open connection.
@@ -225,7 +229,8 @@ func (x *Exec) EnsureFolders(ctx context.Context, accountID int64, names []strin
 
 // Undo reverses one action: a move goes back to the folder it came from, a flag change
 // goes back to what the before snapshot says. Undoing an action that is already undone,
-// or that never changed the mailbox (dry-run, failed), does nothing. When the message is
+// or that never changed the mailbox (dry-run, failed), does nothing. An action made more
+// than store.UndoDays ago is refused with ErrTooOld. When the message is
 // not where the action left it, the error is ErrGone and the action stays as it was.
 // Undo does not look at dry-run: it only restores what MailRules itself changed, and
 // only when asked.
@@ -243,6 +248,9 @@ func (x *Exec) undo(ctx context.Context, actionID int64) error {
 	a, err := x.Store.Action(ctx, actionID)
 	if err != nil || a.Status != store.ActionDone || a.After == nil {
 		return err
+	}
+	if x.now()-a.CreatedAt > store.UndoDays*24*3600 {
+		return ErrTooOld
 	}
 	msg, err := x.Store.Message(ctx, a.MessageID)
 	if err != nil {
@@ -308,7 +316,9 @@ func locate(ctx context.Context, mb mail.Mailbox, a store.Action, msg store.Mess
 
 // UndoBatch undoes a batch's actions, newest first, and returns how many it undid. An
 // action that cannot be undone does not stop the rest: its error is joined into the one
-// returned, and the batch is marked undone only when every action was.
+// returned, and the batch is marked undone only when every action was. A batch that never
+// changed a mailbox (all its actions were recorded in dry-run, or failed) has nothing to
+// undo: that is a no-op, and the batch stays as it is.
 func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (int, error) {
 	if _, err := x.Store.Batch(ctx, batchID); err != nil {
 		return 0, err
@@ -318,8 +328,10 @@ func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (int, error) {
 		return 0, err
 	}
 	undone := 0
+	changed := false // the batch changed a mailbox at some point
 	var errs []error
 	for _, a := range slices.Backward(acts) {
+		changed = changed || a.Status == store.ActionDone || a.Status == store.ActionUndone
 		if a.Status != store.ActionDone {
 			continue
 		}
@@ -331,6 +343,9 @@ func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (int, error) {
 	}
 	if len(errs) > 0 {
 		return undone, errors.Join(errs...)
+	}
+	if !changed {
+		return 0, nil
 	}
 	return undone, x.Store.SetBatchStatus(ctx, batchID, store.BatchUndone)
 }
@@ -428,7 +443,8 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 // were undone and how many could not be (their message is gone, or its account is not
 // connected). One that cannot be undone does not stop the rest.
 func (x *Exec) UndoSince(ctx context.Context, ruleID, since int64) (batchID int64, undone, failed int, err error) {
-	acts, err := x.Store.DoneActionsSince(ctx, ruleID, since)
+	// What is older than the undo window is not looked at: it could only fail as too old.
+	acts, err := x.Store.DoneActionsSince(ctx, ruleID, max(since, x.now()-store.UndoDays*24*3600))
 	if err != nil {
 		return 0, 0, 0, err
 	}

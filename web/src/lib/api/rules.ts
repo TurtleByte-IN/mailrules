@@ -49,7 +49,7 @@ export const importYaml = async (file: Blob): Promise<ImportResult> =>
  * Up to 200 emails the daemon answers in one body; above that it streams, and `onProgress`
  * is called as it goes. A run that fails midway throws the error the stream carried.
  */
-export async function test(req: Omit<S['TestRequest'], 'folder'>, onProgress?: (p: TestProgress) => void): Promise<TestResult> {
+export async function test(req: S['TestRequest'], onProgress?: (p: TestProgress) => void): Promise<TestResult> {
   const res = await request('POST', '/rules/test', { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, JSON.stringify(req));
   if (!res.headers.get('Content-Type')?.startsWith('text/event-stream')) return res.json();
 

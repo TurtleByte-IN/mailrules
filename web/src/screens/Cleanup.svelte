@@ -93,7 +93,7 @@
         <h2>
           {total.toLocaleString()} emails from {cleanup.scope.range === 'all' ? 'all time' : 'the ' + ranges[cleanup.scope.range].toLowerCase()} would be sorted like this
         </h2>
-        {#each cleanup.preview.groups as g (g.outcome + g.rule_id + g.rule_name)}
+        {#each cleanup.preview.groups as g (g.key)}
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <span class="w-[170px] font-medium">{groupName(g)}</span>
             <div class="h-2.5 flex-[1_1_200px] overflow-hidden rounded bg-neutral">

@@ -16,8 +16,8 @@ const starterTemplates = [
   { id: 't5', name: 'Travel', desc: 'tickets and bookings to Travel', on: false },
 ];
 
-/** What the provider calls the secret the user pastes. A preset without a host is the user's own server. */
-export const secretLabel = (p: Preset) => (p.name === 'icloud' ? 'App-specific password' : p.host ? 'App password' : 'Password');
+/** What the provider calls the secret the user pastes, as the daemon's preset says. */
+export const secretLabel = (p: Preset) => p.secret_label;
 
 /** View state for one run of the connect wizard. Thrown away when the wizard closes. */
 export class Wizard {

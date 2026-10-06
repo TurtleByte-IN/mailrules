@@ -7,11 +7,8 @@ export type Account = S['Account'];
 export type AccountStatus = S['AccountStatus'];
 export type Preset = S['Preset'];
 export type AccountPatch = S['AccountPatch'];
-/**
- * The password is sent once and never comes back in any response. watch_folder has a default
- * in the contract, which the type generator turns into a required field; it is optional.
- */
-export type AccountInput = Omit<S['AccountInput'], 'watch_folder'> & Partial<Pick<S['AccountInput'], 'watch_folder'>>;
+/** The password is sent once and never comes back in any response. */
+export type AccountInput = S['AccountInput'];
 export type TestResult = S['AccountTestResult'];
 
 export const listPresets = () => api<{ items: Preset[] }>('GET', '/presets').then((r) => r.items);

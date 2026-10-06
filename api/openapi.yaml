@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.17.0
+  version: 0.18.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -18,6 +18,14 @@ info:
       `rules[1].conditions.all[0].op`).
     - Lists that can grow use cursor pagination: `?cursor=&limit=` (limit 1 to 100, default 50).
       The response carries `next_cursor`; pass it back as `cursor`, and `null` means the end.
+      A cursor is opaque, with one exception a client may rely on: for `/api/senders` it is
+      an offset into the sorted list.
+    - A request field that may be left out says in its description what is used then. The
+      schema carries no `default` for request-body fields, so generated clients type them
+      as optional.
+    - What MailRules did stays undoable for 30 days. An action, or a batch, older than that
+      is refused by every undo endpoint with 409 `too_old`, and a feed row's `undoable` is
+      false once nothing on it is younger.
     - Every route except the four under `/api/auth`, `/healthz`, `/readyz` and `/metrics` needs
       the `mailrules_session` cookie, and answers 401 without one: `setup_required` before the
       admin account exists, `unauthenticated` after.
@@ -256,6 +264,28 @@ paths:
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # account_paused
+  /api/accounts/{id}/test:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Accounts]
+      operationId: testStoredAccount
+      summary: Check a connected account's stored login, without disturbing it
+      description: |
+        Logs in with the stored password on a connection of its own, lists the folders and
+        closes it again. The account's watcher is not restarted and its `status` does not
+        change: this only answers "would it connect right now?". Use
+        `/api/accounts/{id}/reconnect` to actually restart it. Works for a paused account too.
+      responses:
+        '200':
+          description: The server accepted the stored login
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountTestResult' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ConnectionFailed' }
   /api/accounts/{id}/folders:
     parameters:
       - { $ref: '#/components/parameters/Id' }
@@ -324,7 +354,9 @@ paths:
       description: |
         How every rule is created besides import: approved composer drafts, a rule built by
         hand in the condition builder, a template. It needs no model. Every rule is
-        validated before anything is done, so one bad rule saves none. `new_folders` are
+        validated before anything is done, so one bad rule saves none. A rule is known by
+        its name: two rules of the batch with the same name, or one named like a saved
+        rule, are refused (400 `rule_invalid`, path `rules[1].name`). `new_folders` are
         then created on the rule's account (every connected account for a rule with
         `account_id` null), and the rules inserted at the end or at `position`. Folders are
         not created while dry-run is on or the account is offline; the first live move
@@ -344,7 +376,7 @@ paths:
                 required: [items]
                 properties:
                   items: { type: array, items: { $ref: '#/components/schemas/Rule' } }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path: rules[0].conditions.all[0].op | rules[0].model | rules[0].new_folders[0]), invalid_input (path: rules | rules[0] for a field of the wrong type or an unknown one | rules[0].account_id), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path: rules[0].conditions.all[0].op | rules[0].model | rules[0].new_folders[0] | rules[1].name for a name used twice or already saved), invalid_input (path: rules | rules[0] for a field of the wrong type or an unknown one | rules[0].account_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error: a folder could not be created; nothing was saved
@@ -536,7 +568,7 @@ paths:
       tags: [Fixes]
       operationId: undoRuleSince
       summary: Undo everything this rule did since a time
-      description: Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest.
+      description: Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. Actions older than 30 days are not undoable and are left out, however far back `since` reaches.
       responses:
         '200':
           description: The undo batch and its counts
@@ -556,7 +588,9 @@ paths:
         Every address mail was seen from in the last 30 days, every address that has a sender
         rule even if it has been quiet, and every domain that has a sender rule (counted over
         its addresses). `source=learned` lists the rules MailRules learned by itself,
-        `source=user` the ones the user set. The cursor is an offset into the sorted list.
+        `source=user` the ones the user set. The cursor is an offset into the sorted list (a
+        plain number: `50` is the second page of 50), not an opaque token, so the list can
+        shift under it when mail arrives between two pages.
       parameters:
         - { name: sort, in: query, schema: { type: string, enum: [volume, recent], default: volume } }
         - { name: q, in: query, schema: { type: string }, description: Matches the address or display name }
@@ -702,7 +736,8 @@ paths:
         stop the others: `failed` counts them, and `item` shows each action as it is now
         (`undoable` stays true while one is still in effect). The request is refused only
         when not one action could be undone, with the reason of the first: 409
-        `message_gone` when the email was moved or deleted outside MailRules. With nothing
+        `message_gone` when the email was moved or deleted outside MailRules, `too_old` when
+        what was done is older than 30 days. With nothing
         in effect (already undone, only recorded in dry-run, or no action at all) it does
         nothing and answers 200 with zero counts. The Needs review tag is left alone. Each
         undone action is also sent as `action.undone`. Undo ignores dry-run.
@@ -715,7 +750,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline: nothing could be undone
+        '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline, too_old: nothing could be undone
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error: nothing could be undone
   /api/review:
     get:
@@ -768,7 +803,7 @@ paths:
       tags: [Fixes]
       operationId: undoSince
       summary: Undo everything done since a time ("Undo the last hour")
-      description: Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone.
+      description: Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone. Actions older than 30 days are not undoable and are left out, however far back `since` reaches.
       responses:
         '200':
           description: The undo batch and its counts
@@ -799,14 +834,14 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' } # message_gone (the action stays done), account_offline
+        '409': { $ref: '#/components/responses/Conflict' } # message_gone (the action stays done), account_offline, too_old (done more than 30 days ago)
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
   /api/batches:
     get:
       tags: [Cleanup]
       operationId: listBatches
       summary: Past batches, newest first
-      description: The Cleanup screen lists `kind=cleanup` as its "batches you can undo"; undo one with `POST /api/batches/{id}/undo`.
+      description: The Cleanup screen lists `kind=cleanup` as its "batches you can undo"; undo one with `POST /api/batches/{id}/undo`. A batch can be undone for 30 days from its `created_at`.
       parameters:
         - { name: kind, in: query, schema: { type: string, enum: [live, cleanup, review, correction, undo] }, description: Only batches of this kind }
         - { $ref: '#/components/parameters/Cursor' }
@@ -850,7 +885,12 @@ paths:
       tags: [Fixes]
       operationId: undoBatch
       summary: Undo every action of a batch, newest first
-      description: An action that cannot be undone does not stop the rest; `failed` counts them and the batch becomes `undone` only when every action was.
+      description: |
+        An action that cannot be undone does not stop the rest; `failed` counts them and the
+        batch becomes `undone` only when every action was. A batch stays undoable for 30
+        days from when it was created; after that the answer is 409 `too_old`. Undoing a
+        batch that never changed a mailbox (all its actions were recorded as `dry_run`) is a
+        no-op: it answers 200 with `undone` 0 and `failed` 0, and the batch stays as it is.
       responses:
         '200':
           description: The batch and how the undo went
@@ -860,6 +900,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # too_old: the batch is older than 30 days
   /api/cleanup/preview:
     post:
       tags: [Cleanup]
@@ -1235,7 +1276,7 @@ components:
 
     Preset:
       type: object
-      required: [name, label, host, port, tls_mode, help_url, local_part_login]
+      required: [name, label, host, port, tls_mode, help_url, local_part_login, secret_label]
       properties:
         name: { $ref: '#/components/schemas/PresetName' }
         label: { type: string, description: 'Shown in the provider picker, e.g. "iCloud Mail"' }
@@ -1244,6 +1285,7 @@ components:
         tls_mode: { $ref: '#/components/schemas/TLSMode' }
         help_url: { type: string, description: Where the user creates an app password; may be empty }
         local_part_login: { type: boolean, description: The server may want the part before "@" as the username; the daemon tries both }
+        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Fastmail, Yahoo, Zoho) or "Password" (generic)' }
     PresetName: { type: string, enum: [icloud, fastmail, yahoo, zoho, generic] }
     TLSMode: { type: string, enum: [implicit, starttls] }
     AccountStatus:
@@ -1262,7 +1304,7 @@ components:
         host: { type: string, description: Required with the generic preset; otherwise overrides the preset }
         port: { type: integer, minimum: 1, maximum: 65535 }
         tls_mode: { $ref: '#/components/schemas/TLSMode' }
-        watch_folder: { type: string, default: INBOX }
+        watch_folder: { type: string, description: Left out = INBOX }
     AccountTestResult:
       type: object
       required: [username, folders, can_move, idle]
@@ -1273,7 +1315,7 @@ components:
         idle: { type: boolean, description: False means new mail is checked for once a minute }
     Account:
       type: object
-      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, capabilities, can_move, folder_count, created_at]
+      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, last_mail_at, capabilities, can_move, folder_count, created_at]
       properties:
         id: { type: integer, format: int64 }
         label: { type: string }
@@ -1285,7 +1327,8 @@ components:
         watch_folder: { type: string }
         status: { $ref: '#/components/schemas/AccountStatus' }
         last_error: { type: string, description: Why the status is what it is; empty when all is well }
-        last_event_at: { type: [integer, 'null'], format: int64, description: When the status last changed }
+        last_event_at: { type: [integer, 'null'], format: int64, description: 'When `status` last changed (the account went live, started reconnecting, failed, was paused). Not when mail last arrived: that is `last_mail_at`. null until the first status is reported' }
+        last_mail_at: { type: [integer, 'null'], format: int64, description: 'When the newest email MailRules has seen in this account arrived (its received date); null when it has seen none' }
         capabilities: { type: array, items: { type: string }, description: What the server advertised at the last login }
         can_move: { type: boolean }
         folder_count: { type: integer }
@@ -1405,10 +1448,10 @@ components:
         exceptions: { $ref: '#/components/schemas/Condition' }
         actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
         account_id: { type: [integer, 'null'], format: int64 }
-        stack: { type: boolean, default: false }
+        stack: { type: boolean, description: Left out = false }
         model: { type: string }
         min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
-        enabled: { type: boolean, default: true }
+        enabled: { type: boolean, description: 'Left out = true. A tested rule is always switched on' }
         new_folders: { type: array, items: { type: string }, description: Folders to create on the server when the rule is saved }
         position: { type: integer, minimum: 0, description: Where in the priority order to insert it (0 = first); left out = at the end }
     ComposeRequest:
@@ -1420,7 +1463,8 @@ components:
         account_id: { type: [integer, 'null'], format: int64, description: The account whose folders and recent mail the drafts are checked against }
     RuleDraft:
       type: object
-      required: [name, said, intent, conditions, exceptions, actions, min_confidence, new_folders, question, conflicts, errors, match_count, samples]
+      required: [name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders, question, conflicts, errors, match_count, samples]
+      description: 'A draft carries every field of RuleInput, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything'
       properties:
         name: { type: string }
         said: { type: string, description: The exact span of the user's words this rule came from }
@@ -1428,6 +1472,9 @@ components:
         conditions: { $ref: '#/components/schemas/Condition' }
         exceptions: { $ref: '#/components/schemas/Condition' }
         actions: { type: array, items: { $ref: '#/components/schemas/RuleAction' } }
+        account_id: { type: [integer, 'null'], format: int64, description: 'null = every account, which is what a composed draft is for. A re-optimized rule keeps its own' }
+        stack: { type: boolean, description: 'false for a composed draft; a re-optimized rule keeps its own' }
+        model: { type: string, description: 'Empty for a composed draft; a re-optimized rule keeps its own' }
         min_confidence: { type: [number, 'null'] }
         new_folders: { type: array, items: { type: string }, description: Folders the rule names that do not exist yet }
         question: { type: [string, 'null'], description: At most one question, when the text was genuinely ambiguous }
@@ -1472,8 +1519,8 @@ components:
         account_id: { type: integer, format: int64 }
         rule_ids: { type: array, items: { type: integer, format: int64 }, description: 'Saved rules to test, each switched on, without the other saved rules and without the sender rules' }
         rules: { type: array, items: { $ref: '#/components/schemas/RuleInput' }, description: 'Draft rules to test, in the order given, after any saved rules named in `rule_ids`. The other saved rules take no part' }
-        folder: { type: string, default: INBOX }
-        limit: { type: integer, minimum: 1, maximum: 2000, default: 200 }
+        folder: { type: string, description: Left out = INBOX }
+        limit: { type: integer, minimum: 1, maximum: 2000, description: 'Left out = 200. Above 200 the answer is an event stream' }
     TestRow:
       type: object
       required: [from, subject, received_at, stage, rule_id, rule_name, confidence, reason, actions]
@@ -1499,8 +1546,8 @@ components:
       required: [results, tested, matched, model_calls, cost_usd]
       properties:
         results: { type: array, items: { $ref: '#/components/schemas/TestRow' } }
-        tested: { type: integer }
-        matched: { type: integer }
+        tested: { type: integer, description: Emails read }
+        matched: { type: integer, description: 'Of those, the emails one of the tested rules would be applied to. Only the rules this request tested count (`rule_ids` and `rules`, or the saved set when it names neither): a rule that was left out matches nothing here, and an email that would go to Needs review is not counted' }
         model_calls: { type: integer }
         cost_usd: { type: number }
 
@@ -1510,7 +1557,7 @@ components:
       properties:
         type: { type: string, enum: [address, domain] }
         value: { type: string, description: Lower-case address or domain }
-        name: { type: string, description: 'The From display name of the newest email from this address; empty when it had none, and for a domain' }
+        name: { type: string, description: 'The From display name of the newest email from this address. Empty when that email had none, for a domain, and for an address that has a sender rule but no mail in the last 30 days: show `value` once then, not twice' }
         messages: { type: integer, description: 'Emails MailRules has seen from this sender in the last 30 days; for a domain, from all its addresses' }
         last_seen_at: { type: [integer, 'null'], format: int64 }
         has_list_unsubscribe: { type: boolean, description: At least one of those emails carried a List-Unsubscribe header. Unsubscribing itself is not built (features.unsubscribe) }
@@ -1683,7 +1730,7 @@ components:
       additionalProperties: false
       properties:
         rule_id: { type: [integer, 'null'], format: int64, description: The rule the email belongs to; null = keep it in the inbox }
-        always_for_sender: { type: boolean, default: false, description: 'Also store a sender rule, so future mail from this address goes the same way. The same as `always_for: address`; `always_for` wins when both are sent' }
+        always_for_sender: { type: boolean, description: 'Left out = false. Also store a sender rule, so future mail from this address goes the same way. The same as `always_for: address`; `always_for` wins when both are sent' }
         always_for: { type: string, enum: [address, domain], description: 'Also store a sender rule, so future mail goes the same way: from this sender''s address, or from its whole domain (subdomains included). Left out = no sender rule. `domain` is refused with 422 `domain_too_broad` for a well-known free-mail domain' }
     FixResult:
       type: object
@@ -1737,7 +1784,7 @@ components:
       additionalProperties: false
       properties:
         account_id: { type: integer, format: int64 }
-        folder: { type: string, default: INBOX, description: One folder of the account. There is no "all folders" }
+        folder: { type: string, description: 'One folder of the account; left out = INBOX. There is no "all folders"' }
         since: { type: [integer, 'null'], format: int64, description: Only mail received on or after this time's date; null = all of it }
         limit: { type: integer, minimum: 1, description: Only the newest N emails }
     CleanupPreview:
@@ -1750,8 +1797,9 @@ components:
           description: Biggest group first
           items:
             type: object
-            required: [outcome, rule_id, rule_name, count, samples]
+            required: [key, outcome, rule_id, rule_name, count, samples]
             properties:
+              key: { type: string, description: 'Names the group, unique within a preview and the same from one preview to the next: `rule:<id>` for a rule, `sender:keep` or `sender:trash` for a sender rule without a rule, `none`, `model`, `review`' }
               outcome:
                 type: string
                 enum: [rule, none, model, review]
@@ -1809,7 +1857,7 @@ components:
         quiet_rules: { type: integer, description: Enabled rules applied to no email in the range }
         decided_without_model: { type: number, minimum: 0, maximum: 1, description: 'Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed' }
         cost_usd: { type: number }
-        calls_by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' } }
+        calls_by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' }, description: 'One row per provider, model and purpose, dearest first: a model used both to decide and as the fallback has two rows. Add them up for a per-model figure' }
         top_rules:
           type: array
           description: The five rules applied to the most emails, most first
@@ -1856,10 +1904,12 @@ components:
                 type: array
                 items:
                   type: object
-                  required: [provider, model, calls, cost_usd]
+                  required: [provider, model, purpose, calls, cost_usd]
+                  description: One entry per provider, model and purpose
                   properties:
                     provider: { type: string }
                     model: { type: string }
+                    purpose: { type: string, enum: [decide, escalate, compose, test] }
                     calls: { type: integer }
                     cost_usd: { type: number }
         by_rule:
@@ -1873,7 +1923,7 @@ components:
               emails: { type: integer }
               calls: { type: integer, description: Decisions a model was asked for }
               cost_usd: { type: number }
-        by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' } }
+        by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' }, description: 'One row per provider, model and purpose, dearest first' }
         without_model: { type: integer, description: 'Of the `processed` emails, those settled without asking a model: by conditions or sender rules, or because no rule was in play. Never more than `processed`; the free share is `without_model / processed`, not over `emails`' }
 
     Decider: { type: string, enum: [jev, clef, anthropic, openai, ollama] }

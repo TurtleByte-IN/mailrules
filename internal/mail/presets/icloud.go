@@ -16,7 +16,8 @@ var icloud = Preset{
 		mail.RoleArchive: {"Archive"},
 		mail.RoleSent:    {"Sent Messages"},
 	}),
-	HelpURL: "https://support.apple.com/en-us/102654",
+	PasteLabel: "App-specific password",
+	HelpURL:    "https://support.apple.com/en-us/102654",
 	// Apple documents the username as the part before "@"; some accounts take the full address.
 	LocalPartLogin: true,
 }

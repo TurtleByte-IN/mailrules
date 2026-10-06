@@ -41,12 +41,12 @@ const row = (from: string, subject: string): Preview['groups'][number]['samples'
 const previewed: Preview = {
   total: 412,
   groups: [
-    { outcome: 'rule', rule_id: 5, rule_name: 'Newsletters', count: 298, samples: [row('news@substack.com', 'This week <b>in</b> Go')] },
+    { key: 'rule:5', outcome: 'rule', rule_id: 5, rule_name: 'Newsletters', count: 298, samples: [row('news@substack.com', 'This week <b>in</b> Go')] },
     // Two sender rules without a rule: same outcome, both with a null rule_id.
-    { outcome: 'rule', rule_id: null, rule_name: 'Sender rule: keep', count: 20, samples: [] },
-    { outcome: 'rule', rule_id: null, rule_name: 'Sender rule: trash', count: 4, samples: [] },
-    { outcome: 'model', rule_id: null, rule_name: '', count: 80, samples: [] },
-    { outcome: 'none', rule_id: null, rule_name: '', count: 10, samples: [] },
+    { key: 'sender:keep', outcome: 'rule', rule_id: null, rule_name: 'Sender rule: keep', count: 20, samples: [] },
+    { key: 'sender:trash', outcome: 'rule', rule_id: null, rule_name: 'Sender rule: trash', count: 4, samples: [] },
+    { key: 'model', outcome: 'model', rule_id: null, rule_name: '', count: 80, samples: [] },
+    { key: 'none', outcome: 'none', rule_id: null, rule_name: '', count: 10, samples: [] },
   ],
   estimated_model_calls: 80,
   estimated_cost_usd: 0.01,

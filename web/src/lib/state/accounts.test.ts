@@ -28,7 +28,7 @@ const acct = (over: Partial<Account> = {}): Account => ({
   watch_folder: 'INBOX',
   status: 'live',
   last_error: '',
-  last_event_at: 1791270000,
+  last_event_at: 1791270000, last_mail_at: null,
   capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'],
   can_move: true,
   folder_count: 14,

@@ -144,6 +144,7 @@ func (s *server) handleStatsUsage(w http.ResponseWriter, r *http.Request) {
 	type dayModel struct {
 		Provider string  `json:"provider"`
 		Model    string  `json:"model"`
+		Purpose  string  `json:"purpose"`
 		Calls    int     `json:"calls"`
 		CostUSD  float64 `json:"cost_usd"`
 	}
@@ -162,9 +163,9 @@ func (s *server) handleStatsUsage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		ms := days[i].Models
-		j := slices.IndexFunc(ms, func(m dayModel) bool { return m.Provider == u.Provider && m.Model == u.Model })
+		j := slices.IndexFunc(ms, func(m dayModel) bool { return m.Provider == u.Provider && m.Model == u.Model && m.Purpose == u.Purpose })
 		if j < 0 {
-			j, ms = len(ms), append(ms, dayModel{Provider: u.Provider, Model: u.Model})
+			j, ms = len(ms), append(ms, dayModel{Provider: u.Provider, Model: u.Model, Purpose: u.Purpose})
 		}
 		ms[j].Calls, ms[j].CostUSD = ms[j].Calls+u.Calls, ms[j].CostUSD+u.CostUSD
 		days[i].Models = ms

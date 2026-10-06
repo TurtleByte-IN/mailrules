@@ -10,7 +10,7 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 // GET /api/accounts, one item.
 const acct = (over: Partial<Account> = {}): Account => ({
   id: 1, label: 'me@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'me', watch_folder: 'INBOX',
-  status: 'live', last_error: '', last_event_at: 1791270000, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000,
+  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000,
   ...over,
 });
 const failed = acct({ status: 'auth_failed', last_error: 'The mail server refused the sign-in.' });

@@ -62,7 +62,7 @@ it('shows the totals, the days, each rule and each model', async () => {
       cost_usd: 1.75,
       days: [
         { day: '2026-10-05', models: [] },
-        { day: '2026-10-06', models: [{ provider: 'openrouter', model: 'jev', calls: 40, cost_usd: 0.5 }] },
+        { day: '2026-10-06', models: [{ provider: 'openrouter', model: 'jev', purpose: 'decide', calls: 40, cost_usd: 0.5 }] },
       ],
       by_rule: [
         { rule_id: 5, rule_name: 'Newsletters', emails: 120, calls: 40, cost_usd: 0.5 },

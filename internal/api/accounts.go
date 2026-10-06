@@ -23,6 +23,7 @@ type presetJSON struct {
 	TLSMode        string `json:"tls_mode"`
 	HelpURL        string `json:"help_url"`
 	LocalPartLogin bool   `json:"local_part_login"`
+	PasteLabel     string `json:"secret_label"` // what the provider calls the secret the user pastes
 }
 
 // accountJSON is an account as the API shows it. The password is not a field of
@@ -38,7 +39,8 @@ type accountJSON struct {
 	WatchFolder  string   `json:"watch_folder"`
 	Status       string   `json:"status"`
 	LastError    string   `json:"last_error"`
-	LastEventAt  *int64   `json:"last_event_at"`
+	LastEventAt  *int64   `json:"last_event_at"` // when the status last changed
+	LastMailAt   *int64   `json:"last_mail_at"`  // when the newest email seen arrived
 	Capabilities []string `json:"capabilities"`
 	CanMove      bool     `json:"can_move"`
 	FolderCount  int      `json:"folder_count"`
@@ -61,6 +63,9 @@ func (s *server) accountJSON(ctx context.Context, a store.Account) accountJSON {
 	if folders, err := s.store.Folders(ctx, a.ID); err == nil {
 		out.FolderCount = len(folders)
 	}
+	if at, err := s.store.LastMailAt(ctx, a.ID); err == nil {
+		out.LastMailAt = ts(at)
+	}
 	return out
 }
 
@@ -75,7 +80,7 @@ func foldersJSON(folders []store.Folder) []folderJSON {
 func (s *server) handlePresets(w http.ResponseWriter, _ *http.Request) {
 	var out []presetJSON
 	for _, p := range presets.All() {
-		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin})
+		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -190,6 +195,28 @@ func (s *server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, ok := s.tryAccount(w, r, a, in.Password)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"username": c.account.Username, "folders": foldersJSON(c.folders), "can_move": c.caps.CanMove(), "idle": c.caps.Idle,
+	})
+}
+
+// handleStoredAccountTest checks a connected account's stored login on a connection of its
+// own, opened for this and closed again. The account's watcher is not touched: its
+// connection, its status and what it is doing stay as they are.
+func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.account(w, r)
+	if !ok {
+		return
+	}
+	secret, err := s.store.AccountSecret(r.Context(), s.Master, a.ID)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	c, ok := s.tryAccount(w, r, a, secret)
 	if !ok {
 		return
 	}

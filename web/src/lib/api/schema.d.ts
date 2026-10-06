@@ -181,6 +181,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a connected account's stored login, without disturbing it
+         * @description Logs in with the stored password on a connection of its own, lists the folders and
+         *     closes it again. The account's watcher is not restarted and its `status` does not
+         *     change: this only answers "would it connect right now?". Use
+         *     `/api/accounts/{id}/reconnect` to actually restart it. Works for a paused account too.
+         */
+        post: operations["testStoredAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}/folders": {
         parameters: {
             query?: never;
@@ -256,7 +281,9 @@ export interface paths {
          * Save rules, in one transaction
          * @description How every rule is created besides import: approved composer drafts, a rule built by
          *     hand in the condition builder, a template. It needs no model. Every rule is
-         *     validated before anything is done, so one bad rule saves none. `new_folders` are
+         *     validated before anything is done, so one bad rule saves none. A rule is known by
+         *     its name: two rules of the batch with the same name, or one named like a saved
+         *     rule, are refused (400 `rule_invalid`, path `rules[1].name`). `new_folders` are
          *     then created on the rule's account (every connected account for a rule with
          *     `account_id` null), and the rules inserted at the end or at `position`. Folders are
          *     not created while dry-run is on or the account is offline; the first live move
@@ -425,7 +452,7 @@ export interface paths {
         put?: never;
         /**
          * Undo everything this rule did since a time
-         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest.
+         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. Actions older than 30 days are not undoable and are left out, however far back `since` reaches.
          */
         post: operations["undoRuleSince"];
         delete?: never;
@@ -446,7 +473,9 @@ export interface paths {
          * @description Every address mail was seen from in the last 30 days, every address that has a sender
          *     rule even if it has been quiet, and every domain that has a sender rule (counted over
          *     its addresses). `source=learned` lists the rules MailRules learned by itself,
-         *     `source=user` the ones the user set. The cursor is an offset into the sorted list.
+         *     `source=user` the ones the user set. The cursor is an offset into the sorted list (a
+         *     plain number: `50` is the second page of 50), not an opaque token, so the list can
+         *     shift under it when mail arrives between two pages.
          */
         get: operations["listSenders"];
         put?: never;
@@ -569,7 +598,8 @@ export interface paths {
          *     stop the others: `failed` counts them, and `item` shows each action as it is now
          *     (`undoable` stays true while one is still in effect). The request is refused only
          *     when not one action could be undone, with the reason of the first: 409
-         *     `message_gone` when the email was moved or deleted outside MailRules. With nothing
+         *     `message_gone` when the email was moved or deleted outside MailRules, `too_old` when
+         *     what was done is older than 30 days. With nothing
          *     in effect (already undone, only recorded in dry-run, or no action at all) it does
          *     nothing and answers 200 with zero counts. The Needs review tag is left alone. Each
          *     undone action is also sent as `action.undone`. Undo ignores dry-run.
@@ -637,7 +667,7 @@ export interface paths {
         put?: never;
         /**
          * Undo everything done since a time ("Undo the last hour")
-         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone.
+         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone. Actions older than 30 days are not undoable and are left out, however far back `since` reaches.
          */
         post: operations["undoSince"];
         delete?: never;
@@ -677,7 +707,7 @@ export interface paths {
         };
         /**
          * Past batches, newest first
-         * @description The Cleanup screen lists `kind=cleanup` as its "batches you can undo"; undo one with `POST /api/batches/{id}/undo`.
+         * @description The Cleanup screen lists `kind=cleanup` as its "batches you can undo"; undo one with `POST /api/batches/{id}/undo`. A batch can be undone for 30 days from its `created_at`.
          */
         get: operations["listBatches"];
         put?: never;
@@ -720,7 +750,11 @@ export interface paths {
         put?: never;
         /**
          * Undo every action of a batch, newest first
-         * @description An action that cannot be undone does not stop the rest; `failed` counts them and the batch becomes `undone` only when every action was.
+         * @description An action that cannot be undone does not stop the rest; `failed` counts them and the
+         *     batch becomes `undone` only when every action was. A batch stays undoable for 30
+         *     days from when it was created; after that the answer is 409 `too_old`. Undoing a
+         *     batch that never changed a mailbox (all its actions were recorded as `dry_run`) is a
+         *     no-op: it answers 200 with `undone` 0 and `failed` 0, and the batch stays as it is.
          */
         post: operations["undoBatch"];
         delete?: never;
@@ -1023,6 +1057,8 @@ export interface components {
             help_url: string;
             /** @description The server may want the part before "@" as the username; the daemon tries both */
             local_part_login: boolean;
+            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Fastmail, Yahoo, Zoho) or "Password" (generic) */
+            secret_label: string;
         };
         /** @enum {string} */
         PresetName: "icloud" | "fastmail" | "yahoo" | "zoho" | "generic";
@@ -1044,8 +1080,8 @@ export interface components {
             host?: string;
             port?: number;
             tls_mode?: components["schemas"]["TLSMode"];
-            /** @default INBOX */
-            watch_folder: string;
+            /** @description Left out = INBOX */
+            watch_folder?: string;
         };
         AccountTestResult: {
             /** @description The username that worked (may be the local part) */
@@ -1071,9 +1107,14 @@ export interface components {
             last_error: string;
             /**
              * Format: int64
-             * @description When the status last changed
+             * @description When `status` last changed (the account went live, started reconnecting, failed, was paused). Not when mail last arrived: that is `last_mail_at`. null until the first status is reported
              */
             last_event_at: number | null;
+            /**
+             * Format: int64
+             * @description When the newest email MailRules has seen in this account arrived (its received date); null when it has seen none
+             */
+            last_mail_at: number | null;
             /** @description What the server advertised at the last login */
             capabilities: string[];
             can_move: boolean;
@@ -1198,12 +1239,12 @@ export interface components {
             actions: components["schemas"]["RuleAction"][];
             /** Format: int64 */
             account_id?: number | null;
-            /** @default false */
-            stack: boolean;
+            /** @description Left out = false */
+            stack?: boolean;
             model?: string;
             min_confidence?: number | null;
-            /** @default true */
-            enabled: boolean;
+            /** @description Left out = true. A tested rule is always switched on */
+            enabled?: boolean;
             /** @description Folders to create on the server when the rule is saved */
             new_folders?: string[];
             /** @description Where in the priority order to insert it (0 = first); left out = at the end */
@@ -1218,6 +1259,7 @@ export interface components {
              */
             account_id?: number | null;
         };
+        /** @description A draft carries every field of RuleInput, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything */
         RuleDraft: {
             name: string;
             /** @description The exact span of the user's words this rule came from */
@@ -1226,6 +1268,15 @@ export interface components {
             conditions: components["schemas"]["Condition"];
             exceptions: components["schemas"]["Condition"];
             actions: components["schemas"]["RuleAction"][];
+            /**
+             * Format: int64
+             * @description null = every account, which is what a composed draft is for. A re-optimized rule keeps its own
+             */
+            account_id: number | null;
+            /** @description false for a composed draft; a re-optimized rule keeps its own */
+            stack: boolean;
+            /** @description Empty for a composed draft; a re-optimized rule keeps its own */
+            model: string;
             min_confidence: number | null;
             /** @description Folders the rule names that do not exist yet */
             new_folders: string[];
@@ -1263,10 +1314,10 @@ export interface components {
             rule_ids?: number[];
             /** @description Draft rules to test, in the order given, after any saved rules named in `rule_ids`. The other saved rules take no part */
             rules?: components["schemas"]["RuleInput"][];
-            /** @default INBOX */
-            folder: string;
-            /** @default 200 */
-            limit: number;
+            /** @description Left out = INBOX */
+            folder?: string;
+            /** @description Left out = 200. Above 200 the answer is an event stream */
+            limit?: number;
         };
         TestRow: {
             from: string;
@@ -1293,7 +1344,9 @@ export interface components {
         };
         TestResult: {
             results: components["schemas"]["TestRow"][];
+            /** @description Emails read */
             tested: number;
+            /** @description Of those, the emails one of the tested rules would be applied to. Only the rules this request tested count (`rule_ids` and `rules`, or the saved set when it names neither): a rule that was left out matches nothing here, and an email that would go to Needs review is not counted */
             matched: number;
             model_calls: number;
             cost_usd: number;
@@ -1303,7 +1356,7 @@ export interface components {
             type: "address" | "domain";
             /** @description Lower-case address or domain */
             value: string;
-            /** @description The From display name of the newest email from this address; empty when it had none, and for a domain */
+            /** @description The From display name of the newest email from this address. Empty when that email had none, for a domain, and for an address that has a sender rule but no mail in the last 30 days: show `value` once then, not twice */
             name: string;
             /** @description Emails MailRules has seen from this sender in the last 30 days; for a domain, from all its addresses */
             messages: number;
@@ -1534,11 +1587,8 @@ export interface components {
              * @description The rule the email belongs to; null = keep it in the inbox
              */
             rule_id: number | null;
-            /**
-             * @description Also store a sender rule, so future mail from this address goes the same way. The same as `always_for: address`; `always_for` wins when both are sent
-             * @default false
-             */
-            always_for_sender: boolean;
+            /** @description Left out = false. Also store a sender rule, so future mail from this address goes the same way. The same as `always_for: address`; `always_for` wins when both are sent */
+            always_for_sender?: boolean;
             /**
              * @description Also store a sender rule, so future mail goes the same way: from this sender's address, or from its whole domain (subdomains included). Left out = no sender rule. `domain` is refused with 422 `domain_too_broad` for a well-known free-mail domain
              * @enum {string}
@@ -1618,11 +1668,8 @@ export interface components {
         CleanupRequest: {
             /** Format: int64 */
             account_id: number;
-            /**
-             * @description One folder of the account. There is no "all folders"
-             * @default INBOX
-             */
-            folder: string;
+            /** @description One folder of the account; left out = INBOX. There is no "all folders" */
+            folder?: string;
             /**
              * Format: int64
              * @description Only mail received on or after this time's date; null = all of it
@@ -1635,6 +1682,8 @@ export interface components {
             total: number;
             /** @description Biggest group first */
             groups: {
+                /** @description Names the group, unique within a preview and the same from one preview to the next: `rule:<id>` for a rule, `sender:keep` or `sender:trash` for a sender rule without a rule, `none`, `model`, `review` */
+                key: string;
                 /**
                  * @description `rule`: a rule or sender rule applies, settled without a model. `none`: no rule matches; the email stays. `model`: rules with an intent compete for it; the decision model decides during the run. `review`: only rules with an intent could take it and no decision model is set, so it would wait in Needs review
                  * @enum {string}
@@ -1707,6 +1756,7 @@ export interface components {
             /** @description Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed */
             decided_without_model: number;
             cost_usd: number;
+            /** @description One row per provider, model and purpose, dearest first: a model used both to decide and as the fallback has two rows. Add them up for a per-model figure */
             calls_by_model: components["schemas"]["ModelUsage"][];
             /** @description The five rules applied to the most emails, most first */
             top_rules: {
@@ -1747,6 +1797,8 @@ export interface components {
                 models: {
                     provider: string;
                     model: string;
+                    /** @enum {string} */
+                    purpose: "decide" | "escalate" | "compose" | "test";
                     calls: number;
                     cost_usd: number;
                 }[];
@@ -1764,6 +1816,7 @@ export interface components {
                 calls: number;
                 cost_usd: number;
             }[];
+            /** @description One row per provider, model and purpose, dearest first */
             by_model: components["schemas"]["ModelUsage"][];
             /** @description Of the `processed` emails, those settled without asking a model: by conditions or sender rules, or because no rule was in play. Never more than `processed`; the free share is `without_model / processed`, not over `emails` */
             without_model: number;
@@ -2306,6 +2359,32 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    testStoredAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The server accepted the stored login */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountTestResult"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ConnectionFailed"];
         };
     };
     listAccountFolders: {
@@ -3076,6 +3155,7 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     previewCleanup: {

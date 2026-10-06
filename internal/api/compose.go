@@ -245,6 +245,24 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A rule is known by its name (an import replaces the rule of the same name), so a
+	// batch may not bring a name twice, nor one a saved rule has.
+	saved, err := s.store.Rules(r.Context(), user(r).ID)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	for i, rule := range rs {
+		at := fmt.Sprintf("rules[%d].name", i)
+		switch same := func(x rules.Rule) bool { return x.Name == rule.Name }; {
+		case slices.ContainsFunc(rs[:i], same):
+			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("Two of these rules are named %q. Give each rule its own name.", rule.Name), at)
+			return
+		case slices.ContainsFunc(saved, same):
+			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("There is already a rule named %q. Choose another name.", rule.Name), at)
+			return
+		}
+	}
 	accounts, err := s.store.Accounts(r.Context())
 	if err != nil {
 		internalError(w, r, err)
@@ -265,14 +283,14 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	saved, err := s.store.CreateRules(r.Context(), user(r).ID, added, s.now().Unix())
+	created, err := s.store.CreateRules(r.Context(), user(r).ID, added, s.now().Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
 	s.Hub.Publish(events.RulesChanged, nil)
-	items := make([]ruleJSON, len(saved))
-	for i, rule := range saved {
+	items := make([]ruleJSON, len(created))
+	for i, rule := range created {
 		items[i] = toRuleJSON(rule, store.RuleStat{})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"items": items})

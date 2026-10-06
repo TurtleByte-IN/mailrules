@@ -66,25 +66,34 @@ type Problem struct {
 
 // Draft is one proposed rule, as a card to review. Its JSON is the contract's RuleDraft.
 type Draft struct {
-	Name          string         `json:"name"`
-	Said          string         `json:"said"`
-	Intent        *string        `json:"intent"`
-	Conditions    rules.Cond     `json:"conditions"`
-	Exceptions    rules.Cond     `json:"exceptions"`
-	Actions       []rules.Action `json:"actions"`
-	MinConfidence *float64       `json:"min_confidence"`
-	NewFolders    []string       `json:"new_folders"`
-	Question      *string        `json:"question"`
-	Conflicts     []Conflict     `json:"conflicts"`
-	Errors        []Problem      `json:"errors"`
-	MatchCount    int            `json:"match_count"`
-	Samples       []Row          `json:"samples"`
+	Name       string         `json:"name"`
+	Said       string         `json:"said"`
+	Intent     *string        `json:"intent"`
+	Conditions rules.Cond     `json:"conditions"`
+	Exceptions rules.Cond     `json:"exceptions"`
+	Actions    []rules.Action `json:"actions"`
+	// AccountID, Stack and Model are the rest of a rule, so a draft can be saved as it is.
+	// The composer does not write them: a new draft is for every account, does not stack
+	// and has no model of its own; a re-optimized rule keeps what it had.
+	AccountID     *int64     `json:"account_id"`
+	Stack         bool       `json:"stack"`
+	Model         string     `json:"model"`
+	MinConfidence *float64   `json:"min_confidence"`
+	NewFolders    []string   `json:"new_folders"`
+	Question      *string    `json:"question"`
+	Conflicts     []Conflict `json:"conflicts"`
+	Errors        []Problem  `json:"errors"`
+	MatchCount    int        `json:"match_count"`
+	Samples       []Row      `json:"samples"`
 }
 
 // Rule is the draft as a rule, enabled, to validate or to test.
 func (d Draft) Rule() rules.Rule {
 	r := rules.Rule{Name: d.Name, Said: d.Said, Conditions: d.Conditions, Exceptions: d.Exceptions, Actions: d.Actions,
-		MinConfidence: d.MinConfidence, Enabled: true}
+		Stack: d.Stack, Model: d.Model, MinConfidence: d.MinConfidence, Enabled: true}
+	if d.AccountID != nil {
+		r.AccountID = *d.AccountID
+	}
 	if d.Intent != nil {
 		r.Intent = *d.Intent
 	}
@@ -157,7 +166,19 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 		}
 	}
 	for _, r := range top.Rules {
-		out.Drafts = append(out.Drafts, readDraft(r, named, existing, folders))
+		d := readDraft(r, named, existing, folders)
+		if base := req.Rule; base != nil {
+			// A re-optimized rule keeps what the composer does not write, and is checked with it.
+			d.Stack, d.Model = base.Stack, base.Model
+			if base.AccountID != 0 {
+				d.AccountID = &base.AccountID
+			}
+			var ve *rules.ValidationError
+			if err := d.Rule().Validate(); errors.As(err, &ve) {
+				d.fail(ve.Path, ve.Message)
+			}
+		}
+		out.Drafts = append(out.Drafts, d)
 	}
 	if req.Rule != nil && len(out.Drafts) == 0 {
 		return Output{}, fmt.Errorf("%w: the answer holds no rule", ErrModel)

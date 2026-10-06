@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -85,6 +86,7 @@ func (s *server) routes() []route {
 		on(patch, "/api/accounts/{id}", s.handleAccountPatch),
 		on(del, "/api/accounts/{id}", s.handleAccountDelete),
 		on(post, "/api/accounts/{id}/reconnect", s.handleAccountReconnect),
+		on(post, "/api/accounts/{id}/test", s.handleStoredAccountTest),
 		on(get, "/api/accounts/{id}/folders", s.handleAccountFolders),
 
 		on(get, "/api/rules", s.handleRules),
@@ -300,6 +302,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error, what string) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		notFound(w, what)
+	case errors.Is(err, actions.ErrTooOld):
+		writeError(w, http.StatusConflict, "too_old", fmt.Sprintf("This was done more than %d days ago, so it can no longer be undone.", store.UndoDays), "")
 	case errors.Is(err, actions.ErrGone):
 		writeError(w, http.StatusConflict, "message_gone", "The message was moved or deleted outside MailRules, so this cannot be undone.", "")
 	case errors.As(err, &noFolder):
