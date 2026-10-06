@@ -79,12 +79,12 @@ it('does not leave the provider step until the presets have loaded', async () =>
   expect(w.step).toBe(0);
 });
 
-it('sends host and port only for a preset that has no host of its own', async () => {
+it('sends host, port and encryption only for a preset that has no host of its own', async () => {
   await atSignIn({ email: 'a@icloud.com', password: SECRET, host: 'ignored.example', port: 143 }).runTest();
   await atSignIn({ presetId: 'generic', email: ' a@example.com ', password: SECRET, host: ' mail.example.com ', port: 143 }).runTest();
   expect(bodies('/api/accounts/test')).toEqual([
     { preset: 'icloud', username: 'a@icloud.com', password: SECRET },
-    { preset: 'generic', username: 'a@example.com', password: SECRET, host: 'mail.example.com', port: 143 },
+    { preset: 'generic', username: 'a@example.com', password: SECRET, host: 'mail.example.com', port: 143, tls_mode: 'implicit' },
   ]);
 });
 
@@ -92,6 +92,7 @@ it.each<[string, Wizard['presetId'], Reply, string]>([
   ['wrong password', 'icloud', [422, refusal('auth_failed', 'The mail server refused the sign-in.', 'password')], 'password'],
   ['missing username', 'icloud', [400, refusal('invalid_input', 'Enter the email address or username you sign in with.', 'username')], 'username'],
   ['unreachable host typed by the user', 'generic', [422, refusal('connection_failed', 'Could not reach 127.0.0.1:1. Check the host and port.', 'host')], 'host'],
+  ['bad encryption mode', 'generic', [400, refusal('invalid_input', 'tls_mode must be implicit or starttls.', 'tls_mode')], 'tls_mode'],
   ['bad port', 'generic', [400, refusal('invalid_input', 'The port must be between 1 and 65535.', 'port')], 'port'],
   ['unreachable host of a preset, which has no host field', 'icloud', [422, refusal('connection_failed', 'Could not reach imap.mail.me.com:993. Check the host and port.', 'host')], ''],
   ['watch folder missing, which has no field', 'icloud', [422, refusal('no_folder', 'The server has no folder named INBOX.', 'watch_folder')], ''],
@@ -101,6 +102,32 @@ it.each<[string, Wizard['presetId'], Reply, string]>([
   const w = atSignIn({ presetId, email: 'd@example.com', password: SECRET, host: '127.0.0.1' });
   expect(await w.next()).toBe(false);
   expect([w.step, w.test, w.error, w.errorField]).toEqual([1, 'err', (reply[1] as ReturnType<typeof refusal>).error.message, field]);
+});
+
+it('moves the port with the encryption mode until the port is typed by hand', () => {
+  const w = atSignIn({ presetId: 'generic' });
+  expect([w.tls, w.port]).toEqual(['implicit', 993]);
+  w.setTls('starttls');
+  expect(w.port).toBe(143);
+  w.setTls('implicit');
+  expect(w.port).toBe(993);
+  w.port = 2143;
+  w.portEdited();
+  w.setTls('starttls');
+  expect([w.tls, w.port]).toEqual(['starttls', 2143]);
+});
+
+it('sends the encryption mode in the test and in the save, and a change voids the test', async () => {
+  const w = atSignIn({ presetId: 'generic', email: 'a@example.com', password: SECRET, host: 'mail.example.com' });
+  await w.runTest();
+  w.setTls('starttls');
+  expect(w.test).toBe('idle');
+  await w.runTest();
+  w.step = 3;
+  expect(await w.next()).toBe(true);
+  const sent = { preset: 'generic', username: 'a@example.com', password: SECRET, host: 'mail.example.com' };
+  expect(bodies('/api/accounts/test')).toEqual([{ ...sent, port: 993, tls_mode: 'implicit' }, { ...sent, port: 143, tls_mode: 'starttls' }]);
+  expect(bodies('/api/accounts')).toEqual([{ ...sent, port: 143, tls_mode: 'starttls' }]);
 });
 
 it('tests first, then walks to the end and saves the mailbox', async () => {
@@ -136,15 +163,23 @@ it('does not ask for starter rules when none is chosen', async () => {
   expect(addTemplatesByName).not.toHaveBeenCalled();
 });
 
-it.each<[string, Error, string]>([
-  ['are not built yet (501)', new ApiError(501, 'not_implemented', 'This part of MailRules is not built yet.'), 'new@icloud.com is live. Starter rules could not be added yet.'],
-  ['fail', new ApiError(500, 'internal', 'Something went wrong.'), 'Something went wrong.'],
-])('leaves the mailbox connected when the starter rules %s', async (_name, error, said) => {
-  vi.mocked(addTemplatesByName).mockRejectedValue(error);
+it.each<[number, string]>([
+  [3, 'new@icloud.com is live with 3 new rules'],
+  [1, 'new@icloud.com is live with 1 new rule'],
+  [0, 'new@icloud.com is live'],
+])('says how many starter rules were added: %i', async (added, said) => {
+  vi.mocked(addTemplatesByName).mockResolvedValue(added);
+  const w = await atGoLive();
+  expect(await w.next()).toBe(true);
+  expect(toast.text).toBe(said);
+});
+
+it('leaves the mailbox connected when the starter rules fail', async () => {
+  vi.mocked(addTemplatesByName).mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong.'));
   const w = await atGoLive();
   expect(await w.next()).toBe(true);
   expect(accounts.list).toEqual([created]);
-  expect([toast.text, w.busy]).toEqual([said, false]);
+  expect([toast.text, w.busy]).toEqual(['Something went wrong.', false]);
 });
 
 it('goes back to the sign-in form when the daemon refuses to save', async () => {

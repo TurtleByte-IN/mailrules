@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Settings, SettingsPatch } from '../api/settings';
-import { load, patch, setKey, settings, toggleDryRun } from './settings.svelte';
+import { load, patch, setKey, settings, setUrl, toggleDryRun } from './settings.svelte';
 import { toast } from './toast.svelte';
 
 const SECRET = 'sk-ant-secret-123';
@@ -78,6 +78,25 @@ it('shows why a change was refused and keeps the saved value', async () => {
   expect(await patch({ decider: 'ollama' })).toBe(false);
   expect(toast.text).toBe('ollama has no default model: name one');
   expect(settings.value).toEqual(fresh());
+});
+
+it('saves a decider URL, removes it with an empty string, and hands back a refusal of that field', async () => {
+  expect(await setUrl('ollama_url', 'http://localhost:11434')).toBe('');
+  expect(sent()).toEqual({ ollama_url: 'http://localhost:11434' });
+  expect(settings.value.ollama_url).toBe('http://localhost:11434');
+
+  expect(await setUrl('ollama_url', '')).toBe('');
+  expect(sent()).toEqual({ ollama_url: '' });
+  expect(settings.value.ollama_url).toBe('');
+
+  toast.text = '';
+  refuse = { status: 400, error: { code: 'invalid_input', message: 'must be an http or https URL', path: 'openai_base_url' } };
+  expect(await setUrl('openai_base_url', 'not a url')).toBe('must be an http or https URL');
+  expect([toast.text, settings.value.openai_base_url]).toEqual(['', '']);
+
+  refuse = { status: 500, error: { code: 'internal', message: 'Something went wrong.' } };
+  expect(await setUrl('openai_base_url', 'https://llm.example.test/v1')).toBe('');
+  expect(toast.text).toBe('Something went wrong.');
 });
 
 it('toggles dry-run both ways with the matching toast', async () => {

@@ -86,9 +86,17 @@
               <input class="field h-11 font-mono" autocomplete="off" aria-invalid={w.errorField === 'host'} bind:value={w.host} oninput={() => w.edited()} />
               {@render fieldError('host')}
             </label>
+            <label class="flex flex-[2_1_150px] flex-col gap-1.5">
+              <span class="text-[13px] font-semibold">Encryption</span>
+              <select class="field h-11 px-2.5" aria-invalid={w.errorField === 'tls_mode'} value={w.tls} onchange={(e) => w.setTls(e.currentTarget.value as typeof w.tls)}>
+                <option value="implicit">TLS (port 993)</option>
+                <option value="starttls">STARTTLS (port 143)</option>
+              </select>
+              {@render fieldError('tls_mode')}
+            </label>
             <label class="flex flex-[1_1_80px] flex-col gap-1.5">
               <span class="text-[13px] font-semibold">Port</span>
-              <input class="field h-11 font-mono" type="number" min="1" max="65535" aria-invalid={w.errorField === 'port'} bind:value={w.port} oninput={() => w.edited()} />
+              <input class="field h-11 font-mono" type="number" min="1" max="65535" aria-invalid={w.errorField === 'port'} bind:value={w.port} oninput={() => w.portEdited()} />
               {@render fieldError('port')}
             </label>
           </div>
