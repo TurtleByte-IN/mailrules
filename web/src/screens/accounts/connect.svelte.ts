@@ -2,11 +2,12 @@ import type { Credentials, TestResult } from '../../lib/api/accounts';
 import * as accountsApi from '../../lib/api/accounts';
 import { ApiError } from '../../lib/api/client';
 import { accounts, connect } from '../../lib/state/accounts.svelte';
+import { addTemplatesByName } from '../../lib/state/compose.svelte';
 
 export const stepNames = ['Provider', 'Sign in', 'Rules', 'Preview'];
 
-// DEMO: the starter rules become GET /api/templates and the counts a real preview run
-// once the template gallery is built (F6). Until then picking templates adds no rules.
+// Names match templates in lib/api/templates.ts; the ones left on are saved as rules at Go live.
+// DEMO: the preview counts become a real preview run (POST /api/rules/test).
 const starterTemplates = [
   { id: 't1', name: 'Newsletters', desc: 'move to Reading and mark read', on: true },
   { id: 't2', name: 'Receipts', desc: 'move to Receipts', on: true },
@@ -101,6 +102,7 @@ export class Wizard {
     this.busy = true;
     try {
       await connect(this.#credentials());
+      await addTemplatesByName(this.templates.filter((t) => t.on).map((t) => t.name));
     } finally {
       this.busy = false;
       this.password = '';

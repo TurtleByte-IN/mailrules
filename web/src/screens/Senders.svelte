@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { features } from '../lib/features';
   import { domainOf, type SenderRule, type Sort } from '../lib/api/senders';
   import { rules } from '../lib/state/rules.svelte';
   import { forget, load, routingOf, search, senders, setRouting, setSort, targetOf, unsubscribe } from '../lib/state/senders.svelte';
@@ -55,7 +56,9 @@
           {/each}
           <option value="trash">Always trash</option>
         </select>
-        {#if s.list}
+        {#if !features.unsubscribe}
+          <!-- P2: hidden until the backend can act on List-Unsubscribe -->
+        {:else if s.list}
           <button type="button" class="btn px-3" disabled={s.unsubscribed} onclick={() => unsubscribe(s)}>
             {s.unsubscribed ? 'Unsubscribed' : 'Unsubscribe'}
           </button>

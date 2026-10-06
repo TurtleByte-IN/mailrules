@@ -6,6 +6,7 @@ export const features = {
   timedActions: false,
   draftReplies: false,
   billing: false,
+  unsubscribe: false,
 } as const;
 
 export type Feature = keyof typeof features;

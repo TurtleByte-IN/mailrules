@@ -4,6 +4,7 @@
   import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
   import { auth, logout, start } from './lib/state/auth.svelte';
   import { badges } from './lib/state/badges.svelte';
+  import { load as loadReview } from './lib/state/review.svelte';
   import { load as loadRules, rules } from './lib/state/rules.svelte';
   import { load as loadSettings, settings, toggleDryRun } from './lib/state/settings.svelte';
   import { toast } from './lib/state/toast.svelte';
@@ -16,6 +17,7 @@
     if (auth.status === 'in') {
       loadAccounts();
       loadRules();
+      loadReview();
       loadSettings();
     }
   });

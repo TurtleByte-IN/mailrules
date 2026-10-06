@@ -1,5 +1,6 @@
 <script lang="ts">
   import { router } from 'svelte-spa-router';
+  import { compose } from '../lib/state/compose.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import Build from './compose/Build.svelte';
   import Describe from './compose/Describe.svelte';
@@ -7,6 +8,10 @@
 
   // Rules links here with ?mode=build for a new condition rule and ?edit=<id> to edit one.
   const query = $derived(new URLSearchParams(router.querystring));
+  // Needs review links here with ?idea=<text> to start a rule from an email.
+  const idea = new URLSearchParams(router.querystring).get('idea');
+  if (idea) compose.text = idea.slice(0, 4000);
+
   const editing = $derived(rules.list.find((r) => r.id === query.get('edit')));
 
   const modes = [

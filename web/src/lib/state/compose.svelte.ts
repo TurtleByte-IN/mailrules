@@ -54,10 +54,17 @@ export async function loadTemplates() {
   compose.templates = await templatesApi.list();
 }
 
+/** Adds the named templates as rules, skipping any whose name is already a rule. Returns how many were added. */
+export async function addTemplatesByName(names: string[]) {
+  if (!compose.templates.length) await loadTemplates();
+  const picked = compose.templates.filter((t) => names.includes(t.name) && !rules.list.some((r) => r.name === t.name));
+  if (picked.length)
+    await add(
+      picked.map((t) => ({ name: t.name, said: 'Template: ' + t.name, intent: t.intent, conditions: t.conditions, exceptions: {}, actions: t.actions, account_id: null, stack: false, model: null, min_confidence: null })),
+    );
+  return picked.length;
+}
+
 export async function addTemplate(t: templatesApi.Template) {
-  if (rules.list.some((r) => r.name === t.name)) return;
-  await add([
-    { name: t.name, said: 'Template: ' + t.name, intent: t.intent, conditions: t.conditions, exceptions: {}, actions: t.actions, account_id: null, stack: false, model: null, min_confidence: null },
-  ]);
-  flash(t.name + ' added and live');
+  if (await addTemplatesByName([t.name])) flash(t.name + ' added and live');
 }
