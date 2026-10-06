@@ -38,6 +38,9 @@ type Config struct {
 
 	PricesFile string
 	LogLevel   string
+
+	// CookieSecure is auto, true or false; see SecureCookies.
+	CookieSecure string
 }
 
 // flagName turns MAILRULES_DATA_DIR into data-dir and OPENROUTER_API_KEY into openrouter-api-key.
@@ -82,6 +85,7 @@ func Load(args []string, getenv func(string) string) (*Config, error) {
 	str(&c.OllamaURL, "OLLAMA_URL", "", "local models")
 	str(&c.PricesFile, "MAILRULES_PRICES_FILE", "", "per-model prices for the cost ledger")
 	str(&c.LogLevel, "LOG_LEVEL", "info", "debug, info, warn or error")
+	str(&c.CookieSecure, "MAILRULES_COOKIE_SECURE", "auto", "send login cookies over HTTPS only: auto, true or false")
 
 	var errs []error
 	for _, env := range envs {
@@ -134,6 +138,11 @@ func (c *Config) Validate() error {
 	if c.ModelConcurrency <= 0 {
 		bad("MAILRULES_MODEL_CONCURRENCY=%d must be positive", c.ModelConcurrency)
 	}
+	switch c.CookieSecure {
+	case "auto", "true", "false":
+	default:
+		bad("MAILRULES_COOKIE_SECURE=%q must be auto, true or false", c.CookieSecure)
+	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
@@ -174,6 +183,20 @@ func (c *Config) DeciderReady() error {
 		needs("OLLAMA_URL", c.OllamaURL)
 	}
 	return errors.Join(errs...)
+}
+
+// SecureCookies reports whether login cookies are marked HTTPS-only.
+// "auto" means yes unless the daemon listens on loopback only. Set "false" when
+// the daemon listens on every interface but is only published to this machine
+// over plain HTTP (the Docker Compose setup); set "true" behind a TLS proxy.
+func (c *Config) SecureCookies() bool {
+	switch c.CookieSecure {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return !c.ListensLocally()
 }
 
 // ListensLocally reports whether the HTTP address is loopback-only.

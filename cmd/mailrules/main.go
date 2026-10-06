@@ -174,7 +174,7 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	}
 
 	handler := api.NewHandler(api.Options{
-		Store: st, SecureCookies: !cfg.ListensLocally(), Hub: hub, Exec: exec, Settings: sett, Master: master,
+		Store: st, SecureCookies: cfg.SecureCookies(), Hub: hub, Exec: exec, Settings: sett, Master: master,
 		Metrics: telemetry.NewMetrics(version), Version: version,
 		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
 			mb, username, err := dial(ctx, acct, password, nil)

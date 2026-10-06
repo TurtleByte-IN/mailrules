@@ -126,6 +126,31 @@ func TestDeciderReady(t *testing.T) {
 	}
 }
 
+func TestSecureCookies(t *testing.T) {
+	tests := []struct {
+		listen, setting string
+		want            bool
+	}{
+		{"127.0.0.1:8080", "auto", false},
+		{"0.0.0.0:8080", "auto", true},
+		{"0.0.0.0:8080", "false", false},
+		{"127.0.0.1:8080", "true", true},
+	}
+	for _, tt := range tests {
+		c := &Config{Listen: tt.listen, CookieSecure: tt.setting}
+		if got := c.SecureCookies(); got != tt.want {
+			t.Errorf("listen %s, setting %s: got %v want %v", tt.listen, tt.setting, got, tt.want)
+		}
+	}
+	c, err := Load(nil, env(map[string]string{"MAILRULES_COOKIE_SECURE": "sometimes"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "MAILRULES_COOKIE_SECURE") {
+		t.Errorf("bad value accepted: %v", err)
+	}
+}
+
 func TestListensLocally(t *testing.T) {
 	for addr, want := range map[string]bool{"127.0.0.1:8080": true, "localhost:8080": true, "[::1]:8080": true, "0.0.0.0:8080": false, ":8080": false, "192.168.1.4:80": false} {
 		if got := (&Config{Listen: addr}).ListensLocally(); got != want {

@@ -18,7 +18,7 @@ Open <http://127.0.0.1:8080> on the same machine. The image is distroless, runs 
 
 Settings are environment variables. Put the ones you need in `deploy/.env` (never in the compose file), for example a model key; or leave them out and enter the keys in the browser.
 
-Inside the container the daemon listens on every interface, and Compose publishes the port to `127.0.0.1` only. Because of that the daemon logs a warning that it is reachable from other machines, and it marks its cookies `Secure`. If your browser then refuses to stay signed in over plain `http://127.0.0.1`, reach MailRules through a reverse proxy with TLS (see Security).
+Inside the container the daemon listens on every interface, and Compose publishes the port to `127.0.0.1` only, over plain HTTP. The Compose file therefore sets `MAILRULES_COOKIE_SECURE=false` so you can stay signed in at `http://127.0.0.1:8080`. On a server (a VPS such as Hetzner), put a TLS reverse proxy in front and set `MAILRULES_COOKIE_SECURE=true` in `.env`, so the login cookie only ever travels over HTTPS.
 
 ## Quickstart with a single binary
 
@@ -70,7 +70,7 @@ Every setting is an environment variable that also works as a `--flag`. The full
 ## Security
 
 - **Local by default.** The daemon listens on `127.0.0.1:8080`. Nothing outside the machine can reach it.
-- **Before you expose it,** put a reverse proxy that terminates TLS in front (Caddy, nginx, Traefik) and leave MailRules on a private address behind it. Do not publish port 8080 to the internet directly: the session cookie and your admin password would travel in the clear. Listening on a non-local address makes the daemon log a warning and mark its cookies `Secure`, so the browser sends them over HTTPS only.
+- **Before you expose it,** put a reverse proxy that terminates TLS in front (Caddy, nginx, Traefik) and leave MailRules on a private address behind it. Do not publish port 8080 to the internet directly: the session cookie and your admin password would travel in the clear. Listening on a non-local address makes the daemon log a warning and, unless `MAILRULES_COOKIE_SECURE` says otherwise, mark its cookies `Secure`, so the browser sends them over HTTPS only. Never set it to `false` on a machine others can reach.
 - **Mail is fetched without marking it read,** and nothing is ever permanently deleted except the exact messages MailRules has just moved.
 - **Secrets stay put.** Passwords and keys are encrypted at rest, never returned by the API and never logged.
 - `/healthz`, `/readyz` and `/metrics` need no sign-in. Keep `/metrics` off the public side of your proxy.

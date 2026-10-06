@@ -44,6 +44,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-}
+      # This file publishes the port to 127.0.0.1 over plain HTTP, so login cookies
+      # must not be HTTPS-only. Set to "true" in .env once a TLS reverse proxy is in front.
+      MAILRULES_COOKIE_SECURE: ${MAILRULES_COOKIE_SECURE:-false}
 
 volumes:
   mailrules-data:
