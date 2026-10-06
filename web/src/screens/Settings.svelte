@@ -20,6 +20,16 @@
     { id: 'ollama_url', decider: 'ollama', label: 'Ollama server URL', placeholder: 'http://localhost:11434' },
   ];
   const keySource = { stored: 'Set', environment: 'Set by environment', none: 'Not set' };
+  // Where to get each credential; fixed text, opened in a new tab. Both Cloudflare rows share one guide.
+  const cloudflareGuide = 'https://developers.cloudflare.com/workers-ai/get-started/rest-api/';
+  const keyGuides: Record<KeyName, string> = {
+    openrouter_api_key: 'https://openrouter.ai/docs/api-reference/authentication',
+    cloudflare_account_id: cloudflareGuide,
+    cloudflare_api_token: cloudflareGuide,
+    anthropic_api_key: 'https://platform.claude.com/docs/en/api/overview',
+    openai_api_key: 'https://developers.openai.com/api/docs/quickstart',
+  };
+  const ollamaGuide = 'https://docs.ollama.com/quickstart';
   const keys: { id: KeyName; label: string; placeholder: string }[] = [
     { id: 'openrouter_api_key', label: 'OpenRouter API key', placeholder: 'sk-or-v1-…' },
     { id: 'cloudflare_account_id', label: 'Cloudflare account ID', placeholder: '' },
@@ -92,7 +102,12 @@
             <option value={d.id}>{d.name}</option>
           {/each}
         </select>
-        <div class="text-[12.5px] text-secondary">{chosen?.note}</div>
+        <div class="text-[12.5px] text-secondary">
+          {chosen?.note}
+          {#if decider === 'ollama'}
+            <a href={ollamaGuide} target="_blank" rel="noopener noreferrer" class="font-semibold">Setup guide</a>
+          {/if}
+        </div>
         {#each s.warnings as w (w.path)}
           <div id="warn-{w.path}" role="status" class="rounded-md border border-warn-line bg-warn-bg px-4 py-3 text-warn">{w.message}</div>
         {/each}
@@ -207,6 +222,7 @@
               {#if needed('keys.' + k.id)}
                 <span class="text-[12.5px] font-normal text-warn">Needed</span>
               {/if}
+              <a href={keyGuides[k.id]} target="_blank" rel="noopener noreferrer" class="ml-auto text-[12.5px] font-semibold">How to get this</a>
             </span>
             <input class="field font-mono text-[13px]" type="password" autocomplete="off" placeholder={k.placeholder} aria-describedby={needed('keys.' + k.id)} bind:value={drafts[k.id]} />
           </label>

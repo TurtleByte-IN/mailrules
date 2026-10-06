@@ -137,3 +137,32 @@ it('saves a URL, shows a refusal beside the field, and removes the stored one wi
   await waitFor(() => expect(settings.value.ollama_url).toBe(''));
   expect(patches()).toEqual([{ ollama_url: 'localhost:11434' }, { ollama_url: 'http://localhost:11434' }, { ollama_url: null }]);
 });
+
+it('links every key row to its provider guide in a new tab, both Cloudflare rows to the same one', async () => {
+  await show(fresh());
+  const guide = (label: RegExp) => screen.getByLabelText(label).closest('label')!.querySelector('a')!;
+  const want: [RegExp, string][] = [
+    [/^OpenRouter API key/, 'https://openrouter.ai/docs/api-reference/authentication'],
+    [/^Cloudflare account ID/, 'https://developers.cloudflare.com/workers-ai/get-started/rest-api/'],
+    [/^Cloudflare API token/, 'https://developers.cloudflare.com/workers-ai/get-started/rest-api/'],
+    [/^Anthropic API key/, 'https://platform.claude.com/docs/en/api/overview'],
+    [/^OpenAI API key/, 'https://developers.openai.com/api/docs/quickstart'],
+  ];
+  for (const [label, href] of want) {
+    const a = guide(label);
+    expect(a.textContent).toBe('How to get this');
+    expect(a.getAttribute('href')).toBe(href);
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+  }
+});
+
+it('shows the Ollama setup guide only while Ollama is the decision model', async () => {
+  await show(fresh());
+  expect(screen.queryByRole('link', { name: 'Setup guide' })).toBeNull();
+  await fireEvent.change(screen.getByLabelText('Decision model'), { target: { value: 'ollama' } });
+  const a = screen.getByRole('link', { name: 'Setup guide' });
+  expect(a.getAttribute('href')).toBe('https://docs.ollama.com/quickstart');
+  expect(a.getAttribute('target')).toBe('_blank');
+  expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+});
