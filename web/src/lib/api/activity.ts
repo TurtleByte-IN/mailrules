@@ -17,7 +17,8 @@ export type ActivityQuery = NonNullable<operations['listActivity']['parameters']
 export const list = (q: ActivityQuery = {}) => api<Ok<'listActivity'>>('GET', '/activity' + query(q));
 export const get = async (id: number) => (await api<Ok<'getMessage'>>('GET', `/messages/${id}`)).message;
 export const correct = (id: number, fix: FixRequest) => api<Ok<'correctMessage'>>('POST', `/messages/${id}/correct`, fix);
-export const undo = async (actionId: number) => (await api<Ok<'undoAction'>>('POST', `/actions/${actionId}/undo`)).action;
+/** Undo everything still in effect on one email, in one call. */
+export const undoMessage = (id: number) => api<Ok<'undoMessage'>>('POST', `/messages/${id}/undo`);
 /** Undo everything done at or after a unix time. */
 export const undoSince = (since: number) => api<Ok<'undoSince'>>('POST', '/actions/undo' + query({ since }));
 /** Today's numbers for the Activity tiles. */

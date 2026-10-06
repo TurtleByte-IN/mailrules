@@ -107,6 +107,7 @@ func (s *server) routes() []route {
 		on(get, "/api/activity", s.handleActivity),
 		on(get, "/api/messages/{id}", s.handleMessage),
 		on(post, "/api/messages/{id}/correct", s.handleCorrect),
+		on(post, "/api/messages/{id}/undo", s.handleMessageUndo),
 		on(get, "/api/review", s.handleReview),
 		on(post, "/api/review/{message_id}/resolve", s.handleReviewResolve),
 		on(post, "/api/actions/undo", s.handleUndoSince),

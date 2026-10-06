@@ -114,14 +114,28 @@ describe('tiles', () => {
 describe('undo', () => {
   const two = () => item({ actions: [action({ id: 21 }), action({ id: 22, kind: 'read', folder: '', to_folder: '' }), action({ id: 23, kind: 'review', folder: '' })] });
 
-  it('undoes every action in effect, newest first, and says so', async () => {
-    const calls = serve((call) => (call.startsWith('GET') ? [200, page([two()])] : [200, { action: action({ id: Number(call.split('/')[3]), status: 'undone', undone_at: 2000 }) }]));
+  const after = (statuses: string[]) => {
+    const row = two();
+    row.actions.forEach((a, i) => Object.assign(a, { status: statuses[i] }));
+    return { ...row, undoable: statuses.slice(0, 2).includes('done') };
+  };
+
+  it('undoes the whole email in one call and shows the row the daemon answers with', async () => {
+    const calls = serve((call) => (call.startsWith('GET') ? [200, page([two()])] : [200, { batch_id: 9, item: after(['undone', 'undone', 'done']), undone: 2, failed: 0 }]));
     await s.load();
     await s.undo(s.activity.list[0]);
-    expect(calls.slice(1)).toEqual([{ call: 'POST /api/actions/22/undo' }, { call: 'POST /api/actions/21/undo' }]);
+    expect(calls.slice(1)).toEqual([{ call: 'POST /api/messages/' + two().id + '/undo' }]);
     expect(s.canUndo(s.activity.list[0])).toBe(false);
     expect(s.activity.list[0].actions.map((a) => a.status)).toEqual(['undone', 'undone', 'done']);
     expect(toast.text).toBe('Undone. The email is back where it was');
+  });
+
+  it('says so when only part of it could be undone, and the row stays undoable', async () => {
+    serve((call) => (call.startsWith('GET') ? [200, page([two()])] : [200, { batch_id: 9, item: after(['done', 'undone', 'done']), undone: 1, failed: 1 }]));
+    await s.load();
+    await s.undo(s.activity.list[0]);
+    expect(s.canUndo(s.activity.list[0])).toBe(true);
+    expect(toast.text).toBe('Undid 1 of 2 actions; the rest could not be undone');
   });
 
   it('shows why when the daemon refuses, and leaves the row as it was', async () => {

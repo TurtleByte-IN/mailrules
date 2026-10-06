@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -104,4 +105,57 @@ func TestRefusalMessagesAreSentences(t *testing.T) {
 			}
 		})
 	}
+}
+
+// MAI-10: one call undoes everything done to one email, as one undo batch. An action that
+// cannot be undone does not stop the others, and the request is refused only when none
+// could be undone.
+func TestUndoOneMessage(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[`+foodRule+`,
+		{"name":"Boss","conditions":{"field":"from_domain","op":"eq","value":"work.example"},"actions":[{"type":"keep"},{"type":"flag"}]}]}`, http.StatusCreated)
+	undo := func(msg any) string { return fmt.Sprintf("/api/messages/%d/undo", id(msg)) }
+	statuses := func(item map[string]any) (s string) {
+		for _, a := range item["actions"].([]any) {
+			s += a.(map[string]any)["status"].(string) + " "
+		}
+		return s
+	}
+
+	// Moved and marked read: both are undone by the one call, newest first.
+	e.deliver("noreply@swiggy.in", "order one")
+	one := e.item("order one", "acted")
+	res := e.call(http.MethodPost, undo(one["id"]), "", http.StatusOK)
+	conform(t, e.doc, "MessageUndoResult", res)
+	item := res["item"].(map[string]any)
+	if res["undone"] != float64(2) || res["failed"] != float64(0) || statuses(item) != "undone undone " || item["undoable"] != false || e.folderOf("order one") != "INBOX" {
+		t.Fatalf("undo = %v undone, %v failed, actions %q, in %q", res["undone"], res["failed"], statuses(item), e.folderOf("order one"))
+	}
+	if b := e.call(http.MethodGet, fmt.Sprintf("/api/batches/%d", id(res["batch_id"])), "", http.StatusOK)["batch"].(map[string]any); b["kind"] != "undo" || b["status"] != "done" || b["done"] != float64(2) {
+		t.Errorf("the undo batch = %v", b)
+	}
+	// Nothing is in effect any more: a second call does nothing and says so.
+	if again := e.call(http.MethodPost, undo(one["id"]), "", http.StatusOK); again["undone"] != float64(0) || again["failed"] != float64(0) {
+		t.Errorf("a second undo = %v", again)
+	}
+
+	// The email was filed by hand since: the flag cannot be taken off, the keep still is
+	// undone, and the answer says both.
+	e.deliver("boss@work.example", "the plan")
+	plan := e.item("the plan", "acted")
+	ref, err := e.mb.FindByMessageID(t.Context(), "INBOX", "the-plan@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.mb.Move(t.Context(), ref, "Archive"); err != nil {
+		t.Fatal(err)
+	}
+	half := e.call(http.MethodPost, undo(plan["id"]), "", http.StatusOK)
+	if item := half["item"].(map[string]any); half["undone"] != float64(1) || half["failed"] != float64(1) || statuses(item) != "undone done " || item["undoable"] != true {
+		t.Errorf("a half undo = %v undone, %v failed, actions %q", half["undone"], half["failed"], statuses(half["item"].(map[string]any)))
+	}
+	// Now nothing at all can be undone, because the email is gone.
+	e.refuse(http.MethodPost, undo(plan["id"]), "", http.StatusConflict, "message_gone", "")
+	e.refuse(http.MethodPost, "/api/messages/999/undo", "", http.StatusNotFound, "not_found", "")
 }

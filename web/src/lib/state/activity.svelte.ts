@@ -176,9 +176,9 @@ function applyAction(a: activityApi.MessageAction) {
 
 export async function undo(row: Item) {
   try {
-    // The contract undoes one action at a time and a row can hold several (moved, then marked read): newest first.
-    for (const a of inEffect(row).reverse()) applyAction(await activityApi.undo(a.id));
-    flash('Undone. The email is back where it was');
+    const r = await activityApi.undoMessage(row.id);
+    upsert(r.item);
+    flash(r.failed ? `Undid ${r.undone} of ${r.undone + r.failed} actions; the rest could not be undone` : 'Undone. The email is back where it was');
   } catch (e) {
     failed(e);
   }

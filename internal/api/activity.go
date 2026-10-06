@@ -404,6 +404,36 @@ func (s *server) correct(w http.ResponseWriter, r *http.Request, messageID int64
 	writeJSON(w, http.StatusOK, map[string]any{"batch_id": batchID, "item": s.activityJSON(r.Context(), row)})
 }
 
+// handleMessageUndo undoes everything still in effect on one email, newest first, as one
+// undo batch, and answers with the row as it is now. An action that cannot be undone does
+// not stop the others; only when none could be undone is the request refused, with the
+// reason of the first (409 message_gone when the email is gone).
+func (s *server) handleMessageUndo(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id", "message")
+	if !ok {
+		return
+	}
+	if _, err := s.store.Message(r.Context(), id); err != nil {
+		fail(w, r, err, "message")
+		return
+	}
+	batchID, undone, failed, why, err := s.Exec.UndoMessage(r.Context(), id)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	if undone == 0 && failed > 0 {
+		fail(w, r, why, "message")
+		return
+	}
+	row, err := s.store.ActivityFor(r.Context(), id)
+	if err != nil {
+		fail(w, r, err, "message")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"batch_id": batchID, "item": s.activityJSON(r.Context(), row), "undone": undone, "failed": failed})
+}
+
 func (s *server) handleCorrect(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "id", "message")
 	if !ok {

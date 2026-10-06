@@ -547,6 +547,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/messages/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo everything still in effect on one email
+         * @description Undoes every action on the email that is still in effect, newest first, in one
+         *     call, recorded as one batch of kind `undo`. An action that cannot be undone does not
+         *     stop the others: `failed` counts them, and `item` shows each action as it is now
+         *     (`undoable` stays true while one is still in effect). The request is refused only
+         *     when not one action could be undone, with the reason of the first: 409
+         *     `message_gone` when the email was moved or deleted outside MailRules. With nothing
+         *     in effect (already undone, only recorded in dry-run, or no action at all) it does
+         *     nothing and answers 200 with zero counts. The Needs review tag is left alone. Each
+         *     undone action is also sent as `action.undone`. Undo ignores dry-run.
+         */
+        post: operations["undoMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review": {
         parameters: {
             query?: never;
@@ -625,7 +655,7 @@ export interface paths {
         put?: never;
         /**
          * Undo one action
-         * @description A move goes back to the folder it came from; a flag goes back to what it was. Undoing an action that is already undone, or that never changed the mailbox (`dry_run`, `failed`), does nothing and answers 200. Undo ignores dry-run.
+         * @description To undo everything done to one email, use `POST /api/messages/{id}/undo`, which does it in one call. A move goes back to the folder it came from; a flag goes back to what it was. Undoing an action that is already undone, or that never changed the mailbox (`dry_run`, `failed`), does nothing and answers 200. Undo ignores dry-run.
          */
         post: operations["undoAction"];
         delete?: never;
@@ -1486,6 +1516,18 @@ export interface components {
              */
             batch_id: number;
             item: components["schemas"]["ActivityItem"];
+        };
+        MessageUndoResult: {
+            /**
+             * Format: int64
+             * @description The undo batch this call was recorded as
+             */
+            batch_id: number;
+            item: components["schemas"]["ActivityItem"];
+            /** @description Actions undone by this call */
+            undone: number;
+            /** @description Actions that could not be undone and are still in effect; `item.actions` says which */
+            failed: number;
         };
         Batch: {
             /** Format: int64 */
@@ -2744,6 +2786,33 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    undoMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The email as it is now, and how the undo went */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageUndoResult"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };
     };

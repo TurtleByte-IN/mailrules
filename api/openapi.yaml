@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.14.0
+  version: 0.15.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -684,6 +684,34 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline
         '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
+  /api/messages/{id}/undo:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      tags: [Fixes]
+      operationId: undoMessage
+      summary: Undo everything still in effect on one email
+      description: |
+        Undoes every action on the email that is still in effect, newest first, in one
+        call, recorded as one batch of kind `undo`. An action that cannot be undone does not
+        stop the others: `failed` counts them, and `item` shows each action as it is now
+        (`undoable` stays true while one is still in effect). The request is refused only
+        when not one action could be undone, with the reason of the first: 409
+        `message_gone` when the email was moved or deleted outside MailRules. With nothing
+        in effect (already undone, only recorded in dry-run, or no action at all) it does
+        nothing and answers 200 with zero counts. The Needs review tag is left alone. Each
+        undone action is also sent as `action.undone`. Undo ignores dry-run.
+      responses:
+        '200':
+          description: The email as it is now, and how the undo went
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageUndoResult' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline: nothing could be undone
+        '502': { $ref: '#/components/responses/Upstream' } # mailbox_error: nothing could be undone
   /api/review:
     get:
       tags: [Review]
@@ -752,7 +780,7 @@ paths:
       tags: [Fixes]
       operationId: undoAction
       summary: Undo one action
-      description: A move goes back to the folder it came from; a flag goes back to what it was. Undoing an action that is already undone, or that never changed the mailbox (`dry_run`, `failed`), does nothing and answers 200. Undo ignores dry-run.
+      description: To undo everything done to one email, use `POST /api/messages/{id}/undo`, which does it in one call. A move goes back to the folder it came from; a flag goes back to what it was. Undoing an action that is already undone, or that never changed the mailbox (`dry_run`, `failed`), does nothing and answers 200. Undo ignores dry-run.
       responses:
         '200':
           description: The action as it is now
@@ -1631,6 +1659,14 @@ components:
       properties:
         batch_id: { type: integer, format: int64, description: The correction batch holding the new actions }
         item: { $ref: '#/components/schemas/ActivityItem' }
+    MessageUndoResult:
+      type: object
+      required: [batch_id, item, undone, failed]
+      properties:
+        batch_id: { type: integer, format: int64, description: The undo batch this call was recorded as }
+        item: { $ref: '#/components/schemas/ActivityItem' }
+        undone: { type: integer, description: Actions undone by this call }
+        failed: { type: integer, description: 'Actions that could not be undone and are still in effect; `item.actions` says which' }
     Batch:
       type: object
       required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd]
