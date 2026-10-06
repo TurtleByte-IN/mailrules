@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -297,6 +298,7 @@ type ActivityFilter struct {
 	Stage     string
 	State     string // a message state; StateReview lists Needs review
 	Action    string // an action kind: only messages with such an action
+	Outcome   string // one of Outcomes: where the message ended up, as the stats count it
 	Before    int64  // cursor: only messages with a smaller id
 	Limit     int    // 0 = 50
 }
@@ -309,10 +311,39 @@ type ActivityRow struct {
 	Actions  []Action
 }
 
+// Outcomes are the four places a processed message ends up: the groups of the Overview bar
+// (Totals.Went*) and the values of ActivityFilter.Outcome.
+var Outcomes = []string{"sorted", "trashed", "inbox", "review"}
+
+// outcomeSQL is the condition for each of Outcomes on one message, given the SQL for its
+// state and its id. The stats and the feed's filter are both built from it, so a group's
+// count and the list behind it cannot disagree. An action is in effect when it is done, or
+// recorded in dry-run; one that was undone is not, so a message whose actions were all
+// undone is back in the inbox.
+func outcomeSQL(state, id string) map[string]string {
+	inEffect := func(more string) string {
+		return `EXISTS (SELECT 1 FROM actions x WHERE x.message_id = ` + id + ` AND x.kind <> 'review' AND x.status IN ('done', 'dry_run')` + more + `)`
+	}
+	acted, trash := state+` = 'acted' AND `+inEffect(""), inEffect(` AND x.kind = 'trash'`)
+	return map[string]string{
+		"review":  state + ` = 'review'`,
+		"trashed": acted + ` AND ` + trash,
+		"sorted":  acted + ` AND NOT ` + trash,
+		"inbox":   state + ` <> 'review' AND NOT (` + acted + `)`,
+	}
+}
+
 // Activity lists messages, newest first, each with its latest decision.
 func (s *Store) Activity(ctx context.Context, f ActivityFilter) ([]ActivityRow, error) {
 	if f.Limit <= 0 {
 		f.Limit = 50
+	}
+	outcome := "1"
+	if f.Outcome != "" {
+		var ok bool
+		if outcome, ok = outcomeSQL("m.state", "m.id")[f.Outcome]; !ok {
+			return nil, fmt.Errorf("list activity: unknown outcome %q", f.Outcome)
+		}
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+messageCols+`, `+decisionCols+`
@@ -320,6 +351,7 @@ func (s *Store) Activity(ctx context.Context, f ActivityFilter) ([]ActivityRow, 
 		 WHERE (?1 = 0 OR m.account_id = ?1) AND (?2 = 0 OR d.rule_id = ?2) AND (?3 = '' OR d.stage = ?3)
 		   AND (?4 = '' OR m.state = ?4) AND (?5 = 0 OR m.id < ?5)
 		   AND (?7 = '' OR EXISTS (SELECT 1 FROM actions a WHERE a.message_id = m.id AND a.kind = ?7))
+		   AND (`+outcome+`)
 		 ORDER BY m.id DESC LIMIT ?6`,
 		f.AccountID, f.RuleID, f.Stage, f.State, f.Before, f.Limit, f.Action)
 	if err != nil {
@@ -416,6 +448,12 @@ func (s *Store) AddLearnedSenderRule(ctx context.Context, userID int64, address 
 	return n == 1, nil
 }
 
+// What a correction was: a fix made from the feed, or an answer given in Needs review.
+const (
+	CorrectionFix    = "correction"
+	CorrectionReview = "review"
+)
+
 // Correction is one row of corrections: the user said a message belongs to another rule.
 type Correction struct {
 	ID          int64
@@ -423,22 +461,24 @@ type Correction struct {
 	WrongRuleID int64  // 0 = no rule had been applied
 	RightRuleID int64  // 0 = keep in the inbox
 	RightRule   string // that rule's name, when read back; empty for keep, or once the rule is deleted
+	Kind        string // CorrectionFix | CorrectionReview; empty is stored as CorrectionFix
 	Example     string // JSON message.Summary, the few-shot example
 	CreatedAt   int64
 }
 
 // AddCorrection records a correction in one transaction: it inserts the row, forgets the
-// learned sender rule for that message's sender and marks the message acted. With
-// alwaysForSender it instead stores a user sender rule that sends the address to the right
-// rule (or keeps it in the inbox), replacing whatever the address had.
-func (s *Store) AddCorrection(ctx context.Context, userID int64, c Correction, alwaysForSender bool) (int64, error) {
+// learned sender rule for that message's sender and marks the message acted. With always
+// (rules.MatchAddress or rules.MatchDomain; "" = neither) it also stores a user sender rule
+// that sends the address, or its whole domain, to the right rule (or keeps it in the
+// inbox), replacing whatever that address or domain had.
+func (s *Store) AddCorrection(ctx context.Context, userID int64, c Correction, always string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	var sender string
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(from_addr, '') FROM messages WHERE id = ?`, c.MessageID).Scan(&sender)
+	var sender, domain string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(from_addr, ''), COALESCE(from_domain, '') FROM messages WHERE id = ?`, c.MessageID).Scan(&sender, &domain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -446,26 +486,31 @@ func (s *Store) AddCorrection(ctx context.Context, userID int64, c Correction, a
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO corrections (message_id, wrong_rule_id, right_rule_id, example, created_at) VALUES (?, ?, ?, ?, ?)`,
-		c.MessageID, null(c.WrongRuleID), null(c.RightRuleID), c.Example, c.CreatedAt)
+		`INSERT INTO corrections (message_id, wrong_rule_id, right_rule_id, example, kind, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		c.MessageID, null(c.WrongRuleID), null(c.RightRuleID), c.Example, cmp.Or(c.Kind, CorrectionFix), c.CreatedAt)
 	if err != nil {
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	id, _ := res.LastInsertId()
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM sender_rules WHERE user_id = ? AND match_type = ? AND value = ? AND (source = 'learned' OR ?)`,
-		userID, rules.MatchAddress, sender, alwaysForSender); err != nil {
+		userID, rules.MatchAddress, sender, always == rules.MatchAddress); err != nil {
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
-	if alwaysForSender && sender != "" {
+	value := sender
+	if always == rules.MatchDomain {
+		value = domain
+	}
+	if always != "" && value != "" {
 		verdict := rules.VerdictRoute
 		if c.RightRuleID == 0 {
 			verdict = rules.VerdictKeep
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO sender_rules (user_id, match_type, value, rule_id, verdict, source, hits, created_at)
-			 VALUES (?, ?, ?, ?, ?, 'user', 0, ?)`,
-			userID, rules.MatchAddress, sender, null(c.RightRuleID), verdict, c.CreatedAt); err != nil {
+			 VALUES (?, ?, ?, ?, ?, 'user', 0, ?)
+			 ON CONFLICT (user_id, match_type, value) DO UPDATE SET rule_id = excluded.rule_id, verdict = excluded.verdict, source = 'user', hits = 0`,
+			userID, always, value, null(c.RightRuleID), verdict, c.CreatedAt); err != nil {
 			return 0, fmt.Errorf("add correction: %w", err)
 		}
 	}
@@ -529,7 +574,7 @@ func (s *Store) MessageDecisions(ctx context.Context, messageID int64) ([]Decisi
 func (s *Store) MessageCorrections(ctx context.Context, messageID int64) ([]Correction, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, message_id, COALESCE(wrong_rule_id, 0), COALESCE(right_rule_id, 0),
-		        COALESCE((SELECT name FROM rules WHERE id = right_rule_id), ''), created_at
+		        COALESCE((SELECT name FROM rules WHERE id = right_rule_id), ''), kind, created_at
 		 FROM corrections WHERE message_id = ? ORDER BY id`, messageID)
 	if err != nil {
 		return nil, fmt.Errorf("list corrections: %w", err)
@@ -538,7 +583,7 @@ func (s *Store) MessageCorrections(ctx context.Context, messageID int64) ([]Corr
 	var out []Correction
 	for rows.Next() {
 		var c Correction
-		if err := rows.Scan(&c.ID, &c.MessageID, &c.WrongRuleID, &c.RightRuleID, &c.RightRule, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.MessageID, &c.WrongRuleID, &c.RightRuleID, &c.RightRule, &c.Kind, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("list corrections: %w", err)
 		}
 		out = append(out, c)

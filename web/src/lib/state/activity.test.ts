@@ -171,7 +171,7 @@ describe('undoLastHour', () => {
 });
 
 describe('correct', () => {
-  const fixed = item({ correction: { rule_id: 4, rule_name: 'Scams', created_at: 2000 }, actions: [action({ status: 'undone' }), action({ id: 30, decision_id: null, batch_id: 8, kind: 'trash', folder: '' })] });
+  const fixed = item({ correction: { kind: 'correction', rule_id: 4, rule_name: 'Scams', created_at: 2000 }, actions: [action({ status: 'undone' }), action({ id: 30, decision_id: null, batch_id: 8, kind: 'trash', folder: '' })] });
 
   it.each([
     { to: 4, always: false, said: 'Fixed. MailRules will use this as an example' },
@@ -245,24 +245,25 @@ describe('live events', () => {
 });
 
 describe('how a row reads', () => {
-  const read = action({ id: 22, kind: 'read', folder: '', to_folder: '' });
-  it.each<[string, Partial<ActivityItem>, string, string, string]>([
-    ['moved and marked read', { actions: [action(), read] }, 'Recruiters', 'ok', 'Moved to Jobs · read'],
-    ['trashed', { decision: decision({ rule_name: 'Scams' }), actions: [action({ kind: 'trash', folder: '' })] }, 'Scams', 'trash', 'Moved to Trash'],
-    ['recorded in dry-run', { actions: [action({ status: 'dry_run', to_folder: '' })], undoable: false }, 'Recruiters', 'ok', 'Moved to Jobs (dry run)'],
-    ['no rule', { state: 'skipped', decision: decision({ stage: 'none', rule_id: null, rule_name: '' }), actions: [], undoable: false }, 'No rule', 'none', 'Kept in Inbox'],
-    ['a deleted rule', { decision: decision({ rule_id: null, rule_name: 'Old rule' }) }, 'Old rule', 'ok', 'Moved to Jobs'],
-    ['waiting for review', inReview(1), 'Needs review', 'review', 'In Inbox'],
-    ['undone', { actions: [action({ status: 'undone' })], undoable: false }, 'Recruiters', 'ok', 'Undone · back in Inbox'],
-    ['failed', { actions: [action({ status: 'failed', error: 'folder Jobs does not exist', to_folder: '' })], undoable: false }, 'Recruiters', 'ok', 'Failed: folder Jobs does not exist'],
+  it.each<[string, Partial<ActivityItem>, string, string]>([
+    ['moved and marked read', {}, 'Recruiters', 'ok'],
+    ['trashed', { decision: decision({ rule_name: 'Scams' }), actions: [action({ kind: 'trash', folder: '' })] }, 'Scams', 'trash'],
+    ['no rule', { state: 'skipped', decision: decision({ stage: 'none', rule_id: null, rule_name: '' }), actions: [], undoable: false }, 'No rule', 'none'],
+    ['a deleted rule', { decision: decision({ rule_id: null, rule_name: 'Old rule' }) }, 'Old rule', 'ok'],
+    ['waiting for review', inReview(1), 'Needs review', 'review'],
     [
       'corrected to keep in Inbox: the correction overrules the decision and its actions',
-      { correction: { rule_id: null, rule_name: '', created_at: 2000 }, actions: [action({ status: 'undone' }), action({ id: 30, decision_id: null, batch_id: 8, kind: 'keep', folder: '', to_folder: 'INBOX' })] },
-      'No rule', 'none', 'Kept in Inbox',
+      { correction: { kind: 'correction', rule_id: null, rule_name: '', created_at: 2000 }, actions: [action({ status: 'undone' }), action({ id: 30, decision_id: null, batch_id: 8, kind: 'keep', folder: '', to_folder: 'INBOX' })] },
+      'No rule', 'none',
     ],
-    ['not decided yet', { state: 'new', decision: null, actions: [], undoable: false }, 'No rule', 'none', 'In Inbox'],
-  ])('%s', (_name, over, rule, kind, outcome) => {
+    ['not decided yet', { state: 'new', decision: null, actions: [], undoable: false }, 'No rule', 'none'],
+  ])('%s', (_name, over, rule, kind) => {
     const r = item(over);
-    expect([s.ruleName(r), s.kind(r), s.outcome(r)]).toEqual([rule, kind, outcome]);
+    expect([s.ruleName(r), s.kind(r)]).toEqual([rule, kind]);
+  });
+
+  it('the outcome is the sentence the daemon sent', () => {
+    expect(s.outcome(item({ outcome: 'Would move to Jobs · mark read' }))).toBe('Would move to Jobs · mark read');
+    expect(s.outcome(item({ outcome: 'Moved to Jobs', actions: [action({ status: 'undone' })] }))).toBe('Undone · back in Inbox');
   });
 });

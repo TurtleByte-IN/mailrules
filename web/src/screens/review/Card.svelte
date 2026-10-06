@@ -16,7 +16,7 @@
 
 <article class="card flex flex-col gap-3 p-[18px]">
   <div class="flex flex-wrap items-baseline justify-between gap-2">
-    <div class="min-w-0 break-words"><span class="font-semibold">{item.from}</span><span class="text-nav"> · {item.subject}</span></div>
+    <div class="min-w-0 break-words"><span class="font-semibold">{item.from_name || item.from}</span><span class="text-nav"> · {item.subject}</span></div>
     <span class="font-mono text-xs text-muted">{clock(item.received_at ?? item.created_at)}</span>
   </div>
   <p class="text-[13px] break-words text-nav">{item.snippet}</p>

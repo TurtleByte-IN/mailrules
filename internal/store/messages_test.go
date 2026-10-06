@@ -85,10 +85,10 @@ func TestMessagesAndDecisions(t *testing.T) {
 	}
 
 	// History outlives its rule; nothing outlives its account.
-	if _, err := s.AddCorrection(ctx, u.ID, Correction{MessageID: m.ID, WrongRuleID: rule.ID, Example: "{}", CreatedAt: 400}, false); err != nil {
+	if _, err := s.AddCorrection(ctx, u.ID, Correction{MessageID: m.ID, WrongRuleID: rule.ID, Example: "{}", CreatedAt: 400}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddCorrection(ctx, u.ID, Correction{MessageID: 999, Example: "{}"}, false); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AddCorrection(ctx, u.ID, Correction{MessageID: 999, Example: "{}"}, ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("correcting a missing message: %v", err)
 	}
 	if err := s.DeleteRule(ctx, u.ID, rule.ID); err != nil {

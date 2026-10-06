@@ -147,6 +147,7 @@ CREATE TABLE corrections (
   wrong_rule_id INTEGER REFERENCES rules(id) ON DELETE SET NULL,
   right_rule_id INTEGER REFERENCES rules(id) ON DELETE SET NULL,  -- NULL = keep in inbox
   example       TEXT NOT NULL,              -- JSON summary used as a few-shot example
+  kind          TEXT NOT NULL DEFAULT 'correction',  -- correction | review: fixed from the feed, or answered in Needs review
   created_at    INTEGER NOT NULL
 );
 

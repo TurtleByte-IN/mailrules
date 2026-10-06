@@ -337,16 +337,21 @@ func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (int, error) {
 
 // Correction is the user saying a message belongs to another rule.
 type Correction struct {
-	MessageID       int64
-	RightRuleID     int64 // 0 = keep in the inbox
-	AlwaysForSender bool  // also store a user sender rule for the message's sender
+	MessageID   int64
+	RightRuleID int64 // 0 = keep in the inbox
+	// Always also stores a user sender rule, so future mail goes the same way: for the
+	// message's sender (rules.MatchAddress) or its whole domain (rules.MatchDomain). "" = no.
+	Always string
+	Review bool // an answer given in Needs review, as opposed to a fix made from the feed
 }
 
 // Correct fixes one message: it undoes what was done to it (newest first), applies the
 // right rule's actions, or none for "keep", and records the correction, which deletes the
-// learned sender rule for that sender and, with AlwaysForSender, stores a user sender rule
+// learned sender rule for that sender and, with Always, stores a user sender rule
 // instead. The new actions are one batch, whose id is returned. It also resolves a message
-// waiting in Needs review.
+// waiting in Needs review. When the new actions cannot be applied, what was undone stays
+// undone; the row as it now is goes out as message.processed all the same, after the
+// action.undone events, so a screen that shows the email does not keep the old picture.
 func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err error) {
 	msg, err := x.Store.Message(ctx, c.MessageID)
 	if err != nil {
@@ -374,7 +379,13 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 		return 0, err
 	}
 	status := store.BatchFailed
-	defer func() { err = errors.Join(err, x.Store.SetBatchStatus(context.WithoutCancel(ctx), batchID, status)) }()
+	defer func() {
+		recCtx := context.WithoutCancel(ctx)
+		err = errors.Join(err, x.Store.SetBatchStatus(recCtx, batchID, status))
+		if row, rowErr := x.Store.ActivityFor(recCtx, msg.ID); rowErr == nil {
+			x.Hub.Publish(events.MessageProcessed, row)
+		}
+	}()
 
 	for _, a := range slices.Backward(row.Actions) {
 		if err := x.undo(ctx, a.ID); err != nil {
@@ -401,13 +412,13 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 	if row.Decision != nil {
 		corr.WrongRuleID = row.Decision.RuleID
 	}
-	if _, err := x.Store.AddCorrection(ctx, acct.UserID, corr, c.AlwaysForSender); err != nil {
+	if c.Review {
+		corr.Kind = store.CorrectionReview
+	}
+	if _, err := x.Store.AddCorrection(ctx, acct.UserID, corr, c.Always); err != nil {
 		return batchID, err
 	}
 	status = store.BatchDone
-	if row, err := x.Store.ActivityFor(ctx, msg.ID); err == nil {
-		x.Hub.Publish(events.MessageProcessed, row)
-	}
 	return batchID, nil
 }
 

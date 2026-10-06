@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
@@ -52,6 +53,7 @@ type activityJSON struct {
 	ID            int64         `json:"id"`
 	AccountID     int64         `json:"account_id"`
 	From          string        `json:"from"`
+	FromName      string        `json:"from_name"` // the From display name; empty when the email had none
 	FromDomain    string        `json:"from_domain"`
 	Subject       string        `json:"subject"`
 	Snippet       string        `json:"snippet"`
@@ -61,15 +63,66 @@ type activityJSON struct {
 	State         string        `json:"state"`
 	Decision      *decisionJSON `json:"decision"`
 	Actions       []actionJSON  `json:"actions"`
+	Outcome       string        `json:"outcome"`  // what became of the email, as a sentence to show
 	Undoable      bool          `json:"undoable"` // at least one action is in effect and can be undone
 	// Correction is the user's latest word on this email, which overrules Decision.
 	Correction *correctionJSON `json:"correction"`
 }
 
 type correctionJSON struct {
+	Kind      string `json:"kind"`    // correction (fixed from the feed) | review (answered in Needs review)
 	RuleID    *int64 `json:"rule_id"` // null = keep in the inbox
 	RuleName  string `json:"rule_name"`
 	CreatedAt int64  `json:"created_at"`
+}
+
+// What one action did, and what it would do, as the words of an outcome sentence. A move
+// names its folder.
+var outcomeWords = map[string][2]string{
+	rules.ActMove: {"moved to ", "move to "}, rules.ActArchive: {"archived", "archive"}, rules.ActTrash: {"moved to Trash", "move to Trash"},
+	rules.ActJunk: {"moved to Junk", "move to Junk"}, rules.ActFlag: {"flagged", "flag"}, rules.ActUnflag: {"unflagged", "unflag"},
+	rules.ActRead: {"read", "mark read"}, rules.ActUnread: {"unread", "mark unread"}, rules.ActKeep: {"kept in Inbox", "keep in Inbox"},
+}
+
+// outcome says in one sentence what became of an email: "Moved to Food · read", "Kept in
+// Inbox", "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed:
+// no Archive folder". It reads the actions of the latest decision or correction; earlier
+// ones were undone by it or, in dry-run, never happened.
+func outcome(row store.ActivityRow) string {
+	var current []store.Action
+	for _, a := range row.Actions {
+		if last := row.Actions[len(row.Actions)-1]; a.BatchID == last.BatchID && a.DecisionID == last.DecisionID && a.Kind != actions.KindReview {
+			current = append(current, a)
+		}
+	}
+	if len(current) == 0 {
+		if row.Message.State == store.StateSkipped {
+			return "Kept in Inbox"
+		}
+		return "In Inbox" // not decided yet, or waiting in Needs review
+	}
+	dry := 0
+	if slices.ContainsFunc(current, func(a store.Action) bool { return a.Status == store.ActionDryRun }) {
+		dry = 1
+	}
+	var parts []string
+	for _, a := range current {
+		switch a.Status {
+		case store.ActionFailed:
+			return "Failed: " + a.Error
+		case store.ActionUndone:
+			continue
+		}
+		parts = append(parts, outcomeWords[a.Kind][dry]+a.Folder) // only a move has a folder
+	}
+	if len(parts) == 0 {
+		return "Undone · back in Inbox"
+	}
+	text := strings.Join(parts, " · ")
+	if dry == 1 {
+		return "Would " + text
+	}
+	return strings.ToUpper(text[:1]) + text[1:]
 }
 
 func toDecisionJSON(d store.Decision) decisionJSON {
@@ -95,9 +148,9 @@ func toActionJSON(a store.Action) actionJSON {
 // to; only then is the correction looked up.
 func (s *server) activityJSON(ctx context.Context, row store.ActivityRow) activityJSON {
 	m := row.Message
-	out := activityJSON{ID: m.ID, AccountID: m.AccountID, From: m.FromAddr, FromDomain: m.FromDomain, Subject: m.Subject,
+	out := activityJSON{ID: m.ID, AccountID: m.AccountID, From: m.FromAddr, FromName: m.FromName, FromDomain: m.FromDomain, Subject: m.Subject,
 		Snippet: m.Snippet, ReceivedAt: ts(m.ReceivedAt), CreatedAt: m.CreatedAt, HasAttachment: m.HasAttachment, State: m.State,
-		Actions: make([]actionJSON, 0, len(row.Actions))}
+		Actions: make([]actionJSON, 0, len(row.Actions)), Outcome: outcome(row)}
 	if r := []rune(out.Snippet); len(r) > maxSnippet {
 		out.Snippet = string(r[:maxSnippet])
 	}
@@ -112,7 +165,7 @@ func (s *server) activityJSON(ctx context.Context, row store.ActivityRow) activi
 	if slices.ContainsFunc(row.Actions, func(a store.Action) bool { return a.DecisionID == 0 }) {
 		if cs, err := s.store.MessageCorrections(ctx, m.ID); err == nil && len(cs) > 0 {
 			c := cs[len(cs)-1]
-			out.Correction = &correctionJSON{RuleID: ts(c.RightRuleID), RuleName: c.RightRule, CreatedAt: c.CreatedAt}
+			out.Correction = &correctionJSON{Kind: c.Kind, RuleID: ts(c.RightRuleID), RuleName: c.RightRule, CreatedAt: c.CreatedAt}
 		}
 	}
 	return out
@@ -126,10 +179,10 @@ var (
 )
 
 // activityFilter reads the list parameters shared by the feed and Needs review:
-// ?account=&rule=&stage=&status=&action=&cursor=&limit=.
+// ?account=&rule=&stage=&status=&action=&outcome=&cursor=&limit=.
 func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilter, bool) {
 	q := r.URL.Query()
-	f := store.ActivityFilter{Stage: q.Get("stage"), State: q.Get("status"), Action: q.Get("action"), Limit: 50}
+	f := store.ActivityFilter{Stage: q.Get("stage"), State: q.Get("status"), Action: q.Get("action"), Outcome: q.Get("outcome"), Limit: 50}
 	for name, dst := range map[string]*int64{"account": &f.AccountID, "rule": &f.RuleID, "cursor": &f.Before} {
 		if v := q.Get(name); v != "" {
 			n, err := strconv.ParseInt(v, 10, 64)
@@ -151,7 +204,7 @@ func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilte
 	for name, c := range map[string]struct {
 		got  string
 		want []string
-	}{"stage": {f.Stage, stages}, "status": {f.State, states}, "action": {f.Action, kinds}} {
+	}{"stage": {f.Stage, stages}, "status": {f.State, states}, "action": {f.Action, kinds}, "outcome": {f.Outcome, store.Outcomes}} {
 		if c.got != "" && !slices.Contains(c.want, c.got) {
 			invalid(w, name, "Unknown "+name+".")
 			return f, false
@@ -373,17 +426,39 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+// freeMail are the well-known domains anyone can get an address at. A sender rule for one
+// of them would route every stranger's mail, so "always for this domain" is refused there.
+var freeMail = []string{"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com", "me.com",
+	"mac.com", "proton.me", "protonmail.com", "aol.com", "gmx.com", "zoho.com", "fastmail.com"}
+
 // correct is the body of both fix endpoints: file the message under another rule, or keep
-// it in the inbox (rule_id null).
-func (s *server) correct(w http.ResponseWriter, r *http.Request, messageID int64) {
+// it in the inbox (rule_id null). review says the message was answered in Needs review.
+func (s *server) correct(w http.ResponseWriter, r *http.Request, m store.Message, review bool) {
+	messageID := m.ID
 	var in struct {
 		RuleID          *int64 `json:"rule_id"`
 		AlwaysForSender bool   `json:"always_for_sender"`
+		AlwaysFor       string `json:"always_for"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
-	c := actions.Correction{MessageID: messageID, AlwaysForSender: in.AlwaysForSender}
+	c := actions.Correction{MessageID: messageID, Always: in.AlwaysFor, Review: review}
+	if c.Always == "" && in.AlwaysForSender {
+		c.Always = rules.MatchAddress
+	}
+	switch {
+	case c.Always != "" && c.Always != rules.MatchAddress && c.Always != rules.MatchDomain:
+		invalid(w, "always_for", "Choose address or domain.")
+		return
+	case c.Always == rules.MatchDomain && m.FromDomain == "":
+		invalid(w, "always_for", "This email has no sender domain to make a rule for.")
+		return
+	case c.Always == rules.MatchDomain && slices.ContainsFunc(freeMail, func(d string) bool { return m.FromDomain == d || strings.HasSuffix(m.FromDomain, "."+d) }):
+		writeError(w, http.StatusUnprocessableEntity, "domain_too_broad", "Anyone can have an address at "+m.FromDomain+
+			", so a rule for the whole domain would catch mail from strangers. Make the rule for this sender's address instead.", "always_for")
+		return
+	}
 	if in.RuleID != nil {
 		if _, err := s.store.Rule(r.Context(), user(r).ID, *in.RuleID); err != nil {
 			invalid(w, "rule_id", "No such rule.")
@@ -439,11 +514,12 @@ func (s *server) handleCorrect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.store.Message(r.Context(), id); err != nil {
+	m, err := s.store.Message(r.Context(), id)
+	if err != nil {
 		fail(w, r, err, "message")
 		return
 	}
-	s.correct(w, r, id)
+	s.correct(w, r, m, false)
 }
 
 // handleReviewResolve settles a message waiting in Needs review: approve the suggested
@@ -462,7 +538,7 @@ func (s *server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "not_in_review", "This message is not waiting in Needs review.", "")
 		return
 	}
-	s.correct(w, r, id)
+	s.correct(w, r, m, true)
 }
 
 func (s *server) handleActionUndo(w http.ResponseWriter, r *http.Request) {

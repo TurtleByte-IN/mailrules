@@ -34,7 +34,7 @@ it('shows an email with its answers', async () => {
   serve(() => [200, queue([8])]);
   render(Review);
   const card = within(await screen.findByRole('article'));
-  expect(card.getByText('priya@talentbridge.in')).toBeTruthy();
+  expect(card.getByText('Priya Nair')).toBeTruthy(); // the sender's name, when the email had one
   expect(card.getByText('Best guess: Recruiters · 0.58')).toBeTruthy();
   for (const name of ['Yes, Recruiters', 'Keep in Inbox', 'Apply']) expect(card.getByRole('button', { name })).toBeTruthy();
 });

@@ -543,7 +543,7 @@ func TestLearnedSenderRule(t *testing.T) {
 
 	// Any correction for that sender deletes the learned rule, and the model is asked again.
 	if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
-		RightRuleID: e.receipts.ID, Example: "{}", CreatedAt: e.now.Unix()}, false); err != nil {
+		RightRuleID: e.receipts.ID, Example: "{}", CreatedAt: e.now.Unix()}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := learned(); len(got) != 0 {
@@ -555,7 +555,7 @@ func TestLearnedSenderRule(t *testing.T) {
 
 	// "Always for this sender" stores a user rule instead, which learning never replaces.
 	if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, RightRuleID: e.receipts.ID,
-		Example: "{}", CreatedAt: e.now.Unix()}, true); err != nil {
+		Example: "{}", CreatedAt: e.now.Unix()}, rules.MatchAddress); err != nil {
 		t.Fatal(err)
 	}
 	if got := learned(); len(got) != 1 || got[0].Source != "user" || got[0].RuleID != e.receipts.ID {
@@ -733,7 +733,7 @@ func TestFallbackSeesCorrectionsAndTheSpreadIsKept(t *testing.T) {
 		ex, _ := json.Marshal(message.Summary{From: from, FromDomain: from[strings.IndexByte(from, '@')+1:], Subject: subject})
 		e.now = e.now.Add(time.Minute)
 		if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
-			RightRuleID: right, Example: string(ex), CreatedAt: e.now.Unix()}, false); err != nil {
+			RightRuleID: right, Example: string(ex), CreatedAt: e.now.Unix()}, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

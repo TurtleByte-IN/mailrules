@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.16.0
+  version: 0.17.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -624,6 +624,7 @@ paths:
         - { name: stage, in: query, schema: { $ref: '#/components/schemas/Stage' }, description: Only mail whose latest decision was made at this stage }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/MessageState' }, description: Only mail in this state }
         - { name: action, in: query, schema: { $ref: '#/components/schemas/ActionKind' }, description: Only mail with an action of this kind }
+        - { name: outcome, in: query, schema: { type: string, enum: [sorted, trashed, inbox, review] }, description: 'Only mail that ended up there: the four groups of `StatsSummary.went`, counted the same way, so a group''s number and the list behind it agree' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
       responses:
@@ -632,7 +633,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ActivityPage' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account | rule | stage | status | action | cursor | limit)
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account | rule | stage | status | action | outcome | cursor | limit)
         '401': { $ref: '#/components/responses/Unauthenticated' }
   /api/messages/{id}:
     parameters:
@@ -665,7 +666,11 @@ paths:
         (`rule_id` null keeps it in the inbox), records the correction as a few-shot example
         and forgets any learned sender rule for that sender. The new actions are one batch of
         kind `correction`. In dry-run the earlier real actions are still undone and the new
-        ones are recorded as `dry_run`.
+        ones are recorded as `dry_run`. With `always_for` a sender rule is stored too, for
+        the sender's address or its whole domain; a domain rule is refused with 422
+        `domain_too_broad` for a well-known free-mail domain (gmail.com, googlemail.com,
+        outlook.com, hotmail.com, live.com, yahoo.com, icloud.com, me.com, mac.com, proton.me,
+        protonmail.com, aol.com, gmx.com, zoho.com, fastmail.com), before anything is done.
       requestBody:
         required: true
         content:
@@ -677,12 +682,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FixResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id | always_for), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline
-        '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder
+        '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder, domain_too_broad (path: always_for)
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
   /api/messages/{id}/undo:
     parameters:
@@ -749,12 +754,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FixResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id | always_for), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # not_in_review, message_gone, account_offline
-        '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder
+        '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder, domain_too_broad (path: always_for)
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
   /api/actions/undo:
     parameters:
@@ -1187,7 +1192,11 @@ components:
         The request is understood but cannot be carried out on this mail account.
         `no_special_folder`: the right rule archives, trashes or junks, and the account has no
         folder the server marks for that use (MailRules never guesses one). What had been done
-        to the email before was already undone; the correction itself was not recorded.
+        to the email before was already undone, and the correction itself was not recorded.
+        The daemon sends the events for what it undid all the same: one `action.undone` per
+        action, then `message.processed` with the row as it now is.
+        `domain_too_broad` (path `always_for`): a sender rule for a whole free-mail domain
+        would catch mail from strangers. Nothing was done; choose the address instead.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -1567,12 +1576,13 @@ components:
         undone_at: { type: [integer, 'null'], format: int64 }
     ActivityItem:
       type: object
-      required: [id, account_id, from, from_domain, subject, snippet, received_at, created_at, has_attachment, state, decision, actions, undoable, correction]
+      required: [id, account_id, from, from_name, from_domain, subject, snippet, received_at, created_at, has_attachment, state, decision, actions, outcome, undoable, correction]
       description: One email in the feed. `id` is the message id used by `/api/messages/{id}` and the fix endpoints.
       properties:
         id: { type: integer, format: int64 }
         account_id: { type: integer, format: int64 }
         from: { type: string, description: The sender's address }
+        from_name: { type: string, description: 'The sender''s display name from the From header; empty when the email had none (show the address)' }
         from_domain: { type: string }
         subject: { type: string }
         snippet: { type: string, maxLength: 200, description: The first characters of the text; blank once retention has purged it }
@@ -1586,6 +1596,7 @@ components:
             - { type: 'null' }
           description: The latest decision; null until one is made
         actions: { type: array, items: { $ref: '#/components/schemas/MessageAction' }, description: Every action taken on it, oldest first }
+        outcome: { type: string, description: 'What became of the email, as a sentence ready to show, from the actions of the latest decision or correction: "Moved to Food · read", "Kept in Inbox" (no rule matched), "In Inbox" (not decided yet, or waiting in Needs review), "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed: no Archive folder"' }
         undoable: { type: boolean, description: At least one action is in effect and can be undone }
         correction:
           oneOf:
@@ -1594,8 +1605,9 @@ components:
           description: The user's latest word on this email, which overrules `decision`; null when it was never corrected
     Correction:
       type: object
-      required: [rule_id, rule_name, created_at]
+      required: [kind, rule_id, rule_name, created_at]
       properties:
+        kind: { type: string, enum: [correction, review], description: '`correction`: the user fixed what a rule had done, from the feed. `review`: the user answered an email waiting in Needs review' }
         rule_id: { type: [integer, 'null'], format: int64, description: The rule the user chose; null = keep in the inbox }
         rule_name: { type: string }
         created_at: { type: integer, format: int64 }
@@ -1671,7 +1683,8 @@ components:
       additionalProperties: false
       properties:
         rule_id: { type: [integer, 'null'], format: int64, description: The rule the email belongs to; null = keep it in the inbox }
-        always_for_sender: { type: boolean, default: false, description: Also store a sender rule, so future mail from this address goes the same way }
+        always_for_sender: { type: boolean, default: false, description: 'Also store a sender rule, so future mail from this address goes the same way. The same as `always_for: address`; `always_for` wins when both are sent' }
+        always_for: { type: string, enum: [address, domain], description: 'Also store a sender rule, so future mail goes the same way: from this sender''s address, or from its whole domain (subdomains included). Left out = no sender rule. `domain` is refused with 422 `domain_too_broad` for a well-known free-mail domain' }
     FixResult:
       type: object
       required: [batch_id, item]

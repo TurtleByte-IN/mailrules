@@ -61,11 +61,11 @@ it('an empty feed says nothing is sorted yet', async () => {
 });
 
 it('shows the rows, the tiles and what the model gave each rule', async () => {
-  daemon([item(), item({ id: 2, from: 'orders@swiggy.in', subject: 'Your order is on the way' })]);
+  daemon([item(), item({ id: 2, from: 'orders@swiggy.in', from_name: '', subject: 'Your order is on the way' })]);
   render(Activity);
   const feed = within(screen.getByRole('region', { name: 'Activity feed' }));
   expect(await feed.findByText('orders@swiggy.in')).toBeTruthy();
-  expect(feed.getByText('priya@talentbridge.in')).toBeTruthy();
+  expect(feed.getByText('Priya Nair')).toBeTruthy(); // the sender's name, when the email had one
   expect(feed.getAllByRole('button', { name: 'Undo' })).toHaveLength(2);
 
   const tiles = screen.getByRole('region', { name: 'Today at a glance' });

@@ -52,7 +52,7 @@ describe('review queue', () => {
     { name: 'another rule, always', to: 4, always: true, said: 'Done: Moved to Jobs' },
     { name: 'keep in Inbox', to: null, always: false, said: 'Kept in Inbox' },
   ])('$name', async (c) => {
-    const settled = item({ id: 8, correction: { rule_id: c.to, rule_name: 'Recruiters', created_at: 2000 }, actions: [action({ message_id: 8, decision_id: null })] });
+    const settled = item({ id: 8, correction: { kind: 'review', rule_id: c.to, rule_name: 'Recruiters', created_at: 2000 }, actions: [action({ message_id: 8, decision_id: null })] });
     const calls = serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [200, { batch_id: 8, item: settled }]));
     await s.load();
     await s.resolve(8, c.to, c.always);

@@ -137,32 +137,11 @@ export const kind = (r: Item): Kind =>
         ? 'none'
         : 'ok';
 
-const words: Record<activityApi.MessageAction['kind'], string> = {
-  move: 'moved',
-  archive: 'archived',
-  trash: 'moved to Trash',
-  junk: 'moved to Junk',
-  flag: 'flagged',
-  unflag: 'unflagged',
-  read: 'read',
-  unread: 'unread',
-  keep: 'kept in Inbox',
-  review: 'in Inbox',
-};
-
-/** What happened to the email, in the feed's words: "Moved to Food · read". */
-export function outcome(r: Item) {
-  const acts = current(r);
-  if (!acts.length) return r.state === 'skipped' ? 'Kept in Inbox' : 'In Inbox';
-  if (undone(r)) return 'Undone · back in Inbox';
-  const stuck = acts.find((a) => a.status === 'failed');
-  if (stuck) return 'Failed: ' + stuck.error;
-  const text = acts
-    .filter((a) => a.status !== 'undone')
-    .map((a) => (a.kind === 'move' ? 'moved to ' + a.folder : words[a.kind]))
-    .join(' · ');
-  return text[0].toUpperCase() + text.slice(1) + (acts.some((a) => a.status === 'dry_run') ? ' (dry run)' : '');
-}
+/**
+ * What happened to the email, in the daemon's words: "Moved to Food · read". A row whose
+ * actions a live event has since marked undone says so until the daemon sends the row again.
+ */
+export const outcome = (r: Item) => (undone(r) ? 'Undone · back in Inbox' : r.outcome);
 
 export const canUndo = (r: Item) => r.undoable;
 

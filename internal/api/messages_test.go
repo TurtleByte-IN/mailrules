@@ -8,6 +8,8 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/TurtleByte-IN/mailrules/internal/models"
 )
 
 // fieldPath is how a message used to begin: "rules[0].conditions.all[0].op: ...".
@@ -250,5 +252,125 @@ func TestRuleModelIsCheckedTheSameEverywhere(t *testing.T) {
 		if !ok && (patch.body.Error.Message != batch.body.Error.Message || patch.body.Error.Code != "rule_invalid" || patch.body.Error.Path != "model" || batch.body.Error.Path != "rules[0].model") {
 			t.Errorf("model %q: edit says %q at %q, batch save says %q at %q", model, patch.body.Error.Message, patch.body.Error.Path, batch.body.Error.Message, batch.body.Error.Path)
 		}
+	}
+}
+
+// MAI-11: what a feed row tells the UI, so the browser need not work it out.
+func TestFeedRowSaysWhoWhatAndHow(t *testing.T) {
+	e := newEnv(t)
+	e.signIn() // dry-run is still on
+	e.call(http.MethodPost, "/api/accounts", accountBody, http.StatusCreated)
+	e.live()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[`+foodRule+`,
+		{"name":"Junk","conditions":{"field":"from_domain","op":"eq","value":"junk.example"},"actions":[{"type":"trash"}]},
+		{"name":"Later","intent":"Things for later","actions":[{"type":"archive"}]}]}`, http.StatusCreated)
+	e.decider.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{RuleID: 3, Confidence: 0.4}, models.Usage{Provider: "fake", Model: "fake-1"}, nil
+	}
+	named := func(from, subject string) {
+		e.mb.Deliver("INBOX", "From: "+from+"\r\nTo: me@example.test\r\nSubject: "+subject+"\r\nMessage-ID: <"+strings.ReplaceAll(subject, " ", "-")+"@example.test>\r\n\r\nbody\r\n")
+	}
+
+	// (a) the sender's display name; (c) the outcome as a sentence, also in dry-run.
+	named(`"Swiggy Orders" <noreply@swiggy.in>`, "dry order")
+	dry := e.item("dry order", "acted")
+	if dry["from_name"] != "Swiggy Orders" || dry["from"] != "noreply@swiggy.in" || dry["outcome"] != "Would move to Food · mark read" {
+		t.Errorf("dry-run row = name %q, outcome %q", dry["from_name"], dry["outcome"])
+	}
+	e.call(http.MethodPatch, "/api/settings", `{"dry_run":false}`, http.StatusOK)
+	e.deliver("noreply@swiggy.in", "order one")
+	e.deliver("spam@junk.example", "win big")
+	e.deliver("friend@example.org", "lunch") // the model is unsure: Needs review
+	named("someone@gmail.com", "hello")
+	one, lunch := e.item("order one", "acted"), e.item("lunch", "review")
+	for subject, want := range map[string]string{"order one": "Moved to Food · read", "win big": "Moved to Trash", "lunch": "In Inbox", "hello": "In Inbox"} {
+		state := map[string]string{"lunch": "review", "hello": "review"}[subject]
+		if state == "" {
+			state = "acted"
+		}
+		if got := e.item(subject, state); got["outcome"] != want || got["from_name"] != "" {
+			t.Errorf("%s: outcome %q, name %q; want %q and no name", subject, got["outcome"], got["from_name"], want)
+		}
+	}
+	if d := e.call(http.MethodGet, fmt.Sprintf("/api/messages/%d", id(dry["id"])), "", http.StatusOK)["message"].(map[string]any); d["from_name"] != "Swiggy Orders" || d["outcome"] == "" {
+		t.Errorf("message detail = name %q, outcome %q", d["from_name"], d["outcome"])
+	}
+	if r := e.call(http.MethodGet, "/api/review", "", http.StatusOK)["items"].([]any)[0].(map[string]any); r["outcome"] != "In Inbox" {
+		t.Errorf("review item outcome = %q", r["outcome"])
+	}
+	undone := e.call(http.MethodPost, fmt.Sprintf("/api/messages/%d/undo", id(one["id"])), "", http.StatusOK)["item"].(map[string]any)
+	if undone["outcome"] != "Undone · back in Inbox" {
+		t.Errorf("after undo: outcome %q", undone["outcome"])
+	}
+
+	// (e) ?outcome= lists exactly what the Overview's four groups count.
+	went := e.call(http.MethodGet, "/api/stats/summary", "", http.StatusOK)["went"].(map[string]any)
+	for _, group := range []string{"sorted", "trashed", "inbox", "review"} {
+		page := e.call(http.MethodGet, "/api/activity?outcome="+group, "", http.StatusOK)
+		conform(t, e.doc, "ActivityPage", page)
+		if n := len(page["items"].([]any)); float64(n) != went[group] {
+			t.Errorf("?outcome=%s lists %d emails, the summary counts %v", group, n, went[group])
+		}
+	}
+	if went["sorted"] != float64(1) || went["trashed"] != float64(1) || went["inbox"] != float64(1) || went["review"] != float64(2) {
+		t.Errorf("went = %v, want the dry-run order sorted, one trashed, the undone order in the inbox, two in review", went)
+	}
+	e.refuse(http.MethodGet, "/api/activity?outcome=lost", "", http.StatusBadRequest, "invalid_input", "outcome")
+
+	// (b) always for the address or the whole domain; never for a free-mail domain. (d) the
+	// row says whether a person's last word was a review answer or a correction.
+	resolve := fmt.Sprintf("/api/review/%d/resolve", id(lunch["id"]))
+	e.refuse(http.MethodPost, resolve, `{"rule_id":null,"always_for":"everyone"}`, http.StatusBadRequest, "invalid_input", "always_for")
+	answered := e.call(http.MethodPost, resolve, `{"rule_id":null,"always_for":"domain"}`, http.StatusOK)
+	conform(t, e.doc, "FixResult", answered)
+	if c := answered["item"].(map[string]any)["correction"].(map[string]any); c["kind"] != "review" || c["rule_id"] != nil {
+		t.Errorf("after answering in Needs review: correction = %v", c)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM sender_rules WHERE match_type = 'domain' AND value = 'example.org' AND verdict = 'keep' AND source = 'user'`); n != 1 {
+		t.Errorf("%d domain sender rules for example.org, want 1", n)
+	}
+	hello := e.item("hello", "review")
+	gmail := fmt.Sprintf("/api/review/%d/resolve", id(hello["id"]))
+	e.refuse(http.MethodPost, gmail, `{"rule_id":1,"always_for":"domain"}`, http.StatusUnprocessableEntity, "domain_too_broad", "always_for")
+	if e.item("hello", "review")["correction"] != nil || e.count(`SELECT COUNT(*) FROM sender_rules WHERE value LIKE '%gmail%'`) != 0 {
+		t.Error("a refused domain rule changed something")
+	}
+	e.call(http.MethodPost, gmail, `{"rule_id":null,"always_for":"address"}`, http.StatusOK)
+	if n := e.count(`SELECT COUNT(*) FROM sender_rules WHERE match_type = 'address' AND value = 'someone@gmail.com'`); n != 1 {
+		t.Errorf("%d address sender rules for the gmail sender, want 1", n)
+	}
+	fixed := e.call(http.MethodPost, fmt.Sprintf("/api/messages/%d/correct", id(one["id"])), `{"rule_id":2,"always_for_sender":true}`, http.StatusOK)["item"].(map[string]any)
+	if c := fixed["correction"].(map[string]any); c["kind"] != "correction" || fixed["outcome"] != "Moved to Trash" ||
+		e.count(`SELECT COUNT(*) FROM sender_rules WHERE match_type = 'address' AND value = 'noreply@swiggy.in' AND rule_id = 2`) != 1 {
+		t.Errorf("after a correction with always_for_sender: correction %v, outcome %q", c, fixed["outcome"])
+	}
+}
+
+// MAI-11 (f): a correction the account cannot carry out has already undone what was done
+// to the email. The stream says so: the undone actions, then the row as it now is.
+func TestFailedCorrectionStillSendsItsEvents(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[`+foodRule+`,{"name":"Archive it","intent":"Things to archive","actions":[{"type":"archive"}]}]}`, http.StatusCreated)
+	e.decider.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{}, models.Usage{Provider: "fake", Model: "fake-1"}, nil
+	}
+	e.deliver("noreply@swiggy.in", "order one")
+	msg := id(e.item("order one", "acted")["id"])
+	if _, err := e.db.ExecContext(t.Context(), `UPDATE folders SET special_use = NULL WHERE name = 'Archive'`); err != nil {
+		t.Fatal(err)
+	}
+	_, live, cancel := e.hub.Subscribe(0)
+	defer cancel()
+	e.refuse(http.MethodPost, fmt.Sprintf("/api/messages/%d/correct", msg), `{"rule_id":2}`, http.StatusUnprocessableEntity, "no_special_folder", "")
+	var names []string
+	for len(live) > 0 {
+		names = append(names, (<-live).Name)
+	}
+	if got := strings.Join(names, " "); got != "action.undone action.undone message.processed" {
+		t.Errorf("events after the refused correction = %q", got)
+	}
+	if it := e.item("order one", "acted"); it["outcome"] != "Failed: no Archive folder" || it["undoable"] != false || e.folderOf("order one") != "INBOX" {
+		t.Errorf("the row after the refused correction: outcome %q, undoable %v, in %q", it["outcome"], it["undoable"], e.folderOf("order one"))
 	}
 }

@@ -13,12 +13,12 @@ export const action = (over: Partial<MessageAction> = {}): MessageAction => ({
 });
 
 export const item = (over: Partial<ActivityItem> = {}): ActivityItem => ({
-  id: 1, account_id: 1, from: 'priya@talentbridge.in', from_domain: 'talentbridge.in', subject: 'Senior backend role', snippet: 'Hi, I came across your profile',
-  received_at: 1000, created_at: 1001, has_attachment: false, state: 'acted', decision: decision(), actions: [action()], undoable: true, correction: null, ...over,
+  id: 1, account_id: 1, from: 'priya@talentbridge.in', from_name: 'Priya Nair', from_domain: 'talentbridge.in', subject: 'Senior backend role', snippet: 'Hi, I came across your profile',
+  received_at: 1000, created_at: 1001, has_attachment: false, state: 'acted', decision: decision(), actions: [action()], outcome: 'Moved to Jobs', undoable: true, correction: null, ...over,
 });
 
 export const inReview = (id: number): ActivityItem =>
-  item({ id, state: 'review', decision: decision({ stage: 'fallback', confidence: 0.58, reason: 'Could be Recruiters or Newsletters' }), actions: [], undoable: false });
+  item({ id, state: 'review', decision: decision({ stage: 'fallback', confidence: 0.58, reason: 'Could be Recruiters or Newsletters' }), actions: [], outcome: 'In Inbox', undoable: false });
 
 export const detail = (over: Partial<MessageDetail> = {}): MessageDetail => ({
   ...item(), to: ['me@icloud.com'], list_id: '', size: 2048, signals: { bulk: false, noreply: false, is_contact: false, replied_before: false, dmarc: 'pass' },

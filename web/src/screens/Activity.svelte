@@ -153,7 +153,7 @@
                 class="min-w-0 flex-[1_1_200px] border-0 bg-transparent p-0 text-left text-inherit"
                 onclick={() => (selected = row.id)}
               >
-                <div class="break-words"><span class="font-semibold">{row.from}</span><span class="text-nav"> · {row.subject}</span></div>
+                <div class="break-words"><span class="font-semibold">{row.from_name || row.from}</span><span class="text-nav"> · {row.subject}</span></div>
                 <div class="mt-0.5 text-xs text-muted">{row.decision?.reason}</div>
                 <div class="mt-2 flex flex-wrap gap-1.5">
                   <span class="chip {chip(row)}">{ruleName(row)}</span>

@@ -71,22 +71,20 @@ type Totals struct {
 // StatsTotals counts the user's emails decided since `since`.
 func (s *Store) StatsTotals(ctx context.Context, userID, since int64) (Totals, error) {
 	var t Totals
-	// In effect: done, or recorded in dry-run. An email whose actions were all undone is
-	// back where it was, so it no longer counts as sorted.
-	const trash = `x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2`
-	const sorted = `state = 'acted' AND EXISTS (SELECT 1 FROM actions x WHERE x.message_id = latest.message_id AND x.kind <> 'review' AND x.status IN ('done', 'dry_run'))`
+	// The four groups come from outcomeSQL, which the feed's ?outcome= filter is built from too.
+	went := outcomeSQL("state", "latest.message_id")
+	sum := func(outcome string) string { return `COALESCE(SUM(` + went[outcome] + `), 0)` }
 	err := s.db.QueryRowContext(ctx,
-		latest+`SELECT COUNT(*), COALESCE(SUM(`+sorted+`), 0), COALESCE(SUM(model = ''), 0),
+		latest+`SELECT COUNT(*), COALESCE(SUM(model = ''), 0),
 		          (SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN accounts a ON a.id = x.account_id
-		           WHERE a.user_id = ?1 AND `+trash+`),
-		          COALESCE(SUM(state = 'acted' AND EXISTS (SELECT 1 FROM actions x WHERE x.message_id = latest.message_id AND `+trash+`)), 0),
-		          COALESCE(SUM(state = 'review'), 0)
+		           WHERE a.user_id = ?1 AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2),
+		          `+sum("sorted")+`, `+sum("trashed")+`, `+sum("review")+`, `+sum("inbox")+`
 		        FROM latest`, userID, since).
-		Scan(&t.Processed, &t.Sorted, &t.WithoutModel, &t.Trashed, &t.WentTrash, &t.WentReview)
+		Scan(&t.Processed, &t.WithoutModel, &t.Trashed, &t.WentSorted, &t.WentTrash, &t.WentReview, &t.WentNowhere)
 	if err != nil {
 		return Totals{}, fmt.Errorf("stats totals: %w", err)
 	}
-	t.WentSorted, t.WentNowhere = t.Sorted-t.WentTrash, t.Processed-t.Sorted-t.WentReview
+	t.Sorted = t.WentSorted + t.WentTrash
 	return t, nil
 }
 

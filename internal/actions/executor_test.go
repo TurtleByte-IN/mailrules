@@ -592,7 +592,7 @@ func TestCorrect(t *testing.T) {
 	}
 
 	// "Keep in the inbox, always for this sender".
-	batch, err = e.x.Correct(ctx, Correction{MessageID: d.MessageID, AlwaysForSender: true})
+	batch, err = e.x.Correct(ctx, Correction{MessageID: d.MessageID, Always: rules.MatchAddress})
 	if err != nil {
 		t.Fatal(err)
 	}

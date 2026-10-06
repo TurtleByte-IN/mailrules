@@ -538,7 +538,11 @@ export interface paths {
          *     (`rule_id` null keeps it in the inbox), records the correction as a few-shot example
          *     and forgets any learned sender rule for that sender. The new actions are one batch of
          *     kind `correction`. In dry-run the earlier real actions are still undone and the new
-         *     ones are recorded as `dry_run`.
+         *     ones are recorded as `dry_run`. With `always_for` a sender rule is stored too, for
+         *     the sender's address or its whole domain; a domain rule is refused with 422
+         *     `domain_too_broad` for a well-known free-mail domain (gmail.com, googlemail.com,
+         *     outlook.com, hotmail.com, live.com, yahoo.com, icloud.com, me.com, mac.com, proton.me,
+         *     protonmail.com, aol.com, gmx.com, zoho.com, fastmail.com), before anything is done.
          */
         post: operations["correctMessage"];
         delete?: never;
@@ -1408,6 +1412,8 @@ export interface components {
             account_id: number;
             /** @description The sender's address */
             from: string;
+            /** @description The sender's display name from the From header; empty when the email had none (show the address) */
+            from_name: string;
             from_domain: string;
             subject: string;
             /** @description The first characters of the text; blank once retention has purged it */
@@ -1425,12 +1431,19 @@ export interface components {
             decision: components["schemas"]["Decision"] | null;
             /** @description Every action taken on it */
             actions: components["schemas"]["MessageAction"][];
+            /** @description What became of the email, as a sentence ready to show, from the actions of the latest decision or correction: "Moved to Food · read", "Kept in Inbox" (no rule matched), "In Inbox" (not decided yet, or waiting in Needs review), "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed: no Archive folder" */
+            outcome: string;
             /** @description At least one action is in effect and can be undone */
             undoable: boolean;
             /** @description The user's latest word on this email, which overrules `decision`; null when it was never corrected */
             correction: components["schemas"]["Correction"] | null;
         };
         Correction: {
+            /**
+             * @description `correction`: the user fixed what a rule had done, from the feed. `review`: the user answered an email waiting in Needs review
+             * @enum {string}
+             */
+            kind: "correction" | "review";
             /**
              * Format: int64
              * @description The rule the user chose; null = keep in the inbox
@@ -1522,10 +1535,15 @@ export interface components {
              */
             rule_id: number | null;
             /**
-             * @description Also store a sender rule
+             * @description Also store a sender rule, so future mail from this address goes the same way. The same as `always_for: address`; `always_for` wins when both are sent
              * @default false
              */
             always_for_sender: boolean;
+            /**
+             * @description Also store a sender rule, so future mail goes the same way: from this sender's address, or from its whole domain (subdomains included). Left out = no sender rule. `domain` is refused with 422 `domain_too_broad` for a well-known free-mail domain
+             * @enum {string}
+             */
+            always_for?: "address" | "domain";
         };
         FixResult: {
             /**
@@ -1950,7 +1968,11 @@ export interface components {
          * @description The request is understood but cannot be carried out on this mail account.
          *     `no_special_folder`: the right rule archives, trashes or junks, and the account has no
          *     folder the server marks for that use (MailRules never guesses one). What had been done
-         *     to the email before was already undone; the correction itself was not recorded.
+         *     to the email before was already undone, and the correction itself was not recorded.
+         *     The daemon sends the events for what it undid all the same: one `action.undone` per
+         *     action, then `message.processed` with the row as it now is.
+         *     `domain_too_broad` (path `always_for`): a sender rule for a whole free-mail domain
+         *     would catch mail from strangers. Nothing was done; choose the address instead.
          */
         Unprocessable: {
             headers: {
@@ -2748,6 +2770,8 @@ export interface operations {
                 status?: components["schemas"]["MessageState"];
                 /** @description Only mail with an action of this kind */
                 action?: components["schemas"]["ActionKind"];
+                /** @description Only mail that ended up there: the four groups of `StatsSummary.went`, counted the same way, so a group's number and the list behind it agree */
+                outcome?: "sorted" | "trashed" | "inbox" | "review";
                 /** @description The `next_cursor` of the previous page */
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
