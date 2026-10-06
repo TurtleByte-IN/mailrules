@@ -3,13 +3,14 @@
   import type { Account, AccountPatch } from '../lib/api/accounts';
   import { ApiError } from '../lib/api/client';
   import { clock, day } from '../lib/format';
-  import { accounts, edit, folderNames, load, loadPresets, reconnect, remove, setPaused, statuses } from '../lib/state/accounts.svelte';
+  import { accounts, edit, folderNames, load, loadPresets, reconnect, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import Wizard from './accounts/Wizard.svelte';
 
   let connecting = $state(false);
   let removing = $state<number>();
   let editing = $state<number>();
+  let testing = $state<Record<number, boolean>>({});
   // The Edit form of the mailbox being edited. A new password lives here only, until it is sent or the form closes.
   let form = $state({ label: '', folder: '', password: '', folders: [] as string[], error: '', errorPath: '', busy: false });
 
@@ -21,6 +22,12 @@
     a.status === 'live'
       ? a.capabilities.includes('IDLE') ? 'push (IDLE) connected' : 'checked once a minute'
       : a.last_error || statuses[a.status].label.toLowerCase();
+
+  async function runTest(id: number) {
+    testing[id] = true;
+    await test(id);
+    testing[id] = false;
+  }
 
   async function openEdit(a: Account, focus: 'name' | 'password') {
     form = { label: a.label, folder: a.watch_folder, password: '', folders: [a.watch_folder], error: '', errorPath: '', busy: false };
@@ -91,7 +98,7 @@
           <div class="min-w-0 flex-[1_1_220px]">
             <div class="font-semibold">{a.label}</div>
             <div class="text-[12.5px] text-muted">
-              {provider(a)} · watching {a.watch_folder} · {a.folder_count} folders{#if !a.can_move} · cannot move mail{/if} · {detail(a)}{#if a.last_event_at} · since {day(a.last_event_at)}, {clock(a.last_event_at)}{/if}
+              {provider(a)} · watching {a.watch_folder} · {a.folder_count} folders{#if !a.can_move} · cannot move mail{/if} · {detail(a)}{#if a.last_event_at} · since {day(a.last_event_at)}, {clock(a.last_event_at)}{/if}{#if a.last_mail_at} · last email {day(a.last_mail_at)}, {clock(a.last_mail_at)}{/if}
             </div>
           </div>
           <span class="text-[12.5px] font-semibold">{statuses[a.status].label}</span>
@@ -135,7 +142,11 @@
               {#if a.status === 'paused'}
                 <button type="button" class="btn" aria-label="Resume {a.label}" onclick={() => setPaused(a.id, false)}>Resume</button>
               {:else}
-                <button type="button" class="btn" aria-label="Reconnect {a.label}" onclick={() => reconnect(a.id)}>Reconnect</button>
+                {#if a.status === 'live'}
+                  <button type="button" class="btn" aria-label="Test {a.label}" disabled={testing[a.id]} onclick={() => runTest(a.id)}>{testing[a.id] ? 'Testing…' : 'Test'}</button>
+                {:else}
+                  <button type="button" class="btn" aria-label="Reconnect {a.label}" onclick={() => reconnect(a.id)}>Reconnect</button>
+                {/if}
                 <button type="button" class="btn" aria-label="Pause {a.label}" onclick={() => setPaused(a.id, true)}>Pause</button>
               {/if}
               <button type="button" class="btn" aria-label="Edit {a.label}" onclick={() => openEdit(a, 'name')}>Edit</button>

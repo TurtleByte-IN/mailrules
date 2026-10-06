@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account, TestResult } from '../api/accounts';
 import { dispatch } from '../api/events';
-import { accounts, connect, load, reconnect, remove, setPaused, statuses, testSummary } from './accounts.svelte';
+import { accounts, connect, load, reconnect, remove, setPaused, statuses, test, testSummary } from './accounts.svelte';
 import { toast } from './toast.svelte';
 
 type Reply = [status: number, body?: unknown];
@@ -80,6 +80,7 @@ it.each<[string, () => Promise<void>, string, unknown, Reply, string, (Account['
   ['pause', () => setPaused(1, true), 'PATCH /api/accounts/1', { paused: true }, [200, { account: acct({ status: 'paused' }) }], 'me@icloud.com paused', ['paused', 'live']],
   ['resume', () => setPaused(1, false), 'PATCH /api/accounts/1', { paused: false }, [200, { account: acct({ status: 'new' }) }], 'me@icloud.com resumed', ['new', 'live']],
   ['remove', () => remove(1), 'DELETE /api/accounts/1', undefined, [204], 'me@icloud.com removed', ['live']],
+  ['test', () => test(1), 'POST /api/accounts/1/test', undefined, [200, { username: 'me', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }], can_move: true, idle: true }], 'Connected. 1 folders found. Push (IDLE) supported.', ['live', 'live']],
 ])('%s calls the daemon and shows the result', async (_name, run, route, body, reply, said, statusesAfter) => {
   const f = serve({ [route]: reply });
   await run();
@@ -92,6 +93,7 @@ it.each<[string, () => Promise<void>, string, unknown, Reply, string, (Account['
 it.each<[string, () => Promise<void>, string, Reply, string]>([
   ['reconnect of a paused mailbox', () => reconnect(1), 'POST /api/accounts/1/reconnect', [409, { error: { code: 'account_paused', message: 'This account is paused. Resume it first.' } }], 'This account is paused. Resume it first.'],
   ['remove of a mailbox that is gone', () => remove(1), 'DELETE /api/accounts/1', [404, { error: { code: 'not_found', message: 'No such account.' } }], 'No such account.'],
+  ['test of a mailbox that refuses the stored login', () => test(1), 'POST /api/accounts/1/test', [422, { error: { code: 'auth_failed', message: 'The mail server refused the sign-in.' } }], 'The mail server refused the sign-in.'],
   ['pause with no answer', () => setPaused(1, true), 'PATCH /api/accounts/1', [502], 'The daemon did not answer.'],
 ])('a failed %s shows the daemon message and changes nothing', async (_name, run, route, reply, said) => {
   serve({ [route]: reply });

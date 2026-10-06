@@ -35,6 +35,8 @@
   let escalate = $derived(Math.round(s.escalate_below * 100));
   let act = $derived(Math.round(s.min_confidence * 100));
   const chosen = $derived(deciders.find((d) => d.id === decider));
+  /** The id of the warning that names this setting (as SettingsPatch spells it), when there is one. */
+  const needed = (path: string) => (s.warnings.some((w) => w.path === path) ? 'warn-' + path : undefined);
   let urlErrors = $state<Record<UrlName, string>>({ openai_base_url: '', ollama_url: '' });
   // Write-only: a draft lives here until it is sent, then it is cleared.
   let drafts = $state<Record<KeyName, string>>({ openrouter_api_key: '', cloudflare_account_id: '', cloudflare_api_token: '', anthropic_api_key: '', openai_api_key: '' });
@@ -91,6 +93,9 @@
           {/each}
         </select>
         <div class="text-[12.5px] text-secondary">{chosen?.note}</div>
+        {#each s.warnings as w (w.path)}
+          <div id="warn-{w.path}" role="status" class="rounded-md border border-warn-line bg-warn-bg px-4 py-3 text-warn">{w.message}</div>
+        {/each}
       </div>
       <div class="flex flex-col gap-1.5">
         <label for="set-decider-model" class="text-[13px] font-semibold">Decision model name</label>
@@ -119,6 +124,7 @@
             autocomplete="off"
             placeholder={u.placeholder}
             aria-invalid={!!urlErrors[u.id]}
+            aria-describedby={needed(u.id)}
             value={s[u.id]}
             onchange={async (e) => {
               const el = e.currentTarget;
@@ -127,6 +133,9 @@
           />
           {#if urlErrors[u.id]}
             <div role="alert" class="text-[12.5px] text-trash">{urlErrors[u.id]}</div>
+          {/if}
+          {#if needed(u.id)}
+            <div class="text-[12.5px] text-warn">Needed</div>
           {/if}
         </div>
       {/each}
@@ -195,8 +204,11 @@
             <span class="flex items-center gap-2 text-[13px] font-semibold">
               {k.label}
               <span class="chip {s.keys[k.id] === 'none' ? 'chip-neutral' : ''}">{keySource[s.keys[k.id]]}</span>
+              {#if needed('keys.' + k.id)}
+                <span class="text-[12.5px] font-normal text-warn">Needed</span>
+              {/if}
             </span>
-            <input class="field font-mono text-[13px]" type="password" autocomplete="off" placeholder={k.placeholder} bind:value={drafts[k.id]} />
+            <input class="field font-mono text-[13px]" type="password" autocomplete="off" placeholder={k.placeholder} aria-describedby={needed('keys.' + k.id)} bind:value={drafts[k.id]} />
           </label>
           <button class="btn font-semibold" disabled={!drafts[k.id].trim()}>{s.keys[k.id] === 'stored' ? 'Replace' : 'Save'}</button>
           {#if s.keys[k.id] === 'stored'}

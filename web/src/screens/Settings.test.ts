@@ -82,6 +82,42 @@ it('shows the URL field as soon as its decider is picked', async () => {
   expect(patches()).toEqual([]); // Ollama has no default model, so nothing is saved until one is named
 });
 
+// The warnings a daemon with no keys answers (recorded from a real PATCH).
+const noUrl = { code: 'decider_not_ready' as const, message: 'The ollama decision model needs the URL of your Ollama server. Until it is set, rules that need a model are passed over.', path: 'ollama_url' };
+const noKey = { code: 'decider_not_ready' as const, message: 'The jev decision model needs an OpenRouter API key. Until it is set, rules that need a model are passed over.', path: 'keys.openrouter_api_key' };
+
+it('shows the warning of a saved decider that cannot work, marks the URL it names, and clears both when it is filled in', async () => {
+  await show(fresh());
+  expect(screen.queryByRole('status')).toBeNull();
+  expect(screen.queryByText('Needed')).toBeNull();
+
+  routes['PATCH /api/settings'] = [200, fresh({ decider: 'ollama', decider_model: 'llama3.2', warnings: [noUrl] })];
+  await fireEvent.change(screen.getByLabelText('Decision model'), { target: { value: 'ollama' } });
+  await fireEvent.input(screen.getByLabelText('Decision model name'), { target: { value: 'llama3.2' } });
+  await fireEvent.change(screen.getByLabelText('Decision model name'));
+  const warning = await screen.findByRole('status');
+  expect(warning.textContent).toBe(noUrl.message);
+  const field = screen.getByLabelText('Ollama server URL');
+  expect(field.getAttribute('aria-describedby')).toBe(warning.id);
+  expect(field.parentElement!.textContent).toContain('Needed');
+
+  routes['PATCH /api/settings'] = [200, fresh({ decider: 'ollama', decider_model: 'llama3.2', ollama_url: 'http://localhost:11434' })];
+  await fireEvent.change(field, { target: { value: 'http://localhost:11434' } });
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  expect(field.getAttribute('aria-describedby')).toBeNull();
+  expect(screen.queryByText('Needed')).toBeNull();
+});
+
+it('marks the provider key a warning names, and no other', async () => {
+  await show(fresh({ warnings: [noKey] }));
+  const warning = screen.getByRole('status');
+  expect(warning.textContent).toBe(noKey.message);
+  expect(warning.compareDocumentPosition(screen.getByLabelText('Decision model name')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByLabelText(/^OpenRouter API key/).getAttribute('aria-describedby')).toBe(warning.id);
+  expect(screen.getByLabelText(/^Anthropic API key/).getAttribute('aria-describedby')).toBeNull();
+  expect(screen.getAllByText('Needed')).toHaveLength(1);
+});
+
 it('saves a URL, shows a refusal beside the field, and removes the stored one with an empty value', async () => {
   await show(fresh({ decider: 'ollama', decider_model: 'llama3.2' }));
   const field = screen.getByLabelText('Ollama server URL') as HTMLInputElement;

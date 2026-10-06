@@ -18,6 +18,8 @@ export const folders = (id: number) => api<{ items: S['Folder'][] }>('GET', `/ac
 
 /** Tries the credentials without saving anything. */
 export const test = (c: AccountInput) => api<TestResult>('POST', '/accounts/test', c);
+/** Tries the stored login on a connection of its own; the watcher and the status are left alone. */
+export const testStored = (id: number) => api<TestResult>('POST', `/accounts/${id}/test`);
 
 const one = (r: S['AccountEnvelope']) => r.account;
 export const create = (c: AccountInput) => api<S['AccountEnvelope']>('POST', '/accounts', c).then(one);

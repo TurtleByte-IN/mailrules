@@ -99,6 +99,9 @@ export const reconnect = (id: number) =>
     flash('Reconnecting ' + a.label);
   });
 
+/** Checks a stored mailbox without disturbing it and says how it went; its status stays as it was. */
+export const test = (id: number) => act(async () => flash(testSummary(await accountsApi.testStored(id))));
+
 export const setPaused = (id: number, paused: boolean) =>
   act(async () => {
     const a = await accountsApi.patch(id, { paused });

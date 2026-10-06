@@ -164,3 +164,41 @@ it('still lets the password be changed when the folders cannot be listed', async
   await waitFor(() => expect(toast.text).toBe('No such account.'));
   expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['INBOX']);
 });
+
+// POST /api/accounts/{id}/test, 200.
+const found = { username: 'me', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Trash', delimiter: '/', special_use: '\\Trash' }], can_move: true, idle: true };
+
+it('offers Test in place of Reconnect on a live mailbox, and Reconnect on any other', async () => {
+  await show(acct(), acct({ id: 2, label: 'work@fastmail.com', status: 'error', last_error: 'The mail server closed the connection.' }));
+  expect(screen.getByRole('button', { name: 'Test me@icloud.com' }).textContent).toBe('Test');
+  expect(screen.queryByRole('button', { name: 'Reconnect me@icloud.com' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Reconnect work@fastmail.com' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Test work@fastmail.com' })).toBeNull();
+});
+
+it.each<[string, Reply, string]>([
+  ['passes', [200, found], 'Connected. 2 folders found; Trash detected. Push (IDLE) supported.'],
+  ['fails', [422, { error: { code: 'auth_failed', message: 'The mail server refused the sign-in.' } }], 'The mail server refused the sign-in.'],
+])('Test reads "Testing…" while it runs, then shows how it went when it %s; the mailbox stays as it was', async (_name, reply, said) => {
+  await show(acct());
+  let answer = () => {};
+  fetchMock.mockImplementationOnce(() => new Promise((done) => (answer = () => done(new Response(JSON.stringify(reply[1]), { status: reply[0] })))));
+  const button = screen.getByRole('button', { name: 'Test me@icloud.com' }) as HTMLButtonElement;
+  await fireEvent.click(button);
+  expect([button.textContent, button.disabled]).toEqual(['Testing…', true]);
+  const [url, init] = fetchMock.mock.calls.at(-1)!;
+  expect([init.method, url]).toEqual(['POST', '/api/accounts/1/test']);
+
+  answer();
+  await waitFor(() => expect(toast.text).toBe(said));
+  expect([button.textContent, button.disabled]).toEqual(['Test', false]);
+  expect(accounts.list).toEqual([acct()]);
+});
+
+it('says when the last email arrived only once one has', async () => {
+  await show(acct(), acct({ id: 2, label: 'work@fastmail.com', last_mail_at: 1791273600 }));
+  const rows = screen.getAllByText(/watching INBOX/).map((r) => r.textContent!);
+  expect(rows[0]).toMatch(/· since \S.*, \S+/);
+  expect(rows[0]).not.toContain('last email');
+  expect(rows[1]).toMatch(/· since \S.*, \S.*· last email \S.*, \S+/);
+});
