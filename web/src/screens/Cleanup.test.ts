@@ -5,6 +5,7 @@ import { dispatch } from '../lib/api/events';
 import { day } from '../lib/format';
 import { accounts } from '../lib/state/accounts.svelte';
 import { cleanup } from '../lib/state/cleanup.svelte';
+import { toast } from '../lib/state/toast.svelte';
 import Cleanup from './Cleanup.svelte';
 
 type Reply = [status: number, body: unknown];
@@ -53,9 +54,15 @@ const previewed: Preview = {
 };
 
 const PAST = 'GET /api/batches?kind=cleanup';
+// The day after the batches above were made.
+const NOW = 1790086400;
+const DAY = 86400;
 const page = (items: Batch[], next: string | null = null): Reply => [200, { items, next_cursor: next }];
 
 beforeEach(() => {
+  // Only the clock is set, so a batch's age does not depend on the day the tests run.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW * 1000);
   // The state lives in module scope; each test starts it over.
   Object.assign(cleanup, {
     phase: 'idle',
@@ -83,7 +90,10 @@ beforeEach(() => {
     }),
   );
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 it('a failed load of past runs shows an alert, and Retry fetches again', async () => {
   routes[PAST] = [500, { error: { code: 'internal', message: 'Something went wrong.' } }];
@@ -116,7 +126,7 @@ it('there is no Run before a preview; the preview shows groups, samples, the est
 });
 
 it('past runs render with their scope, counts and Undo; Show more follows the cursor', async () => {
-  const cut = batch({ id: 2, status: 'failed', done: 90, since: null, account_id: null, actions: { done: 0, dry_run: 90, failed: 0, undone: 0 } });
+  const cut = batch({ id: 2, status: 'failed', done: 90, since: null, account_id: null, actions: { done: 5, dry_run: 90, failed: 0, undone: 0 } });
   const undone = batch({ id: 1, status: 'undone', actions: { done: 0, dry_run: 0, failed: 0, undone: 310 } });
   routes[PAST] = page([batch(), cut], '2');
   routes[PAST + '&cursor=2'] = page([undone]);
@@ -151,5 +161,35 @@ it('a run still going at load shows its progress with tokens and cost, and offer
   // The event that ends the run also stops the poll the pickup started.
   dispatch('batch.progress', batch());
   expect(await screen.findByRole('status')).toBeTruthy();
+  expect(screen.getByRole('button', { name: /^Undo batch/ })).toBeTruthy();
+});
+
+it('says so in place of Undo when a batch is too old or only a dry run', async () => {
+  routes[PAST] = page([
+    batch({ id: 6, folder: 'Recent', created_at: NOW - 29 * DAY }),
+    batch({ id: 5, folder: 'Old', created_at: NOW - 30 * DAY - 1 }),
+    batch({ id: 4, folder: 'Dry', actions: { done: 0, dry_run: 412, failed: 0, undone: 0 } }),
+  ]);
+  render(Cleanup);
+  await screen.findByText(/ · Recent · /);
+  expect(screen.getByText('Kept for 30 days. Undo puts every email back where it was.')).toBeTruthy();
+  const rowOf = (folder: string) => screen.getByText(new RegExp(' · ' + folder + ' · ')).closest('.border-t') as HTMLElement;
+
+  expect(within(rowOf('Recent')).getByRole('button', { name: /^Undo batch/ })).toBeTruthy();
+  expect(within(rowOf('Old')).getByText('Too old to undo')).toBeTruthy();
+  expect(within(rowOf('Dry')).getByText('Dry run: nothing to undo')).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: /^Undo batch/ })).toHaveLength(1);
+});
+
+it('a batch the daemon finds too old says so in a toast and keeps its row', async () => {
+  // internal/api/server.go: what every undo route answers past store.UndoDays.
+  const message = 'This was done more than 30 days ago, so it can no longer be undone.';
+  routes[PAST] = page([batch()]);
+  routes['POST /api/batches/3/undo'] = [409, { error: { code: 'too_old', message, path: '' } }];
+  render(Cleanup);
+  await fireEvent.click(await screen.findByRole('button', { name: /^Undo batch/ }));
+
+  await vi.waitFor(() => expect(toast.text).toBe(message));
+  expect(screen.getByText('Done')).toBeTruthy();
   expect(screen.getByRole('button', { name: /^Undo batch/ })).toBeTruthy();
 });

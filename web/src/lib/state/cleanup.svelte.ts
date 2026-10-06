@@ -177,6 +177,18 @@ export const outcome = (b: cleanupApi.Batch) =>
       ? 'Dry run: ' + b.done.toLocaleString() + ' emails checked, nothing moved.'
       : 'Cleanup done: ' + b.done.toLocaleString() + ' emails sorted. Undo it as one batch below.';
 
+// Mirrors the daemon's store.UndoDays (internal/store/retention.go): a batch created more
+// than this many days ago is refused whole with 409 too_old.
+export const UNDO_DAYS = 30;
+
+/** Why a finished batch offers no Undo; empty when it does. `now` is in milliseconds. */
+export const noUndo = (b: cleanupApi.Batch, now = Date.now()) =>
+  now / 1000 - b.created_at > UNDO_DAYS * 86400
+    ? 'Too old to undo'
+    : !b.actions.done && !b.actions.failed && !b.actions.undone && b.actions.dry_run
+      ? 'Dry run: nothing to undo'
+      : '';
+
 export async function undo(b: cleanupApi.Batch) {
   try {
     const r = await cleanupApi.undo(b.id);

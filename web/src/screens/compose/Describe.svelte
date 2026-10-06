@@ -4,7 +4,7 @@
   import { sample } from '../../lib/api/compose';
   import { leaves } from '../../lib/api/rules';
   import { accounts } from '../../lib/state/accounts.svelte';
-  import { compose, optimize, savable, saveAll } from '../../lib/state/compose.svelte';
+  import { compose, optimize, savable, saveAll, type Draft } from '../../lib/state/compose.svelte';
   import { actionsText, condText, kind, treeWords } from '../rules/text';
   import { listen, supported } from './dictation';
 
@@ -28,6 +28,8 @@
   onDestroy(() => stop?.());
 
   const keep = $derived(compose.drafts.filter(savable).length);
+  // A refused save stays on its card until the card is changed or skipped.
+  const change = (d: Draft, patch: Partial<Draft>) => Object.assign(d, patch, { refused: '' });
 
   async function save() {
     const added = await saveAll();
@@ -128,12 +130,26 @@
           {#if d.samples.length}
             <div class="text-[12.5px] text-muted">Would have matched: {d.samples.map((m) => m.subject).join('; ')}</div>
           {/if}
+          {#if accounts.list.length > 1}
+            <label class="flex flex-wrap items-center gap-2">
+              <span class="w-[110px] text-[13px] font-semibold">Applies to</span>
+              <select class="field flex-[0_1_260px] px-2.5" value={String(d.account_id ?? '')} onchange={(e) => change(d, { account_id: e.currentTarget.value ? Number(e.currentTarget.value) : null })}>
+                <option value="">All mailboxes</option>
+                {#each accounts.list as a (a.id)}
+                  <option value={String(a.id)}>{a.label}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+          {#if d.refused}
+            <div role="alert" class="rounded bg-trash-bg px-3 py-2.5 text-[13px] text-trash">{d.refused}</div>
+          {/if}
           <div class="flex items-center gap-2 border-t border-line-divider pt-2">
             {#if d.errors.length}
               <span class="text-[12.5px] font-semibold text-muted">Cannot be saved as it is</span>
             {:else}
               <span class="text-[12.5px] font-semibold {d.rejected ? 'text-muted' : ''}">{d.rejected ? 'Skipped' : 'Will be saved'}</span>
-              <button type="button" class="btn ml-auto min-h-9 px-3 text-[13px]" onclick={() => (d.rejected = !d.rejected)}>{d.rejected ? 'Include' : 'Skip'}</button>
+              <button type="button" class="btn ml-auto min-h-9 px-3 text-[13px]" onclick={() => change(d, { rejected: !d.rejected })}>{d.rejected ? 'Include' : 'Skip'}</button>
             {/if}
           </div>
         </article>

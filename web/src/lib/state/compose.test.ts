@@ -78,7 +78,8 @@ it('saves only the drafts not skipped and not in error, as rule inputs', async (
   const f = serve({ 'POST /api/rules/batch': [201, { items: [saved(2, 'Finance'), saved(3, 'Cold sales')] }] });
   compose.text = 'typed';
   compose.drafts = [
-    { ...draft('Finance', { intent: 'Bank statements', actions: [{ type: 'move', folder: 'Finance' }], new_folders: ['Finance'] }), rejected: false },
+    // A draft's mailbox, stacking and model go back as the daemon sent them.
+    { ...draft('Finance', { intent: 'Bank statements', actions: [{ type: 'move', folder: 'Finance' }], new_folders: ['Finance'], account_id: 7, stack: true, model: 'clef' }), rejected: false },
     { ...draft('LinkedIn'), rejected: true },
     { ...draft('Broken', { errors: [{ path: 'actions', message: 'A rule needs at least one action.' }] }), rejected: false },
     { ...draft('Cold sales', { intent: 'Cold sales pitches', actions: [{ type: 'trash' }], question: 'Trash them, or keep them in a Sales folder?' }), rejected: false },
@@ -86,13 +87,26 @@ it('saves only the drafts not skipped and not in error, as rule inputs', async (
   const added = await saveAll();
 
   expect(sent(f).rules).toEqual([
-    { name: 'Finance', said: 'Finance in my words', intent: 'Bank statements', conditions: draft('x').conditions, exceptions: {}, actions: [{ type: 'move', folder: 'Finance' }], min_confidence: null, new_folders: ['Finance'], stack: false, enabled: true },
-    { name: 'Cold sales', said: 'Cold sales in my words', intent: 'Cold sales pitches', conditions: draft('x').conditions, exceptions: {}, actions: [{ type: 'trash' }], min_confidence: 0.9, new_folders: [], stack: false, enabled: true },
+    { name: 'Finance', said: 'Finance in my words', intent: 'Bank statements', conditions: draft('x').conditions, exceptions: {}, actions: [{ type: 'move', folder: 'Finance' }], account_id: 7, stack: true, model: 'clef', min_confidence: null, new_folders: ['Finance'] },
+    { name: 'Cold sales', said: 'Cold sales in my words', intent: 'Cold sales pitches', conditions: draft('x').conditions, exceptions: {}, actions: [{ type: 'trash' }], account_id: null, stack: false, model: '', min_confidence: 0.9, new_folders: [] },
   ]);
   expect(added?.map((r) => r.id)).toEqual([2, 3]);
   expect(rules.list.map((r) => r.id)).toEqual([1, 2, 3]);
   expect(compose).toMatchObject({ drafts: [], text: '' });
   expect(toast.text).toBe('2 rules saved and live');
+});
+
+it('puts a refused name on the draft the daemon counted, past a skipped one', async () => {
+  // The daemon's own refusal for two rules of one name; it names the later of the two.
+  const message = 'Two of these rules are named "Twin". Give each rule its own name.';
+  serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[2].name' } }] });
+  compose.text = 'typed';
+  compose.drafts = [{ ...draft('Skipped'), rejected: true }, { ...draft('First'), rejected: false }, { ...draft('Twin'), rejected: false }, { ...draft('Twin'), rejected: false }];
+  expect(await saveAll()).toBeUndefined();
+
+  expect(compose.drafts.map((d) => d.refused)).toEqual(['', '', '', message]);
+  expect(compose.text).toBe('typed');
+  expect(toast.text).toBe('');
 });
 
 it('saves nothing when every draft is skipped', async () => {
