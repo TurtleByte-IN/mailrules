@@ -41,4 +41,7 @@ it('shows today\'s numbers, the top rule and the latest decision', async () => {
   expect(screen.getByText('Recruiters')).toBeTruthy();
   expect(screen.getByText('Senior backend role')).toBeTruthy();
   expect(screen.getByText('No mailbox connected yet.')).toBeTruthy();
+  // The bar's four parts are the daemon's own split, not arithmetic on the counts.
+  expect(document.body.textContent).toContain('Left in Inbox 6');
+  expect(document.body.textContent).toContain('Sorted 29');
 });

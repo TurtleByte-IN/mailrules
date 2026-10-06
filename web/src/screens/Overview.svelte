@@ -12,17 +12,17 @@
 
   const stats = $derived(overview.stats);
   const top = $derived(healthLine(accounts.list));
-  const parts = $derived(stats ? split(stats.counts) : []);
+  const parts = $derived(stats ? split(stats.went) : []);
   const most = $derived(Math.max(1, ...(stats?.top_rules ?? []).map((r) => r.hits)));
-  const quiet = $derived(rules.list.filter((r) => r.enabled && r.last_match_at === null).length);
+  const quiet = $derived(stats?.quiet_rules ?? 0);
   const mailboxes = $derived(accounts.list.length + (accounts.list.length === 1 ? ' mailbox' : ' mailboxes'));
 
   const tiles = $derived(
     stats
       ? [
           { label: 'Processed today', value: stats.counts.processed, sub: 'across ' + mailboxes, href: '/activity' },
-          { label: 'Sorted', value: parts[0].n, sub: 'moved, archived or flagged', href: '/activity' },
-          { label: 'Trashed', value: stats.counts.trashed, sub: 'restorable for 30 days', href: '/activity' },
+          { label: 'Sorted', value: stats.went.sorted, sub: 'moved, archived or flagged', href: '/activity' },
+          { label: 'Trashed', value: stats.went.trashed, sub: 'restorable for 30 days', href: '/activity' },
           { label: 'Needs review', value: stats.counts.review, sub: stats.counts.review ? 'Review now' : 'All clear', href: '/review', warn: stats.counts.review > 0 },
           { label: 'Cost today', value: money(stats.cost_usd), sub: callsLine(stats.calls_by_model), href: '/usage' },
         ]
@@ -130,7 +130,7 @@
         {/each}
         {#if rules.loaded && rules.list.length}
           <div class="text-[12.5px] text-secondary">
-            {quiet ? quiet + (quiet === 1 ? ' rule has' : ' rules have') + ' not matched anything yet.' : 'Every active rule has matched at least once.'}
+            {quiet ? quiet + (quiet === 1 ? ' rule has' : ' rules have') + ' not matched anything today.' : 'Every active rule matched at least once today.'}
           </div>
         {/if}
       </section>

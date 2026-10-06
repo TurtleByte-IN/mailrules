@@ -24,15 +24,13 @@ export async function load() {
 subscribe('message.processed', () => overview.stats && load());
 subscribe('action.undone', () => overview.stats && load());
 
-/** Where today's mail went, as the four parts of the bar. An email in review or trashed is not counted as sorted. */
-export function split(c: activityApi.StatsSummary['counts']) {
-  const sorted = Math.max(0, c.sorted - c.trashed);
-  const kept = Math.max(0, c.processed - c.sorted - c.review);
+/** Where today's mail went, as the four parts of the bar. The daemon's four numbers add up to the emails processed. */
+export function split(went: activityApi.StatsSummary['went']) {
   const parts = [
-    { label: 'Sorted', n: sorted, fill: 'bg-ink' },
-    { label: 'Left in Inbox', n: kept, fill: 'bg-idle' },
-    { label: 'Needs review', n: c.review, fill: 'bg-attention' },
-    { label: 'Trashed', n: c.trashed, fill: 'bg-signal' },
+    { label: 'Sorted', n: went.sorted, fill: 'bg-ink' },
+    { label: 'Left in Inbox', n: went.inbox, fill: 'bg-idle' },
+    { label: 'Needs review', n: went.review, fill: 'bg-attention' },
+    { label: 'Trashed', n: went.trashed, fill: 'bg-signal' },
   ];
   const total = parts.reduce((a, p) => a + p.n, 0);
   return parts.map((p) => ({ ...p, pct: total ? (p.n / total) * 100 : 0 }));

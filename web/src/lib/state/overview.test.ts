@@ -9,13 +9,13 @@ const account = (over: Partial<Account> = {}): Account => ({
 
 describe('split', () => {
   it.each([
-    ['a normal day', { processed: 40, sorted: 31, trashed: 2, review: 3 }, [29, 6, 3, 2]],
-    ['nothing yet', { processed: 0, sorted: 0, trashed: 0, review: 0 }, [0, 0, 0, 0]],
-    ['more in review than processed today', { processed: 2, sorted: 1, trashed: 0, review: 5 }, [1, 0, 5, 0]],
-  ])('%s', (_name, counts, ns) => {
-    const parts = split(counts);
-    expect(parts.map((p) => p.n)).toEqual(ns);
-    const total = ns.reduce((a, n) => a + n, 0);
+    ['a normal day', { sorted: 29, inbox: 6, review: 3, trashed: 2 }],
+    ['nothing yet', { sorted: 0, inbox: 0, review: 0, trashed: 0 }],
+    ['only review', { sorted: 0, inbox: 0, review: 5, trashed: 0 }],
+  ])('%s', (_name, went) => {
+    const parts = split(went);
+    expect(parts.map((p) => p.n)).toEqual([went.sorted, went.inbox, went.review, went.trashed]);
+    const total = went.sorted + went.inbox + went.review + went.trashed;
     expect(Math.round(parts.reduce((a, p) => a + p.pct, 0))).toBe(total ? 100 : 0);
   });
 });
