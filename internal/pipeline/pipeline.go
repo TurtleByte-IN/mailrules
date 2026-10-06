@@ -57,6 +57,12 @@ type Pipeline struct {
 	// that model cannot be used (settings.Settings.RouterFor). nil = rules' models are ignored.
 	Override func(ctx context.Context, spec string) *models.Router
 
+	// Batch is the batch the actions belong to. 0 = the day's live batch; a cleanup run
+	// sets its own, so the whole run can be undone as one.
+	Batch int64
+	// Spent, when set, is told what each model decision cost: a cleanup run shows the total.
+	Spent func(tokens int, costUSD float64)
+
 	Now func() time.Time // nil = time.Now
 	// Rediscover re-runs folder discovery. It is called once when a step fails because a
 	// folder is unknown, and the step is then tried again. nil = never.
@@ -86,6 +92,18 @@ func (p *Pipeline) Process(ctx context.Context, ref mail.MsgRef) error {
 		}
 	}
 	return p.Store.AdvanceFolder(ctx, ref)
+}
+
+// Sort runs one message of existing mail through the same steps as new mail: cleanup's
+// way in. Unlike Process it does not look at whether the message was seen before (the
+// rules may have changed since, or dry-run been switched off), and it leaves the folder's
+// watch position alone.
+func (p *Pipeline) Sort(ctx context.Context, ref mail.MsgRef) error {
+	m, _, err := p.Store.IngestMessage(ctx, ref, p.now().Unix())
+	if err != nil {
+		return err
+	}
+	return p.run(ctx, m)
 }
 
 // RetryDue is the retry job: it re-runs every failed message of the account whose wait is
@@ -171,7 +189,8 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	if err != nil {
 		return err
 	}
-	d := Decider{Router: p.Router, Override: p.Override, MinConfidence: p.MinConfidence, Now: now}
+	d := Decider{Router: p.Router, Override: p.Override, MinConfidence: p.MinConfidence, Now: now,
+		Examples: Corrections(p.Store, p.Account.UserID)}
 	if p.Live != nil {
 		d.Router, d.MinConfidence = p.Live(ctx)
 	}
@@ -180,10 +199,18 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		return err
 	}
 	res := out.Result
-	dec.Reason, dec.RuleName = out.Reason, out.RuleName
+	dec.Reason, dec.RuleName, dec.Probabilities = out.Reason, out.RuleName, out.Probabilities
+	if res.SenderRuleID != 0 {
+		if err := p.Store.HitSenderRule(ctx, res.SenderRuleID); err != nil {
+			return err
+		}
+	}
 	if out.Asked {
 		p.Hub.Publish(events.UsageUpdated, nil)
 		u := out.Usage
+		if p.Spent != nil {
+			p.Spent(u.TokensIn+u.TokensOut, u.CostUSD)
+		}
 		dec.Model, dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = u.Model, u.TokensIn, u.TokensOut, u.CostUSD, u.Latency.Milliseconds()
 	}
 	dec.Stage, dec.RuleID, dec.RuleVersion, dec.Confidence = string(res.Stage), res.RuleID, res.RuleVersion, res.Confidence
@@ -219,9 +246,12 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 	}
 	if p.Exec != nil && len(acts) > 0 {
 		// Live processing shares one batch per day, so "undo today" is one batch undo.
-		batch, err := p.Store.LiveBatch(ctx, p.now())
-		if err != nil {
-			return err
+		batch := p.Batch
+		if batch == 0 {
+			var err error
+			if batch, err = p.Store.LiveBatch(ctx, p.now()); err != nil {
+				return err
+			}
 		}
 		switch _, err := p.Exec.Apply(ctx, rec, acts, batch); {
 		case err == nil:
@@ -246,13 +276,14 @@ func fill(m *store.Message, s *message.Summary, raw *message.Raw) {
 	if ids := s.Headers["Message-Id"]; len(ids) > 0 {
 		m.MessageID = trimAngles(ids[0])
 	}
-	m.FromAddr, m.FromDomain, m.ToAddrs, m.Subject, m.ListID = s.From, s.FromDomain, s.To, s.Subject, s.ListID
+	m.FromAddr, m.FromName, m.FromDomain, m.ToAddrs, m.Subject, m.ListID = s.From, s.FromName, s.FromDomain, s.To, s.Subject, s.ListID
 	m.Snippet = s.Body
 	if r := []rune(s.Body); len(r) > snippetChars {
 		m.Snippet = string(r[:snippetChars])
 	}
 	m.ReceivedAt, m.HasAttachment, m.Size = s.ReceivedAt.Unix(), s.HasAttachment, raw.Size
-	m.Signals = store.Signals{Bulk: s.IsBulk, Noreply: s.IsNoreply, Contact: s.IsContact, RepliedBefore: s.RepliedBefore, DMARC: s.DMARC}
+	m.Signals = store.Signals{Bulk: s.IsBulk, Noreply: s.IsNoreply, Contact: s.IsContact, RepliedBefore: s.RepliedBefore, DMARC: s.DMARC,
+		ListUnsubscribe: len(s.Headers["List-Unsubscribe"]) > 0}
 }
 
 func trimAngles(id string) string {

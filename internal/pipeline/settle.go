@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/learn"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
 // ErrModel marks a failure of the decision model, as opposed to the mailbox or the database.
@@ -23,6 +26,21 @@ type Decider struct {
 	Override      func(ctx context.Context, spec string) *models.Router
 	MinConfidence float64   // act threshold for rules that set none
 	Now           time.Time // for age_days
+	// Examples returns the user's corrections to show the fallback model for this email,
+	// most similar first; candidates are the rule ids on offer. nil = show none.
+	Examples func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example
+}
+
+// Corrections is the Examples of a Decider that learns from the user's corrections. A
+// failure to read them is logged and costs the examples, never the decision.
+func Corrections(st *store.Store, userID int64) func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example {
+	return func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example {
+		ex, err := learn.Examples(ctx, st, userID, email, candidates)
+		if err != nil {
+			slog.WarnContext(ctx, "could not read corrections for the fallback model", "error", err.Error())
+		}
+		return ex
+	}
 }
 
 // Outcome is what was settled for one email.
@@ -33,6 +51,9 @@ type Outcome struct {
 	Asked    bool         // a model was asked
 	Calls    int          // how many model calls that took: 2 when the fallback answered too
 	Usage    models.Usage // what asking cost, over both models when the fallback answered
+	// Probabilities is what the decision model gave each candidate, by rule id (0 = none
+	// of them); nil when it gives none.
+	Probabilities map[int64]float64
 }
 
 // Settle runs the evaluation order for one email and asks the model when it has to. The
@@ -49,9 +70,11 @@ func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rul
 	}
 	router := d.Router
 	req := models.DecideRequest{Email: sum}
+	ids := make([]int64, 0, len(ev.Candidates))
 	overridden := false
 	for _, r := range ev.Candidates {
 		req.Candidates = append(req.Candidates, models.Candidate{RuleID: r.ID, Name: r.Name, Intent: r.Intent, Exceptions: r.Exceptions.Text()})
+		ids = append(ids, r.ID)
 		if r.Model != "" && !overridden && d.Override != nil {
 			if own := d.Override(ctx, r.Model); own != nil {
 				router, overridden = own, true
@@ -61,11 +84,15 @@ func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rul
 	if router == nil {
 		return Outcome{Result: rules.Result{Stage: rules.StageNone, Review: true}, Reason: ReasonNoModel}, nil
 	}
+	if router.Fallback != nil && d.Examples != nil { // only the fallback is shown examples
+		req.Examples = d.Examples(ctx, sum, ids)
+	}
 	routed, err := router.Route(ctx, req)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("decide: %w: %w", ErrModel, err)
 	}
-	out := Outcome{Result: ev.Resolve(routed.RuleID, routed.Confidence), Reason: routed.Reason, Asked: true, Calls: 1, Usage: routed.Primary}
+	out := Outcome{Result: ev.Resolve(routed.RuleID, routed.Confidence), Reason: routed.Reason, Asked: true, Calls: 1, Usage: routed.Primary,
+		Probabilities: routed.Probabilities}
 	if out.Stage == rules.StageCondition {
 		out.Reason += fmt.Sprintf("; the default rule %q applied", names[out.RuleID])
 	}

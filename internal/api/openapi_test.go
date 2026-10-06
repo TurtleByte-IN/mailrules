@@ -46,7 +46,7 @@ func resolve(doc map[string]any, ref string) (any, bool) {
 var methods = []string{"get", "post", "put", "patch", "delete"}
 
 // The route table and the OpenAPI contract are two lists of the same thing; keep them
-// equal, down to which endpoints are only a contract so far (x-status: planned = 501).
+// equal. Every endpoint in the contract is built: none is marked x-status: planned.
 func TestRoutesMatchOpenAPI(t *testing.T) {
 	doc := spec(t)
 	var inSpec []string
@@ -56,14 +56,16 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 		}
 		for method, op := range item.(map[string]any) {
 			if slices.Contains(methods, method) {
-				planned := op.(map[string]any)["x-status"] == "planned"
-				inSpec = append(inSpec, fmt.Sprintf("%s %s planned=%v", strings.ToUpper(method), path, planned))
+				if status, planned := op.(map[string]any)["x-status"]; planned {
+					t.Errorf("%s %s is marked x-status: %v, but every endpoint is built", strings.ToUpper(method), path, status)
+				}
+				inSpec = append(inSpec, strings.ToUpper(method)+" "+path)
 			}
 		}
 	}
 	var served []string
 	for _, r := range (&server{}).routes() {
-		served = append(served, fmt.Sprintf("%s %s planned=%v", r.method, r.path, r.planned))
+		served = append(served, r.method+" "+r.path)
 	}
 	sort.Strings(inSpec)
 	sort.Strings(served)
@@ -72,8 +74,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	}
 }
 
-// Every $ref resolves, every operation has an id and says what a planned one answers, and
-// no schema requires a property it does not define.
+// Every $ref resolves, every operation has an id, none still answers 501, and no schema
+// requires a property it does not define.
 func TestOpenAPIIsSound(t *testing.T) {
 	doc := spec(t)
 	if doc["openapi"] != "3.1.0" {
@@ -125,8 +127,8 @@ func TestOpenAPIIsSound(t *testing.T) {
 			}
 			ids[id] = at
 			responses := o["responses"].(map[string]any)
-			if _, has := responses["501"]; has != (o["x-status"] == "planned") {
-				t.Errorf("%s: a planned operation documents 501, and only a planned one does", at)
+			if _, has := responses["501"]; has {
+				t.Errorf("%s: documents 501, but every endpoint is built", at)
 			}
 		}
 	}

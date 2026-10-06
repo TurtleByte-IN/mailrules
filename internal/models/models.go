@@ -73,6 +73,14 @@ type Decider interface {
 	Decide(ctx context.Context, req DecideRequest) (Decision, Usage, error)
 }
 
+// Spreader is a Decider that can also say how sure it was of every option: the
+// probability it gave each candidate, by rule id, with 0 for "none of these". The decision
+// models (Jev, Clef) are; a generative model asked for one answer is not.
+type Spreader interface {
+	Decider
+	DecideSpread(ctx context.Context, req DecideRequest) (Decision, map[int64]float64, Usage, error)
+}
+
 // Generator is for free-form structured output (composer, AI rule builder).
 type Generator interface {
 	Generate(ctx context.Context, system, user string, schema json.RawMessage, out any) (Usage, error)

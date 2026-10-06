@@ -61,10 +61,11 @@ func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
 
 // testDecider is the deciding step for a test run: the routers in force, with their calls
 // booked as tests.
-func (s *server) testDecider(ctx context.Context) pipeline.Decider {
+func (s *server) testDecider(r *http.Request) pipeline.Decider {
 	src := s.modelSource()
-	router, minConfidence := src.Live(ctx)
+	router, minConfidence := src.Live(r.Context())
 	return pipeline.Decider{Router: router.For("test"), MinConfidence: minConfidence, Now: s.now(),
+		Examples: pipeline.Corrections(s.store, user(r).ID),
 		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("test") }}
 }
 
@@ -119,7 +120,7 @@ func (s *server) compose(w http.ResponseWriter, r *http.Request, text string, ac
 	}
 	c := composer.Composer{Store: s.store, Gen: gen, Now: s.now, BodyChars: s.Settings.Env.BodyChars}
 	out, err := c.Compose(r.Context(), composer.Request{UserID: user(r).ID, Text: strings.TrimSpace(text), Rule: rule,
-		Account: acct, Mailbox: mb, Decider: s.testDecider(r.Context())})
+		Account: acct, Mailbox: mb, Decider: s.testDecider(r)})
 	s.Hub.Publish(events.UsageUpdated, nil)
 	if err != nil {
 		s.modelFail(w, r, err)
@@ -356,7 +357,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 	}
 	set := append(saved, drafts...)
 
-	decider := s.testDecider(ctx)
+	decider := s.testDecider(r)
 	if decider.Router == nil && slices.ContainsFunc(set, func(x rules.Rule) bool { return x.Enabled && x.Intent != "" }) {
 		noModel(w)
 		return

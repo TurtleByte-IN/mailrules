@@ -206,6 +206,14 @@ func (s *Store) SenderRules(ctx context.Context, userID int64) ([]rules.SenderRu
 	return out, nil
 }
 
+// HitSenderRule counts one more email settled by a sender rule.
+func (s *Store) HitSenderRule(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE sender_rules SET hits = hits + 1 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("count sender rule hit: %w", err)
+	}
+	return nil
+}
+
 // DeleteSenderRule removes a sender's verdict; deleting a missing one is not an error.
 func (s *Store) DeleteSenderRule(ctx context.Context, userID int64, matchType, value string) error {
 	if _, err := s.db.ExecContext(ctx,

@@ -103,6 +103,7 @@ func newEnv(t *testing.T) *env {
 	}
 	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(Options{
 		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Models: e, Master: master, Version: "test",
+		Cleanup: e.mgr.Cleanup,
 		Connect: func(_ context.Context, acct store.Account, _ string) (mail.Mailbox, string, error) {
 			if e.connectErr != nil {
 				return nil, "", e.connectErr
@@ -245,23 +246,6 @@ func TestSessionAndCSRFOnEveryRoute(t *testing.T) {
 		if got := e.do(http.MethodGet, path, ""); got.status != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200", path, got.status)
 		}
-	}
-}
-
-// The endpoints of later milestones are served as a contract only.
-func TestPlannedRoutesAnswer501(t *testing.T) {
-	e := newEnv(t)
-	e.signIn()
-	fill := strings.NewReplacer("{id}", "1", "{type}", "address", "{value}", "a@b.example")
-	n := 0
-	for _, r := range (&server{}).routes() {
-		if r.planned {
-			n++
-			e.refuse(r.method, fill.Replace(r.path), "{}", http.StatusNotImplemented, "not_implemented", "")
-		}
-	}
-	if n != 8 {
-		t.Errorf("%d planned routes; the M9 endpoints are 8", n)
 	}
 }
 

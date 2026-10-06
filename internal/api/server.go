@@ -36,6 +36,9 @@ type Options struct {
 	Metrics  *telemetry.Metrics // nil = a private registry
 	Version  string             // shown in GET /api/settings
 
+	// Cleanup starts sorting an account's existing mail in the background and returns the
+	// run's batch (worker.Manager.Cleanup).
+	Cleanup func(ctx context.Context, c worker.Cleanup) (store.Batch, error)
 	// Connect logs in to a mail server with credentials that are not stored yet, trying
 	// the usernames the preset allows, and returns the connection with the username that worked.
 	Connect func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error)
@@ -59,7 +62,6 @@ type route struct {
 	method, path string
 	handler      http.HandlerFunc
 	public       bool // reachable without a session
-	planned      bool // contract only: answers 501 until its milestone (x-status: planned in the spec)
 }
 
 // routes is the single list of endpoints; a test keeps it in step with api/openapi.yaml.
@@ -68,14 +70,11 @@ func (s *server) routes() []route {
 	on := func(method, path string, h http.HandlerFunc) route {
 		return route{method: method, path: path, handler: h}
 	}
-	later := func(method, path string) route {
-		return route{method: method, path: path, handler: notImplemented, planned: true}
-	}
 	return []route{
-		{post, "/api/auth/setup", s.handleSetup, true, false},
-		{post, "/api/auth/login", s.handleLogin, true, false},
-		{post, "/api/auth/logout", s.handleLogout, true, false},
-		{get, "/api/auth/me", s.handleMe, true, false},
+		{post, "/api/auth/setup", s.handleSetup, true},
+		{post, "/api/auth/login", s.handleLogin, true},
+		{post, "/api/auth/logout", s.handleLogout, true},
+		{get, "/api/auth/me", s.handleMe, true},
 
 		on(get, "/api/presets", s.handlePresets),
 		on(post, "/api/accounts/test", s.handleAccountTest),
@@ -100,9 +99,9 @@ func (s *server) routes() []route {
 		on(post, "/api/rules/{id}/compose", s.handleRecompose),
 		on(post, "/api/rules/{id}/undo", s.handleRuleUndo),
 
-		later(get, "/api/senders"),                // M9
-		later(put, "/api/senders/{type}/{value}"), // M9
-		later(del, "/api/senders/{type}/{value}"), // M9
+		on(get, "/api/senders", s.handleSenders),
+		on(put, "/api/senders/{type}/{value}", s.handleSenderPut),
+		on(del, "/api/senders/{type}/{value}", s.handleSenderDelete),
 
 		on(get, "/api/activity", s.handleActivity),
 		on(get, "/api/messages/{id}", s.handleMessage),
@@ -111,14 +110,15 @@ func (s *server) routes() []route {
 		on(post, "/api/review/{message_id}/resolve", s.handleReviewResolve),
 		on(post, "/api/actions/undo", s.handleUndoSince),
 		on(post, "/api/actions/{id}/undo", s.handleActionUndo),
+		on(get, "/api/batches", s.handleBatches),
 		on(get, "/api/batches/{id}", s.handleBatch),
 		on(post, "/api/batches/{id}/undo", s.handleBatchUndo),
 
-		later(post, "/api/cleanup/preview"), // M9
-		later(post, "/api/cleanup/run"),     // M9
-		later(get, "/api/templates"),        // M9
-		later(get, "/api/stats/summary"),    // M9
-		later(get, "/api/stats/usage"),      // M9
+		on(post, "/api/cleanup/preview", s.handleCleanupPreview),
+		on(post, "/api/cleanup/run", s.handleCleanupRun),
+		on(get, "/api/templates", s.handleTemplates),
+		on(get, "/api/stats/summary", s.handleStatsSummary),
+		on(get, "/api/stats/usage", s.handleStatsUsage),
 
 		on(get, "/api/settings", s.handleSettings),
 		on(patch, "/api/settings", s.handleSettingsPatch),
@@ -198,10 +198,6 @@ func (s *server) harden(next http.Handler) http.Handler {
 		}
 		s.Metrics.ObserveHTTP(r.Method, pattern, sw.status, time.Since(start))
 	})
-}
-
-func notImplemented(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "This part of MailRules is not built yet.", "")
 }
 
 type apiError struct {
@@ -294,11 +290,15 @@ func user(r *http.Request) store.User {
 
 // fail answers for an error from the store or the executor.
 func fail(w http.ResponseWriter, r *http.Request, err error, what string) {
+	var noFolder *actions.NoFolderError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		notFound(w, what)
 	case errors.Is(err, actions.ErrGone):
 		writeError(w, http.StatusConflict, "message_gone", "The message was moved or deleted outside MailRules, so this cannot be undone.", "")
+	case errors.As(err, &noFolder):
+		writeError(w, http.StatusUnprocessableEntity, "no_special_folder", "This mail account has no "+noFolder.Role+
+			" folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.", "")
 	case errors.Is(err, worker.ErrNotConnected):
 		writeError(w, http.StatusConflict, "account_offline", "The mail account is not connected right now. Try again once it is live.", "")
 	case isMailError(err):

@@ -1,10 +1,13 @@
-// Package learn holds what the daemon learns from its own decisions: learned sender
-// rules now, few-shot retrieval of corrections later (milestone M9). It also defines the
-// example type the model adapters accept.
+// Package learn holds what the daemon learns from its own decisions and the user's
+// corrections: learned sender rules, and the few-shot examples the fallback model is shown.
+// It also defines the example type the model adapters accept.
 package learn
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"slices"
 
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
@@ -39,4 +42,66 @@ func Observe(ctx context.Context, st *store.Store, userID int64, sender string, 
 		}
 	}
 	return st.AddLearnedSenderRule(ctx, userID, sender, recent[0].RuleID, now)
+}
+
+// MaxExamples is how many corrections the fallback model is shown for one email.
+const MaxExamples = 5
+
+// recent is how many of the newest corrections retrieval looks at.
+// ponytail: ranks the newest 500 corrections in memory on every escalation; one user makes
+// a handful a week. Add from_addr and from_domain columns to corrections and rank in SQL
+// if that stops being true.
+const recent = 500
+
+// Past is one stored correction as retrieval ranks it.
+type Past struct {
+	Example
+	At int64 // when the user made it
+}
+
+// Rank picks the corrections to show for an email: at most MaxExamples, most similar
+// first. Same sender address beats same sender domain, which beats same List-Id, which
+// beats no likeness at all; within each, the most recent comes first. Only corrections
+// the model can still answer with are kept: towards one of candidates, or towards "keep in
+// the inbox" (rule 0).
+func Rank(email message.Summary, past []Past, candidates []int64) []Example {
+	likeness := func(p Past) int {
+		switch {
+		case email.From != "" && p.Email.From == email.From:
+			return 0
+		case email.FromDomain != "" && p.Email.FromDomain == email.FromDomain:
+			return 1
+		case email.ListID != "" && p.Email.ListID == email.ListID:
+			return 2
+		}
+		return 3
+	}
+	past = slices.DeleteFunc(slices.Clone(past), func(p Past) bool {
+		return p.RightRuleID != 0 && !slices.Contains(candidates, p.RightRuleID)
+	})
+	slices.SortStableFunc(past, func(a, b Past) int {
+		return cmp.Or(cmp.Compare(likeness(a), likeness(b)), cmp.Compare(b.At, a.At))
+	})
+	out := make([]Example, 0, MaxExamples)
+	for _, p := range past[:min(len(past), MaxExamples)] {
+		out = append(out, p.Example)
+	}
+	return out
+}
+
+// Examples retrieves the few-shot examples for an email from the user's corrections.
+func Examples(ctx context.Context, st *store.Store, userID int64, email message.Summary, candidates []int64) ([]Example, error) {
+	rows, err := st.Corrections(ctx, userID, recent)
+	if err != nil {
+		return nil, err
+	}
+	past := make([]Past, 0, len(rows))
+	for _, c := range rows {
+		p := Past{Example: Example{RightRuleID: c.RightRuleID}, At: c.CreatedAt}
+		if json.Unmarshal([]byte(c.Example), &p.Email) != nil {
+			continue // written by a version that summarised differently: not worth failing a decision
+		}
+		past = append(past, p)
+	}
+	return Rank(email, past, candidates), nil
 }

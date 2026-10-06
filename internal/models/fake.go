@@ -11,6 +11,8 @@ type Fake struct {
 	NameValue string
 	// DecideFunc answers Decide; nil answers "none" with confidence 1.
 	DecideFunc func(req DecideRequest) (Decision, Usage, error)
+	// Spread, when set, is what DecideSpread reports as the probability of each option.
+	Spread map[int64]float64
 	// GenerateFunc answers Generate, usually by unmarshalling canned JSON into out.
 	GenerateFunc func(system, user string, schema json.RawMessage, out any) (Usage, error)
 
@@ -30,6 +32,12 @@ func (f *Fake) Decide(_ context.Context, req DecideRequest) (Decision, Usage, er
 		return Decision{Confidence: 1}, Usage{Provider: "fake", Model: f.NameValue}, nil
 	}
 	return f.DecideFunc(req)
+}
+
+// DecideSpread implements Spreader with Spread.
+func (f *Fake) DecideSpread(ctx context.Context, req DecideRequest) (Decision, map[int64]float64, Usage, error) {
+	d, u, err := f.Decide(ctx, req)
+	return d, f.Spread, u, err
 }
 
 // Generate implements Generator.

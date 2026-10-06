@@ -52,6 +52,8 @@ type Result struct {
 	Actions     []Action // the primary rule's actions, then each stacking rule's
 	Stacked     []int64  // stacking rules whose actions were appended
 	Review      bool     // below threshold: take no action, show in Needs review
+	// SenderRuleID is the sender rule that settled the email (Stage is StageSender); 0 otherwise.
+	SenderRuleID int64
 }
 
 // Options are the per-run settings Evaluate needs.
@@ -96,15 +98,16 @@ func Evaluate(e message.Summary, rs []Rule, senders []SenderRule, opt Options) E
 	if sr := matchSender(&e, senders); sr != nil {
 		switch sr.Verdict {
 		case VerdictKeep:
-			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActKeep}}}
+			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActKeep}}, SenderRuleID: sr.ID}
 			return ev
 		case VerdictBlock:
-			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActTrash}}}
+			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActTrash}}, SenderRuleID: sr.ID}
 			return ev
 		case VerdictRoute:
 			// A route to a rule that is gone or switched off falls through to the walk.
 			if i := slices.IndexFunc(rs, func(r Rule) bool { return r.ID == sr.RuleID && r.Enabled }); i >= 0 {
 				res := ev.result(&rs[i], StageSender, 1)
+				res.SenderRuleID = sr.ID
 				ev.Final = &res
 				return ev
 			}

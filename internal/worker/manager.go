@@ -15,13 +15,15 @@ var ErrNotConnected = errors.New("account is not connected")
 // Manager runs the supervisors and is how the action executor reaches an account
 // (it implements actions.Accounts).
 type Manager struct {
-	mu   sync.Mutex
-	sups map[int64]*running
-	wg   sync.WaitGroup
+	mu       sync.Mutex
+	sups     map[int64]*running
+	cleaning map[int64]bool // accounts with a cleanup run going
+	wg       sync.WaitGroup // supervisors and cleanup runs
 }
 
 type running struct {
 	sup    *Supervisor
+	ctx    context.Context // done when the supervisor is stopped; a cleanup run of the account stops with it
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -31,7 +33,7 @@ type running struct {
 func (m *Manager) Start(ctx context.Context, s *Supervisor) {
 	m.Stop(s.Account.ID)
 	ctx, cancel := context.WithCancel(ctx)
-	r := &running{sup: s, cancel: cancel, done: make(chan struct{})}
+	r := &running{sup: s, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	m.mu.Lock()
 	if m.sups == nil {
 		m.sups = map[int64]*running{}
@@ -58,7 +60,7 @@ func (m *Manager) Stop(accountID int64) {
 	}
 }
 
-// Wait blocks until every supervisor has stopped.
+// Wait blocks until every supervisor and every cleanup run has stopped.
 func (m *Manager) Wait() { m.wg.Wait() }
 
 func (m *Manager) supervisor(accountID int64) *Supervisor {

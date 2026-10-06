@@ -140,8 +140,19 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	hub := events.NewHub()
 	ctx, stopAll := context.WithCancel(ctx)
 	supervisors := &worker.Manager{}
+	retention := make(chan struct{})
 	defer supervisors.Wait()
-	defer stopAll() // runs first, so Wait returns even when the HTTP server is what failed
+	defer func() { <-retention }()
+	defer stopAll() // runs first, so the waits above return even when the HTTP server is what failed
+	// The retention job forgets old snippets and old messages: now, and then every hour.
+	go func() {
+		defer close(retention)
+		worker.Retention{Store: st, Days: sett.RetentionDays}.Run(ctx)
+	}()
+	// A cleanup that was running when the daemon last stopped will never finish.
+	if err := st.FailRunningBatches(ctx); err != nil {
+		return err
+	}
 	// The executor is the one place that changes a mailbox; the HTTP layer reaches it for
 	// undo and corrections.
 	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
@@ -172,7 +183,7 @@ func serve(ctx context.Context, cfg *config.Config) error {
 			}
 			return mb, username, nil
 		},
-		StartAccount: start, StopAccount: supervisors.Stop,
+		StartAccount: start, StopAccount: supervisors.Stop, Cleanup: supervisors.Cleanup,
 	})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)

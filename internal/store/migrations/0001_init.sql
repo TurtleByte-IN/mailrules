@@ -73,12 +73,13 @@ CREATE TABLE messages (
   uid            INTEGER NOT NULL,
   message_id     TEXT,                      -- RFC 5322 Message-ID
   from_addr      TEXT, from_domain TEXT, to_addrs TEXT, subject TEXT,
+  from_name      TEXT,                      -- the From display name, shown on the Senders screen
   snippet        TEXT,                      -- first 200 chars, purged after retention
   received_at    INTEGER,
   list_id        TEXT,
   has_attachment INTEGER NOT NULL DEFAULT 0,
   size           INTEGER,
-  signals        TEXT,                      -- JSON: bulk, noreply, dmarc, replied_before ...
+  signals        TEXT,                      -- JSON: bulk, noreply, dmarc, replied_before, list_unsubscribe ...
   state          TEXT NOT NULL DEFAULT 'new', -- new | decided | acted | review | skipped | error
   attempts       INTEGER NOT NULL DEFAULT 0, -- retries made after a failure
   next_attempt_at INTEGER,                  -- when the retry job runs it again; NULL = not waiting
@@ -104,14 +105,21 @@ CREATE TABLE decisions (
   model       TEXT,
   tokens_in   INTEGER, tokens_out INTEGER,
   cost_usd    REAL, latency_ms INTEGER,
+  probabilities TEXT,                       -- JSON {"<rule id>": p, "0": p for none}: what the decision model gave each candidate; NULL when it gives none
   created_at  INTEGER NOT NULL
 );
+CREATE INDEX decisions_message ON decisions(message_id);  -- "the latest decision of a message" is asked for every feed row
 
 CREATE TABLE batches (
   id         INTEGER PRIMARY KEY,
   kind       TEXT NOT NULL,                 -- live | cleanup | review | correction | undo
   status     TEXT NOT NULL,                 -- running | done | failed | undone
   total      INTEGER, done INTEGER NOT NULL DEFAULT 0,
+  account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,  -- cleanup: the mailbox it sorted
+  folder     TEXT,                          -- cleanup: the folder
+  since      INTEGER,                       -- cleanup: only mail received from this time on; NULL = all of it
+  tokens     INTEGER NOT NULL DEFAULT 0,    -- cleanup: model tokens used so far, in and out
+  cost_usd   REAL NOT NULL DEFAULT 0,       -- cleanup: model cost so far
   created_at INTEGER NOT NULL
 );
 

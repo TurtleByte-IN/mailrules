@@ -407,3 +407,14 @@ func (s *Settings) Composer(ctx context.Context) (models.Generator, error) {
 	}
 	return models.NewAnthropic("", cfg.AnthropicAPIKey, cfg.ComposerModel, s.Deps), nil
 }
+
+// RetentionDays returns the retention_days setting in force: how long message snippets
+// are kept. When the settings cannot be read it is the default.
+func (s *Settings) RetentionDays(ctx context.Context) int {
+	v, err := s.View(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read the retention setting; using the default", "error", err.Error())
+		return DefaultRetentionDays
+	}
+	return v.RetentionDays
+}
