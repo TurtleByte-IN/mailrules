@@ -1,19 +1,19 @@
 // The one EventSource for the app (GET /api/events). State modules subscribe by event
 // name and patch their own data; see docs/frontend-plan.md → SSE events to state.
-// Nothing calls open() yet: every resource that listens is still on demo data and the
-// daemon does not serve the stream. The shell calls it after sign-in once it does.
-import type { ActivityRow } from './activity';
-import type { ReviewItem } from './review';
+// The shell calls open() after sign-in. EventSource reconnects by itself and sends
+// Last-Event-ID, so the daemon replays what was missed.
+import type { components } from './schema';
+
+type Schemas = components['schemas'];
 
 export interface Events {
-  'message.processed': ActivityRow;
-  'message.review': ReviewItem;
-  'action.undone': { actionId: string };
-  // Payloads below belong to resources that have not defined them yet.
-  'account.status': unknown;
-  'batch.progress': unknown;
-  'rules.changed': unknown;
-  'usage.updated': unknown;
+  'message.processed': Schemas['EventMessageProcessed'];
+  'message.review': Schemas['EventMessageReview'];
+  'action.undone': Schemas['EventActionUndone'];
+  'account.status': Schemas['EventAccountStatus'];
+  'batch.progress': Schemas['EventBatchProgress'];
+  'rules.changed': Schemas['EventEmpty'];
+  'usage.updated': Schemas['EventEmpty'];
 }
 
 // A record, not an array, so the compiler fails when an event is added above and not here.

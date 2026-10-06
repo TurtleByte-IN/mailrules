@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { close, open, subscribe } from './events';
+import { close, open, subscribe, type Events } from './events';
+
+// Shaped like MessageAction in api/openapi.yaml.
+const undoneAction: Events['action.undone'] = {
+  id: 21, message_id: 1, account_id: 1, decision_id: 11, batch_id: 5, kind: 'move', folder: 'Jobs', from_folder: 'INBOX', to_folder: 'Jobs',
+  status: 'undone', error: '', created_at: 1000, undone_at: 2000,
+};
 
 class FakeEventSource {
   static made: FakeEventSource[] = [];
@@ -43,8 +49,8 @@ describe('events', () => {
     subscribe('action.undone', undone);
     subscribe('rules.changed', changed);
     open();
-    FakeEventSource.made[0].emit('action.undone', { actionId: 'act1' });
-    expect(undone).toHaveBeenCalledExactlyOnceWith({ actionId: 'act1' });
+    FakeEventSource.made[0].emit('action.undone', undoneAction);
+    expect(undone).toHaveBeenCalledExactlyOnceWith(undoneAction);
     expect(changed).not.toHaveBeenCalled();
   });
 
@@ -53,7 +59,7 @@ describe('events', () => {
     const stop = subscribe('action.undone', handler);
     open();
     stop();
-    FakeEventSource.made[0].emit('action.undone', { actionId: 'act1' });
+    FakeEventSource.made[0].emit('action.undone', undoneAction);
     expect(handler).not.toHaveBeenCalled();
   });
 
