@@ -17,7 +17,8 @@ const fresh = (): Settings => ({
   escalate_below: 0.75,
   min_confidence: 0.75,
   retention_days: 30,
-  keys: { openrouter_api_key: false, cloudflare_account_id: false, cloudflare_api_token: false, anthropic_api_key: false, openai_api_key: false },
+  keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
+  warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },
 });
@@ -31,8 +32,10 @@ const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
   if (refuse) return new Response(refuse.error ? JSON.stringify({ error: refuse.error }) : null, { status: refuse.status });
   if (init.method === 'PATCH') {
     const { keys = {}, ...rest } = JSON.parse(init.body as string) as SettingsPatch;
-    const set = Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, v !== '']));
-    stored = { ...stored, ...rest, keys: { ...stored.keys, ...set } };
+    const set = Object.fromEntries(Object.entries(keys ?? {}).map(([k, v]) => [k, v ? 'stored' : 'none']));
+    // null puts the environment's default back, which this daemon has none of.
+    const values = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, v ?? fresh()[k as keyof Settings]]));
+    stored = { ...stored, ...values, keys: { ...stored.keys, ...set } };
   }
   return new Response(JSON.stringify(stored), { status: 200 });
 });
@@ -86,7 +89,7 @@ it('saves a decider URL, removes it with an empty string, and hands back a refus
   expect(settings.value.ollama_url).toBe('http://localhost:11434');
 
   expect(await setUrl('ollama_url', '')).toBe('');
-  expect(sent()).toEqual({ ollama_url: '' });
+  expect(sent()).toEqual({ ollama_url: null });
   expect(settings.value.ollama_url).toBe('');
 
   toast.text = '';
@@ -114,7 +117,7 @@ it('sends a key once in the body and keeps only that it is set', async () => {
 
   expect(sent()).toEqual({ keys: { anthropic_api_key: SECRET } });
   expect(fetchMock.mock.calls.map((c) => c[0]).join()).not.toContain(SECRET);
-  expect(settings.value.keys.anthropic_api_key).toBe(true);
+  expect(settings.value.keys.anthropic_api_key).toBe('stored');
   expect(toast.text).toBe('Anthropic API key saved');
   expect(JSON.stringify([settings, { ...localStorage }, { ...sessionStorage }])).not.toContain(SECRET);
 });
@@ -123,6 +126,6 @@ it('removes a stored key with an empty string', async () => {
   await setKey('openai_api_key', SECRET, 'OpenAI API key');
   await setKey('openai_api_key', '', 'OpenAI API key');
   expect(sent()).toEqual({ keys: { openai_api_key: '' } });
-  expect(settings.value.keys.openai_api_key).toBe(false);
+  expect(settings.value.keys.openai_api_key).toBe('none');
   expect(toast.text).toBe('OpenAI API key removed');
 });

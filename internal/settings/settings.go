@@ -63,8 +63,24 @@ type Invalid struct{ Path, Message string }
 
 func (e *Invalid) Error() string { return e.Path + ": " + e.Message }
 
+// Where a provider key in force comes from. Never the key.
+const (
+	KeyStored      = "stored"      // saved through the API; it wins over the environment
+	KeyEnvironment = "environment" // set in the daemon's environment only
+	KeyNone        = "none"
+)
+
+// Warning is something about the settings in force that will not work as it stands, which
+// the user may still be on the way to fixing (the first-run wizard saves in steps), so it
+// is reported and not refused. Path names the setting to fill in.
+type Warning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
+}
+
 // View is what may be shown: every setting in force, and for each provider key only
-// whether one is set.
+// where it comes from.
 type View struct {
 	DryRun        bool
 	Decider       string
@@ -74,14 +90,20 @@ type View struct {
 	EscalateBelow float64
 	MinConfidence float64
 	RetentionDays int
-	OpenAIBaseURL string // an OpenAI-compatible endpoint; empty = api.openai.com
-	OllamaURL     string // a local Ollama server
-	Keys          map[string]bool
+	OpenAIBaseURL string            // an OpenAI-compatible endpoint; empty = api.openai.com
+	OllamaURL     string            // a local Ollama server
+	Keys          map[string]string // KeyStored | KeyEnvironment | KeyNone
+	Warnings      []Warning         // never nil
 }
 
-// Patch is a change: nil fields stay as they are. In Keys, an empty value removes the
-// stored key, which puts the environment's back in force.
+// Patch is a change: nil fields stay as they are. An empty string is a value like any
+// other, stored as it is: no fallback, the provider's default model, no URL. Where an
+// empty value cannot work (the composer's model, the model of a decider that has no
+// default) it is refused. Reset names the settings to forget, which puts the environment's
+// default back in force. In Keys, an empty value removes the stored key: a key cannot be
+// "set to nothing".
 type Patch struct {
+	Reset         []string // setting names, as the API spells them
 	DryRun        *bool
 	Decider       *string
 	DeciderModel  *string
@@ -90,8 +112,8 @@ type Patch struct {
 	EscalateBelow *float64
 	MinConfidence *float64
 	RetentionDays *int
-	OpenAIBaseURL *string // empty removes the stored value, which puts the environment's back in force
-	OllamaURL     *string // likewise
+	OpenAIBaseURL *string // empty = api.openai.com
+	OllamaURL     *string // empty = none
 	Keys          map[string]string
 }
 
@@ -193,14 +215,48 @@ func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
 	return cfg, err
 }
 
-func view(cfg config.Config, retention int) View {
+func (s *Settings) view(rows map[string]string, cfg config.Config, retention int) View {
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
 		ComposerModel: cfg.ComposerModel, EscalateBelow: cfg.EscalateBelow, MinConfidence: cfg.MinConfidence,
-		RetentionDays: retention, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL, Keys: map[string]bool{}}
+		RetentionDays: retention, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL, Keys: map[string]string{},
+		Warnings: warnings(cfg)}
 	for name, field := range keyFields {
-		v.Keys[name] = *field(&cfg) != ""
+		switch _, stored := rows[keyPrefix+name]; {
+		case stored:
+			v.Keys[name] = KeyStored
+		case *field(s.Env) != "":
+			v.Keys[name] = KeyEnvironment
+		default:
+			v.Keys[name] = KeyNone
+		}
 	}
 	return v
+}
+
+// deciderNeeds is what each decider cannot run without: the settings to fill in (as the
+// API spells them) and what to call each. config.DeciderReady checks the same fields for
+// the startup log; TestWarningsAgreeWithDeciderReady fails if the two lists part ways.
+var deciderNeeds = map[string][]struct {
+	path, what string
+	get        func(*config.Config) string
+}{
+	"jev":       {{"keys.openrouter_api_key", "an OpenRouter API key", func(c *config.Config) string { return c.OpenRouterAPIKey }}},
+	"clef":      {{"keys.cloudflare_account_id", "a Cloudflare account ID", func(c *config.Config) string { return c.CloudflareAccountID }}, {"keys.cloudflare_api_token", "a Cloudflare API token", func(c *config.Config) string { return c.CloudflareAPIToken }}},
+	"anthropic": {{"keys.anthropic_api_key", "an Anthropic API key", func(c *config.Config) string { return c.AnthropicAPIKey }}},
+	"openai":    {{"keys.openai_api_key", "an OpenAI API key", func(c *config.Config) string { return c.OpenAIAPIKey }}},
+	"ollama":    {{"ollama_url", "the URL of your Ollama server", func(c *config.Config) string { return c.OllamaURL }}},
+}
+
+// warnings lists what the chosen decider still lacks. It is never nil.
+func warnings(cfg config.Config) []Warning {
+	out := []Warning{}
+	for _, n := range deciderNeeds[cfg.Decider] {
+		if n.get(&cfg) == "" {
+			out = append(out, Warning{Code: "decider_not_ready", Path: n.path,
+				Message: fmt.Sprintf("The %s decision model needs %s. Until it is set, rules that need a model are passed over.", cfg.Decider, n.what)})
+		}
+	}
+	return out
 }
 
 // View returns the settings in force.
@@ -213,8 +269,12 @@ func (s *Settings) View(ctx context.Context) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return view(cfg, retention), nil
+	return s.view(rows, cfg, retention), nil
 }
+
+// resettable are the settings Patch.Reset may name.
+var resettable = []string{"dry_run", "decider", "decider_model", "fallback_model", "composer_model", "escalate_below",
+	"min_confidence", "retention_days", "openai_base_url", "ollama_url"}
 
 // Apply validates a change against the settings it would produce and stores it in one
 // transaction. A problem the user can fix comes back as *Invalid. Nothing needs a restart:
@@ -224,11 +284,18 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 	if err != nil {
 		return err
 	}
+	set := map[string]*string{}
+	for _, name := range p.Reset {
+		if !slices.Contains(resettable, name) {
+			return &Invalid{name, "This setting cannot be reset."}
+		}
+		delete(rows, name) // the environment's default shows through
+		set[name] = nil
+	}
 	cfg, retention, err := s.effective(rows)
 	if err != nil {
 		return err
 	}
-	set := map[string]*string{}
 	put := func(key string, v any) {
 		b, _ := json.Marshal(v) // strings, numbers and booleans cannot fail
 		enc := string(b)
@@ -259,21 +326,14 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		retention = *p.RetentionDays
 		put("retention_days", retention)
 	}
-	for key, f := range map[string]struct {
-		in       *string
-		dst, env *string
-	}{
-		"openai_base_url": {p.OpenAIBaseURL, &cfg.OpenAIBaseURL, &s.Env.OpenAIBaseURL},
-		"ollama_url":      {p.OllamaURL, &cfg.OllamaURL, &s.Env.OllamaURL},
+	for key, f := range map[string]struct{ in, dst *string }{
+		"openai_base_url": {p.OpenAIBaseURL, &cfg.OpenAIBaseURL}, "ollama_url": {p.OllamaURL, &cfg.OllamaURL},
 	} {
 		if f.in == nil {
 			continue
 		}
-		if *f.dst = strings.TrimSpace(*f.in); *f.dst == "" {
-			set[key], *f.dst = nil, *f.env
-			continue
-		}
-		if u, err := url.Parse(*f.dst); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		*f.dst = strings.TrimSpace(*f.in)
+		if u, err := url.Parse(*f.dst); *f.dst != "" && (err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "") {
 			return &Invalid{key, "Enter an http or https URL, such as http://localhost:11434."}
 		}
 		put(key, *f.dst)

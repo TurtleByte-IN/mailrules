@@ -37,7 +37,11 @@ The contract is `api/openapi.yaml` (OpenAPI 3.1). It lists every endpoint with i
 
 ## Settings and provider keys
 
-`GET /api/settings` returns the settings in force. `openai_base_url` and `ollama_url` are plain settings, readable and writable, so every decider can be set up in the browser; an empty string removes the stored value. The environment variables in `docs/backend-plan.md` → Configuration are the defaults; whatever is saved through `PATCH /api/settings` lies over them and wins. Provider keys saved this way are stored in the `settings` table encrypted under the master key. Sending a key as an empty string removes the stored one, which puts the environment's back in force.
+`GET /api/settings` returns the settings in force. `openai_base_url` and `ollama_url` are plain settings, readable and writable, so every decider can be set up in the browser. The environment variables in `docs/backend-plan.md` → Configuration are the defaults; whatever is saved through `PATCH /api/settings` lies over them and wins. Provider keys saved this way are stored in the `settings` table encrypted under the master key.
+
+- **One rule for every setting.** A field left out stays as it is. `null` forgets the stored value, so the environment's default is back in force. An empty string is a value and is stored: no fallback (`fallback_model`), the provider's default model (`decider_model`), api.openai.com (`openai_base_url`), no Ollama server (`ollama_url`). Where empty cannot work it is refused: `composer_model`, and `decider_model` for `openai` and `ollama`. A provider key cannot be set to nothing, so in `keys` both `""` and `null` remove the stored key.
+- **Where a key comes from.** `keys` says, per key, `"stored"` (saved through the API; it wins and can be removed), `"environment"` (set in the daemon's environment only) or `"none"`.
+- **Warnings instead of a refusal.** The first-run wizard saves in steps, so a change that leaves the chosen decider without its key or URL is saved and answers 200. `warnings` in the response, and in `GET /api/settings`, lists what is missing as `{"code": "decider_not_ready", "message", "path"}`, with `path` naming the setting to fill in (`ollama_url`, `keys.openrouter_api_key`).
 
 Nothing needs a restart: the dry-run switch is read before every action, and the decider, its models, the thresholds and the keys are read for every email.
 

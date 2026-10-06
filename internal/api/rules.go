@@ -112,15 +112,16 @@ func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ruleInvalid answers for a rule that does not pass validation: the message is a sentence
-// for a person, and where the problem is goes in path.
-func ruleInvalid(w http.ResponseWriter, err error) {
+// ruleProblem is the one check every way of saving or testing a rule runs (an edit, a
+// batch save, an import, a draft to test), so they cannot come to disagree: the rule's own
+// validation, then its model. msg is a sentence for a person, empty when the rule is fine;
+// path says where the problem is inside the rule.
+func ruleProblem(rule rules.Rule) (path, msg string) {
 	var ve *rules.ValidationError
-	if errors.As(err, &ve) {
-		writeError(w, http.StatusBadRequest, "rule_invalid", ve.Message, ve.Path)
-		return
+	if err := rule.Validate(); errors.As(err, &ve) {
+		return ve.Path, ve.Message
 	}
-	writeError(w, http.StatusBadRequest, "rule_invalid", "This rule cannot be used.", "")
+	return "model", settings.CheckModel(rule.Model)
 }
 
 // importInvalid answers for a rules file that cannot be imported. Every rule with a
@@ -171,12 +172,8 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rule.Name, rule.Model = strings.TrimSpace(rule.Name), strings.TrimSpace(rule.Model)
-	if err := rule.Validate(); err != nil {
-		ruleInvalid(w, err)
-		return
-	}
-	if msg := settings.CheckModel(rule.Model); msg != "" {
-		writeError(w, http.StatusBadRequest, "rule_invalid", msg, "model")
+	if path, msg := ruleProblem(rule); msg != "" {
+		writeError(w, http.StatusBadRequest, "rule_invalid", msg, path)
 		return
 	}
 	if err := s.store.UpdateRule(r.Context(), rule, s.now().Unix()); err != nil {
@@ -252,8 +249,8 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, rule := range f.Rules {
-		if msg := settings.CheckModel(rule.Model); msg != "" {
-			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("Rule %d (%q): %s", i+1, rule.Name, msg), "model")
+		if path, msg := ruleProblem(rule); msg != "" {
+			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("Rule %d (%q): %s", i+1, rule.Name, msg), path)
 			return
 		}
 	}

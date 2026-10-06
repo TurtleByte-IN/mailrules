@@ -211,13 +211,8 @@ func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.R
 			}
 			rule.AccountID = *in.AccountID
 		}
-		var ve *rules.ValidationError
-		if err := rule.Validate(); errors.As(err, &ve) {
-			writeError(w, http.StatusBadRequest, "rule_invalid", ve.Message, at+"."+ve.Path)
-			return nil, nil, false
-		}
-		if msg := settings.CheckModel(rule.Model); msg != "" {
-			writeError(w, http.StatusBadRequest, "rule_invalid", msg, at+".model")
+		if path, msg := ruleProblem(rule); msg != "" {
+			writeError(w, http.StatusBadRequest, "rule_invalid", msg, at+"."+path)
 			return nil, nil, false
 		}
 		for j, name := range in.NewFolders {

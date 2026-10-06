@@ -382,7 +382,7 @@ export interface paths {
         head?: never;
         /**
          * Edit a rule; fields left out stay as they are
-         * @description The result is validated as a whole and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`.
+         * @description The result is validated as a whole, by the same check a batch save and an import run (`model` included), and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`.
          */
         patch: operations["updateRule"];
         trace?: never;
@@ -855,7 +855,7 @@ export interface paths {
         };
         /**
          * The settings in force
-         * @description Stored settings lie over the environment variables, which are the defaults. Provider keys are never returned; `keys` only says which are set.
+         * @description Stored settings lie over the environment variables, which are the defaults. Provider keys are never returned; `keys` only says where each comes from. `warnings` lists what the chosen decider still lacks.
          */
         get: operations["getSettings"];
         put?: never;
@@ -865,7 +865,25 @@ export interface paths {
         head?: never;
         /**
          * Change settings; fields left out stay as they are
-         * @description The result is validated as a whole and stored in one transaction. Everything takes effect without a restart, from the next email on. Provider keys are stored encrypted under the master key.
+         * @description The result is validated as a whole and stored in one transaction. Everything takes
+         *     effect without a restart, from the next email on. Provider keys are stored encrypted
+         *     under the master key.
+         *
+         *     **One rule for every setting.** A field left out stays as it is. `null` forgets the
+         *     stored value, which puts the environment's default back in force. An empty string
+         *     is a value like any other and is stored: `fallback_model` "" turns the fallback off,
+         *     `decider_model` "" means the provider's default model, `openai_base_url` "" means
+         *     api.openai.com and `ollama_url` "" means no server. Where an empty value cannot
+         *     work it is refused with 400: `composer_model`, and `decider_model` while the decider
+         *     is `openai` or `ollama`, which have no default model. The one exception is a
+         *     provider key, which cannot be "set to nothing": in `keys`, both "" and `null` remove
+         *     the stored key.
+         *
+         *     **A decider that cannot work yet is not refused.** The first-run wizard saves in
+         *     steps (the decider first, its key or URL after), so a change that leaves the chosen
+         *     decider without its key or URL answers 200, and the response, like `GET`, lists
+         *     what is missing in `warnings`. Until it is set, rules that need a model are passed
+         *     over.
          */
         patch: operations["updateSettings"];
         trace?: never;
@@ -1734,18 +1752,35 @@ export interface components {
         };
         /** @enum {string} */
         Decider: "jev" | "clef" | "anthropic" | "openai" | "ollama";
-        /** @description For each provider key, whether one is set (stored here, or in the environment). Never the key */
+        /**
+         * @description Where a provider key in force comes from. `stored`: saved through this API (it wins over the environment, and can be removed here). `environment`: set in the daemon's environment only (it cannot be removed here). `none`: not set
+         * @enum {string}
+         */
+        KeySource: "stored" | "environment" | "none";
+        /** @description For each provider key, where the one in force comes from. Never the key */
         ProviderKeys: {
             /** @description Jev */
-            openrouter_api_key: boolean;
+            openrouter_api_key: components["schemas"]["KeySource"];
             /** @description Clef */
-            cloudflare_account_id: boolean;
+            cloudflare_account_id: components["schemas"]["KeySource"];
             /** @description Clef */
-            cloudflare_api_token: boolean;
+            cloudflare_api_token: components["schemas"]["KeySource"];
             /** @description The Haiku fallback and the rule composer */
-            anthropic_api_key: boolean;
+            anthropic_api_key: components["schemas"]["KeySource"];
             /** @description An OpenAI-compatible endpoint */
-            openai_api_key: boolean;
+            openai_api_key: components["schemas"]["KeySource"];
+        };
+        /** @description Something about the settings in force that will not work as it stands. Shaped like an error, but the settings were saved. */
+        SettingsWarning: {
+            /**
+             * @description `decider_not_ready`: the chosen decider lacks a key or its URL
+             * @enum {string}
+             */
+            code: "decider_not_ready";
+            /** @description A sentence for a person */
+            message: string;
+            /** @description The setting to fill in, as SettingsPatch spells it: `ollama_url`, `keys.openrouter_api_key` */
+            path: string;
         };
         Settings: {
             /** @description While true */
@@ -1767,6 +1802,8 @@ export interface components {
             /** @description The Ollama server the ollama decider talks to, e.g. http://localhost:11434; empty = not set. Not a secret */
             ollama_url: string;
             keys: components["schemas"]["ProviderKeys"];
+            /** @description What the chosen decider still lacks; empty when it can run. For example decider `ollama` with no `ollama_url` */
+            warnings: components["schemas"]["SettingsWarning"][];
             readonly server: {
                 version: string;
                 data_dir: string;
@@ -1785,26 +1822,30 @@ export interface components {
                 oauth_providers: boolean;
             };
         };
+        /** @description For every field: left out = unchanged; `null` = forget the stored value, so the environment's default is back in force; an empty string = that value, stored (see each field), or refused where empty cannot work */
         SettingsPatch: {
-            dry_run?: boolean;
-            decider?: components["schemas"]["Decider"];
-            decider_model?: string;
-            fallback_model?: string;
-            composer_model?: string;
-            escalate_below?: number;
-            min_confidence?: number;
-            retention_days?: number;
-            /** @description An http or https URL. An empty string removes the stored value */
-            openai_base_url?: string;
-            /** @description An http or https URL. An empty string removes the stored value */
-            ollama_url?: string;
-            /** @description Provider keys to store. An empty string removes the stored key, which puts the environment's back in force */
+            dry_run?: boolean | null;
+            decider?: components["schemas"]["Decider"] | null;
+            /** @description Empty = the provider's default model; refused while the decider is openai or ollama, which have none */
+            decider_model?: string | null;
+            /** @description Empty = off; the fallback is never asked */
+            fallback_model?: string | null;
+            /** @description Empty is refused; the composer needs a model */
+            composer_model?: string | null;
+            escalate_below?: number | null;
+            min_confidence?: number | null;
+            retention_days?: number | null;
+            /** @description An http or https URL. Empty = api.openai.com */
+            openai_base_url?: string | null;
+            /** @description An http or https URL. Empty = no server, so the ollama decider cannot run (a warning says so) */
+            ollama_url?: string | null;
+            /** @description Provider keys to store. A key cannot be set to nothing: an empty string and `null` both remove the stored key, which puts the environment's back in force */
             keys?: {
-                openrouter_api_key?: string;
-                cloudflare_account_id?: string;
-                cloudflare_api_token?: string;
-                anthropic_api_key?: string;
-                openai_api_key?: string;
+                openrouter_api_key?: string | null;
+                cloudflare_account_id?: string | null;
+                cloudflare_api_token?: string | null;
+                anthropic_api_key?: string | null;
+                openai_api_key?: string | null;
             };
         };
         /** @description Data of `message.processed` */

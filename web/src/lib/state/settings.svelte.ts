@@ -16,7 +16,8 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     retention_days: 0,
     openai_base_url: '',
     ollama_url: '',
-    keys: { openrouter_api_key: false, cloudflare_account_id: false, cloudflare_api_token: false, anthropic_api_key: false, openai_api_key: false },
+    keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
+    warnings: [],
     server: { version: '', data_dir: '', listen: '', mode: 'selfhost' },
     features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },
   },
@@ -48,12 +49,13 @@ export async function patch(p: settingsApi.SettingsPatch) {
 }
 
 /**
- * Saves the URL a decider talks to; an empty one removes the stored value. Resolves the daemon's
- * reason when it refuses the URL, to show beside the field, and '' otherwise.
+ * Saves the URL a decider talks to; an empty one forgets the stored value (null), which puts the
+ * environment's back. Resolves the daemon's reason when it refuses the URL, to show beside the
+ * field, and '' otherwise.
  */
 export async function setUrl(name: settingsApi.UrlName, url: string) {
   try {
-    settings.value = await settingsApi.patch({ [name]: url });
+    settings.value = await settingsApi.patch({ [name]: url || null });
   } catch (e) {
     if (e instanceof ApiError && e.path === name) return e.message;
     flash(message(e));
@@ -65,7 +67,7 @@ export async function setUrl(name: settingsApi.UrlName, url: string) {
 export async function setKey(name: settingsApi.KeyName, secret: string, label: string) {
   if (!(await patch({ keys: { [name]: secret } }))) return;
   if (secret) flash(label + ' saved');
-  else flash(settings.value.keys[name] ? `Stored ${label} removed; the one in the environment is in use` : label + ' removed');
+  else flash(settings.value.keys[name] === 'environment' ? `Stored ${label} removed; the one in the environment is in use` : label + ' removed');
 }
 
 export async function toggleDryRun() {

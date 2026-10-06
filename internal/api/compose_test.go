@@ -392,7 +392,7 @@ func TestSettingsModelURLs(t *testing.T) {
 	if e.sett.RouterFor(t.Context(), "jev") != nil || e.sett.RouterFor(t.Context(), "nope") != nil {
 		t.Error("a model without its key, or an unknown one, is used")
 	}
-	// An empty string removes the stored value: the environment's (none here) is back in force.
+	// An empty string means no URL: the decider can no longer run.
 	if got := e.call(http.MethodPatch, "/api/settings", `{"ollama_url":""}`, http.StatusOK); got["ollama_url"] != "" {
 		t.Errorf("after clearing = %v", got["ollama_url"])
 	}

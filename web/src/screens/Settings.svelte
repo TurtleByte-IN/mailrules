@@ -19,6 +19,7 @@
     { id: 'openai_base_url', decider: 'openai', label: 'Endpoint URL', placeholder: 'api.openai.com' },
     { id: 'ollama_url', decider: 'ollama', label: 'Ollama server URL', placeholder: 'http://localhost:11434' },
   ];
+  const keySource = { stored: 'Set', environment: 'Set by environment', none: 'Not set' };
   const keys: { id: KeyName; label: string; placeholder: string }[] = [
     { id: 'openrouter_api_key', label: 'OpenRouter API key', placeholder: 'sk-or-v1-…' },
     { id: 'cloudflare_account_id', label: 'Cloudflare account ID', placeholder: '' },
@@ -193,12 +194,12 @@
           <label class="flex flex-[1_1_260px] flex-col gap-1.5">
             <span class="flex items-center gap-2 text-[13px] font-semibold">
               {k.label}
-              <span class="chip {s.keys[k.id] ? '' : 'chip-neutral'}">{s.keys[k.id] ? 'Set' : 'Not set'}</span>
+              <span class="chip {s.keys[k.id] === 'none' ? 'chip-neutral' : ''}">{keySource[s.keys[k.id]]}</span>
             </span>
             <input class="field font-mono text-[13px]" type="password" autocomplete="off" placeholder={k.placeholder} bind:value={drafts[k.id]} />
           </label>
-          <button class="btn font-semibold" disabled={!drafts[k.id].trim()}>{s.keys[k.id] ? 'Replace' : 'Save'}</button>
-          {#if s.keys[k.id]}
+          <button class="btn font-semibold" disabled={!drafts[k.id].trim()}>{s.keys[k.id] === 'stored' ? 'Replace' : 'Save'}</button>
+          {#if s.keys[k.id] === 'stored'}
             <button type="button" class="btn text-trash" aria-label="Remove {k.label}" onclick={() => setKey(k.id, '', k.label)}>Remove</button>
           {/if}
         </form>

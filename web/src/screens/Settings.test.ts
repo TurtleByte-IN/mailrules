@@ -8,7 +8,8 @@ import Settings from './Settings.svelte';
 const fresh = (over: Partial<Saved> = {}): Saved => ({
   dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', composer_model: 'claude-haiku-4-5',
   escalate_below: 0.75, min_confidence: 0.75, retention_days: 30, openai_base_url: '', ollama_url: '',
-  keys: { openrouter_api_key: false, cloudflare_account_id: false, cloudflare_api_token: false, anthropic_api_key: true, openai_api_key: false },
+  keys: { openrouter_api_key: 'environment', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'stored', openai_api_key: 'none' },
+  warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },
   ...over,
@@ -57,7 +58,10 @@ it('renders the settings in force', async () => {
   expect((screen.getByLabelText('Fallback model') as HTMLInputElement).value).toBe('claude-haiku-4-5');
   expect((screen.getByLabelText('Keep email snippets for') as HTMLInputElement).value).toBe('30');
   expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
-  expect(screen.getByLabelText(/^Anthropic API key/).closest('label')!.textContent).toContain('Set');
+  // The chip says where each key comes from; only a stored key can be removed here.
+  const chip = (label: RegExp) => screen.getByLabelText(label).closest('label')!.querySelector('.chip')!.textContent;
+  expect([chip(/^Anthropic API key/), chip(/^OpenRouter API key/), chip(/^OpenAI API key/)]).toEqual(['Set', 'Set by environment', 'Not set']);
+  expect(screen.getAllByRole('button', { name: /^Remove / }).map((b) => b.getAttribute('aria-label'))).toEqual(['Remove Anthropic API key']);
   expect(screen.getByText('Version dev · data in ./data · listening on 127.0.0.1:8080')).toBeTruthy();
 });
 
@@ -95,5 +99,5 @@ it('saves a URL, shows a refusal beside the field, and removes the stored one wi
   routes['PATCH /api/settings'] = [200, fresh({ decider: 'ollama', decider_model: 'llama3.2' })];
   await fireEvent.change(field, { target: { value: '' } });
   await waitFor(() => expect(settings.value.ollama_url).toBe(''));
-  expect(patches()).toEqual([{ ollama_url: 'localhost:11434' }, { ollama_url: 'http://localhost:11434' }, { ollama_url: '' }]);
+  expect(patches()).toEqual([{ ollama_url: 'localhost:11434' }, { ollama_url: 'http://localhost:11434' }, { ollama_url: null }]);
 });

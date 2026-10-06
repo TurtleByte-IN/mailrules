@@ -159,3 +159,96 @@ func TestUndoOneMessage(t *testing.T) {
 	e.refuse(http.MethodPost, undo(plan["id"]), "", http.StatusConflict, "message_gone", "")
 	e.refuse(http.MethodPost, "/api/messages/999/undo", "", http.StatusNotFound, "not_found", "")
 }
+
+// MAI-12 (a), (b), (c): a decider that cannot work yet is saved with a warning, not
+// refused; null puts the environment's default back and an empty string is a value; and
+// `keys` says where each key comes from.
+func TestSettingsWarningsResetAndKeySources(t *testing.T) {
+	e := newEnv(t)
+	e.signIn()
+	e.sett.Env.OllamaURL, e.sett.Env.AnthropicAPIKey = "http://from-env:11434", "sk-ant-from-env"
+	warned := func(s map[string]any) (out string) {
+		for _, w := range s["warnings"].([]any) {
+			w := w.(map[string]any)
+			if why := forAPerson(w["message"].(string), ""); why != "" {
+				t.Errorf("warning %q: %s", w["message"], why)
+			}
+			out += fmt.Sprint(w["code"], "@", w["path"], " ")
+		}
+		return out
+	}
+
+	// A fresh install: Jev is chosen and has no key. That is a warning on GET too.
+	got := e.call(http.MethodGet, "/api/settings", "", http.StatusOK)
+	conform(t, e.doc, "Settings", got)
+	if warned(got) != "decider_not_ready@keys.openrouter_api_key " {
+		t.Errorf("warnings on a fresh install = %q", warned(got))
+	}
+	if k := got["keys"].(map[string]any); k["anthropic_api_key"] != "environment" || k["openrouter_api_key"] != "none" {
+		t.Errorf("key sources = %v", k)
+	}
+
+	// The wizard picks Ollama first and gives the URL in a later step: saved, with a warning.
+	got = e.call(http.MethodPatch, "/api/settings", `{"decider":"ollama","decider_model":"llama3.2","ollama_url":""}`, http.StatusOK)
+	conform(t, e.doc, "Settings", got)
+	if got["decider"] != "ollama" || got["ollama_url"] != "" || warned(got) != "decider_not_ready@ollama_url " {
+		t.Fatalf("ollama without its URL = decider %v, url %q, warnings %q", got["decider"], got["ollama_url"], warned(got))
+	}
+	if warned(e.call(http.MethodGet, "/api/settings", "", http.StatusOK)) != "decider_not_ready@ollama_url " {
+		t.Error("GET does not repeat the warning")
+	}
+	// null forgets the stored (empty) URL: the environment's is back, and the warning goes.
+	got = e.call(http.MethodPatch, "/api/settings", `{"ollama_url":null}`, http.StatusOK)
+	if got["ollama_url"] != "http://from-env:11434" || warned(got) != "" {
+		t.Errorf("after ollama_url null = %q, warnings %q", got["ollama_url"], warned(got))
+	}
+
+	// The same rule for every setting: "" is a value where empty means something, refused
+	// where it cannot work; null is the environment's default.
+	got = e.call(http.MethodPatch, "/api/settings", `{"fallback_model":"","composer_model":"my-composer","retention_days":90,"dry_run":false}`, http.StatusOK)
+	if got["fallback_model"] != "" || got["composer_model"] != "my-composer" || got["retention_days"] != float64(90) || got["dry_run"] != false {
+		t.Fatalf("after patch = %v", got)
+	}
+	e.refuse(http.MethodPatch, "/api/settings", `{"composer_model":""}`, http.StatusBadRequest, "invalid_input", "composer_model")
+	e.refuse(http.MethodPatch, "/api/settings", `{"decider_model":""}`, http.StatusBadRequest, "invalid_input", "decider_model") // ollama has no default model
+	got = e.call(http.MethodPatch, "/api/settings", `{"fallback_model":null,"composer_model":null,"retention_days":null,"dry_run":null,"decider":null,"decider_model":null}`, http.StatusOK)
+	if got["fallback_model"] != "claude-haiku-4-5" || got["composer_model"] != "claude-haiku-4-5" || got["retention_days"] != float64(30) || got["dry_run"] != true ||
+		got["decider"] != "jev" || got["decider_model"] != "" {
+		t.Errorf("after null = %v", got)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM settings WHERE key NOT LIKE 'key.%'`); n != 0 {
+		t.Errorf("%d settings still stored after every one was reset", n)
+	}
+
+	// A stored key wins over the environment's and says so; removing it shows the environment's again.
+	got = e.call(http.MethodPatch, "/api/settings", `{"keys":{"anthropic_api_key":"sk-ant-stored","openrouter_api_key":"sk-or-stored"}}`, http.StatusOK)
+	if k := got["keys"].(map[string]any); k["anthropic_api_key"] != "stored" || k["openrouter_api_key"] != "stored" || warned(got) != "" {
+		t.Errorf("after storing keys = %v, warnings %q", k, warned(got))
+	}
+	got = e.call(http.MethodPatch, "/api/settings", `{"keys":{"anthropic_api_key":"","openrouter_api_key":null}}`, http.StatusOK)
+	if k := got["keys"].(map[string]any); k["anthropic_api_key"] != "environment" || k["openrouter_api_key"] != "none" {
+		t.Errorf("after removing keys = %v", k)
+	}
+}
+
+// MAI-12 (d): editing one rule checks its model exactly as a batch save and an import do.
+func TestRuleModelIsCheckedTheSameEverywhere(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[{"name":"News","intent":"Newsletters","actions":[{"type":"keep"}]}]}`, http.StatusCreated)
+	for model, ok := range map[string]bool{"": true, "jev": true, " clef ": true, "clef:clef-flash": true, "ollama:llama3.2": true, "openai:gpt-4o-mini": true,
+		"gpt": false, "ollama": false, "openai": false, "ollama:": false, ":x": false, "Jev": false} {
+		want := http.StatusBadRequest
+		if ok {
+			want = http.StatusOK
+		}
+		patch := e.do(http.MethodPatch, "/api/rules/1", fmt.Sprintf(`{"model":%q}`, model))
+		batch := e.do(http.MethodPost, "/api/rules/batch", fmt.Sprintf(`{"rules":[{"name":"Draft %s","intent":"x","actions":[{"type":"keep"}],"model":%q}]}`, model, model))
+		if patch.status != want || (batch.status == http.StatusCreated) != ok {
+			t.Errorf("model %q: edit answers %d, batch save %d; want accepted = %v by both", model, patch.status, batch.status, ok)
+		}
+		if !ok && (patch.body.Error.Message != batch.body.Error.Message || patch.body.Error.Code != "rule_invalid" || patch.body.Error.Path != "model" || batch.body.Error.Path != "rules[0].model") {
+			t.Errorf("model %q: edit says %q at %q, batch save says %q at %q", model, patch.body.Error.Message, patch.body.Error.Path, batch.body.Error.Message, batch.body.Error.Path)
+		}
+	}
+}

@@ -685,8 +685,8 @@ func TestSettings(t *testing.T) {
 		}
 	}
 	for name, set := range got["keys"].(map[string]any) {
-		if set != false {
-			t.Errorf("key %s reads as set on a fresh install", name)
+		if set != "none" {
+			t.Errorf("key %s reads as %v on a fresh install", name, set)
 		}
 	}
 	if router, _ := e.sett.Live(ctx); router != nil {
@@ -720,7 +720,7 @@ func TestSettings(t *testing.T) {
 	got = r.object(t)
 	conform(t, e.doc, "Settings", got)
 	if got["dry_run"] != false || got["escalate_below"] != 0.6 || got["min_confidence"] != 0.8 || got["retention_days"] != float64(90) ||
-		got["fallback_model"] != "" || got["keys"].(map[string]any)["openrouter_api_key"] != true || got["keys"].(map[string]any)["anthropic_api_key"] != false {
+		got["fallback_model"] != "" || got["keys"].(map[string]any)["openrouter_api_key"] != "stored" || got["keys"].(map[string]any)["anthropic_api_key"] != "none" {
 		t.Errorf("after patch = %v", got)
 	}
 	if strings.Contains(string(e.do(http.MethodGet, "/api/settings", "").raw), secret) {
