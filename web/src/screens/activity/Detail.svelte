@@ -47,6 +47,14 @@
         <div class="font-semibold">{step.label}{step.model ? ` (${step.model})` : ''}</div>
         <div class="text-xs text-muted">{step.detail}</div>
         {#if meta(step)}<div class="mt-0.5 font-mono text-xs text-muted">{meta(step)}</div>{/if}
+        {#if step.candidates.length}
+          <!-- What the decision model gave each rule it chose between, likeliest first as the daemon sends them. -->
+          <ul class="mt-0.5 font-mono text-xs text-muted">
+            {#each step.candidates as c, j (j)}
+              <li>{c.rule_id === null ? 'No rule' : c.rule_name || 'Deleted rule'} {confidence(c.probability)}</li>
+            {/each}
+          </ul>
+        {/if}
       </div>
     </li>
   {/each}
