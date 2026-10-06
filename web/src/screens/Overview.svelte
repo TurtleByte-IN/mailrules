@@ -33,14 +33,14 @@
   const act = (a: Account, action: 'reconnect' | 'resume') => (action === 'resume' ? setPaused(a.id, false) : reconnect(a.id));
 </script>
 
-<div class="flex flex-col gap-3.5">
+<div class="flex flex-col gap-[22px]">
   <header class="flex flex-wrap items-end justify-between gap-2.5">
     <div>
       <h1>Overview</h1>
       <p class="mt-1 text-secondary">Is MailRules working? Today's numbers, mailbox health and the rules doing the work.</p>
     </div>
     {#if accounts.loaded}
-      <span class="inline-flex h-[26px] items-center gap-1.5 rounded bg-selected px-[9px] text-xs font-medium">
+      <span class="inline-flex h-9 items-center gap-1.5 rounded bg-selected px-3 text-[13px] font-medium">
         <span class="size-2 rounded-sm {top.ok ? 'bg-live' : 'bg-attention'}"></span>{top.text}
       </span>
     {/if}
@@ -51,27 +51,27 @@
   {/if}
 
   {#if stats}
-    <section aria-label="Today" class="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2">
+    <section aria-label="Today" class="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">
       {#each tiles as t (t.label)}
-        <a href={t.href} use:link class="rounded-md border px-3.5 py-2.5 no-underline {t.warn ? 'border-warn-line bg-warn-bg text-warn' : 'border-line-card text-ink'}">
-          <div class="text-[11.5px] font-medium {t.warn ? 'text-review' : 'text-secondary'}">{t.label}</div>
-          <div class="mt-1 text-[17px] font-medium tracking-[-0.02em]">{t.value}</div>
-          <div class="text-[11.5px] {t.warn ? 'text-review' : 'text-secondary'}">{t.sub}</div>
+        <a href={t.href} use:link class="rounded-md border px-[18px] py-4 no-underline {t.warn ? 'border-warn-line bg-warn-bg text-warn' : 'border-line-card text-ink'}">
+          <div class="text-[12.5px] font-medium {t.warn ? 'text-review' : 'text-secondary'}">{t.label}</div>
+          <div class="mt-1 text-[28px] font-semibold tracking-[-0.02em]">{t.value}</div>
+          <div class="text-[12.5px] {t.warn ? 'text-review' : 'text-secondary'}">{t.sub}</div>
         </a>
       {/each}
     </section>
 
-    <section aria-label="Where today's mail went" class="card flex flex-col gap-2 p-3">
+    <section aria-label="Where today's mail went" class="card flex flex-col gap-3 p-[18px]">
       <div class="flex flex-wrap items-baseline justify-between gap-1.5">
-        <h2 class="text-[13px]">Where today's mail went</h2>
-        <span class="text-[11.5px] text-muted">{stats.counts.processed} processed</span>
+        <h2 class="text-[15px]">Where today's mail went</h2>
+        <span class="text-[12.5px] text-muted">{stats.counts.processed} processed</span>
       </div>
       <div class="flex h-3 overflow-hidden rounded-sm bg-line-divider" aria-hidden="true">
         {#each parts as p (p.label)}
           <div class="h-3 {p.fill}" style:width="{p.pct}%"></div>
         {/each}
       </div>
-      <div class="flex flex-wrap gap-x-3.5 gap-y-1 text-[11.5px] text-secondary">
+      <div class="flex flex-wrap gap-x-3.5 gap-y-1 text-[12.5px] text-secondary">
         {#each parts as p (p.label)}
           <span class="inline-flex items-center gap-[5px]"><span class="size-2.5 rounded-sm {p.fill}"></span>{p.label} {p.n}</span>
         {/each}
@@ -81,31 +81,31 @@
 
   <div class="flex flex-wrap items-start gap-3">
     <section aria-label="Mailbox health" class="card min-w-0 flex-[3_1_460px] overflow-x-auto">
-      <div class="flex items-center justify-between px-3.5 py-2.5">
-        <h2 class="text-[13px]">Mailbox health</h2>
-        <a href="/accounts" use:link class="btn min-h-[26px] px-[9px] text-xs no-underline">Manage</a>
+      <div class="flex items-center justify-between px-[18px] py-4">
+        <h2 class="text-[15px]">Mailbox health</h2>
+        <a href="/accounts" use:link class="btn min-h-9 px-3 text-[13px] no-underline">Manage</a>
       </div>
       {#each accounts.list as a (a.id)}
         {@const h = health(a)}
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line-divider px-3.5 py-2 text-[12.5px]">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line-divider px-[18px] py-3">
           <span class="min-w-0 flex-[1_1_180px]">
             <span class="font-medium">{a.label}</span><br />
-            <span class="text-[11.5px] text-muted">{a.username} · {a.folder_count} folders</span>
+            <span class="text-[12.5px] text-muted">{a.username} · {a.folder_count} folders</span>
           </span>
-          <span class="chip h-[22px] gap-[5px] text-[11.5px] {h.chip}">{statuses[a.status].label}</span>
-          <span class="min-w-0 flex-[1_1_200px] text-[11.5px] text-secondary">{h.detail}</span>
+          <span class="chip h-[22px] text-[12.5px] {h.chip}">{statuses[a.status].label}</span>
+          <span class="min-w-0 flex-[1_1_200px] text-[12.5px] text-secondary">{h.detail}</span>
           {#if h.action === 'go'}
-            <a href="/accounts" use:link class="btn min-h-[26px] px-[9px] text-xs no-underline">{h.label}</a>
+            <a href="/accounts" use:link class="btn min-h-9 px-3 text-[13px] no-underline">{h.label}</a>
           {:else if h.action === 'wait'}
-            <button type="button" class="btn min-h-[26px] px-[9px] text-xs" disabled>{h.label}</button>
+            <button type="button" class="btn min-h-9 px-3 text-[13px]" disabled>{h.label}</button>
           {:else if h.action === 'reconnect' || h.action === 'resume'}
             {@const action = h.action}
-            <button type="button" class="btn min-h-[26px] px-[9px] text-xs" onclick={() => act(a, action)}>{h.label}</button>
+            <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={() => act(a, action)}>{h.label}</button>
           {/if}
         </div>
       {:else}
         {#if accounts.loaded}
-          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-line-divider px-3.5 py-2.5 text-secondary">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-line-divider px-[18px] py-3 text-secondary">
             No mailbox connected yet.
             <a href="/accounts" use:link class="btn-primary no-underline">Add mailbox</a>
           </div>
@@ -114,22 +114,22 @@
     </section>
 
     {#if stats}
-      <section aria-label="Top rules today" class="card flex min-w-0 flex-[2_1_300px] flex-col gap-2 p-3">
+      <section aria-label="Top rules today" class="card flex min-w-0 flex-[2_1_300px] flex-col gap-3 p-[18px]">
         <div class="flex items-baseline justify-between">
-          <h2 class="text-[13px]">Top rules today</h2>
-          <span class="text-[11.5px] text-muted">by matches</span>
+          <h2 class="text-[15px]">Top rules today</h2>
+          <span class="text-[12.5px] text-muted">by matches</span>
         </div>
         {#each stats.top_rules as r (r.rule_id)}
-          <a href={r.rule_id === null ? '/rules' : '/rules?id=' + r.rule_id} use:link class="flex items-center gap-2.5 text-xs text-ink no-underline">
-            <span class="flex-[0_0_130px] truncate font-medium">{r.rule_name}</span>
+          <a href={r.rule_id === null ? '/rules' : '/rules?id=' + r.rule_id} use:link class="flex items-center gap-3 text-ink no-underline">
+            <span class="flex-[0_0_110px] truncate font-medium">{r.rule_name}</span>
             <span class="h-2 flex-auto overflow-hidden rounded-sm bg-line-divider"><span class="block h-2 bg-ink" style:width="{Math.max(3, (r.hits / most) * 100)}%"></span></span>
-            <span class="flex-[0_0_32px] text-right font-mono text-[11.5px]">{r.hits}</span>
+            <span class="flex-[0_0_32px] text-right font-mono text-[12.5px]">{r.hits}</span>
           </a>
         {:else}
-          <div class="text-[11.5px] text-secondary">No rule has matched today.</div>
+          <div class="text-[12.5px] text-secondary">No rule has matched today.</div>
         {/each}
         {#if rules.loaded && rules.list.length}
-          <div class="text-[11.5px] text-muted">
+          <div class="text-[12.5px] text-secondary">
             {quiet ? quiet + (quiet === 1 ? ' rule has' : ' rules have') + ' not matched anything yet.' : 'Every active rule has matched at least once.'}
           </div>
         {/if}
@@ -139,19 +139,19 @@
 
   {#if stats}
     <section aria-label="Latest decisions" class="card overflow-hidden">
-      <div class="flex items-center justify-between px-3.5 py-2.5">
-        <h2 class="text-[13px]">Latest decisions</h2>
-        <a href="/activity" use:link class="btn min-h-[26px] px-[9px] text-xs no-underline">Open activity</a>
+      <div class="flex items-center justify-between px-[18px] py-4">
+        <h2 class="text-[15px]">Latest decisions</h2>
+        <a href="/activity" use:link class="btn min-h-9 px-3 text-[13px] no-underline">Open activity</a>
       </div>
       {#each overview.latest as row (row.id)}
-        <a href="/activity" use:link class="flex min-h-8 items-center gap-2.5 border-t border-line-divider px-3.5 text-xs text-ink no-underline">
-          <span class="flex-[0_0_38px] font-mono text-[11px] text-muted">{clock(row.created_at)}</span>
-          <span class="flex-[0_0_110px] truncate font-medium">{row.from}</span>
+        <a href="/activity" use:link class="flex min-h-11 items-center gap-2.5 border-t border-line-divider px-[18px] text-[13px] text-ink no-underline">
+          <span class="flex-[0_0_62px] font-mono text-xs text-muted">{clock(row.created_at)}</span>
+          <span class="flex-[0_0_130px] truncate font-medium">{row.from}</span>
           <span class="min-w-0 flex-[1_1_160px] truncate text-nav">{row.subject}</span>
           <span class="chip {chips[kind(row)]}">{outcome(row)}</span>
         </a>
       {:else}
-        <div class="border-t border-line-divider px-3.5 py-2.5 text-secondary">Nothing sorted yet. New mail shows up here as it arrives.</div>
+        <div class="border-t border-line-divider px-[18px] py-3 text-secondary">Nothing sorted yet. New mail shows up here as it arrives.</div>
       {/each}
     </section>
   {/if}

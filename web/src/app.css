@@ -1,23 +1,21 @@
-@import '@fontsource/ibm-plex-sans/400.css';
-@import '@fontsource/ibm-plex-sans/500.css';
-@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource-variable/schibsted-grotesk/wght.css';
 @import '@fontsource/ibm-plex-mono/400.css';
 @import '@fontsource/ibm-plex-mono/500.css';
 @import 'tailwindcss';
 
-/* Tokens from docs/design/README.md (the revised, denser design). Components use these utilities, never raw hex. */
+/* Tokens from docs/design/README.md. Components use these utilities, never raw hex. */
 @theme {
   --color-*: initial;
   --color-surface: #ffffff;
-  --color-ink: #111113;
-  --color-nav: #3f3f46;
-  --color-secondary: #52525b;
-  --color-muted: #71717a;
-  --color-line-input: #d4d4d8;
-  --color-line-card: #e4e4e7;
-  --color-line-divider: #efeff1;
-  --color-selected: #ededf0;
-  --color-selected-row: #fafafa;
+  --color-ink: #16130f;
+  --color-nav: #3a342c;
+  --color-secondary: #5a5247;
+  --color-muted: #776e61;
+  --color-line-input: #cbc3b3;
+  --color-line-card: #dcd4c4;
+  --color-line-divider: #e9e3d6;
+  --color-selected: #e6dfcc;
+  --color-selected-row: #faf1e1;
   --color-signal: #e2471c;
   --color-trash-bg: #fee4e2;
   --color-trash: #9f1d14;
@@ -27,9 +25,9 @@
   --color-live-bg: #eaf3ec;
   --color-live-strong: #1f5a2b;
   --color-attention: #c27a0e;
-  --color-idle: #a1a1aa;
-  --color-ink-soft: #18181b;
-  --color-neutral: #f1f1f3;
+  --color-idle: #a39a8c;
+  --color-ink-soft: #221e19;
+  --color-neutral: #ece6d9;
   --color-both-bg: #e3e6f2;
   --color-both: #27346e;
   --color-warn-bg: #fffbeb;
@@ -37,7 +35,7 @@
   --color-warn-strong: #f59e0b;
   --color-warn: #78350f;
 
-  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-sans: 'Schibsted Grotesk Variable', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
   --radius-*: initial;
@@ -50,20 +48,20 @@
 
 @layer base {
   body {
-    @apply bg-surface font-sans text-[13px] leading-[1.4] text-ink;
+    @apply bg-surface font-sans text-sm leading-[1.45] text-ink;
   }
   h1 {
-    @apply text-[17px] font-semibold tracking-[-0.01em];
+    @apply text-[28px] font-extrabold tracking-[-0.035em];
   }
   h2 {
-    @apply text-sm font-medium;
+    @apply text-[17px] font-semibold;
   }
   button {
     @apply cursor-pointer disabled:cursor-not-allowed disabled:opacity-50;
   }
   input[type='checkbox'],
   input[type='radio'] {
-    @apply size-3.5 accent-ink;
+    @apply size-[18px] accent-ink;
   }
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-signal;
@@ -73,19 +71,19 @@
 /* Shared control styles from the prototype. Use these before writing new ones. */
 @layer components {
   .btn {
-    @apply inline-flex min-h-7 items-center justify-center gap-1.5 rounded border border-line-input bg-surface px-2.5 text-ink-soft;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded border border-line-input bg-surface px-3.5 text-ink-soft;
   }
   .btn-primary {
-    @apply inline-flex min-h-7 items-center justify-center gap-1.5 rounded bg-ink px-[11px] font-medium text-surface;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded bg-ink px-4 font-semibold text-surface;
   }
   .field {
-    @apply h-[30px] rounded border border-line-input bg-surface px-[9px] text-ink;
+    @apply h-10 rounded border border-line-input bg-surface px-3 text-ink;
   }
   .card {
     @apply rounded-md border border-line-card bg-surface;
   }
   .chip {
-    @apply inline-flex h-5 items-center rounded bg-selected px-[7px] text-[11px] font-medium whitespace-nowrap text-ink;
+    @apply inline-flex items-center rounded-sm bg-selected px-2 py-0.5 text-xs font-medium whitespace-nowrap text-ink;
   }
   .chip-trash {
     @apply bg-trash-bg text-trash;
@@ -103,6 +101,6 @@
     @apply bg-both-bg text-both;
   }
   .label {
-    @apply text-[11.5px] font-medium text-secondary;
+    @apply text-[13px] font-medium text-secondary;
   }
 }
