@@ -1,6 +1,6 @@
 // The condition builder's form and its translation to and from a rule.
-import { leaves, type Action, type Condition, type Extras, type Rule, type RuleInput } from '../../lib/api/rules';
-import { actionsText, extrasText, fields, treeWords, type FieldDef } from '../rules/text';
+import { leaves, type Action, type Condition, type Rule, type RulePatch } from '../../lib/api/rules';
+import { actionsText, extrasText, fields, treeWords, type Extras, type FieldDef } from '../rules/text';
 
 /** One row of the form. `value` is what the user typed; yes/no fields use `op` alone. */
 export interface Row {
@@ -19,7 +19,7 @@ export interface Builder extends Extras {
   action: 'move' | 'archive' | 'trash' | 'keep' | 'flag';
   folder: string;
   markRead: boolean;
-  editingId: string | null;
+  editingId: number | null;
 }
 
 export const emptyBuilder = (): Builder => ({
@@ -44,40 +44,40 @@ export function opsFor(type: FieldDef['type']): [id: string, name: string][] {
 
 export function toCondition(r: Row): Condition {
   const type = fields[r.field].type;
+  const op = r.op as Condition['op'];
   if (type === 'bool') return { field: r.field, op: 'eq', value: r.op === 'yes' };
-  if (type === 'num') return { field: r.field, op: r.op, value: Number(r.value) };
-  if (r.op === 'matches') return { field: r.field, op: r.op, value: r.value.trim() };
-  return { field: r.field, op: r.op, value: r.value.split(',').map((v) => v.trim()).filter(Boolean) };
+  if (type === 'num') return { field: r.field, op, value: Number(r.value) };
+  if (r.op === 'matches') return { field: r.field, op, value: r.value.trim() };
+  return { field: r.field, op, value: r.value.split(',').map((v) => v.trim()).filter(Boolean) };
 }
 
 /** A field or operator the builder does not offer falls back to the first one it does. */
 export function toRow(c: Condition): Row {
-  const field = fields[c.field] ? c.field : 'subject';
+  const field = c.field && fields[c.field] ? c.field : 'subject';
   if (typeof c.value === 'boolean') return { field, op: c.value ? 'yes' : 'no', value: '' };
   const ops = opsFor(fields[field].type).map((o) => o[0]);
-  return { field, op: ops.includes(c.op) ? c.op : ops[0], value: [c.value].flat().join(', ') };
+  return { field, op: c.op && ops.includes(c.op) ? c.op : ops[0], value: [c.value].flat().join(', ') };
 }
 
 /** Rows that say something: yes/no rows always do, the others need a value. */
 export const filled = (b: Builder) => b.rows.filter((r) => fields[r.field].type === 'bool' || r.value.trim());
 
-/** The rule this form describes, without the fields the builder does not own (wording, model, threshold). */
-export function toRule(b: Builder): Omit<RuleInput, 'said' | 'model' | 'min_confidence'> {
+/**
+ * The rule this form describes, without the fields the builder does not own (wording, model,
+ * threshold). It is a patch as it stands; with `said` and `enabled` it is a RuleInput.
+ */
+export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' | 'conditions' | 'exceptions' | 'actions' | 'account_id' | 'stack'>> {
   const rows = filled(b);
   const folder = b.folder.trim();
   const first: Action[] = b.action === 'flag' ? [{ type: 'keep' }, { type: 'flag' }] : b.action === 'move' ? [{ type: 'move', folder }] : [{ type: b.action }];
   return {
     name: b.name.trim() || (b.action === 'move' ? folder : 'Condition rule'),
-    intent: b.intent.trim() || null,
+    intent: b.intent.trim(),
     conditions: rows.length ? { [b.match]: rows.map(toCondition) } : {},
     exceptions: b.unless ? { all: [{ field: 'replied_before', op: 'eq', value: true }] } : {},
     actions: b.markRead && b.action !== 'trash' ? [...first, { type: 'read' }] : first,
     account_id: b.account_id,
     stack: b.stack,
-    later: b.later,
-    notify: b.notify,
-    draft: b.draft,
-    draftNote: b.draftNote,
   };
 }
 
@@ -90,7 +90,7 @@ export function fromRule(r: Rule): Builder {
     name: r.name,
     match: r.conditions.any ? 'any' : 'all',
     rows: rows.length ? rows : emptyBuilder().rows,
-    intent: r.intent ?? '',
+    intent: r.intent,
     unless: leaves(r.exceptions).length > 0,
     action: has('trash') ? 'trash' : has('move') ? 'move' : has('archive') ? 'archive' : has('flag') ? 'flag' : 'keep',
     folder: r.actions.find((a) => a.type === 'move')?.folder ?? '',
@@ -98,10 +98,6 @@ export function fromRule(r: Rule): Builder {
     editingId: r.id,
     account_id: r.account_id,
     stack: r.stack,
-    later: r.later,
-    notify: r.notify,
-    draft: r.draft,
-    draftNote: r.draftNote,
   };
 }
 

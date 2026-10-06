@@ -1,8 +1,10 @@
 <script lang="ts">
   import { push } from 'svelte-spa-router';
+  import { notBuilt } from '../../lib/api/client';
   import * as rulesApi from '../../lib/api/rules';
-  import { features } from '../../lib/features';
+  import NotBuilt from '../../lib/components/NotBuilt.svelte';
   import { accounts } from '../../lib/state/accounts.svelte';
+  import { attempt } from '../../lib/state/compose.svelte';
   import { add, edit, rules } from '../../lib/state/rules.svelte';
   import { flash } from '../../lib/state/toast.svelte';
   import MoreOptions from '../rules/MoreOptions.svelte';
@@ -16,13 +18,12 @@
   let b = $state(start());
   let testing = $state(false);
   // A test result is shown only for the form it was run on.
-  let tested = $state({ form: '', text: '' });
+  let tested = $state({ form: '', text: '', notBuilt: false });
   const form = $derived(JSON.stringify(toRule(b)));
 
   const empty = $derived(!filled(b).length && !b.intent.trim());
   // Folders other rules already move mail to. The mailbox's own folder list arrives with accounts.
   const folders = $derived([...new Set(rules.list.flatMap((r) => r.actions.flatMap((a) => a.folder ?? [])))]);
-  const more = ['mailbox', 'stacking', features.timedActions && 'later actions', features.notifications && 'notifications', features.draftReplies && 'reply drafts'].filter(Boolean).join(', ');
 
   function setField(i: number, field: string) {
     b.rows[i] = { field, op: opsFor(fields[field].type)[0][0], value: '' };
@@ -30,31 +31,39 @@
 
   async function test() {
     if (empty) return flash('Add a condition with a value first');
+    const account = b.account_id ?? accounts.list[0]?.id;
+    if (account === undefined) return flash('Connect a mailbox first: a test runs on its recent mail');
+    const r = toRule(b);
     testing = true;
-    const t = await rulesApi.test(toRule(b));
-    testing = false;
-    tested = {
-      form,
-      text:
-        `Matched ${t.matched} of your last ${t.limit} emails, ` +
-        (t.model_calls ? `with ${t.model_calls} sent to the decision model.` : 'all decided by conditions with no model calls.') +
-        ` Latest: ${t.latest_from ? 'mail from ' + t.latest_from : 'a matching email from yesterday'}.`,
-    };
+    try {
+      const t = await rulesApi.test({ account_id: Number(account), rules: [{ ...r, enabled: true }], limit: 200 });
+      // A draft's rows carry its name and no rule id.
+      const latest = t.results.filter((x) => x.rule_id === null && x.rule_name === r.name).sort((x, y) => (y.received_at ?? 0) - (x.received_at ?? 0))[0];
+      tested = {
+        form,
+        notBuilt: false,
+        text:
+          `Matched ${t.matched} of your last ${t.tested} emails, ` +
+          (t.model_calls ? `with ${t.model_calls} sent to the decision model.` : 'all decided by conditions with no model calls.') +
+          (latest ? ` Latest: mail from ${latest.from}.` : ''),
+      };
+    } catch (e) {
+      if (notBuilt(e)) tested = { form, text: '', notBuilt: true };
+      else flash((e as Error).message);
+    } finally {
+      testing = false;
+    }
   }
 
   async function save() {
     if (empty) return flash('Add at least one condition with a value');
     if (b.action === 'move' && !b.folder.trim()) return flash('Choose a folder to move these emails to');
     const r = toRule(b);
-    let id = b.editingId;
-    if (id) {
-      await edit(id, r);
-      flash(r.name + ' updated');
-    } else {
-      [{ id }] = await add([{ ...r, said: 'Built with conditions', model: null, min_confidence: null }]);
-      flash(r.name + ' saved and live');
-    }
-    push('/rules?id=' + id);
+    const id = b.editingId;
+    const saved = await attempt('Saving new rules', async () => (id ? edit(id, r) : (await add([{ ...r, said: 'Built with conditions', enabled: true }]))[0]));
+    if (!saved) return;
+    flash(r.name + (id ? ' updated' : ' saved and live'));
+    push('/rules?id=' + saved.id);
   }
 </script>
 
@@ -133,9 +142,9 @@
     </div>
 
     <details class="border-t border-line-divider pt-3.5">
-      <summary class="min-h-8 cursor-pointer font-semibold">More options: {more}</summary>
+      <summary class="min-h-8 cursor-pointer font-semibold">More options: mailbox, stacking</summary>
       <div class="flex flex-col gap-3.5 pt-3">
-        <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" draftLabel="Draft a reply in my Drafts folder (never sent automatically)" />
+        <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" />
       </div>
     </details>
     <div class="flex flex-wrap gap-2 border-t border-line-divider pt-3.5">
@@ -151,7 +160,7 @@
 
   <aside aria-label="Rule preview" class="card flex min-w-0 flex-[2_1_300px] flex-col gap-3.5 p-[18px]">
     <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">In plain words</div>
-    <p class="text-[15px] leading-[1.55]">{english(b, accounts.list.find((a) => a.id === b.account_id)?.email)}</p>
+    <p class="text-[15px] leading-[1.55]">{english(b, accounts.list.find((a) => String(a.id) === String(b.account_id))?.email)}</p>
     <div class="flex flex-wrap gap-1.5">
       {#each filled(b) as r}
         <span class="rounded bg-neutral px-2 py-1 font-mono text-[12.5px] text-ink-soft">{condText(toCondition(r))}</span>
@@ -162,7 +171,9 @@
     {:else}
       <div class="rounded bg-selected px-3 py-2.5 text-[13px]">Conditions only: decided instantly on your server, no model, no cost.</div>
     {/if}
-    {#if tested.form === form}
+    {#if tested.form === form && tested.notBuilt}
+      <NotBuilt what="Testing a rule" />
+    {:else if tested.form === form}
       <div role="status" class="rounded bg-selected px-3 py-2.5 text-[13px]">{tested.text}</div>
     {/if}
     <div class="text-[12.5px] text-muted">Rules are checked top to bottom. New rules go to the bottom; reorder them in Rules.</div>

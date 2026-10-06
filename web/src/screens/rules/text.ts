@@ -1,5 +1,8 @@
 // How a rule reads on screen: wording from the prototype over the rule shape in lib/api/rules.ts.
-import { leaves, type Action, type Condition, type ConditionTree, type Extras, type RuleInput } from '../../lib/api/rules';
+import { leaves, type Action, type Condition, type Rule } from '../../lib/api/rules';
+
+/** The "more options" of a rule. */
+export type Extras = Pick<Rule, 'account_id' | 'stack'>;
 
 export interface FieldDef {
   label: string;
@@ -25,9 +28,9 @@ export const fields: Record<string, FieldDef> = {
 };
 
 /** The chip beside a rule's name: who decides, and whether it costs anything. */
-export function kind(r: Pick<RuleInput, 'intent' | 'conditions'>) {
+export function kind(r: { intent?: string | null; conditions?: Condition }) {
   if (!r.intent) return { label: 'Conditions · free', chip: 'chip chip-neutral' };
-  return leaves(r.conditions).length ? { label: 'Conditions + AI', chip: 'chip chip-both' } : { label: 'AI intent', chip: 'chip' };
+  return leaves(r.conditions ?? {}).length ? { label: 'Conditions + AI', chip: 'chip chip-both' } : { label: 'AI intent', chip: 'chip' };
 }
 
 const values = (c: Condition) => [c.value].flat().map(String);
@@ -39,14 +42,14 @@ export const condText = (c: Condition) =>
 const opWords: Record<string, string> = { in: 'is', contains_any: 'contains', matches: 'matches', gt: 'is more than', lt: 'is less than' };
 
 function condWords(c: Condition) {
-  const words = fields[c.field]?.words ?? c.field;
+  const words = fields[c.field ?? '']?.words ?? c.field;
   if (typeof c.value === 'boolean') return c.value ? words : 'not (' + words + ')';
   const v = values(c);
-  return `${words} ${opWords[c.op] ?? c.op} ${v.length > 1 ? v.slice(0, -1).join(', ') + ' or ' + v.at(-1) : v[0]}`;
+  return `${words} ${opWords[c.op ?? ''] ?? c.op} ${v.length > 1 ? v.slice(0, -1).join(', ') + ' or ' + v.at(-1) : v[0]}`;
 }
 
 /** the sender domain is swiggy.in or zomato.com and it has an attachment */
-export const treeWords = (t: ConditionTree) => leaves(t).map(condWords).join(t.any ? ' or ' : ' and ');
+export const treeWords = (t: Condition) => leaves(t).map(condWords).join(t.any ? ' or ' : ' and ');
 
 const actionWords: Partial<Record<Action['type'], string>> = { archive: 'Archive', trash: 'Move to Trash', keep: 'Keep in Inbox', read: 'mark read' };
 
@@ -55,21 +58,11 @@ export const actionsText = (actions: Action[]) =>
   actions.map((a) => (a.type === 'move' ? 'Move to ' + (a.folder || '[folder]') : (actionWords[a.type] ?? a.type))).join(', ');
 
 /** The tail after the actions. `only` is the mailbox address when the rule applies to one. */
-export function extrasText(x: Extras, only?: string) {
-  const parts = [];
-  const lw: Record<string, string> = { archive: 'archive', trash: 'move to Trash', read: 'mark read' };
-  if (x.later?.on) parts.push('then ' + lw[x.later.action] + ' after ' + x.later.after);
-  if (x.notify && x.notify !== 'none') parts.push('notify on ' + x.notify);
-  if (x.draft) parts.push('draft a reply');
-  let t = parts.length ? ', ' + parts.join(', ') : '';
-  if (x.stack) t += ' · stacks';
-  if (only) t += ' · only ' + only;
-  return t;
-}
+export const extrasText = (x: Extras, only?: string) => (x.stack ? ' · stacks' : '') + (only ? ' · only ' + only : '');
 
 /** One line for the rule list: conditions, then intent, then the exception. */
-export function summary(r: Pick<RuleInput, 'intent' | 'conditions' | 'exceptions'>) {
+export function summary(r: Pick<Rule, 'intent' | 'conditions' | 'exceptions'>) {
   const conds = leaves(r.conditions).map(condText).join(r.conditions.any ? ' or ' : ' and ');
   const unless = treeWords(r.exceptions);
-  return conds + (conds && r.intent ? ', about: ' : '') + (r.intent ?? '') + (unless ? ', unless ' + unless : '');
+  return conds + (conds && r.intent ? ', about: ' : '') + r.intent + (unless ? ', unless ' + unless : '');
 }
