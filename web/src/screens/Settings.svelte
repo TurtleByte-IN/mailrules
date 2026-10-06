@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { Decider, KeyName } from '../lib/api/settings';
+  import type { Decider, KeyName, UrlName } from '../lib/api/settings';
   import { confidence } from '../lib/format';
-  import { load, patch, setKey, settings, toggleDryRun } from '../lib/state/settings.svelte';
+  import { load, patch, setKey, settings, setUrl, toggleDryRun } from '../lib/state/settings.svelte';
 
   // Digest and Notification channels (P2) are added here with their backend, behind
   // features.digest and features.notifications.
@@ -13,6 +13,11 @@
     { id: 'anthropic', name: 'Claude Haiku 4.5 only', note: 'Every uncertain email goes to Claude Haiku 4.5. About $1.25 to $2.35 per month at 100 emails a day.' },
     { id: 'openai', name: 'OpenAI-compatible endpoint', note: 'Uses your OpenAI API key. Name the model below.', needsModel: true },
     { id: 'ollama', name: 'Ollama on my server', note: 'Runs on your own server. Free, private, slower on small machines. Name the model below.', needsModel: true },
+  ];
+  // Where a decider that runs on the user's own endpoint is reached; shown for that decider only.
+  const urls: { id: UrlName; decider: Decider; label: string; placeholder: string }[] = [
+    { id: 'openai_base_url', decider: 'openai', label: 'Endpoint URL', placeholder: 'api.openai.com' },
+    { id: 'ollama_url', decider: 'ollama', label: 'Ollama server URL', placeholder: 'http://localhost:11434' },
   ];
   const keys: { id: KeyName; label: string; placeholder: string }[] = [
     { id: 'openrouter_api_key', label: 'OpenRouter API key', placeholder: 'sk-or-v1-…' },
@@ -29,6 +34,7 @@
   let escalate = $derived(Math.round(s.escalate_below * 100));
   let act = $derived(Math.round(s.min_confidence * 100));
   const chosen = $derived(deciders.find((d) => d.id === decider));
+  let urlErrors = $state<Record<UrlName, string>>({ openai_base_url: '', ollama_url: '' });
   // Write-only: a draft lives here until it is sent, then it is cleared.
   let drafts = $state<Record<KeyName, string>>({ openrouter_api_key: '', cloudflare_account_id: '', cloudflare_api_token: '', anthropic_api_key: '', openai_api_key: '' });
 
@@ -102,6 +108,27 @@
           <div class="text-[12.5px] text-secondary">Leave empty to use the provider's default.</div>
         {/if}
       </div>
+      {#each urls.filter((u) => u.decider === decider) as u (u.id)}
+        <div class="flex flex-col gap-1.5">
+          <label for="set-{u.id}" class="text-[13px] font-semibold">{u.label}</label>
+          <input
+            id="set-{u.id}"
+            class="field h-11 max-w-[360px] font-mono text-[13px]"
+            type="url"
+            autocomplete="off"
+            placeholder={u.placeholder}
+            aria-invalid={!!urlErrors[u.id]}
+            value={s[u.id]}
+            onchange={async (e) => {
+              const el = e.currentTarget;
+              urlErrors[u.id] = await setUrl(u.id, el.value.trim());
+            }}
+          />
+          {#if urlErrors[u.id]}
+            <div role="alert" class="text-[12.5px] text-trash">{urlErrors[u.id]}</div>
+          {/if}
+        </div>
+      {/each}
       <div class="flex flex-col gap-1.5">
         <label for="set-fallback" class="text-[13px] font-semibold">Fallback model</label>
         <input id="set-fallback" class="field h-11 max-w-[360px] font-mono text-[13px]" autocomplete="off" value={s.fallback_model} onchange={(e) => saveField(e, 'fallback_model')} />

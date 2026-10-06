@@ -66,6 +66,23 @@ export async function connect(c: accountsApi.AccountInput) {
   return a;
 }
 
+/** The folder names a mailbox can watch; a failure is shown as a toast and none are returned. */
+export async function folderNames(id: number) {
+  try {
+    return (await accountsApi.folders(id)).map((f) => f.name);
+  } catch (e) {
+    flash(message(e));
+    return [];
+  }
+}
+
+/** Saves edits to a mailbox. A new password goes to the API and nowhere else. Throws when the daemon refuses. */
+export async function edit(id: number, p: Pick<accountsApi.AccountPatch, 'label' | 'watch_folder' | 'password'>) {
+  const a = await accountsApi.patch(id, p);
+  put(a);
+  flash(a.label + ' updated');
+}
+
 /** Runs one row action; a failure is shown as a toast and the list stays as it was. */
 async function act(run: () => Promise<void>) {
   try {

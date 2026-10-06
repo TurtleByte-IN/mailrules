@@ -1,6 +1,6 @@
 import type { AccountInput, Preset, TestResult } from '../../lib/api/accounts';
 import * as accountsApi from '../../lib/api/accounts';
-import { ApiError, notBuilt } from '../../lib/api/client';
+import { ApiError } from '../../lib/api/client';
 import { accounts, connect } from '../../lib/state/accounts.svelte';
 import { addTemplatesByName } from '../../lib/state/compose.svelte';
 import { flash } from '../../lib/state/toast.svelte';
@@ -27,6 +27,9 @@ export class Wizard {
   password = $state('');
   host = $state('');
   port = $state(993);
+  tls = $state<Preset['tls_mode']>('implicit');
+  /** Once the user has typed a port, the encryption choice leaves it alone. */
+  #portEdited = false;
   test = $state<'idle' | 'testing' | 'ok' | 'err'>('idle');
   result = $state<TestResult>();
   error = $state('');
@@ -42,7 +45,7 @@ export class Wizard {
 
   /** The field to show the error beside; empty when that field is not on the form (a preset's own host). */
   get errorField() {
-    const shown = this.preset?.host ? ['username', 'password'] : ['username', 'password', 'host', 'port'];
+    const shown = this.preset?.host ? ['username', 'password'] : ['username', 'password', 'host', 'port', 'tls_mode'];
     return this.test === 'err' && shown.includes(this.errorPath) ? this.errorPath : '';
   }
 
@@ -64,9 +67,21 @@ export class Wizard {
     this.test = 'idle';
   }
 
+  portEdited() {
+    this.#portEdited = true;
+    this.edited();
+  }
+
+  /** The port follows the encryption mode until the user has set one by hand. */
+  setTls(mode: Preset['tls_mode']) {
+    this.tls = mode;
+    if (!this.#portEdited) this.port = mode === 'implicit' ? 993 : 143;
+    this.edited();
+  }
+
   #input(): AccountInput {
     const c = { preset: this.presetId, username: this.email.trim(), password: this.password };
-    return this.preset?.host ? c : { ...c, host: this.host.trim(), port: this.port };
+    return this.preset?.host ? c : { ...c, host: this.host.trim(), port: this.port, tls_mode: this.tls };
   }
 
   #fail(message: string, path = '') {
@@ -113,9 +128,10 @@ export class Wizard {
       // The mailbox is connected from here on, whatever happens to the starter rules.
       const names = this.templates.filter((t) => t.on).map((t) => t.name);
       try {
-        if (names.length) await addTemplatesByName(names);
+        const n = names.length ? await addTemplatesByName(names) : 0;
+        if (n) flash(`${a.label} is live with ${n} new ${n === 1 ? 'rule' : 'rules'}`);
       } catch (e) {
-        flash(notBuilt(e) ? a.label + ' is live. Starter rules could not be added yet.' : e instanceof Error ? e.message : String(e));
+        flash(e instanceof Error ? e.message : String(e));
       }
       return true;
     } catch (e) {

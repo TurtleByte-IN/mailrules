@@ -1,3 +1,4 @@
+import { ApiError } from '../api/client';
 import * as settingsApi from '../api/settings';
 import { flash } from './toast.svelte';
 
@@ -44,6 +45,20 @@ export async function patch(p: settingsApi.SettingsPatch) {
     flash(message(e));
     return false;
   }
+}
+
+/**
+ * Saves the URL a decider talks to; an empty one removes the stored value. Resolves the daemon's
+ * reason when it refuses the URL, to show beside the field, and '' otherwise.
+ */
+export async function setUrl(name: settingsApi.UrlName, url: string) {
+  try {
+    settings.value = await settingsApi.patch({ [name]: url });
+  } catch (e) {
+    if (e instanceof ApiError && e.path === name) return e.message;
+    flash(message(e));
+  }
+  return '';
 }
 
 /** Sends a provider key once; an empty one removes the stored key. Only "is set" comes back; the key is never kept here. */
