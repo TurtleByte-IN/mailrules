@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Decider, KeyName, UrlName } from '../lib/api/settings';
+  import { keysInUse } from './settings/keysInUse';
   import { confidence } from '../lib/format';
+  import { rules } from '../lib/state/rules.svelte';
   import { load, patch, setKey, settings, setUrl, toggleDryRun } from '../lib/state/settings.svelte';
 
   // Digest and Notification channels (P2) are added here with their backend, behind
@@ -35,6 +37,7 @@
   let escalate = $derived(Math.round(s.escalate_below * 100));
   let act = $derived(Math.round(s.min_confidence * 100));
   const chosen = $derived(deciders.find((d) => d.id === decider));
+  const inUse = $derived(keysInUse({ decider: s.decider, fallback_model: s.fallback_model, composer_model: s.composer_model, keys: s.keys, ruleModels: rules.list.map((r) => r.model) }));
   /** The id of the warning that names this setting (as SettingsPatch spells it), when there is one. */
   const needed = (path: string) => (s.warnings.some((w) => w.path === path) ? 'warn-' + path : undefined);
   let urlErrors = $state<Record<UrlName, string>>({ openai_base_url: '', ollama_url: '' });
@@ -195,27 +198,41 @@
       </label>
     </section>
 
+    {#snippet keyRow(k: (typeof keys)[number])}
+      <form class="flex flex-wrap items-end gap-x-3 gap-y-2" onsubmit={(e) => saveKey(e, k.id, k.label)}>
+        <label class="flex flex-[1_1_260px] flex-col gap-1.5">
+          <span class="flex items-center gap-2 text-[13px] font-semibold">
+            {k.label}
+            <span class="chip {s.keys[k.id] === 'none' ? 'chip-neutral' : ''}">{keySource[s.keys[k.id]]}</span>
+            {#if needed('keys.' + k.id)}
+              <span class="text-[12.5px] font-normal text-warn">Needed</span>
+            {/if}
+          </span>
+          <input class="field font-mono text-[13px]" type="password" autocomplete="off" placeholder={k.placeholder} aria-describedby={needed('keys.' + k.id)} bind:value={drafts[k.id]} />
+        </label>
+        <button class="btn font-semibold" disabled={!drafts[k.id].trim()}>{s.keys[k.id] === 'stored' ? 'Replace' : 'Save'}</button>
+        {#if s.keys[k.id] === 'stored'}
+          <button type="button" class="btn text-trash" aria-label="Remove {k.label}" onclick={() => setKey(k.id, '', k.label)}>Remove</button>
+        {/if}
+      </form>
+    {/snippet}
+
     <section aria-label="Model API keys" class="card flex flex-col gap-3.5 p-5">
       <h2>Model API keys</h2>
       <p class="text-[13.5px] text-secondary">Keys are encrypted with your master key and never logged.</p>
-      {#each keys as k (k.id)}
-        <form class="flex flex-wrap items-end gap-x-3 gap-y-2" onsubmit={(e) => saveKey(e, k.id, k.label)}>
-          <label class="flex flex-[1_1_260px] flex-col gap-1.5">
-            <span class="flex items-center gap-2 text-[13px] font-semibold">
-              {k.label}
-              <span class="chip {s.keys[k.id] === 'none' ? 'chip-neutral' : ''}">{keySource[s.keys[k.id]]}</span>
-              {#if needed('keys.' + k.id)}
-                <span class="text-[12.5px] font-normal text-warn">Needed</span>
-              {/if}
-            </span>
-            <input class="field font-mono text-[13px]" type="password" autocomplete="off" placeholder={k.placeholder} aria-describedby={needed('keys.' + k.id)} bind:value={drafts[k.id]} />
-          </label>
-          <button class="btn font-semibold" disabled={!drafts[k.id].trim()}>{s.keys[k.id] === 'stored' ? 'Replace' : 'Save'}</button>
-          {#if s.keys[k.id] === 'stored'}
-            <button type="button" class="btn text-trash" aria-label="Remove {k.label}" onclick={() => setKey(k.id, '', k.label)}>Remove</button>
-          {/if}
-        </form>
+      {#each keys.filter((k) => inUse.has(k.id)) as k (k.id)}
+        {@render keyRow(k)}
       {/each}
+      {#if keys.some((k) => !inUse.has(k.id))}
+        <details class="border-t border-line-divider pt-3.5">
+          <summary class="min-h-8 cursor-pointer font-semibold">Other providers</summary>
+          <div class="flex flex-col gap-3.5 pt-3">
+            {#each keys.filter((k) => !inUse.has(k.id)) as k (k.id)}
+              {@render keyRow(k)}
+            {/each}
+          </div>
+        </details>
+      {/if}
     </section>
 
     {#if s.server.mode === 'selfhost'}
