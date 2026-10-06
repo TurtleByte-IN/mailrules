@@ -48,17 +48,23 @@ func (s *Store) SendersSeen(ctx context.Context, userID, since int64) ([]SenderS
 // decision: the unit the stats count. A message decided twice (a retry, a cleanup run)
 // counts once, as it stands now.
 const latest = `WITH latest AS (
-	SELECT m.id AS message_id, m.state AS state, d.rule_id AS rule_id, COALESCE(d.model, '') AS model,
+	SELECT m.id AS message_id, m.state AS state, d.stage AS stage, d.rule_id AS rule_id, COALESCE(d.model, '') AS model,
 	       COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, '') AS rule_name
 	FROM messages m JOIN accounts a ON a.id = m.account_id
 	JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
 	WHERE a.user_id = ?1 AND d.created_at >= ?2) `
 
+// withoutModelSQL is the one definition of "decided without a model", over the latest CTE:
+// a sender rule or a condition rule settled the email, no model was asked, and the rule's
+// actions ran. Stage "none" (no rule matched, or no model could be asked and the email
+// waits in Needs review) is not a decision by anyone, so it never counts.
+const withoutModelSQL = `(state = 'acted' AND stage IN ('sender', 'condition') AND model = '')`
+
 // Totals are the counts of the stats tiles.
 type Totals struct {
 	Processed    int // emails decided
 	Sorted       int // of those, a rule or sender rule was applied (or recorded, in dry-run) and not undone since
-	WithoutModel int // of those, settled without asking a model
+	WithoutModel int // of those, a sender rule or condition rule acted on, with no model asked; never more than Processed
 	Trashed      int // emails with a trash action that is in effect (or recorded, in dry-run)
 
 	// Where the processed emails ended up; the four add up to Processed.
@@ -75,7 +81,7 @@ func (s *Store) StatsTotals(ctx context.Context, userID, since int64) (Totals, e
 	went := outcomeSQL("state", "latest.message_id")
 	sum := func(outcome string) string { return `COALESCE(SUM(` + went[outcome] + `), 0)` }
 	err := s.db.QueryRowContext(ctx,
-		latest+`SELECT COUNT(*), COALESCE(SUM(model = ''), 0),
+		latest+`SELECT COUNT(*), COALESCE(SUM(`+withoutModelSQL+`), 0),
 		          (SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN accounts a ON a.id = x.account_id
 		           WHERE a.user_id = ?1 AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2),
 		          `+sum("sorted")+`, `+sum("trashed")+`, `+sum("review")+`, `+sum("inbox")+`
