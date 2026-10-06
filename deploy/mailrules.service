@@ -1,0 +1,61 @@
+# systemd unit for the single binary.
+#
+#   sudo useradd --system --home-dir /var/lib/mailrules --shell /usr/sbin/nologin mailrules
+#   sudo install -m 0755 bin/mailrules /usr/local/bin/mailrules
+#   sudo install -m 0644 deploy/mailrules.service /etc/systemd/system/mailrules.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mailrules
+#
+# Optional settings go in /etc/mailrules/env as NAME=value lines (mode 0600, owned by
+# root); see docs/backend-plan.md, Configuration. The database and master.key live in
+# /var/lib/mailrules.
+
+[Unit]
+Description=MailRules email sorting daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=mailrules
+Group=mailrules
+ExecStart=/usr/local/bin/mailrules serve
+Environment=MAILRULES_DATA_DIR=/var/lib/mailrules
+Environment=MAILRULES_LISTEN=127.0.0.1:8080
+EnvironmentFile=-/etc/mailrules/env
+Restart=on-failure
+RestartSec=5
+
+# /var/lib/mailrules, created and owned by the service user; the only writable path.
+StateDirectory=mailrules
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+# Refuse a filtered call with an error instead of killing the daemon.
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

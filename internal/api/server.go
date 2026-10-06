@@ -19,6 +19,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
+	"github.com/TurtleByte-IN/mailrules/internal/web"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
@@ -159,6 +160,10 @@ func NewHandler(o Options) http.Handler {
 		}
 		mux.Handle(r.method+" "+r.path, s.csrf(h))
 	}
+	// Everything else under /api/ is a JSON 404, so a mistyped endpoint never gets the UI's
+	// index.html. The UI takes what is left; the patterns above are more specific and win.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { notFound(w, "endpoint") })
+	mux.Handle("/", web.Handler())
 	return s.harden(mux)
 }
 

@@ -14,3 +14,24 @@ jobs:
           go-version-file: go.mod
       - run: make check
       - run: make vuln
+      # The web app, once web/ is in the repository: its own checks, then the same build
+      # and embed a release does.
+      - if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - if: hashFiles('web/package.json') != ''
+        run: make build && npm --prefix web run check
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Built, never pushed. The container must come up with a read-only root filesystem.
+      - run: docker build -f deploy/Dockerfile -t mailrules:ci .
+      - run: |
+          docker run -d --name mailrules --read-only --tmpfs /tmp -p 127.0.0.1:8080:8080 mailrules:ci
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          docker logs mailrules; exit 1
