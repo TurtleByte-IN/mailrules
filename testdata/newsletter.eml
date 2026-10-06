@@ -1,0 +1,32 @@
+Delivered-To: me@icloud.com
+Authentication-Results: dmarc.icloud.com; dmarc=pass header.from=dailybite.example
+Authentication-Results: dkim-verifier.icloud.com; dkim=pass (2048-bit key) header.d=dailybite.example
+Received: from mta12.dailybite.example (mta12.dailybite.example [203.0.113.12])
+	by mx.icloud.com with ESMTPS; Mon, 05 Oct 2026 08:00:03 +0000
+From: "The Daily Bite" <News@DailyBite.example>
+To: me@icloud.com
+Subject: 5 dinners under 30 minutes
+Date: Mon, 05 Oct 2026 08:00:00 +0000
+Message-ID: <20261005080000.news.42@dailybite.example>
+List-Id: The Daily Bite weekly <weekly.dailybite.example>
+List-Unsubscribe: <https://dailybite.example/u/abc123>, <mailto:unsub@dailybite.example>
+Precedence: bulk
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt-1"
+
+--alt-1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Quick dinners​​ for busy‌ weeknights.   ﻿
+
+
+1. Lemon pasta
+2. Sheet-pan	chicken
+
+Unsubscribe: https://dailybite.example/u/abc123
+--alt-1
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>THE HTML VERSION</h1><p>Quick dinners for busy weeknights.</p></body></html>
+--alt-1--

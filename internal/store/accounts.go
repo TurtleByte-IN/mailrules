@@ -1,0 +1,346 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
+)
+
+// Account is one mailbox the daemon watches. Its password is never part of this struct:
+// read it with AccountSecret at the moment a connection is made.
+type Account struct {
+	ID           int64
+	UserID       int64
+	Label        string
+	Preset       string
+	Host         string
+	Port         int
+	TLSMode      string
+	Username     string
+	WatchFolder  string
+	Status       string // new | live | reconnecting | auth_failed | error | paused
+	LastError    string
+	LastEventAt  int64
+	Capabilities []string
+	CreatedAt    int64
+}
+
+const accountCols = `id, user_id, label, preset, host, port, tls_mode, username, watch_folder, status,
+	COALESCE(last_error, ''), COALESCE(last_event_at, 0), COALESCE(capabilities, '[]'), created_at`
+
+func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
+	var a Account
+	var caps string
+	if err := row.Scan(&a.ID, &a.UserID, &a.Label, &a.Preset, &a.Host, &a.Port, &a.TLSMode, &a.Username,
+		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt); err != nil {
+		return Account{}, err
+	}
+	if err := json.Unmarshal([]byte(caps), &a.Capabilities); err != nil {
+		return Account{}, fmt.Errorf("decode capabilities: %w", err)
+	}
+	return a, nil
+}
+
+// FirstUser returns the admin account, or ErrNotFound before first-run setup.
+func (s *Store) FirstUser(ctx context.Context) (User, error) {
+	var u User
+	err := s.db.QueryRowContext(ctx, `SELECT id, email, password_hash, created_at FROM users ORDER BY id LIMIT 1`).
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("get user: %w", err)
+	}
+	return u, nil
+}
+
+// CreateAccount stores an account with its secret encrypted under the master key. The
+// ciphertext is bound to the row id, which only exists after the insert, so the row is
+// inserted, sealed and updated in one transaction: no reader ever sees it without a secret.
+func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, secret string) (Account, error) {
+	caps, err := json.Marshal(append([]string{}, a.Capabilities...))
+	if err != nil {
+		return Account{}, fmt.Errorf("encode capabilities: %w", err)
+	}
+	if a.WatchFolder == "" {
+		a.WatchFolder = "INBOX"
+	}
+	if a.Status == "" {
+		a.Status = "new"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO accounts (user_id, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
+		                       watch_folder, status, capabilities, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ?)`,
+		a.UserID, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt)
+	if err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	if a.ID, err = res.LastInsertId(); err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	secretEnc, dekEnc, err := crypto.Seal(master, a.ID, []byte(secret))
+	if err != nil {
+		return Account{}, fmt.Errorf("encrypt account secret: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, a.ID); err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	return a, nil
+}
+
+// Account returns one account, or ErrNotFound.
+func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
+	a, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountCols+` FROM accounts WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("get account: %w", err)
+	}
+	return a, nil
+}
+
+// Accounts lists every account, oldest first.
+func (s *Store) Accounts(ctx context.Context) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+accountCols+` FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	defer rows.Close()
+	var out []Account
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list accounts: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	return out, nil
+}
+
+// AccountSecret decrypts an account's app password or token. It returns crypto.ErrDecrypt
+// when the master key is not the one the secret was sealed under.
+func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (string, error) {
+	var secretEnc, dekEnc []byte
+	err := s.db.QueryRowContext(ctx, `SELECT secret_enc, dek_enc FROM accounts WHERE id = ?`, id).Scan(&secretEnc, &dekEnc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get account secret: %w", err)
+	}
+	secret, err := crypto.Open(master, id, secretEnc, dekEnc)
+	if err != nil {
+		return "", fmt.Errorf("decrypt account secret: %w", err)
+	}
+	return string(secret), nil
+}
+
+// SetAccountStatus records the connection state; lastError is cleared by passing "".
+func (s *Store) SetAccountStatus(ctx context.Context, id int64, status, lastError string, now int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE accounts SET status = ?, last_error = NULLIF(?, ''), last_event_at = ? WHERE id = ?`, status, lastError, now, id)
+	if err != nil {
+		return fmt.Errorf("set account status: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetAccountCapabilities stores what the server advertised at the last login.
+func (s *Store) SetAccountCapabilities(ctx context.Context, id int64, capabilities []string) error {
+	caps, err := json.Marshal(append([]string{}, capabilities...))
+	if err != nil {
+		return fmt.Errorf("encode capabilities: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET capabilities = ? WHERE id = ?`, string(caps), id)
+	if err != nil {
+		return fmt.Errorf("set account capabilities: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAccount wipes an account with its secret, folders, contacts, messages, decisions
+// and actions in one transaction. Rules scoped to the account are not touched, so the
+// delete fails while any exist.
+func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	// These two have no ON DELETE CASCADE; folders, contacts, messages and decisions do.
+	for _, q := range []string{
+		`DELETE FROM actions WHERE account_id = ?`,
+		`DELETE FROM corrections WHERE message_id IN (SELECT id FROM messages WHERE account_id = ?)`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return fmt.Errorf("delete account: %w", err)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	return nil
+}
+
+// Folder is one folder of an account, with the watch position when it is watched.
+type Folder struct {
+	AccountID   int64
+	Name        string
+	Delimiter   string
+	SpecialUse  string // \Junk \Trash \Archive \Sent \Drafts or empty
+	UIDValidity uint32
+	LastUID     uint32 // highest UID processed
+}
+
+// SaveFolders replaces an account's folder list with what discovery found. Watch
+// positions of folders that still exist are kept; folders that are gone are removed.
+func (s *Store) SaveFolders(ctx context.Context, accountID int64, folders []Folder) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save folders: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	names := make([]any, 0, len(folders))
+	for _, f := range folders {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO folders (account_id, name, delimiter, special_use) VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''))
+			 ON CONFLICT (account_id, name) DO UPDATE SET delimiter = excluded.delimiter, special_use = excluded.special_use`,
+			accountID, f.Name, f.Delimiter, f.SpecialUse); err != nil {
+			return fmt.Errorf("save folders: %w", err)
+		}
+		names = append(names, f.Name)
+	}
+	enc, err := json.Marshal(names)
+	if err != nil {
+		return fmt.Errorf("save folders: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM folders WHERE account_id = ? AND name NOT IN (SELECT value FROM json_each(?))`, accountID, string(enc)); err != nil {
+		return fmt.Errorf("save folders: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save folders: %w", err)
+	}
+	return nil
+}
+
+const folderCols = `account_id, name, COALESCE(delimiter, ''), COALESCE(special_use, ''), COALESCE(uidvalidity, 0), last_uid`
+
+func scanFolder(row interface{ Scan(...any) error }) (Folder, error) {
+	var f Folder
+	err := row.Scan(&f.AccountID, &f.Name, &f.Delimiter, &f.SpecialUse, &f.UIDValidity, &f.LastUID)
+	return f, err
+}
+
+// Folders lists an account's folders by name.
+func (s *Store) Folders(ctx context.Context, accountID int64) ([]Folder, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+folderCols+` FROM folders WHERE account_id = ? ORDER BY name`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("list folders: %w", err)
+	}
+	defer rows.Close()
+	var out []Folder
+	for rows.Next() {
+		f, err := scanFolder(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list folders: %w", err)
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list folders: %w", err)
+	}
+	return out, nil
+}
+
+// Folder returns one folder, or ErrNotFound.
+func (s *Store) Folder(ctx context.Context, accountID int64, name string) (Folder, error) {
+	f, err := scanFolder(s.db.QueryRowContext(ctx, `SELECT `+folderCols+` FROM folders WHERE account_id = ? AND name = ?`, accountID, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Folder{}, ErrNotFound
+	}
+	if err != nil {
+		return Folder{}, fmt.Errorf("get folder: %w", err)
+	}
+	return f, nil
+}
+
+// SetFolderPosition records how far a watched folder has been processed.
+func (s *Store) SetFolderPosition(ctx context.Context, accountID int64, name string, uidValidity, lastUID uint32) error {
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO folders (account_id, name, uidvalidity, last_uid) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (account_id, name) DO UPDATE SET uidvalidity = excluded.uidvalidity, last_uid = excluded.last_uid`,
+		accountID, name, uidValidity, lastUID); err != nil {
+		return fmt.Errorf("set folder position: %w", err)
+	}
+	return nil
+}
+
+// Contact is an address the account's owner has sent mail to.
+type Contact struct {
+	Address    string // lower-case
+	LastSentAt int64
+}
+
+// UpsertContacts adds addresses to an account's contacts, keeping the latest sent time.
+func (s *Store) UpsertContacts(ctx context.Context, accountID int64, contacts []Contact) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("upsert contacts: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	for _, c := range contacts {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO contacts (account_id, address, last_sent_at) VALUES (?, ?, ?)
+			 ON CONFLICT (account_id, address) DO UPDATE
+			 SET last_sent_at = MAX(COALESCE(contacts.last_sent_at, 0), excluded.last_sent_at)`,
+			accountID, c.Address, c.LastSentAt); err != nil {
+			return fmt.Errorf("upsert contacts: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("upsert contacts: %w", err)
+	}
+	return nil
+}
+
+// IsContact reports whether the account's owner has sent mail to address.
+func (s *Store) IsContact(ctx context.Context, accountID int64, address string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM contacts WHERE account_id = ? AND address = ? COLLATE NOCASE)`, accountID, address).Scan(&n); err != nil {
+		return false, fmt.Errorf("look up contact: %w", err)
+	}
+	return n == 1, nil
+}

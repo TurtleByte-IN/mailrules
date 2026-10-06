@@ -1,0 +1,30 @@
+# Fixture for `mailrules rules validate` and `mailrules rules test`.
+defaults:
+  min_confidence: 0.75
+rules:
+  - id: food
+    said: "Put all Swiggy and Zomato stuff in Food"
+    match:
+      from_domain: [swiggy.in, zomato.com]
+    actions: ["move:Food"]
+  - id: recruiters
+    said: "recruiter emails go to Jobs unless I've talked to them before"
+    when: "Recruiter outreach about job openings"
+    match:
+      is_bulk: false
+    unless:
+      replied_before: true
+    actions: ["move:Jobs"]
+  - id: newsletters
+    said: "newsletters go to Reading"
+    match:
+      any:
+        - {field: list_id, op: exists}
+        - {field: subject, op: matches, value: '^issue \d+'}
+    actions: ["move:Reading", read]
+  - id: flag failed dmarc
+    said: "flag anything that fails DMARC"
+    match:
+      dmarc: fail
+    actions: [flag]
+    stack: true

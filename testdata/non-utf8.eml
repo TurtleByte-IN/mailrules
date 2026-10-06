@@ -1,0 +1,15 @@
+Authentication-Results: mx.icloud.com; dmarc=none
+From: =?ISO-8859-1?Q?J=F6rg_M=FCller?= <joerg@beispiel.example>
+To: me@icloud.com
+Subject: =?ISO-8859-1?Q?Gr=FC=DFe_aus_K=F6ln?=
+Date: Thu, 01 Oct 2026 09:30:00 +0200
+Message-ID: <gruss-1@beispiel.example>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=ISO-8859-1
+Content-Transfer-Encoding: 8bit
+
+Hallo,
+
+viele Grüße aus Köln. Das Café hat geöffnet.
+
+Jörg
