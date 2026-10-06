@@ -1,10 +1,10 @@
 <script lang="ts">
   import { link } from 'svelte-spa-router';
-  import { load, review } from '../lib/state/review.svelte';
+  import { load, loadMore, review } from '../lib/state/review.svelte';
+  import LoadError from './activity/LoadError.svelte';
   import Card from './review/Card.svelte';
 
-  let loaded = $state(false);
-  load().then(() => (loaded = true));
+  load();
 </script>
 
 <div class="flex max-w-[920px] flex-col gap-[18px]">
@@ -12,7 +12,9 @@
     <h1>Needs review</h1>
     <p class="mt-1 text-secondary">MailRules wasn't sure about these, so they're still in your inbox. Each answer teaches it.</p>
   </header>
-  {#if loaded && !review.list.length}
+  {#if review.error}
+    <LoadError message={review.error} retry={load} />
+  {:else if review.loaded && !review.list.length}
     <div class="card px-6 py-10 text-center">
       <div class="text-lg font-semibold">All clear</div>
       <p class="mt-1.5 mb-4 text-secondary">Nothing waiting. New uncertain emails will show up here.</p>
@@ -22,4 +24,7 @@
   {#each review.list as item (item.id)}
     <Card {item} />
   {/each}
+  {#if review.next}
+    <button type="button" class="btn self-center" onclick={loadMore}>Load more</button>
+  {/if}
 </div>
