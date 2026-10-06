@@ -1,0 +1,9 @@
+From: Zomato <noreply@mail.zomato.com>
+To: me@icloud.com
+Subject: Your order from Biryani House is on the way
+Date: Mon, 05 Oct 2026 19:42:10 +0530
+Message-ID: <order-4821@mail.zomato.com>
+Authentication-Results: mx.icloud.com; dkim=pass; dmarc=pass header.from=zomato.com
+Content-Type: text/plain; charset=utf-8
+
+Your rider has picked up the order. Total paid: Rs 412.

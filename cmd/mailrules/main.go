@@ -26,6 +26,7 @@ const usage = `usage: mailrules <command> [flags]
 
   serve     run the daemon and web UI
   migrate   apply database migrations
+  rules     validate a rules file, or test it over .eml files
   version   print the version
 `
 
@@ -59,6 +60,8 @@ func run(args []string) error {
 		}
 		defer db.Close()
 		return store.Migrate(ctx, db)
+	case "rules":
+		return rulesCmd(args[1:], os.Stdout)
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {

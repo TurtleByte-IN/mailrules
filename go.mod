@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/pressly/goose/v3 v3.28.0
 	golang.org/x/crypto v0.57.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
 
