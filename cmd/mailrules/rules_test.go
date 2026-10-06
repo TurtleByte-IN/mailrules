@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
 const fixtures = "../../testdata/rules"
@@ -32,13 +34,13 @@ func TestRulesCmd(t *testing.T) {
 		{"test without --eml", []string{"test", rulesFile}, nil, "no .eml files"},
 		{"test with an empty directory", []string{"test", rulesFile, "--eml", t.TempDir()}, nil, "no .eml files"},
 		{"missing file", []string{"validate", filepath.Join(fixtures, "nope.yaml")}, nil, "read rules"},
-		{"no file", []string{"validate"}, nil, "expected validate or test"},
-		{"unknown subcommand", []string{"import", rulesFile}, nil, "expected validate or test"},
+		{"no file", []string{"validate"}, nil, "expected import, export, validate or test"},
+		{"unknown subcommand", []string{"frobnicate", rulesFile}, nil, "expected import, export, validate or test"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			err := rulesCmd(tt.args, &out)
+			err := rulesCmd(t.Context(), tt.args, os.Getenv, &out)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want one containing %q", err, tt.wantErr)
@@ -86,5 +88,50 @@ func TestSummaryFromEML(t *testing.T) {
 	}
 	if _, err := summaryFromEML(filepath.Join(fixtures, "rules.yaml")); err == nil {
 		t.Error("a non-email parsed")
+	}
+}
+
+// import and export work on the database, the same as the HTTP endpoints.
+func TestRulesImportExport(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	getenv := func(k string) string { return map[string]string{"MAILRULES_DATA_DIR": dir}[k] }
+	rulesFile := filepath.Join(fixtures, "rules.yaml")
+	var out bytes.Buffer
+
+	if err := rulesCmd(ctx, []string{"import", rulesFile}, getenv, &out); err == nil || !strings.Contains(err.Error(), "no admin user yet") {
+		t.Fatalf("import before first-run setup: %v", err)
+	}
+	db, err := store.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.New(db).CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	for _, want := range []string{"4 rules added, 0 updated", "0 rules added, 4 updated"} {
+		out.Reset()
+		if err := rulesCmd(ctx, []string{"import", rulesFile}, getenv, &out); err != nil || !strings.Contains(out.String(), want) {
+			t.Fatalf("import: %v, output %q, want %q", err, out.String(), want)
+		}
+	}
+	exported := filepath.Join(dir, "out.yaml")
+	if err := rulesCmd(ctx, []string{"export", exported}, getenv, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := rulesCmd(ctx, []string{"validate", exported}, getenv, &out); err != nil || !strings.Contains(out.String(), "4 rules ok") {
+		t.Fatalf("the export does not validate: %v %q", err, out.String())
+	}
+	out.Reset()
+	if err := rulesCmd(ctx, []string{"export"}, getenv, &out); err != nil || !strings.Contains(out.String(), "id: newsletters") {
+		t.Fatalf("export to stdout: %v %q", err, out.String())
+	}
+	for _, args := range [][]string{{"import"}, {"export", "a", "b"}, {"import", filepath.Join(dir, "nope.yaml")}} {
+		if err := rulesCmd(ctx, args, getenv, &out); err == nil {
+			t.Errorf("rules %v: no error", args)
+		}
 	}
 }

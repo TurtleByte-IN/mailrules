@@ -327,3 +327,32 @@ func (s *Store) IsContact(ctx context.Context, accountID int64, address string) 
 	}
 	return n == 1, nil
 }
+
+// UpdateAccount stores an account's label, watch folder and status (the fields the user edits).
+func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?, status = ? WHERE id = ?`,
+		a.Label, a.WatchFolder, a.Status, a.ID)
+	if err != nil {
+		return fmt.Errorf("update account: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetAccountSecret replaces an account's app password, sealed under a fresh data key.
+func (s *Store) SetAccountSecret(ctx context.Context, master []byte, id int64, secret string) error {
+	secretEnc, dekEnc, err := crypto.Seal(master, id, []byte(secret))
+	if err != nil {
+		return fmt.Errorf("encrypt account secret: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, id)
+	if err != nil {
+		return fmt.Errorf("set account secret: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

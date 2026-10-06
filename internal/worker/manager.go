@@ -16,19 +16,46 @@ var ErrNotConnected = errors.New("account is not connected")
 // (it implements actions.Accounts).
 type Manager struct {
 	mu   sync.Mutex
-	sups map[int64]*Supervisor
+	sups map[int64]*running
 	wg   sync.WaitGroup
 }
 
-// Start runs a supervisor until ctx is done.
+type running struct {
+	sup    *Supervisor
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// Start runs a supervisor until ctx is done or Stop is called for its account. An
+// account that is already running is stopped first.
 func (m *Manager) Start(ctx context.Context, s *Supervisor) {
+	m.Stop(s.Account.ID)
+	ctx, cancel := context.WithCancel(ctx)
+	r := &running{sup: s, cancel: cancel, done: make(chan struct{})}
 	m.mu.Lock()
 	if m.sups == nil {
-		m.sups = map[int64]*Supervisor{}
+		m.sups = map[int64]*running{}
 	}
-	m.sups[s.Account.ID] = s
+	m.sups[s.Account.ID] = r
 	m.mu.Unlock()
-	m.wg.Go(func() { s.Run(ctx) })
+	m.wg.Go(func() {
+		defer close(r.done)
+		defer cancel()
+		s.Run(ctx)
+	})
+}
+
+// Stop ends an account's supervisor and waits until it has: mail already queued gets the
+// supervisor's drain time to finish. Stopping an account that is not running does nothing.
+func (m *Manager) Stop(accountID int64) {
+	m.mu.Lock()
+	r := m.sups[accountID]
+	delete(m.sups, accountID)
+	m.mu.Unlock()
+	if r != nil {
+		r.cancel()
+		<-r.done
+	}
 }
 
 // Wait blocks until every supervisor has stopped.
@@ -37,7 +64,10 @@ func (m *Manager) Wait() { m.wg.Wait() }
 func (m *Manager) supervisor(accountID int64) *Supervisor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.sups[accountID]
+	if r := m.sups[accountID]; r != nil {
+		return r.sup
+	}
+	return nil
 }
 
 // Mailbox returns the account's open connection, or ErrNotConnected.

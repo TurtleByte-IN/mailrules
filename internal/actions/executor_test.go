@@ -624,3 +624,47 @@ func TestCorrect(t *testing.T) {
 		t.Errorf("correcting mail that is gone: %v, batch %+v", err, b)
 	}
 }
+
+// "Undo the last hour" takes what was done since a time and leaves older actions alone.
+func TestUndoSince(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	now := time.Unix(1000, 0)
+	e.x.Now = func() time.Time { return now }
+	old, recent, gone := e.deliver("old"), e.deliver("recent"), e.deliver("gone")
+	if _, err := e.x.Apply(ctx, old, act("move:Food"), 0); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Unix(5000, 0)
+	for _, d := range []DecisionRecord{recent, gone} {
+		if _, err := e.x.Apply(ctx, d, act("move:Food", "flag"), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ref, _ := e.where(recent.MessageID)
+	tag := DecisionRecord{MessageID: recent.MessageID, Ref: ref}
+	if _, err := e.x.Apply(ctx, tag, []rules.Action{{Type: KindReview}}, 0); err != nil { // the review tag is not undone
+		t.Fatal(err)
+	}
+	ref, _ = e.where(gone.MessageID)
+	if _, err := e.raw.Move(ctx, ref, "Archive"); err != nil { // filed by hand since
+		t.Fatal(err)
+	}
+
+	batch, undone, failed, err := e.x.UndoSince(ctx, 0, 4000)
+	if err != nil || undone != 2 || failed != 2 {
+		t.Fatalf("UndoSince = %d undone, %d failed, %v", undone, failed, err)
+	}
+	if b, _ := e.st.Batch(ctx, batch); b.Kind != store.BatchUndo || b.Status != store.BatchFailed || b.Total != 4 || b.Done != 2 {
+		t.Errorf("undo batch = %+v", b)
+	}
+	if ref, flags := e.where(recent.MessageID); ref.Folder != "INBOX" || !slices.Equal(flags, []string{ReviewKeyword}) {
+		t.Errorf("the recent message is in %s with %v", ref.Folder, flags)
+	}
+	if ref, _ := e.where(old.MessageID); ref.Folder != "Food" {
+		t.Errorf("an action from before the time was undone: the message is in %s", ref.Folder)
+	}
+	if batch, undone, failed, err := e.x.UndoSince(ctx, 77, 0); err != nil || undone != 0 || failed != 0 || batch == 0 {
+		t.Errorf("UndoSince for a rule with no actions = batch %d, %d, %d, %v", batch, undone, failed, err)
+	}
+}

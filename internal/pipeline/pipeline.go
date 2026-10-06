@@ -50,6 +50,9 @@ type Pipeline struct {
 
 	MinConfidence float64 // act threshold for rules that set none
 	BodyChars     int     // plain-text characters shown to models
+	// Live, when set, supplies Router and MinConfidence afresh for every message, so a
+	// change made in Settings needs no restart (settings.Settings.Live).
+	Live func(ctx context.Context) (router *models.Router, minConfidence float64)
 
 	Now func() time.Time // nil = time.Now
 	// Rediscover re-runs folder discovery. It is called once when a step fails because a
@@ -169,14 +172,18 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	for _, r := range rs {
 		names[r.ID] = r.Name
 	}
-	ev := rules.Evaluate(*sum, rs, senders, rules.Options{MinConfidence: p.MinConfidence, Now: now})
+	router, minConfidence := p.Router, p.MinConfidence
+	if p.Live != nil {
+		router, minConfidence = p.Live(ctx)
+	}
+	ev := rules.Evaluate(*sum, rs, senders, rules.Options{MinConfidence: minConfidence, Now: now})
 
 	var res rules.Result
 	switch {
 	case ev.Final != nil:
 		res = *ev.Final
 		dec.Reason = localReason(res, names)
-	case p.Router == nil:
+	case router == nil:
 		res = rules.Result{Stage: rules.StageNone, Review: true}
 		dec.Reason = ReasonNoModel
 	default:
@@ -184,7 +191,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		for _, r := range ev.Candidates {
 			req.Candidates = append(req.Candidates, models.Candidate{RuleID: r.ID, Name: r.Name, Intent: r.Intent, Exceptions: r.Exceptions.Text()})
 		}
-		routed, err := p.Router.Route(ctx, req)
+		routed, err := router.Route(ctx, req)
 		if err != nil {
 			return fmt.Errorf("decide: %w", err)
 		}
@@ -208,6 +215,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		dec.Model, dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = used.Model, used.TokensIn, used.TokensOut, used.CostUSD, used.Latency.Milliseconds()
 	}
 	dec.Stage, dec.RuleID, dec.RuleVersion, dec.Confidence = string(res.Stage), res.RuleID, res.RuleVersion, res.Confidence
+	dec.RuleName = names[res.RuleID]
 	if err := p.finish(ctx, m, dec, res); err != nil {
 		return err
 	}

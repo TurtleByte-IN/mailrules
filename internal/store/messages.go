@@ -215,6 +215,7 @@ type Decision struct {
 	MessageID   int64
 	Stage       string // sender | condition | decider | fallback | none
 	RuleID      int64  // 0 = no rule; in Needs review, the rule the model suggested
+	RuleName    string // the rule's name: as it is now, or as it was when decided if the rule is gone
 	RuleVersion int
 	Confidence  float64
 	Reason      string
@@ -228,11 +229,12 @@ type Decision struct {
 
 // The columns tolerate a missing row, so a LEFT JOIN scans into a zero Decision.
 const decisionCols = `COALESCE(d.id, 0), COALESCE(d.message_id, 0), COALESCE(d.stage, ''), COALESCE(d.rule_id, 0),
+	COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, ''),
 	COALESCE(d.rule_version, 0), COALESCE(d.confidence, 0), COALESCE(d.reason, ''), COALESCE(d.model, ''),
 	COALESCE(d.tokens_in, 0), COALESCE(d.tokens_out, 0), COALESCE(d.cost_usd, 0), COALESCE(d.latency_ms, 0), COALESCE(d.created_at, 0)`
 
 func decisionDest(d *Decision) []any {
-	return []any{&d.ID, &d.MessageID, &d.Stage, &d.RuleID, &d.RuleVersion, &d.Confidence, &d.Reason, &d.Model,
+	return []any{&d.ID, &d.MessageID, &d.Stage, &d.RuleID, &d.RuleName, &d.RuleVersion, &d.Confidence, &d.Reason, &d.Model,
 		&d.TokensIn, &d.TokensOut, &d.CostUSD, &d.LatencyMS, &d.CreatedAt}
 }
 
@@ -245,10 +247,10 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO decisions (message_id, stage, rule_id, rule_version, confidence, reason, model,
+		`INSERT INTO decisions (message_id, stage, rule_id, rule_name, rule_version, confidence, reason, model,
 		                        tokens_in, tokens_out, cost_usd, latency_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.MessageID, d.Stage, null(d.RuleID), null(d.RuleVersion), d.Confidence, d.Reason, null(d.Model),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.MessageID, d.Stage, null(d.RuleID), null(d.RuleName), null(d.RuleVersion), d.Confidence, d.Reason, null(d.Model),
 		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt)
 	if err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
@@ -269,6 +271,7 @@ type ActivityFilter struct {
 	RuleID    int64
 	Stage     string
 	State     string // a message state; StateReview lists Needs review
+	Action    string // an action kind: only messages with such an action
 	Before    int64  // cursor: only messages with a smaller id
 	Limit     int    // 0 = 50
 }
@@ -291,8 +294,9 @@ func (s *Store) Activity(ctx context.Context, f ActivityFilter) ([]ActivityRow, 
 		 FROM messages m LEFT JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
 		 WHERE (?1 = 0 OR m.account_id = ?1) AND (?2 = 0 OR d.rule_id = ?2) AND (?3 = '' OR d.stage = ?3)
 		   AND (?4 = '' OR m.state = ?4) AND (?5 = 0 OR m.id < ?5)
+		   AND (?7 = '' OR EXISTS (SELECT 1 FROM actions a WHERE a.message_id = m.id AND a.kind = ?7))
 		 ORDER BY m.id DESC LIMIT ?6`,
-		f.AccountID, f.RuleID, f.Stage, f.State, f.Before, f.Limit)
+		f.AccountID, f.RuleID, f.Stage, f.State, f.Before, f.Limit, f.Action)
 	if err != nil {
 		return nil, fmt.Errorf("list activity: %w", err)
 	}
@@ -392,6 +396,7 @@ type Correction struct {
 	MessageID   int64
 	WrongRuleID int64  // 0 = no rule had been applied
 	RightRuleID int64  // 0 = keep in the inbox
+	RightRule   string // that rule's name, when read back; empty for keep, or once the rule is deleted
 	Example     string // JSON message.Summary, the few-shot example
 	CreatedAt   int64
 }
@@ -445,4 +450,59 @@ func (s *Store) AddCorrection(ctx context.Context, userID int64, c Correction, a
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	return id, nil
+}
+
+// MessageDecisions lists every decision made for a message, oldest first. A message has
+// more than one when the retry job ran it again.
+func (s *Store) MessageDecisions(ctx context.Context, messageID int64) ([]Decision, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+decisionCols+` FROM decisions d WHERE d.message_id = ? ORDER BY d.id`, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("list decisions: %w", err)
+	}
+	defer rows.Close()
+	var out []Decision
+	for rows.Next() {
+		var d Decision
+		if err := rows.Scan(decisionDest(&d)...); err != nil {
+			return nil, fmt.Errorf("list decisions: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list decisions: %w", err)
+	}
+	return out, nil
+}
+
+// MessageCorrections lists the corrections the user made to a message, oldest first.
+func (s *Store) MessageCorrections(ctx context.Context, messageID int64) ([]Correction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, message_id, COALESCE(wrong_rule_id, 0), COALESCE(right_rule_id, 0),
+		        COALESCE((SELECT name FROM rules WHERE id = right_rule_id), ''), created_at
+		 FROM corrections WHERE message_id = ? ORDER BY id`, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("list corrections: %w", err)
+	}
+	defer rows.Close()
+	var out []Correction
+	for rows.Next() {
+		var c Correction
+		if err := rows.Scan(&c.ID, &c.MessageID, &c.WrongRuleID, &c.RightRuleID, &c.RightRule, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("list corrections: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list corrections: %w", err)
+	}
+	return out, nil
+}
+
+// CountMessages counts the messages in a state, e.g. StateReview for the Needs review badge.
+func (s *Store) CountMessages(ctx context.Context, state string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE state = ?`, state).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count messages: %w", err)
+	}
+	return n, nil
 }

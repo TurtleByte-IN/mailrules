@@ -97,6 +97,7 @@ CREATE TABLE decisions (
   message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   stage       TEXT NOT NULL,                -- sender | condition | decider | fallback | none
   rule_id     INTEGER REFERENCES rules(id) ON DELETE SET NULL,
+  rule_name   TEXT,                         -- the rule's name when decided; survives deleting the rule
   rule_version INTEGER,
   confidence  REAL,
   reason      TEXT,

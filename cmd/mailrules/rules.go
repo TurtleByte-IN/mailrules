@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,20 +13,28 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-const rulesUsage = `usage: mailrules rules validate <file>
+const rulesUsage = `usage: mailrules rules import <file>
+       mailrules rules export [file]
+       mailrules rules validate <file>
        mailrules rules test <file> --eml <dir>
 `
 
-// rulesCmd runs the offline rule commands: both read a rules YAML file and
-// neither touches a mailbox, a model or the database.
-func rulesCmd(args []string, out io.Writer) error {
+// rulesCmd runs the rule commands. import and export work on the database (a running
+// daemon reads the rules for every email, so it follows an import at once); validate and
+// test only read a rules YAML file and touch no mailbox, model or database.
+func rulesCmd(ctx context.Context, args []string, getenv func(string) string, out io.Writer) error {
+	if len(args) > 0 && (args[0] == "import" || args[0] == "export") {
+		return rulesDB(ctx, args, getenv, out)
+	}
 	if len(args) < 2 || (args[0] != "validate" && args[0] != "test") {
 		fmt.Fprint(os.Stderr, rulesUsage)
-		return errors.New("rules: expected validate or test, then a rules file")
+		return errors.New("rules: expected import, export, validate or test")
 	}
 	data, err := os.ReadFile(args[1]) // #nosec G304 G703 -- the operator names the file on the command line
 	if err != nil {
@@ -116,4 +125,64 @@ func summaryFromEML(path string) (message.Summary, error) {
 		e.ReceivedAt, _ = mail.ParseDate(dates[0]) // a file has no server arrival time
 	}
 	return *e, nil
+}
+
+// rulesDB imports a rules YAML file into the database or exports the rules as one. An
+// import replaces the rules whose names the file uses and adds the others after the
+// existing ones, the same as POST /api/rules/import.
+func rulesDB(ctx context.Context, args []string, getenv func(string) string, out io.Writer) error {
+	if (args[0] == "import" && len(args) != 2) || len(args) > 2 {
+		fmt.Fprint(os.Stderr, rulesUsage)
+		return fmt.Errorf("rules %s: wrong number of arguments", args[0])
+	}
+	cfg, err := config.Load(nil, getenv)
+	if err != nil {
+		return err
+	}
+	db, err := store.Open(ctx, cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := store.Migrate(ctx, db); err != nil {
+		return err
+	}
+	st := store.New(db)
+	user, err := st.FirstUser(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("rules %s: no admin user yet; run `mailrules serve` and finish first-run setup in the browser", args[0])
+	}
+	if err != nil {
+		return err
+	}
+
+	if args[0] == "export" {
+		rs, err := st.Rules(ctx, user.ID)
+		if err != nil {
+			return err
+		}
+		data, err := rules.MarshalYAML(rules.File{Rules: rs})
+		if err != nil {
+			return err
+		}
+		if len(args) == 2 {
+			return os.WriteFile(args[1], data, 0o600) // #nosec G304 G703 -- the operator names the file on the command line
+		}
+		_, err = out.Write(data)
+		return err
+	}
+	data, err := os.ReadFile(args[1]) // #nosec G304 G703 -- the operator names the file on the command line
+	if err != nil {
+		return fmt.Errorf("read rules: %w", err)
+	}
+	f, err := rules.ParseYAML(data)
+	if err != nil {
+		return fmt.Errorf("%s:\n%w", args[1], err)
+	}
+	created, updated, err := st.ImportRules(ctx, user.ID, f.Rules, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s: %d rules added, %d updated\n", args[1], created, updated)
+	return err
 }

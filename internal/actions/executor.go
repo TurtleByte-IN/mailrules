@@ -380,3 +380,32 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 	}
 	return batchID, nil
 }
+
+// UndoSince reverses every action made at or after since that is still in effect, newest
+// first: "undo the last hour". With ruleID it only takes the actions that rule led to. The
+// run is recorded as one batch of kind undo, whose id is returned with how many actions
+// were undone and how many could not be (their message is gone, or its account is not
+// connected). One that cannot be undone does not stop the rest.
+func (x *Exec) UndoSince(ctx context.Context, ruleID, since int64) (batchID int64, undone, failed int, err error) {
+	acts, err := x.Store.DoneActionsSince(ctx, ruleID, since)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if batchID, err = x.Store.CreateBatch(ctx, store.BatchUndo, store.BatchRunning, x.now()); err != nil {
+		return 0, 0, 0, err
+	}
+	for _, a := range acts {
+		if err := x.Undo(ctx, a.ID); err != nil {
+			failed++
+			continue
+		}
+		undone++
+	}
+	status := store.BatchDone
+	if failed > 0 {
+		status = store.BatchFailed
+	}
+	recCtx := context.WithoutCancel(ctx)
+	return batchID, undone, failed, errors.Join(
+		x.Store.SetBatchProgress(recCtx, batchID, len(acts), undone), x.Store.SetBatchStatus(recCtx, batchID, status))
+}

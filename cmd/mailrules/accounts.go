@@ -173,6 +173,28 @@ func (a accountsCLI) password(file string, preset presets.Preset) (string, error
 	return pw, nil
 }
 
+// dial logs in with credentials that are not stored yet, trying each username the
+// account's preset allows, and returns the connection with the username that worked. The
+// CLI's `accounts add` and the HTTP API's connection test and account creation share it.
+func dial(ctx context.Context, acct store.Account, password string, tlsConfig *tls.Config) (*imap.Mailbox, string, error) {
+	preset, _ := presets.Get(acct.Preset)
+	var err error
+	for _, name := range preset.Usernames(acct.Username) {
+		var mb *imap.Mailbox
+		mb, err = imap.Open(ctx, imap.Config{
+			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+			Username: name, Password: password, Preset: preset, TLSConfig: tlsConfig,
+		})
+		if err == nil {
+			return mb, name, nil
+		}
+		if !errors.Is(err, mail.ErrAuth) {
+			break
+		}
+	}
+	return nil, "", err
+}
+
 func (a accountsCLI) open(ctx context.Context, acct store.Account, preset presets.Preset, username, password string) (*imap.Mailbox, error) {
 	return imap.Open(ctx, imap.Config{
 		AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
@@ -192,16 +214,7 @@ func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, ac
 	}
 	acct.UserID = user.ID
 
-	var mb *imap.Mailbox
-	for _, name := range preset.Usernames(acct.Username) {
-		if mb, err = a.open(ctx, acct, preset, name, password); err == nil {
-			acct.Username = name
-			break
-		}
-		if !errors.Is(err, mail.ErrAuth) {
-			break
-		}
-	}
+	mb, username, err := dial(ctx, acct, password, a.tlsConfig)
 	if err != nil {
 		if errors.Is(err, mail.ErrAuth) && preset.HelpURL != "" {
 			return fmt.Errorf("%w\nthis provider needs an app password, not your account password: %s", err, preset.HelpURL)
@@ -209,6 +222,7 @@ func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, ac
 		return err
 	}
 	defer mb.Close()
+	acct.Username = username
 
 	folders, err := mb.Folders(ctx)
 	if err != nil {

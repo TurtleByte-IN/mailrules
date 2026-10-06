@@ -25,6 +25,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
+	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
@@ -40,7 +41,8 @@ const usage = `usage: mailrules <command> [flags]
   accounts  add, list or test mail accounts
   eval      measure decider accuracy on labeled mail:
             eval --labels testdata/labeled.jsonl --decider jev,clef:clef-flash
-  rules     validate a rules file, or test it over .eml files
+  rules     import or export the rules as YAML; validate a rules file, or
+            test it over .eml files
   dry-run   on | off: switch the global dry-run; with no argument, show it.
             While it is on, decisions are logged and no mailbox is changed.
   version   print the version
@@ -81,7 +83,7 @@ func run(args []string) error {
 	case "eval":
 		return eval(ctx, args[1:], os.Stdout)
 	case "rules":
-		return rulesCmd(args[1:], os.Stdout)
+		return rulesCmd(ctx, args[1:], os.Getenv, os.Stdout)
 	case "dry-run":
 		return dryRunCmd(ctx, args[1:], os.Getenv, os.Stdout)
 	case "serve":
@@ -119,19 +121,15 @@ func serve(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 
-	var router *models.Router // nil = mail that needs a model waits in Needs review
-	if err := cfg.DeciderReady(); err != nil {
-		slog.Warn("no decision model yet; new mail that needs one waits in Needs review until it is set", "missing", err.Error())
-	} else {
-		prices, err := models.LoadPrices(cfg.PricesFile)
-		if err != nil {
-			return err
-		}
-		deps := models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}
-		if router, err = models.NewRouter(cfg, cfg.DeciderSpec(), deps, st); err != nil {
-			return err
-		}
+	// The decider, its models, the thresholds and the provider keys can be changed in the
+	// browser, so the pipeline asks for them per message (sett.Live) instead of holding a router.
+	prices, err := models.LoadPrices(cfg.PricesFile)
+	if err != nil {
+		return err
 	}
+	sett := &settings.Settings{Store: st, Master: master, Env: cfg,
+		Deps: models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}}
+	sett.Live(ctx) // logs now if the decider is not ready, rather than at the first email
 
 	// One supervisor per account. They stop with ctx and get a few seconds to finish
 	// queued mail; the database closes only after they have.
@@ -144,24 +142,38 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	supervisors := &worker.Manager{}
 	defer supervisors.Wait()
 	defer stopAll() // runs first, so Wait returns even when the HTTP server is what failed
-	// The executor is the one place that changes a mailbox. The HTTP layer (M7) will call
-	// its Undo, UndoBatch and Correct.
+	// The executor is the one place that changes a mailbox; the HTTP layer reaches it for
+	// undo and corrections.
 	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
-	for _, acct := range accounts {
-		if acct.Status == worker.StatusPaused {
-			continue
-		}
+	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
+	start := func(acct store.Account) {
 		supervisors.Start(ctx, &worker.Supervisor{
 			Account: acct, Store: st, Hub: hub, Open: openAccount(st, master, acct),
-			Pipeline: pipeline.Pipeline{Store: st, Router: router, Exec: exec, Hub: hub, MinConfidence: cfg.MinConfidence, BodyChars: cfg.BodyChars},
+			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
 		})
+	}
+	for _, acct := range accounts {
+		if acct.Status != worker.StatusPaused {
+			start(acct)
+		}
 	}
 	dryRun, err := st.DryRun(ctx, cfg.DryRun)
 	if err != nil {
 		return err
 	}
 
-	handler := api.NewHandler(api.Options{Store: st, SecureCookies: !cfg.ListensLocally()})
+	handler := api.NewHandler(api.Options{
+		Store: st, SecureCookies: !cfg.ListensLocally(), Hub: hub, Exec: exec, Settings: sett, Master: master,
+		Metrics: telemetry.NewMetrics(version), Version: version,
+		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
+			mb, username, err := dial(ctx, acct, password, nil)
+			if err != nil {
+				return nil, "", err // not mb: a nil *imap.Mailbox is not a nil mail.Mailbox
+			}
+			return mb, username, nil
+		},
+		StartAccount: start, StopAccount: supervisors.Stop,
+	})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()

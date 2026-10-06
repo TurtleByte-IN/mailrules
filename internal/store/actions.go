@@ -23,6 +23,7 @@ const (
 const (
 	BatchLive       = "live"
 	BatchCorrection = "correction"
+	BatchUndo       = "undo"
 
 	BatchRunning = "running"
 	BatchDone    = "done"
@@ -180,8 +181,8 @@ const (
 	actionsOfBatch   = `SELECT ` + actionCols + ` FROM actions WHERE batch_id = ? ORDER BY id`
 )
 
-func (s *Store) listActions(ctx context.Context, query string, id int64) ([]Action, error) {
-	rows, err := s.db.QueryContext(ctx, query, id)
+func (s *Store) listActions(ctx context.Context, query string, args ...any) ([]Action, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list actions: %w", err)
 	}
@@ -215,6 +216,8 @@ type Batch struct {
 	ID        int64
 	Kind      string // live | cleanup | review | correction | undo
 	Status    string // running | done | failed | undone
+	Total     int    // how many items the batch set out to handle; 0 = not counted (live)
+	Done      int    // how many it has handled
 	CreatedAt int64
 }
 
@@ -231,7 +234,8 @@ func (s *Store) CreateBatch(ctx context.Context, kind, status string, now int64)
 // Batch returns one batch, or ErrNotFound.
 func (s *Store) Batch(ctx context.Context, id int64) (Batch, error) {
 	b := Batch{ID: id}
-	err := s.db.QueryRowContext(ctx, `SELECT kind, status, created_at FROM batches WHERE id = ?`, id).Scan(&b.Kind, &b.Status, &b.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT kind, status, COALESCE(total, 0), done, created_at FROM batches WHERE id = ?`, id).
+		Scan(&b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Batch{}, ErrNotFound
 	}
@@ -292,4 +296,24 @@ func (s *Store) DryRun(ctx context.Context, def bool) (bool, error) {
 // every action, so it takes effect at once.
 func (s *Store) SetDryRun(ctx context.Context, on bool) error {
 	return s.SetSetting(ctx, settingDryRun, fmt.Sprint(on))
+}
+
+// SetBatchProgress records how far a batch has come.
+func (s *Store) SetBatchProgress(ctx context.Context, id int64, total, done int) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET total = ?, done = ? WHERE id = ?`, total, done, id); err != nil {
+		return fmt.Errorf("set batch progress: %w", err)
+	}
+	return nil
+}
+
+// DoneActionsSince lists the actions made at or after since that are still in effect,
+// newest first: the ones "undo everything since" reverses. With ruleID, only those a
+// decision for that rule led to. The Needs review tag is left out: taking it off would not
+// take the message out of review.
+func (s *Store) DoneActionsSince(ctx context.Context, ruleID, since int64) ([]Action, error) {
+	return s.listActions(ctx,
+		`SELECT `+actionCols+` FROM actions
+		 WHERE status = 'done' AND kind <> 'review' AND created_at >= ?1
+		   AND (?2 = 0 OR decision_id IN (SELECT id FROM decisions WHERE rule_id = ?2))
+		 ORDER BY id DESC`, since, ruleID)
 }
