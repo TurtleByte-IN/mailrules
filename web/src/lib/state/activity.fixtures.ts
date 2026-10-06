@@ -38,7 +38,7 @@ export const stats: StatsSummary = {
   accounts: [{ account_id: 1, label: 'me@icloud.com', preset: 'icloud', username: 'me@icloud.com', folder_count: 14, status: 'live', last_event_at: 1000, last_error: '' }],
 };
 
-export const error = (code: string, message: string) => ({ error: { code, message } });
+export const error = (code: string, message: string, path?: string) => ({ error: { code, message, path } });
 
 export type Call = { call: string; body?: unknown };
 

@@ -1,4 +1,5 @@
 import * as activityApi from '../api/activity';
+import { ApiError } from '../api/client';
 import { subscribe } from '../api/events';
 import { flash } from './toast.svelte';
 
@@ -7,11 +8,14 @@ type Item = activityApi.ActivityItem;
 /** How the row reads in the feed: sorted by a rule, sent to Trash, left alone, or waiting for the user. */
 export type Kind = 'ok' | 'trash' | 'none' | 'review';
 
+/** Where mail ended up: the four groups of Overview's "Where today's mail went". */
+export type Outcome = NonNullable<activityApi.ActivityQuery['outcome']>;
+
 /** Empty string means "all". */
 export interface Filter {
   rule: string;
   account: string;
-  kind: Kind | '';
+  outcome: Outcome | '';
 }
 
 export const activity = $state({
@@ -21,7 +25,7 @@ export const activity = $state({
   /** False until the first page has arrived, so "no mail yet" is never shown for "not loaded". */
   loaded: false,
   error: '',
-  filter: { rule: '', account: '', kind: '' } as Filter,
+  filter: { rule: '', account: '', outcome: '' } as Filter,
   detail: null as activityApi.MessageDetail | null,
   detailError: '',
   /** Null until the tiles have loaded. */
@@ -34,18 +38,19 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** A failed action says why in the toast; the API's message is safe to show. */
 export const failed = (e: unknown) => flash(message(e));
 
-// The Outcome filter in the contract's parameters. "Sorted" is every email a rule was
-// applied to, Trash included: the feed has no parameter for "acted on, but not trashed".
-const outcomes: Record<Kind, activityApi.ActivityQuery> = {
-  ok: { status: 'acted' },
-  trash: { action: 'trash' },
-  none: { stage: 'none' },
-  review: { status: 'review' },
-};
+/**
+ * A failed fix. A sender rule for a whole free-mail domain is refused before anything is done:
+ * that message is returned for the form to show beside the choice. Any other failure is a toast.
+ */
+export function refused(e: unknown) {
+  if (e instanceof ApiError && e.code === 'domain_too_broad') return e.message;
+  failed(e);
+  return '';
+}
 
 function params(cursor?: string | null): activityApi.ActivityQuery {
   const f = activity.filter;
-  return { account: Number(f.account) || undefined, rule: Number(f.rule) || undefined, ...(f.kind && outcomes[f.kind]), cursor: cursor ?? undefined };
+  return { account: Number(f.account) || undefined, rule: Number(f.rule) || undefined, outcome: f.outcome || undefined, cursor: cursor ?? undefined };
 }
 
 let asked = 0;
@@ -110,7 +115,7 @@ export function upsert(row: Item) {
   const i = activity.list.findIndex((r) => r.id === row.id);
   const f = activity.filter;
   if (i >= 0) activity.list[i] = row;
-  else if (!f.rule && !f.account && !f.kind) activity.list.unshift(row);
+  else if (!f.rule && !f.account && !f.outcome) activity.list.unshift(row);
   if (activity.detail?.id === row.id) open(row.id);
 }
 
@@ -178,14 +183,18 @@ export async function undoLastHour() {
   }
 }
 
-/** ruleId null means keep in Inbox. */
-export async function correct(id: number, ruleId: number | null, always: boolean) {
+/**
+ * ruleId null means keep in Inbox; alwaysFor also stores a sender rule for the address or the whole domain.
+ * Resolves with the daemon's message when it refuses the domain, and with '' otherwise.
+ */
+export async function correct(id: number, ruleId: number | null, alwaysFor?: activityApi.FixRequest['always_for']) {
   try {
-    const { item } = await activityApi.correct(id, { rule_id: ruleId, always_for_sender: always });
+    const { item } = await activityApi.correct(id, { rule_id: ruleId, always_for: alwaysFor });
     upsert(item);
-    flash(always ? 'Fixed, and saved as a sender rule for ' + item.from : 'Fixed. MailRules will use this as an example');
+    flash(alwaysFor ? 'Fixed, and saved as a sender rule for ' + (alwaysFor === 'domain' ? item.from_domain : item.from) : 'Fixed. MailRules will use this as an example');
+    return '';
   } catch (e) {
-    failed(e);
+    return refused(e);
   }
 }
 

@@ -1,24 +1,31 @@
 <script lang="ts">
-  import { link } from 'svelte-spa-router';
+  import { link, router } from 'svelte-spa-router';
   import type { ActivityItem } from '../lib/api/activity';
   import { clock, confidence, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
-  import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type Kind } from '../lib/state/activity.svelte';
+  import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type Outcome } from '../lib/state/activity.svelte';
   import { load as loadReview, review } from '../lib/state/review.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import Detail from './activity/Detail.svelte';
   import LoadError from './activity/LoadError.svelte';
 
+  // The four groups of Overview's "Where today's mail went", under its labels.
+  const outcomes: [Outcome, string][] = [['sorted', 'Sorted'], ['inbox', 'Left in Inbox'], ['review', 'Needs review'], ['trashed', 'Trashed']];
+
+  // Other screens link to one group: #/activity?outcome=sorted. An unknown value is ignored.
+  const asked = new URLSearchParams(router.querystring).get('outcome');
+  const group = outcomes.find(([value]) => value === asked)?.[0];
+  if (group) activity.filter.outcome = group;
+
   load();
   loadStats();
   loadReview();
 
-  const kinds: [Kind, string][] = [['ok', 'Sorted'], ['trash', 'Trashed'], ['none', 'No rule'], ['review', 'Needs review']];
   const today = Math.floor(Date.now() / 1000);
 
   let selected = $state<number | null>(null);
   const rows = $derived(activity.list);
-  const filtered = $derived(Boolean(activity.filter.rule || activity.filter.account || activity.filter.kind));
+  const filtered = $derived(Boolean(activity.filter.rule || activity.filter.account || activity.filter.outcome));
   // Wide screens always show one decision beside the feed, the first row until one is picked.
   // Narrow screens open it under the row that was tapped.
   const shownId = $derived((rows.find((r) => r.id === selected) ?? rows[0])?.id);
@@ -45,7 +52,7 @@
 
   const stage = (r: ActivityItem) => {
     const d = r.decision;
-    if (r.correction) return 'you · corrected';
+    if (r.correction) return r.correction.kind === 'review' ? 'you · reviewed' : 'you · corrected';
     if (!d) return '';
     if (d.stage === 'sender') return 'sender · learned';
     if (d.stage === 'condition') return 'condition · free';
@@ -129,9 +136,9 @@
         </label>
         <label class="flex min-w-0 flex-[1_1_140px] flex-col gap-1.5">
           <span class="label">Outcome</span>
-          <select class="field" bind:value={activity.filter.kind} onchange={load}>
+          <select class="field" bind:value={activity.filter.outcome} onchange={load}>
             <option value="">All outcomes</option>
-            {#each kinds as [value, name] (value)}
+            {#each outcomes as [value, name] (value)}
               <option {value}>{name}</option>
             {/each}
           </select>
