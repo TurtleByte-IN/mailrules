@@ -142,3 +142,54 @@ func TestSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestAddUsage(t *testing.T) {
+	s, db := open(t)
+	ctx := t.Context()
+	adds := []struct {
+		day, purpose   string
+		calls, in, out int
+		cost           float64
+	}{
+		{"2026-10-06", "decide", 1, 400, 0, 0.00002},
+		{"2026-10-06", "decide", 1, 600, 0, 0.00003},
+		{"2026-10-06", "escalate", 1, 900, 60, 0.0012},
+		{"2026-10-07", "decide", 2, 100, 0, 0.00001},
+	}
+	for _, a := range adds {
+		if err := s.AddUsage(ctx, a.day, "openrouter", "typesafe/jev-1.13", a.purpose, a.calls, a.in, a.out, a.cost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []struct {
+		day, purpose   string
+		calls, in, out int
+		cost           float64
+	}{
+		{"2026-10-06", "decide", 2, 1000, 0, 0.00005},
+		{"2026-10-06", "escalate", 1, 900, 60, 0.0012},
+		{"2026-10-07", "decide", 2, 100, 0, 0.00001},
+	}
+	rows, err := db.QueryContext(ctx, `SELECT day, purpose, calls, tokens_in, tokens_out, cost_usd FROM usage_daily ORDER BY day, purpose`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	i := 0
+	for ; rows.Next(); i++ {
+		if i >= len(want) {
+			t.Fatalf("more than %d rows", len(want))
+		}
+		w, got := want[i], want[i]
+		if err := rows.Scan(&got.day, &got.purpose, &got.calls, &got.in, &got.out, &got.cost); err != nil {
+			t.Fatal(err)
+		}
+		if got.day != w.day || got.purpose != w.purpose || got.calls != w.calls || got.in != w.in || got.out != w.out ||
+			got.cost < w.cost-1e-12 || got.cost > w.cost+1e-12 {
+			t.Errorf("row %d = %+v, want %+v", i, got, w)
+		}
+	}
+	if err := rows.Err(); err != nil || i != len(want) {
+		t.Fatalf("rows = %d, want %d (%v)", i, len(want), err)
+	}
+}

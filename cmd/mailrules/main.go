@@ -4,17 +4,21 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/api"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
+	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 )
@@ -26,6 +30,8 @@ const usage = `usage: mailrules <command> [flags]
 
   serve     run the daemon and web UI
   migrate   apply database migrations
+  eval      measure decider accuracy on labeled mail:
+            eval --labels testdata/labeled.jsonl --decider jev,clef:clef-flash
   version   print the version
 `
 
@@ -59,6 +65,8 @@ func run(args []string) error {
 		}
 		defer db.Close()
 		return store.Migrate(ctx, db)
+	case "eval":
+		return eval(ctx, args[1:], os.Stdout)
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {
@@ -113,6 +121,46 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shut down http server: %w", err)
+	}
+	return nil
+}
+
+// eval runs each named decider over a labeled file and prints its report.
+// Settings come from the environment; nothing is written to the database.
+func eval(ctx context.Context, args []string, out io.Writer) error {
+	cfg, err := config.Load(nil, os.Getenv)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
+	labelsPath := fs.String("labels", "testdata/labeled.jsonl", "labeled emails and their rule set")
+	deciders := fs.String("decider", cfg.Decider, "comma-separated deciders, each name or name:model")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	f, err := os.Open(*labelsPath)
+	if err != nil {
+		return fmt.Errorf("open labels: %w", err)
+	}
+	defer f.Close()
+	labels, err := models.LoadLabels(f)
+	if err != nil {
+		return err
+	}
+	prices, err := models.LoadPrices(cfg.PricesFile)
+	if err != nil {
+		return err
+	}
+	deps := models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}
+	for _, spec := range strings.Split(*deciders, ",") {
+		router, err := models.NewRouter(cfg, strings.TrimSpace(spec), deps, nil)
+		if err != nil {
+			return err
+		}
+		models.Evaluate(ctx, router, labels).Write(out)
 	}
 	return nil
 }

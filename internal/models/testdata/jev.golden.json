@@ -1,0 +1,15 @@
+{
+  "model": "typesafe/jev-1.13",
+  "questions": {
+    "rule": {
+      "criteria": {
+        "none": "None of these",
+        "rule_12": "Food delivery order updates (unless: it is a promotion)",
+        "rule_15": "Invoices and receipts"
+      },
+      "instructions": "Which of these rules does this email match?",
+      "type": "choice"
+    }
+  },
+  "state": "<email>\nFrom: TiffinWheel <noreply@tiffinwheel.example> (domain tiffinwheel.example; contact: no; replied before: no)\nTo: me@mailbox.example\nSubject: Your order is on the way\nSignals: bulk=yes; list-id=none; dmarc=pass; attachments=none\nBody:\nYour order #4471 has been picked up.\n</email>"
+}
