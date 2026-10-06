@@ -29,7 +29,7 @@ export function totals(s: usageApi.StatsUsage) {
   const calls = (purpose: usageApi.ModelUsage['purpose']) => sum(s.by_model.filter((m) => m.purpose === purpose).map((m) => m.calls));
   return {
     emails: s.emails,
-    freePct: s.emails ? Math.round((s.without_model / s.emails) * 100) : 0,
+    freePct: s.processed ? Math.round((s.without_model / s.processed) * 100) : 0,
     decide: calls('decide'),
     escalate: calls('escalate'),
     calls: s.calls,

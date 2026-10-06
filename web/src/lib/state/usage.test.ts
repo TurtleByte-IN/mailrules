@@ -30,6 +30,7 @@ const model = (purpose: ModelUsage['purpose'], calls: number): ModelUsage => ({
 const stats = (over: Partial<StatsUsage> = {}): StatsUsage => ({
   range: 'month',
   since: 1790812800,
+  processed: 0,
   emails: 0,
   calls: 0,
   cost_usd: 0,
@@ -44,13 +45,18 @@ it.each([
   ['nothing sorted yet', stats(), { emails: 0, freePct: 0, decide: 0, escalate: 0, calls: 0, costUsd: 0 }],
   [
     'calls and cost are the API totals, composer included',
-    stats({ emails: 200, without_model: 150, calls: 53, cost_usd: 1.75, by_model: [model('decide', 40), model('escalate', 10), model('compose', 3)] }),
+    stats({ processed: 200, emails: 200, without_model: 150, calls: 53, cost_usd: 1.75, by_model: [model('decide', 40), model('escalate', 10), model('compose', 3)] }),
     { emails: 200, freePct: 75, decide: 40, escalate: 10, calls: 53, costUsd: 1.75 },
   ],
   [
     'one purpose spread over two models is summed',
-    stats({ emails: 3, without_model: 1, calls: 3, by_model: [model('decide', 1), model('decide', 2)] }),
+    stats({ processed: 3, emails: 3, without_model: 1, calls: 3, by_model: [model('decide', 1), model('decide', 2)] }),
     { emails: 3, freePct: 33, decide: 3, escalate: 0, calls: 3, costUsd: 0 },
+  ],
+  [
+    'the free share is over every processed email, not only the sorted ones (MAI-19)',
+    stats({ processed: 15, emails: 10, without_model: 15 }),
+    { emails: 10, freePct: 100, decide: 0, escalate: 0, calls: 0, costUsd: 0 },
   ],
 ])('totals: %s', (_name, s, want) => expect(m.totals(s)).toEqual(want));
 

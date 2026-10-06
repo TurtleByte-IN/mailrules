@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MailRules API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     JSON REST API of the MailRules daemon, plus one Server-Sent Events stream. This file is
     the contract the web UI's TypeScript client is generated from. A test fails if the daemon
@@ -1761,11 +1761,12 @@ components:
               last_error: { type: string }
     StatsUsage:
       type: object
-      required: [range, since, emails, calls, cost_usd, days, by_rule, by_model, without_model]
+      required: [range, since, processed, emails, calls, cost_usd, days, by_rule, by_model, without_model]
       properties:
         range: { type: string, enum: [month] }
         since: { type: integer, format: int64 }
-        emails: { type: integer, description: Emails sorted in the range }
+        processed: { type: integer, description: 'Emails decided in the range, whatever came of them. The base of `without_model`' }
+        emails: { type: integer, description: 'Of the processed emails, those a rule or sender rule was applied to (sorted)' }
         calls: { type: integer }
         cost_usd: { type: number }
         days:
@@ -1792,13 +1793,13 @@ components:
             type: object
             required: [rule_id, rule_name, emails, calls, cost_usd]
             properties:
-              rule_id: { type: [integer, 'null'], format: int64 }
-              rule_name: { type: string }
+              rule_id: { type: [integer, 'null'], format: int64, description: 'null with an empty `rule_name` is the row for emails no rule was applied to (show "No rule"); null with a name is a rule deleted since' }
+              rule_name: { type: string, description: Empty for the no-rule row }
               emails: { type: integer }
               calls: { type: integer, description: Decisions a model was asked for }
               cost_usd: { type: number }
         by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' } }
-        without_model: { type: integer, description: Emails settled by conditions and sender rules, at no cost }
+        without_model: { type: integer, description: 'Of the `processed` emails, those settled without asking a model: by conditions or sender rules, or because no rule was in play. Never more than `processed`; the free share is `without_model / processed`, not over `emails`' }
 
     Decider: { type: string, enum: [jev, clef, anthropic, openai, ollama] }
     ProviderKeys:

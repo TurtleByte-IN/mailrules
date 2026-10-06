@@ -9,6 +9,7 @@ let reply: [status: number, body: unknown];
 const stats = (over: Partial<StatsUsage> = {}): StatsUsage => ({
   range: 'month',
   since: 1788739200,
+  processed: 0,
   emails: 0,
   calls: 0,
   cost_usd: 0,
@@ -54,6 +55,7 @@ it('shows the totals, the days, each rule and each model', async () => {
   reply = [
     200,
     stats({
+      processed: 200,
       emails: 200,
       without_model: 150,
       calls: 53,

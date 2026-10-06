@@ -175,7 +175,7 @@ func (s *server) handleStatsUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	models, calls, cost := byModel(ledger)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"range": name, "since": since.Unix(), "emails": totals.Sorted, "calls": calls, "cost_usd": cost,
+		"range": name, "since": since.Unix(), "processed": totals.Processed, "emails": totals.Sorted, "calls": calls, "cost_usd": cost,
 		"days": days, "by_rule": byRule, "by_model": models, "without_model": totals.WithoutModel,
 	})
 }

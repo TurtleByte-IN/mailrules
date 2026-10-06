@@ -244,7 +244,7 @@ func TestStatsMath(t *testing.T) {
 	u := e.call(http.MethodGet, "/api/stats/usage", "", http.StatusOK)
 	conform(t, e.doc, "StatsUsage", u)
 	days := u["days"].([]any)
-	if u["range"] != "month" || u["emails"] != float64(4) || u["calls"] != float64(7) || !near(u["cost_usd"], 0.022) || u["without_model"] != float64(2) || len(days) != 30 {
+	if u["range"] != "month" || u["processed"] != float64(6) || u["emails"] != float64(4) || u["calls"] != float64(7) || !near(u["cost_usd"], 0.022) || u["without_model"] != float64(2) || len(days) != 30 {
 		t.Fatalf("usage = emails %v calls %v cost %v without %v, %d days", u["emails"], u["calls"], u["cost_usd"], u["without_model"], len(days))
 	}
 	first, quiet, last := days[0].(map[string]any), days[28].(map[string]any), days[29].(map[string]any)
@@ -314,5 +314,29 @@ func TestTraceShowsTheCandidatesProbabilities(t *testing.T) {
 	}
 	if action := trace[1].(map[string]any); len(action["candidates"].([]any)) != 0 {
 		t.Errorf("an action step has candidates: %v", action)
+	}
+}
+
+// MAI-19: 15 emails processed, 10 of them sorted, no model in play. The free share is
+// counted over the processed emails, so it is 100% and can never pass it.
+func TestUsageFreeShareIsOverProcessed(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[{"name":"Food","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"}]}]}`, http.StatusCreated)
+	for i := range 15 {
+		from, state := "noreply@swiggy.in", "acted"
+		if i >= 10 {
+			from, state = "friend@example.org", "skipped"
+		}
+		e.deliver(from, fmt.Sprintf("mail %d", i))
+		e.item(fmt.Sprintf("mail %d", i), state)
+	}
+	u := e.call(http.MethodGet, "/api/stats/usage", "", http.StatusOK)
+	conform(t, e.doc, "StatsUsage", u)
+	if u["processed"] != float64(15) || u["emails"] != float64(10) || u["without_model"] != float64(15) {
+		t.Fatalf("usage = processed %v, emails %v, without_model %v; want 15, 10, 15", u["processed"], u["emails"], u["without_model"])
+	}
+	if u["without_model"].(float64) > u["processed"].(float64) {
+		t.Errorf("without_model %v is more than processed %v", u["without_model"], u["processed"])
 	}
 }

@@ -1651,7 +1651,9 @@ export interface components {
             range: "month";
             /** Format: int64 */
             since: number;
-            /** @description Emails sorted in the range */
+            /** @description Emails decided in the range, whatever came of them. The base of `without_model` */
+            processed: number;
+            /** @description Of the processed emails, those a rule or sender rule was applied to (sorted) */
             emails: number;
             calls: number;
             cost_usd: number;
@@ -1667,8 +1669,12 @@ export interface components {
                 }[];
             }[];
             by_rule: {
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description null with an empty `rule_name` is the row for emails no rule was applied to (show "No rule"); null with a name is a rule deleted since
+                 */
                 rule_id: number | null;
+                /** @description Empty for the no-rule row */
                 rule_name: string;
                 emails: number;
                 /** @description Decisions a model was asked for */
@@ -1676,7 +1682,7 @@ export interface components {
                 cost_usd: number;
             }[];
             by_model: components["schemas"]["ModelUsage"][];
-            /** @description Emails settled by conditions and sender rules */
+            /** @description Of the `processed` emails, those settled without asking a model: by conditions or sender rules, or because no rule was in play. Never more than `processed`; the free share is `without_model / processed`, not over `emails` */
             without_model: number;
         };
         /** @enum {string} */
