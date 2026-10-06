@@ -61,13 +61,10 @@ it('load asks GET /api/stats/usage and keeps the answer', async () => {
   expect(m.usage).toMatchObject({ status: 'ready', summary: { emails: 9 } });
 });
 
-it.each([
-  [501, { error: { code: 'not_implemented', message: 'This part of MailRules is not built yet.' } }, 'not_built'],
-  [500, { error: { code: 'internal', message: 'Something went wrong.' } }, 'error'],
-])('a %i gives the %s state', async (status, body, want) => {
-  respond(status, body);
+it('a failed load gives the error state', async () => {
+  respond(500, { error: { code: 'internal', message: 'Something went wrong.' } });
   await m.load();
-  expect(m.usage).toMatchObject({ status: want, error: body.error.message, summary: null });
+  expect(m.usage).toMatchObject({ status: 'error', error: 'Something went wrong.', summary: null });
 });
 
 it('usage.updated refetches once numbers are showing, and not before', async () => {

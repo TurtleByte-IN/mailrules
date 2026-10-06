@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { ModelUsage, StatsUsage } from '../lib/api/usage';
-  import NotBuilt from '../lib/components/NotBuilt.svelte';
   import { day as shortDay, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { load, totals, usage } from '../lib/state/usage.svelte';
@@ -29,9 +28,7 @@
     <p class="mt-1 text-secondary">What sorting cost this month, and where the model calls went.</p>
   </header>
 
-  {#if usage.status === 'not_built'}
-    <NotBuilt what="Usage" />
-  {:else if usage.status === 'error'}
+  {#if usage.status === 'error'}
     <div role="alert" class="flex flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-3 py-2 text-trash">
       <span>{usage.error}</span>
       <button type="button" class="btn" onclick={load}>Retry</button>
@@ -103,9 +100,14 @@
                 <td class="px-2 py-2.5">{n(r.calls)}</td>
                 <td class="px-[18px] py-2.5 text-right font-mono">{r.calls ? money(r.cost_usd) : 'Free'}</td>
               </tr>
+            {:else}
+              <tr class="border-t border-line-divider">
+                <td colspan="4" class="px-[18px] py-2.5 text-[13px] text-muted">No emails sorted yet.</td>
+              </tr>
             {/each}
           </tbody>
         </table>
+        <p class="border-t border-line-divider px-[18px] py-2.5 text-[12.5px] text-muted">Composing and testing rules are not counted per rule.</p>
       </section>
 
       <section aria-label="By model" class="card flex min-w-0 flex-[2_1_300px] flex-col gap-3 p-[18px]">

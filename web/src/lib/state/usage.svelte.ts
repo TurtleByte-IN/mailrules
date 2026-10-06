@@ -1,9 +1,8 @@
-import { notBuilt } from '../api/client';
 import { subscribe } from '../api/events';
 import * as usageApi from '../api/usage';
 
 export const usage = $state<{
-  status: 'loading' | 'ready' | 'not_built' | 'error';
+  status: 'loading' | 'ready' | 'error';
   error: string;
   summary: usageApi.StatsUsage | null;
 }>({ status: 'loading', error: '', summary: null });
@@ -13,7 +12,7 @@ export async function load() {
     usage.summary = await usageApi.get();
     usage.status = 'ready';
   } catch (e) {
-    usage.status = notBuilt(e) ? 'not_built' : 'error';
+    usage.status = 'error';
     usage.error = (e as Error).message;
   }
 }
