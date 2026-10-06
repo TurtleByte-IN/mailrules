@@ -17,10 +17,10 @@ export class ApiError extends Error {
   }
 }
 
-let onUnauthorized = () => {};
+let onUnauthorized = (_code: string) => {};
 
-/** Called once by the auth gate; runs on any 401 so the app can show Login. */
-export function setUnauthorizedHandler(fn: () => void) {
+/** Called once by the auth state; runs on any 401 with the error code so the app can show Setup or Login. */
+export function setUnauthorizedHandler(fn: (code: string) => void) {
   onUnauthorized = fn;
 }
 
@@ -43,7 +43,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 
   if (res.ok) return (res.status === 204 ? undefined : await res.json()) as T;
 
-  if (res.status === 401) onUnauthorized();
   const err = (await res.json().catch(() => null))?.error;
+  if (res.status === 401) onUnauthorized(err?.code ?? 'unauthenticated');
   throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path);
 }

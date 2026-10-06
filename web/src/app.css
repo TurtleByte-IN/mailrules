@@ -22,6 +22,14 @@
   --color-review-bg: #fef3c7;
   --color-review: #92400e;
   --color-live: #2f7a3e;
+  --color-ink-soft: #221e19;
+  --color-neutral: #ece6d9;
+  --color-both-bg: #e3e6f2;
+  --color-both: #27346e;
+  --color-warn-bg: #fffbeb;
+  --color-warn-line: #fde68a;
+  --color-warn-strong: #f59e0b;
+  --color-warn: #78350f;
 
   --font-sans: 'Schibsted Grotesk Variable', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -38,11 +46,54 @@
   body {
     @apply bg-surface font-sans text-sm leading-[1.45] text-ink;
   }
-  h1,
+  h1 {
+    @apply text-[28px] font-extrabold tracking-[-0.035em];
+  }
   h2 {
-    @apply font-extrabold tracking-[-0.035em];
+    @apply text-[17px] font-semibold;
+  }
+  button {
+    @apply cursor-pointer disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  input[type='checkbox'],
+  input[type='radio'] {
+    @apply size-[18px] accent-ink;
   }
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-signal;
+  }
+}
+
+/* Shared control styles from the prototype. Use these before writing new ones. */
+@layer components {
+  .btn {
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded border border-line-input bg-surface px-3.5 text-ink-soft;
+  }
+  .btn-primary {
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded bg-ink px-4 font-semibold text-surface;
+  }
+  .field {
+    @apply h-10 rounded border border-line-input bg-surface px-3 text-ink;
+  }
+  .card {
+    @apply rounded-md border border-line-card bg-surface;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-sm bg-selected px-2 py-0.5 text-xs font-medium whitespace-nowrap text-ink;
+  }
+  .chip-trash {
+    @apply bg-trash-bg text-trash;
+  }
+  .chip-review {
+    @apply bg-review-bg text-review;
+  }
+  .chip-neutral {
+    @apply bg-neutral text-nav;
+  }
+  .chip-both {
+    @apply bg-both-bg text-both;
+  }
+  .label {
+    @apply text-[13px] font-medium text-secondary;
   }
 }
