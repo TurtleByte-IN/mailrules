@@ -1,0 +1,48 @@
+@import '@fontsource-variable/schibsted-grotesk/wght.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import 'tailwindcss';
+
+/* Tokens from docs/design/README.md. Components use these utilities, never raw hex. */
+@theme {
+  --color-*: initial;
+  --color-surface: #ffffff;
+  --color-ink: #16130f;
+  --color-nav: #3a342c;
+  --color-secondary: #5a5247;
+  --color-muted: #776e61;
+  --color-line-input: #cbc3b3;
+  --color-line-card: #dcd4c4;
+  --color-line-divider: #e9e3d6;
+  --color-selected: #e6dfcc;
+  --color-selected-row: #faf1e1;
+  --color-signal: #e2471c;
+  --color-trash-bg: #fee4e2;
+  --color-trash: #9f1d14;
+  --color-review-bg: #fef3c7;
+  --color-review: #92400e;
+  --color-live: #2f7a3e;
+
+  --font-sans: 'Schibsted Grotesk Variable', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --radius-*: initial;
+  --radius-sm: 2px;
+  --radius: 3px;
+  --radius-md: 4px;
+
+  --shadow-*: initial;
+}
+
+@layer base {
+  body {
+    @apply bg-surface font-sans text-sm leading-[1.45] text-ink;
+  }
+  h1,
+  h2 {
+    @apply font-extrabold tracking-[-0.035em];
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-signal;
+  }
+}
