@@ -1,0 +1,14 @@
+version: "2"
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - noctx
+    - sqlclosecheck
+  exclusions:
+    presets:
+      - std-error-handling # unchecked Close on defer
+formatters:
+  enable:
+    - gofmt
