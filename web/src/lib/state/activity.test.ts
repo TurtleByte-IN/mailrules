@@ -89,8 +89,7 @@ describe('decision panel', () => {
 
 describe('tiles', () => {
   it.each([
-    ['the route is not built (501): no tiles, no error', 501, error('not_implemented', 'Not built yet.'), null, ''],
-    ['any other failure is an error', 500, error('internal', 'Something went wrong.'), null, 'Something went wrong.'],
+    ['a failure is an error', 500, error('internal', 'Something went wrong.'), null, 'Something went wrong.'],
     ['a summary', 200, stats, stats, ''],
   ])('%s', async (_name, status, body, want, said) => {
     const calls = serve(() => [status, body]);
@@ -174,6 +173,15 @@ describe('correct', () => {
     serve(() => [409, error('account_offline', 'This mailbox is not connected.')]);
     await s.correct(1, 4, false);
     expect(toast.text).toBe('This mailbox is not connected.');
+  });
+
+  it('says so when the account has no folder for the rule (422), and leaves the row as it was', async () => {
+    const said = 'This mail account has no Trash folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.';
+    serve((call) => (call.startsWith('GET') ? [200, page([item()])] : [422, error('no_special_folder', said)]));
+    await s.load();
+    await s.correct(1, 4, false);
+    expect(toast.text).toBe(said);
+    expect(s.activity.list).toEqual([item()]);
   });
 });
 

@@ -1,5 +1,4 @@
 import * as activityApi from '../api/activity';
-import { notBuilt } from '../api/client';
 import { subscribe } from '../api/events';
 import { flash } from './toast.svelte';
 
@@ -25,7 +24,7 @@ export const activity = $state({
   filter: { rule: '', account: '', kind: '' } as Filter,
   detail: null as activityApi.MessageDetail | null,
   detailError: '',
-  /** Null until the daemon has the stats route (501 before backend M9). */
+  /** Null until the tiles have loaded. */
   stats: null as activityApi.StatsSummary | null,
   statsError: '',
 });
@@ -84,7 +83,7 @@ export async function loadStats() {
     activity.stats = await activityApi.summary();
     activity.statsError = '';
   } catch (e) {
-    if (!notBuilt(e)) activity.statsError = message(e);
+    activity.statsError = message(e);
   }
 }
 

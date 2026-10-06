@@ -73,6 +73,16 @@ describe('review queue', () => {
     expect(badges['/review']).toBe(2);
   });
 
+  it('says so when the account has no folder for the rule (422), and keeps the email in the queue', async () => {
+    const said = 'This mail account has no Archive folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.';
+    serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [422, error('no_special_folder', said)]));
+    await s.load();
+    await s.resolve(8, 3, false);
+    expect(toast.text).toBe(said);
+    expect(ids()).toEqual([9, 8]);
+    expect(badges['/review']).toBe(2);
+  });
+
   describe('live events', () => {
     beforeEach(async () => {
       serve(() => [200, queue([9, 8], 2)]);
