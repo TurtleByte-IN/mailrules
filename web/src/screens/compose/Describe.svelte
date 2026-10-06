@@ -3,6 +3,7 @@
   import { push } from 'svelte-spa-router';
   import { sample } from '../../lib/api/compose';
   import { leaves } from '../../lib/api/rules';
+  import { accounts } from '../../lib/state/accounts.svelte';
   import { compose, optimize, savable, saveAll } from '../../lib/state/compose.svelte';
   import { actionsText, condText, kind, treeWords } from '../rules/text';
   import { listen, supported } from './dictation';
@@ -61,6 +62,9 @@
     {/if}
   </section>
 
+  {#if compose.needsModel}
+    <div role="alert" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{compose.needsModel} <a href="#/settings" class="font-semibold underline">Open Settings</a></div>
+  {/if}
   {#if compose.unparsed.length}
     <p role="status" class="text-[13px] text-secondary">Not turned into a rule: {compose.unparsed.map((u) => `“${u}”`).join('; ')}</p>
   {/if}
@@ -78,7 +82,10 @@
         <article class="flex flex-col gap-3 rounded-md border border-line-input bg-surface p-[18px] {savable(d) ? '' : 'border-dashed opacity-60'}">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap items-center gap-2"><span class="text-base font-semibold">{d.name}</span><span class={k.chip}>{k.label}</span></div>
-            <span class="text-[12.5px] text-secondary">Matches {d.match_count} of your last 200 emails{d.intent ? '' : ' · no model needed'}</span>
+            <!-- The count is 0 when nothing was tested: a draft in error, or no mailbox to test on. -->
+            {#if !d.errors.length && accounts.list.length}
+              <span class="text-[12.5px] text-secondary">Matches {d.match_count} of your last 200 emails{d.intent ? '' : ' · no model needed'}</span>
+            {/if}
           </div>
           <div class="flex flex-wrap gap-3.5">
             <div class="min-w-0 flex-[1_1_240px] border-l-[3px] border-line-card py-0.5 pl-3">

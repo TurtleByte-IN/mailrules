@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Condition, Rule, RuleInput } from '../../lib/api/rules';
 import { condText } from '../rules/text';
-import { emptyBuilder, english, fromRule, toCondition, toRow, toRule, type Builder, type Row } from './builder';
+import { emptyBuilder, english, fromRule, refusedPart, toCondition, toRow, toRule, type Builder, type Row } from './builder';
 
 describe('condition rows', () => {
   it.each<[Row, unknown, string]>([
@@ -91,5 +91,36 @@ describe('builder', () => {
     [{ intent: '', unless: false, stack: false, match: 'all', folder: '', markRead: false }, 'Emails where the sender domain is acme.com or bills.io and it has an attachment: move to [folder] · only me@icloud.com.'],
   ])('says it in plain words', (change, want) => {
     expect(english({ ...full, ...change }, 'me@icloud.com')).toBe(want);
+  });
+});
+
+// Paths as a daemon at contract 0.9 sent them for each refusal.
+describe('refusedPart', () => {
+  // The empty middle row is not sent, so the daemon's second condition is the form's third row.
+  const b: Builder = { ...emptyBuilder(), rows: [{ field: 'from_domain', op: 'in', value: 'a.com' }, { field: 'subject', op: 'in', value: '' }, { field: 'subject', op: 'matches', value: '((' }] };
+
+  it.each<[string, ReturnType<typeof refusedPart>]>([
+    ['rules[0].conditions.all[1].op', { part: 'row2', leaf: 'op' }],
+    ['rules[0].conditions.any[1].value', { part: 'row2', leaf: 'value' }],
+    ['rules[0].conditions.all[0].field', { part: 'row0', leaf: 'field' }],
+    ['conditions.all[1].op', { part: 'row2', leaf: 'op' }],
+    ['rules[0].conditions.all[5].op', undefined],
+    ['rules[0].exceptions.all[0].op', { part: 'unless' }],
+    ['rules[0].actions[0].folder', { part: 'folder' }],
+    ['rules[0].new_folders[0]', { part: 'folder' }],
+    ['rules[0].actions[0].type', { part: 'action' }],
+    ['rules[0].actions', { part: 'action' }],
+    ['rules[0].min_confidence', { part: 'action' }],
+    ['min_confidence', { part: 'action' }],
+    ['rules[0].name', { part: 'name' }],
+    ['rules[0].stack', { part: 'stack' }],
+    ['rules[0].account_id', { part: 'account_id' }],
+    ['intent', { part: 'intent' }],
+    ['rules[0].model', undefined],
+    ['rules[0].conditions', undefined],
+    ['rules[0]', undefined],
+    ['rules', undefined],
+  ])('%s', (path, want) => {
+    expect(refusedPart(b, path)).toEqual(want);
   });
 });

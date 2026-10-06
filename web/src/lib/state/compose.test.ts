@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Draft as ApiDraft } from '../api/compose';
 import type { Rule } from '../api/rules';
 import type { Template } from '../api/templates';
-import { addTemplate, addTemplatesByName, attempt, compose, loadTemplates, optimize, saveAll } from './compose.svelte';
+import { addTemplate, addTemplatesByName, compose, optimize, saveAll } from './compose.svelte';
 import { rules } from './rules.svelte';
 import { toast } from './toast.svelte';
 
@@ -30,8 +30,6 @@ const saved = (id: number, name: string) =>
 
 const template = (name: string): Template => ({ id: name.toLowerCase(), name, description: name + ' you rarely open', rule: { name, intent: name, actions: [{ type: 'move', folder: name }], new_folders: [name], stack: false, enabled: true } });
 
-const notImplemented: [number, unknown] = [501, { error: { code: 'not_implemented', message: 'This part of MailRules is not built yet.' } }];
-
 /** Answers each "METHOD /path" with its [status, body]; anything else is a 404. */
 function serve(routes: Record<string, [number, unknown?]>) {
   const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
@@ -45,7 +43,7 @@ function serve(routes: Record<string, [number, unknown?]>) {
 const sent = (f: ReturnType<typeof serve>, call = 0) => JSON.parse(f.mock.calls[call][1].body as string);
 
 beforeEach(() => {
-  Object.assign(compose, { text: '', drafts: [], unparsed: [], busy: false, templates: [], notBuilt: '' });
+  Object.assign(compose, { text: '', drafts: [], unparsed: [], busy: false, templates: [], needsModel: '' });
   Object.assign(rules, { list: [saved(1, 'Food')], loaded: true, error: '' });
   toast.text = '';
 });
@@ -58,7 +56,7 @@ it('turns text into drafts and keeps what could not be parsed', async () => {
 
   expect(sent(f)).toEqual({ text: 'Bank statements go to Finance. Archive LinkedIn. And the other stuff' });
   expect(compose.drafts.map((d) => [d.name, d.rejected])).toEqual([['Finance', false], ['LinkedIn', false]]);
-  expect(compose).toMatchObject({ unparsed: ['and the other stuff'], busy: false, notBuilt: '' });
+  expect(compose).toMatchObject({ unparsed: ['and the other stuff'], busy: false, needsModel: '' });
 });
 
 it.each<[string, unknown, number, string]>([
@@ -103,28 +101,34 @@ it('saves nothing when every draft is skipped', async () => {
   expect(toast.text).toBe('Nothing to save: every draft is skipped');
 });
 
+const noModel = 'This needs an AI model, and none is set up yet. Add a Claude (Anthropic) key in Settings, then try again. Rules built from conditions work without one.';
+
+it('keeps the daemon\'s sentence when there is no model to compose with, and what was typed', async () => {
+  serve({ 'POST /api/rules/compose': [409, { error: { code: 'no_composer_model', message: noModel } }] });
+  compose.text = 'Archive LinkedIn';
+  await optimize();
+  expect(compose).toMatchObject({ needsModel: noModel, text: 'Archive LinkedIn', busy: false });
+  expect(toast.text).toBe('');
+
+  // It goes when composing works.
+  serve({ 'POST /api/rules/compose': [200, { rules: [draft('LinkedIn')], unparsed: [] }] });
+  await optimize();
+  expect(compose.needsModel).toBe('');
+});
+
 it.each<[string, string, () => Promise<unknown>]>([
-  ['Turning text into rules', 'POST /api/rules/compose', optimize],
-  ['Saving new rules', 'POST /api/rules/batch', saveAll],
-  ['Templates', 'GET /api/templates', () => attempt('Templates', loadTemplates)],
-])('shows "%s" as not built on a 501 and keeps what was typed', async (what, route, action) => {
-  serve({ [route]: notImplemented });
+  ['model_error', 'POST /api/rules/compose', optimize],
+  ['mailbox_error', 'POST /api/rules/batch', saveAll],
+])('flashes a 502 %s and keeps the text and drafts', async (code, route, action) => {
+  serve({ [route]: [502, { error: { code, message: 'The other end did not answer.' } }] });
   compose.text = 'Archive LinkedIn';
   compose.drafts = [{ ...draft('LinkedIn'), rejected: false }];
   await action();
 
-  expect(compose).toMatchObject({ notBuilt: what, text: 'Archive LinkedIn', busy: false });
+  expect(compose).toMatchObject({ needsModel: '', text: 'Archive LinkedIn', busy: false });
   expect(compose.drafts).toHaveLength(1);
   expect(rules.list).toHaveLength(1);
-  expect(toast.text).toBe('');
-});
-
-it('flashes a failure that is not a 501 and puts up no notice', async () => {
-  serve({ 'POST /api/rules/compose': [502, { error: { code: 'model_not_configured', message: 'No decision model is set up.' } }] });
-  compose.text = 'Archive LinkedIn';
-  await optimize();
-  expect(compose).toMatchObject({ notBuilt: '', text: 'Archive LinkedIn' });
-  expect(toast.text).toBe('No decision model is set up.');
+  expect(toast.text).toBe('The other end did not answer.');
 });
 
 it('adds the named templates as rules, skipping names already taken', async () => {
@@ -141,12 +145,12 @@ it('adds the named templates as rules, skipping names already taken', async () =
   expect(f).toHaveBeenCalledTimes(2);
 });
 
-it('lets addTemplatesByName fail to its caller, and shows the notice from the gallery button', async () => {
-  serve({ 'GET /api/templates': [200, { items: [template('Travel')] }], 'POST /api/rules/batch': notImplemented });
-  await expect(addTemplatesByName(['Travel'])).rejects.toMatchObject({ status: 501, code: 'not_implemented' });
-  expect(compose.notBuilt).toBe('');
+it('lets addTemplatesByName fail to its caller, and flashes the failure from the gallery button', async () => {
+  const refused = { error: { code: 'mailbox_error', message: 'The folder Travel could not be created. Nothing was saved.' } };
+  serve({ 'GET /api/templates': [200, { items: [template('Travel')] }], 'POST /api/rules/batch': [502, refused] });
+  await expect(addTemplatesByName(['Travel'])).rejects.toMatchObject({ status: 502, code: 'mailbox_error' });
+  expect(toast.text).toBe('');
 
   await addTemplate(compose.templates[0]);
-  expect(compose.notBuilt).toBe('Saving new rules');
-  expect(toast.text).toBe('');
+  expect(toast.text).toBe(refused.error.message);
 });

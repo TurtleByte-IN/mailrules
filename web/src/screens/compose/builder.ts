@@ -81,6 +81,26 @@ export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' |
   };
 }
 
+/**
+ * Where on the form a refused save belongs. `path` is as the daemon sends it:
+ * "rules[0].conditions.all[1].op" from a batch save, "conditions.all[1].op" from an edit.
+ * `part` is "row<i>" (an index into `b.rows`; the daemon counts only the filled rows) or a
+ * form field, and `leaf` the control within a row. Nothing when the form has no control for it.
+ */
+export function refusedPart(b: Builder, path: string): { part: string; leaf?: string } | undefined {
+  const p = path.replace(/^rules\[\d+\]\./, '');
+  const row = /^conditions\.(?:all|any)\[(\d+)\](?:\.(field|op|value))?/.exec(p);
+  if (row) {
+    const i = b.rows.indexOf(filled(b)[+row[1]]);
+    return i < 0 ? undefined : { part: 'row' + i, leaf: row[2] ?? 'value' };
+  }
+  if (p.startsWith('exceptions')) return { part: 'unless' };
+  if (/^actions\[\d+\]\.folder|^new_folders/.test(p)) return { part: 'folder' };
+  // The form has no threshold; the one it can break is the higher one a rule that trashes needs.
+  if (p.startsWith('actions') || p === 'min_confidence') return { part: 'action' };
+  if (['name', 'intent', 'account_id', 'stack'].includes(p)) return { part: p };
+}
+
 // ponytail: an exception richer than "replied before" collapses to that checkbox; add an
 // exceptions editor when the composer starts producing others that people want to edit.
 export function fromRule(r: Rule): Builder {

@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { addTemplate, attempt, compose, loadTemplates } from '../../lib/state/compose.svelte';
+  import { addTemplate, compose, loadTemplates } from '../../lib/state/compose.svelte';
   import { rules } from '../../lib/state/rules.svelte';
+  import { flash } from '../../lib/state/toast.svelte';
   import { actionsText, kind } from '../rules/text';
 
-  attempt('Templates', loadTemplates);
+  loadTemplates().catch((e) => flash(e.message));
 </script>
 
 <div class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">

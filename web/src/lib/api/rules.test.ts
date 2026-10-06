@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { notBuilt } from './client';
-import { exportYaml, importYaml, test, undo, type TestResult } from './rules';
+import { ApiError } from './client';
+import { exportYaml, importYaml, test, testRefused, undo, type TestResult } from './rules';
 
 function respond(status: number, body: BodyInit | null, type = 'application/json') {
   const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(body, { status, headers: { 'Content-Type': type } }));
@@ -67,7 +67,19 @@ it('fails a streamed test that ends without a result', async () => {
   await expect(test({ account_id: 1, limit: 500 })).rejects.toMatchObject({ code: 'stream_ended' });
 });
 
-it('reports the tester as not built on a 501', async () => {
-  respond(501, JSON.stringify({ error: { code: 'not_implemented', message: 'This part of MailRules is not built yet.' } }));
-  expect(notBuilt(await test({ account_id: 1, limit: 200 }).catch((e) => e))).toBe(true);
+it('throws the error a streamed test carries when it fails midway', async () => {
+  const error = { code: 'test_failed', message: 'The mailbox stopped answering.' };
+  respond(200, `event: progress\ndata: {"done":25,"total":500}\n\nevent: error\ndata: ${JSON.stringify({ error })}\n\n`, 'text/event-stream');
+  const thrown = await test({ account_id: 1, limit: 500 }).catch((e) => e);
+  expect(thrown).toBeInstanceOf(ApiError);
+  expect(thrown).toMatchObject(error);
+});
+
+it.each([
+  [409, 'no_composer_model', true],
+  [409, 'account_offline', true],
+  [502, 'model_error', false],
+])('a test answered %i %s is shown in place of the result: %s', async (status, code, inline) => {
+  respond(status, JSON.stringify({ error: { code, message: 'Why.' } }));
+  expect(testRefused(await test({ account_id: 1, limit: 200 }).catch((e) => e))).toBe(inline);
 });
