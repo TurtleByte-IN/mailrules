@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Rule } from '../../lib/api/rules';
+import type { Condition, Rule, RuleInput } from '../../lib/api/rules';
 import { condText } from '../rules/text';
 import { emptyBuilder, english, fromRule, toCondition, toRow, toRule, type Builder, type Row } from './builder';
 
@@ -18,9 +18,10 @@ describe('condition rows', () => {
     expect(toRow(c)).toEqual(row);
   });
 
-  it.each([
+  it.each<[Condition, Row]>([
     [{ field: 'header:X-Spam', op: 'exists', value: 'x' }, { field: 'subject', op: 'in', value: 'x' }],
     [{ field: 'subject', op: 'contains', value: 'hi' }, { field: 'subject', op: 'in', value: 'hi' }],
+    [{ all: [{ field: 'subject', op: 'in', value: ['x'] }] }, { field: 'subject', op: 'in', value: '' }],
   ])('%j falls back to what the builder offers', (c, row) => {
     expect(toRow(c)).toEqual(row);
   });
@@ -38,7 +39,7 @@ const full: Builder = {
   unless: true,
   folder: 'Finance',
   markRead: true,
-  account_id: 'acc1',
+  account_id: 2,
   stack: true,
 };
 
@@ -55,7 +56,7 @@ describe('builder', () => {
       },
       exceptions: { all: [{ field: 'replied_before', op: 'eq', value: true }] },
       actions: [{ type: 'move', folder: 'Finance' }, { type: 'read' }],
-      account_id: 'acc1',
+      account_id: 2,
       stack: true,
     });
   });
@@ -69,13 +70,19 @@ describe('builder', () => {
     ['conditions only', { intent: '', unless: false, match: 'all' }],
   ])('loads a saved rule back into the same form: %s', (_, change) => {
     const b = { ...full, ...change };
-    const saved = { ...toRule(b), id: 'r9', said: '', model: null, min_confidence: 0.75, enabled: true, trash: false, hits: 0 } satisfies Rule;
-    expect(fromRule(saved)).toEqual({ ...b, editingId: 'r9' });
+    // The daemon's reply to saving this form, shaped as the contract's Rule.
+    const saved: Rule = { ...toRule(b), id: 9, said: '', priority: 3, model: '', min_confidence: null, enabled: true, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null };
+    expect(fromRule(saved)).toEqual({ ...b, editingId: 9 });
+  });
+
+  it('is a RuleInput once it has its wording', () => {
+    const input: RuleInput = { ...toRule(full), said: 'Built with conditions', enabled: true };
+    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'enabled', 'exceptions', 'intent', 'name', 'said', 'stack']);
   });
 
   it('leaves out rows with no value and names an unnamed rule', () => {
     const r = toRule({ ...emptyBuilder(), rows: [{ field: 'subject', op: 'in', value: ' ' }], action: 'archive' });
-    expect(r).toMatchObject({ name: 'Condition rule', conditions: {}, intent: null, actions: [{ type: 'archive' }] });
+    expect(r).toMatchObject({ name: 'Condition rule', conditions: {}, intent: '', actions: [{ type: 'archive' }] });
   });
 
   it.each<[Partial<Builder>, string]>([

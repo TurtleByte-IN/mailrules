@@ -3,7 +3,7 @@
   import { push } from 'svelte-spa-router';
   import { sample } from '../../lib/api/compose';
   import { leaves } from '../../lib/api/rules';
-  import { answer, compose, optimize, saveAll } from '../../lib/state/compose.svelte';
+  import { compose, optimize, savable, saveAll } from '../../lib/state/compose.svelte';
   import { actionsText, condText, kind, treeWords } from '../rules/text';
   import { listen, supported } from './dictation';
 
@@ -26,7 +26,7 @@
   }
   onDestroy(() => stop?.());
 
-  const keep = $derived(compose.drafts.filter((d) => !d.rejected).length);
+  const keep = $derived(compose.drafts.filter(savable).length);
 
   async function save() {
     const added = await saveAll();
@@ -61,6 +61,9 @@
     {/if}
   </section>
 
+  {#if compose.unparsed.length}
+    <p role="status" class="text-[13px] text-secondary">Not turned into a rule: {compose.unparsed.map((u) => `“${u}”`).join('; ')}</p>
+  {/if}
   {#if compose.drafts.length}
     <div class="flex flex-col gap-3.5">
       <div class="flex flex-wrap items-center justify-between gap-2.5">
@@ -72,7 +75,7 @@
       </div>
       {#each compose.drafts as d}
         {@const k = kind(d)}
-        <article class="flex flex-col gap-3 rounded-md border border-line-input bg-surface p-[18px] {d.rejected ? 'border-dashed opacity-60' : ''}">
+        <article class="flex flex-col gap-3 rounded-md border border-line-input bg-surface p-[18px] {savable(d) ? '' : 'border-dashed opacity-60'}">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap items-center gap-2"><span class="text-base font-semibold">{d.name}</span><span class={k.chip}>{k.label}</span></div>
             <span class="text-[12.5px] text-secondary">Matches {d.match_count} of your last 200 emails{d.intent ? '' : ' · no model needed'}</span>
@@ -109,20 +112,22 @@
           {#each d.conflicts as c}
             <div class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{c.note}</div>
           {/each}
+          {#each d.errors as e}
+            <div role="alert" class="rounded bg-trash-bg px-3 py-2.5 text-[13px] text-trash">{e.message}</div>
+          {/each}
           {#if d.question}
-            <div class="flex flex-wrap items-center gap-2 text-[13px]">
-              <span class="font-semibold">{d.question}</span>
-              {#each d.options as o}
-                <button type="button" aria-pressed={d.answer === o} class="min-h-9 rounded border px-3 text-[13px] {d.answer === o ? 'border-ink bg-ink text-surface' : 'border-line-input bg-surface text-ink-soft'}" onclick={() => answer(d, o)}>{o}</button>
-              {/each}
-            </div>
+            <div class="text-[13px]"><span class="font-semibold">{d.question}</span> <span class="text-secondary">Say which in your own words above, then turn it into rules again.</span></div>
           {/if}
           {#if d.samples.length}
-            <div class="text-[12.5px] text-muted">Would have matched: {d.samples.join('; ')}</div>
+            <div class="text-[12.5px] text-muted">Would have matched: {d.samples.map((m) => m.subject).join('; ')}</div>
           {/if}
           <div class="flex items-center gap-2 border-t border-line-divider pt-2">
-            <span class="text-[12.5px] font-semibold {d.rejected ? 'text-muted' : ''}">{d.rejected ? 'Skipped' : 'Will be saved'}</span>
-            <button type="button" class="btn ml-auto min-h-9 px-3 text-[13px]" onclick={() => (d.rejected = !d.rejected)}>{d.rejected ? 'Include' : 'Skip'}</button>
+            {#if d.errors.length}
+              <span class="text-[12.5px] font-semibold text-muted">Cannot be saved as it is</span>
+            {:else}
+              <span class="text-[12.5px] font-semibold {d.rejected ? 'text-muted' : ''}">{d.rejected ? 'Skipped' : 'Will be saved'}</span>
+              <button type="button" class="btn ml-auto min-h-9 px-3 text-[13px]" onclick={() => (d.rejected = !d.rejected)}>{d.rejected ? 'Include' : 'Skip'}</button>
+            {/if}
           </div>
         </article>
       {/each}

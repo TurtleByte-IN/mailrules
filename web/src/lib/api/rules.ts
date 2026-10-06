@@ -1,184 +1,79 @@
-// DEMO: GET /api/rules, PATCH DELETE /api/rules/{id}, POST /api/rules/reorder,
-// POST /api/rules/batch and POST /api/rules/test are not in api/openapi.yaml yet (backend M7, M8).
-// Shapes follow docs/backend-plan.md → Data model and Rules and condition matcher;
-// `hits`, `trash` and the P2 fields come from the prototype.
-import { fake, fakeId } from './demo';
+import { api, ApiError, query } from './client';
+import type { components, operations } from './schema';
 
-export interface Condition {
-  field: string;
-  op: string;
-  value: string | string[] | number | boolean;
-}
+type S = components['schemas'];
 
-/** One group of conditions; empty means "always true". Nested groups are not modelled yet. */
-export interface ConditionTree {
-  all?: Condition[];
-  any?: Condition[];
-}
+export type Rule = S['Rule'];
+export type RuleInput = S['RuleInput'];
+export type RulePatch = S['RulePatch'];
+export type Condition = S['Condition'];
+export type Action = S['RuleAction'];
+export type ImportResult = S['ImportResult'];
+export type TestResult = S['TestResult'];
+export type TestProgress = S['TestProgress'];
+export type UndoResult = S['UndoResult'];
 
-export interface Action {
-  type: 'move' | 'archive' | 'trash' | 'junk' | 'flag' | 'unflag' | 'read' | 'unread' | 'keep';
-  folder?: string;
-}
-
-/** The "more options" of a rule. `later`, `notify` and the draft fields are P2 (lib/features.ts). */
-export interface Extras {
-  /** null = all mailboxes. */
-  account_id: string | null;
-  stack: boolean;
-  later?: { on: boolean; after: string; action: string };
-  notify?: string;
-  draft?: boolean;
-  draftNote?: string;
-}
-
-/** What the client sends to create a rule. */
-export interface RuleInput extends Extras {
-  name: string;
-  /** The user's original wording. */
-  said: string;
-  /** null = condition-only. */
-  intent: string | null;
-  conditions: ConditionTree;
-  /** The "unless" of a rule. */
-  exceptions: ConditionTree;
-  actions: Action[];
-  /** Per-rule decider override; null = the default decider. */
-  model: string | null;
-  min_confidence: number | null;
-}
-
-export interface Rule extends RuleInput {
-  id: string;
-  enabled: boolean;
-  /** True when the rule's action moves mail to Trash. */
-  trash: boolean;
-  /** Emails this rule acted on this week. */
-  hits: number;
-}
-
-export type RulePatch = Partial<RuleInput & { enabled: boolean }>;
-
-/** Summary of a tester run. The daemon will return one row per email; this is what the screens show. */
-export interface TestSummary {
-  limit: number;
-  matched: number;
-  model_calls: number;
-  /** null when no email reached a model. */
-  avg_confidence: number | null;
-  to_review: number;
-  latest_from: string | null;
-}
-
-export const leaves = (t: ConditionTree) => t.all ?? t.any ?? [];
+// ponytail: reads one level of a condition tree; a group nested inside a group shows as an
+// empty condition. Walk the tree when the composer or an imported file starts nesting them.
+export const leaves = (t: Condition): Condition[] => t.all ?? t.any ?? (t.field ? [t] : []);
 export const isTrash = (actions: Action[]) => actions.some((a) => a.type === 'trash');
 
-const seed = (r: Pick<Rule, 'id' | 'name' | 'said' | 'actions' | 'hits'> & Partial<Rule>): Rule => ({
-  account_id: null,
-  intent: null,
-  conditions: {},
-  exceptions: {},
-  stack: false,
-  model: null,
-  min_confidence: 0.75,
-  enabled: true,
-  ...r,
-  trash: isTrash(r.actions),
-});
+export const list = async () => (await api<S['RuleList']>('GET', '/rules')).items;
+export const patch = async (id: number, p: RulePatch) => (await api<S['RuleEnvelope']>('PATCH', `/rules/${id}`, p)).rule;
+export const remove = (id: number) => api<void>('DELETE', `/rules/${id}`);
 
-let rules: Rule[] = [
-  seed({
-    id: 'r1',
-    name: 'Food orders',
-    said: 'Put all Swiggy and Zomato stuff in Food',
-    conditions: { all: [{ field: 'from_domain', op: 'in', value: ['swiggy.in', 'zomato.com'] }] },
-    actions: [{ type: 'move', folder: 'Food' }, { type: 'read' }],
-    hits: 38,
-  }),
-  seed({
-    id: 'r2',
-    name: 'Login codes',
-    said: 'Keep OTPs and login codes, and flag them',
-    conditions: { all: [{ field: 'subject', op: 'contains_any', value: ['code', 'OTP', 'verification'] }] },
-    actions: [{ type: 'keep' }, { type: 'flag' }],
-    hits: 12,
-  }),
-  seed({
-    id: 'r3',
-    name: 'Recruiters',
-    said: "Recruiter emails go to Jobs unless I've talked to them before",
-    intent: 'Recruiter outreach about job openings',
-    exceptions: { all: [{ field: 'replied_before', op: 'eq', value: true }] },
-    actions: [{ type: 'move', folder: 'Jobs' }],
-    hits: 9,
-  }),
-  seed({
-    id: 'r4',
-    name: 'Scams',
-    said: 'Trash anything that looks like a fake bank alert',
-    intent: 'Phishing, scams or fake bank alerts',
-    actions: [{ type: 'trash' }],
-    hits: 3,
-    min_confidence: 0.9,
-  }),
-  seed({
-    id: 'r5',
-    name: 'Newsletters',
-    said: 'Newsletters I never read go to Reading',
-    intent: 'Newsletters and promotional emails',
-    actions: [{ type: 'move', folder: 'Reading' }, { type: 'read' }],
-    hits: 51,
-  }),
-  seed({
-    id: 'r6',
-    name: 'Orders',
-    said: 'Delivery and shipping updates go to Shopping',
-    intent: 'Order confirmations, delivery and shipping updates',
-    actions: [{ type: 'move', folder: 'Shopping' }],
-    hits: 17,
-    stack: true,
-  }),
-];
+/** Sets the order rules are checked in; `ids` is every rule's id. Returns the list in that order. */
+export const reorder = async (ids: number[]) => (await api<S['RuleList']>('POST', '/rules/reorder', { ids })).items;
 
-// Callers hand in reactive state, which structuredClone refuses; a real request body is JSON anyway.
-const plain = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+/** Saves new rules; the only route that creates rules besides import. */
+export const batch = async (rules: RuleInput[]) =>
+  (await api<operations['createRules']['responses'][201]['content']['application/json']>('POST', '/rules/batch', { rules } satisfies S['RuleBatchRequest'])).items;
 
-export const list = () => fake(rules);
+/** Undoes everything the rule did at or after `since` (unix seconds). */
+export const undo = (id: number, since: number) => api<UndoResult>('POST', `/rules/${id}/undo` + query({ since }));
 
-export function patch(id: string, p: RulePatch) {
-  rules = rules.map((r) => (r.id === id ? seed({ ...r, ...plain(p) }) : r));
-  return fake(rules.find((r) => r.id === id)!);
+// api() sends and reads JSON only; the YAML file and the tester's event stream need the
+// response itself. The CSRF cookie and the error shape are client.ts's, repeated here.
+// ponytail: a 401 on these three does not reach client.ts's unauthorized handler; move this
+// into client.ts when it grows a raw request.
+async function send(method: string, path: string, headers: Record<string, string>, body?: BodyInit) {
+  const csrf = document.cookie.split('; ').find((c) => c.startsWith('mailrules_csrf='))?.slice(15) ?? '';
+  if (method !== 'GET') headers['X-CSRF-Token'] = decodeURIComponent(csrf);
+  const res = await fetch('/api' + path, { method, headers, credentials: 'same-origin', body });
+  if (res.ok) return res;
+  const err = (await res.json().catch(() => null))?.error;
+  throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path);
 }
 
-export function remove(id: string) {
-  rules = rules.filter((r) => r.id !== id);
-  return fake(null);
-}
+/** Every rule as the YAML rules file. */
+export const exportYaml = async () => (await send('GET', '/rules/export', { Accept: 'application/yaml' })).blob();
 
-/** Sets the order rules are checked in; returns the list in that order. */
-export function reorder(ids: string[]) {
-  rules = ids.flatMap((id) => rules.find((r) => r.id === id) ?? []);
-  return fake(rules);
-}
+/** Uploads a YAML rules file. Nothing is stored unless every rule in it is valid. */
+export const importYaml = async (file: Blob): Promise<ImportResult> =>
+  (await send('POST', '/rules/import', { Accept: 'application/json', 'Content-Type': 'application/yaml' }, file)).json();
 
-/** Saves new rules at the bottom of the list. `new_folders` are created by the daemon. */
-export function batch(inputs: (RuleInput & { new_folders?: string[] })[]) {
-  const added = plain(inputs).map(({ new_folders: _, ...r }) => seed({ ...r, id: fakeId('r'), hits: 0 }));
-  rules = [...rules, ...added];
-  return fake(added);
-}
+/**
+ * Runs saved (`rule_ids`) or draft (`rules`) rules over the account's recent mail without acting.
+ * Up to 200 emails the daemon answers in one body; above that it streams, and `onProgress`
+ * is called as it goes.
+ */
+export async function test(req: Omit<S['TestRequest'], 'folder'>, onProgress?: (p: TestProgress) => void): Promise<TestResult> {
+  const res = await send('POST', '/rules/test', { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, JSON.stringify(req));
+  if (!res.headers.get('Content-Type')?.startsWith('text/event-stream')) return res.json();
 
-/** Runs a saved or draft rule over recent mail without acting. */
-export function test(rule: Pick<RuleInput, 'intent' | 'conditions'>, limit = 200): Promise<TestSummary> {
-  const conds = leaves(rule.conditions);
-  const matched = ((conds.map((c) => String(c.value)).join('').length + conds.length * 3) * 7) % 17 + 3;
-  const first = conds[0];
-  return fake({
-    limit,
-    matched,
-    model_calls: rule.intent ? Math.max(1, Math.round(matched / 4)) : 0,
-    avg_confidence: rule.intent ? 0.89 : null,
-    to_review: rule.intent ? 1 : 0,
-    latest_from: first?.field === 'from_domain' ? String([first.value].flat()[0]) : null,
-  });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) throw new ApiError(502, 'stream_ended', 'The test stopped before it finished.');
+    buffer += decoder.decode(value, { stream: true });
+    for (let end; (end = buffer.indexOf('\n\n')) >= 0; buffer = buffer.slice(end + 2)) {
+      const frame = buffer.slice(0, end);
+      const event = /^event: ?(.*)$/m.exec(frame)?.[1];
+      const data = /^data: ?(.*)$/m.exec(frame)?.[1];
+      if (event === 'done') return JSON.parse(data!);
+      if (event === 'progress') onProgress?.(JSON.parse(data!));
+    }
+  }
 }
