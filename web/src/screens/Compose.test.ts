@@ -89,6 +89,7 @@ it('puts a refused builder save on the row its path names, until that row is edi
   // Three rows; the empty middle one is not sent, so the daemon's second condition is the third row.
   await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
   const values = screen.getAllByLabelText<HTMLInputElement>('Value');
   await fireEvent.input(values[0], { target: { value: 'acme.com' } });
   await fireEvent.change(screen.getAllByLabelText('Operator')[2], { target: { value: 'matches' } });
@@ -114,12 +115,50 @@ it('flashes a refused builder save the form has no control for', async () => {
   serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].model' } }] });
   render(Compose);
   await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
   await fireEvent.input(screen.getByLabelText('Value'), { target: { value: 'acme.com' } });
   await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
   await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
 
   await vi.waitFor(() => expect(toast.text).toBe(message));
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('starts with no condition and brings the row, sentence and picker in with the first one', async () => {
+  serve({});
+  render(Compose);
+  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  expect(screen.getByRole('heading', { name: 'Conditions (optional)' })).toBeTruthy();
+  expect(screen.queryByLabelText('Value')).toBeNull();
+  expect(screen.queryByLabelText('All or any')).toBeNull();
+  expect(screen.queryByText('When an email matches')).toBeNull();
+  expect(screen.getByText('(checked by AI; if you add conditions, only after they match)')).toBeTruthy();
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
+  expect(screen.getByLabelText('Value')).toBeTruthy();
+  expect(screen.getByLabelText('All or any')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Conditions (optional)' })).toBeNull();
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove condition 1' }));
+  expect(screen.queryByLabelText('Value')).toBeNull();
+  expect(screen.queryByLabelText('All or any')).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Conditions (optional)' })).toBeTruthy();
+});
+
+it('saves an AI-only rule with no conditions in the payload', async () => {
+  const saved = { ...drafted('Invoices'), id: 3 };
+  const f = serve({ 'POST /api/rules/batch': [200, { rules: [saved] }] });
+  render(Compose);
+  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.input(screen.getByLabelText('Rule name'), { target: { value: 'Invoices' } });
+  await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'an invoice' } });
+  await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+
+  await vi.waitFor(() => expect(f).toHaveBeenCalledOnce());
+  const sent = JSON.parse(f.mock.calls[0][1].body as string).rules[0];
+  expect(sent.intent).toBe('an invoice');
+  expect(sent.conditions).toEqual({});
 });
 
 // A draft as POST /api/rules/compose returns it.
