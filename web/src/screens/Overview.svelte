@@ -2,7 +2,7 @@
   import { link } from 'svelte-spa-router';
   import type { Account } from '../lib/api/accounts';
   import { clock, money } from '../lib/format';
-  import { accounts, reconnect, setPaused, statuses } from '../lib/state/accounts.svelte';
+  import { accounts, reconnect, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { kind, outcome } from '../lib/state/activity.svelte';
   import { callsLine, health, healthLine, load, overview, split } from '../lib/state/overview.svelte';
   import { rules } from '../lib/state/rules.svelte';
@@ -21,8 +21,8 @@
     stats
       ? [
           { label: 'Processed today', value: stats.counts.processed, sub: 'across ' + mailboxes, href: '/activity' },
-          { label: 'Sorted', value: stats.went.sorted, sub: 'moved, archived or flagged', href: '/activity' },
-          { label: 'Trashed', value: stats.went.trashed, sub: 'restorable for 30 days', href: '/activity' },
+          { label: 'Sorted', value: stats.went.sorted, sub: 'moved, archived or flagged', href: '/activity?outcome=sorted' },
+          { label: 'Trashed', value: stats.went.trashed, sub: 'restorable for 30 days', href: '/activity?outcome=trashed' },
           { label: 'Needs review', value: stats.counts.review, sub: stats.counts.review ? 'Review now' : 'All clear', href: '/review', warn: stats.counts.review > 0 },
           { label: 'Cost today', value: money(stats.cost_usd), sub: callsLine(stats.calls_by_model), href: '/usage' },
         ]
@@ -31,6 +31,14 @@
 
   const chips = { ok: '', trash: 'chip-trash', none: 'chip-neutral', review: 'chip-review' };
   const act = (a: Account, action: 'reconnect' | 'resume') => (action === 'resume' ? setPaused(a.id, false) : reconnect(a.id));
+
+  // A test opens its own connection and leaves the mailbox's watcher alone.
+  let testing = $state<Record<number, boolean>>({});
+  async function runTest(id: number) {
+    testing[id] = true;
+    await test(id);
+    testing[id] = false;
+  }
 </script>
 
 <div class="flex flex-col gap-[22px]">
@@ -73,7 +81,7 @@
       </div>
       <div class="flex flex-wrap gap-x-3.5 gap-y-1 text-[12.5px] text-secondary">
         {#each parts as p (p.label)}
-          <span class="inline-flex items-center gap-[5px]"><span class="size-2.5 rounded-sm {p.fill}"></span>{p.label} {p.n}</span>
+          <a href="/activity?outcome={p.outcome}" use:link class="inline-flex items-center gap-[5px] text-secondary no-underline"><span class="size-2.5 rounded-sm {p.fill}"></span>{p.label} {p.n}</a>
         {/each}
       </div>
     </section>
@@ -98,6 +106,8 @@
             <a href="/accounts" use:link class="btn min-h-9 px-3 text-[13px] no-underline">{h.label}</a>
           {:else if h.action === 'wait'}
             <button type="button" class="btn min-h-9 px-3 text-[13px]" disabled>{h.label}</button>
+          {:else if h.action === 'test'}
+            <button type="button" class="btn min-h-9 px-3 text-[13px]" aria-label="Test {a.label}" disabled={testing[a.id]} onclick={() => runTest(a.id)}>{testing[a.id] ? 'Testing…' : h.label}</button>
           {:else if h.action === 'reconnect' || h.action === 'resume'}
             {@const action = h.action}
             <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={() => act(a, action)}>{h.label}</button>

@@ -10,6 +10,20 @@
   let connecting = $state(false);
   let removing = $state<number>();
   let editing = $state<number>();
+  // Joined here, not in the markup: a separator at the start of an {#if} block loses its leading space.
+  const line = (a: Account) =>
+    [
+      provider(a),
+      'watching ' + a.watch_folder,
+      a.folder_count + ' folders',
+      !a.can_move && 'cannot move mail',
+      detail(a),
+      a.last_event_at && 'since ' + day(a.last_event_at) + ', ' + clock(a.last_event_at),
+      a.last_mail_at && 'last email ' + day(a.last_mail_at) + ', ' + clock(a.last_mail_at),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
   let testing = $state<Record<number, boolean>>({});
   // The Edit form of the mailbox being edited. A new password lives here only, until it is sent or the form closes.
   let form = $state({ label: '', folder: '', password: '', folders: [] as string[], error: '', errorPath: '', busy: false });
@@ -98,7 +112,7 @@
           <div class="min-w-0 flex-[1_1_220px]">
             <div class="font-semibold">{a.label}</div>
             <div class="text-[12.5px] text-muted">
-              {provider(a)} · watching {a.watch_folder} · {a.folder_count} folders{#if !a.can_move} · cannot move mail{/if} · {detail(a)}{#if a.last_event_at} · since {day(a.last_event_at)}, {clock(a.last_event_at)}{/if}{#if a.last_mail_at} · last email {day(a.last_mail_at)}, {clock(a.last_mail_at)}{/if}
+              {line(a)}
             </div>
           </div>
           <span class="text-[12.5px] font-semibold">{statuses[a.status].label}</span>

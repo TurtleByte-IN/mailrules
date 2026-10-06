@@ -35,7 +35,7 @@ it.each([
 ])('healthLine(%#)', (list, ok, text) => expect(healthLine(list)).toEqual({ ok, text }));
 
 it.each([
-  ['live', undefined],
+  ['live', 'test'],
   ['new', 'wait'],
   ['reconnecting', 'reconnect'],
   ['paused', 'resume'],
@@ -45,3 +45,11 @@ it.each([
 
 it('shows the daemon\'s reason for a failed sign-in', () =>
   expect(health(account({ status: 'auth_failed', last_error: 'App password revoked.' })).detail).toBe('App password revoked.'));
+
+it('a live mailbox says when its last email arrived, once one has', () => {
+  expect(health(account({ last_mail_at: null })).detail).toBe('IDLE connected');
+  expect(health(account({ last_mail_at: 1790000000 })).detail).toMatch(/^IDLE connected · last email .+, .+$/);
+});
+
+it('each part of the bar names the Activity filter that lists it', () =>
+  expect(split({ sorted: 1, inbox: 1, review: 1, trashed: 1 }).map((p) => p.outcome)).toEqual(['sorted', 'inbox', 'review', 'trashed']));
