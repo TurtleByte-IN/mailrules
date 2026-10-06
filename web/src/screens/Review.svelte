@@ -18,7 +18,7 @@
     <div class="card px-6 py-10 text-center">
       <div class="text-lg font-semibold">All clear</div>
       <p class="mt-1.5 mb-4 text-secondary">Nothing waiting. New uncertain emails will show up here.</p>
-      <a href="/" use:link class="btn no-underline">Back to activity</a>
+      <a href="/activity" use:link class="btn no-underline">Back to activity</a>
     </div>
   {/if}
   {#each review.list as item (item.id)}

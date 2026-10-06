@@ -9,6 +9,7 @@ import Rules from './screens/Rules.svelte';
 import Senders from './screens/Senders.svelte';
 import Settings from './screens/Settings.svelte';
 import Usage from './screens/Usage.svelte';
+import Overview from './screens/Overview.svelte';
 import Pending from './screens/Pending.svelte';
 
 export interface Screen {
@@ -23,7 +24,8 @@ export interface Screen {
 // Order and labels follow the prototype nav. Plan and billing is P2: it keeps the
 // stand-in until its backend exists.
 const all: Screen[] = [
-  { path: '/', label: 'Activity', icon: 'M3 12h4l3 8 4-16 3 8h4', component: Activity },
+  { path: '/', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z', component: Overview },
+  { path: '/activity', label: 'Activity', icon: 'M3 12h4l3 8 4-16 3 8h4', component: Activity },
   { path: '/review', label: 'Needs review', icon: 'M5 21V4h12l-2 4 2 4H5', component: Review },
   { path: '/rules', label: 'Rules', icon: 'M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01', component: Rules },
   { path: '/senders', label: 'Senders', icon: 'M8 12a4 4 0 1 0 8 0 4 4 0 1 0-8 0M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8', component: Senders },
