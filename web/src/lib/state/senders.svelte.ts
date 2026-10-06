@@ -1,65 +1,111 @@
+import { notBuilt } from '../api/client';
 import * as sendersApi from '../api/senders';
 import { rules } from './rules.svelte';
 import { flash } from './toast.svelte';
 
-export const senders = $state<{ list: sendersApi.Sender[]; rules: sendersApi.SenderRule[]; sort: sendersApi.Sort }>({
-  list: [],
-  rules: [],
-  sort: 'volume',
-});
+type Sender = sendersApi.Sender;
+
+export const senders = $state<{
+  status: 'loading' | 'ready' | 'not_built' | 'error';
+  error: string;
+  list: Sender[];
+  /** Cursor of the next page of the list; null at the end. */
+  next: string | null;
+  /** Senders whose rule MailRules learned. */
+  learned: Sender[];
+  sort: sendersApi.Sort;
+  q: string;
+}>({ status: 'loading', error: '', list: [], next: null, learned: [], sort: 'volume', q: '' });
+
+const fail = (e: unknown) => flash((e as Error).message);
+const same = (a: Sender, b: Sender) => a.type === b.type && a.value === b.value;
+
+// Search asks the server on every keystroke, so a slow earlier answer must not replace a later one.
+let latest = 0;
+
+async function fetchList() {
+  const mine = ++latest;
+  const page = await sendersApi.list({ sort: senders.sort, q: senders.q });
+  if (mine !== latest) return;
+  senders.list = page.items;
+  senders.next = page.next_cursor;
+}
 
 export async function load() {
-  const page = await sendersApi.list(senders.sort);
-  senders.list = page.senders;
-  senders.rules = page.rules;
+  try {
+    // ponytail: the learned list is its first 100; page it if anyone learns more.
+    const [, learned] = await Promise.all([fetchList(), sendersApi.list({ source: 'learned', limit: 100 })]);
+    senders.learned = learned.items;
+    senders.status = 'ready';
+  } catch (e) {
+    senders.status = notBuilt(e) ? 'not_built' : 'error';
+    senders.error = (e as Error).message;
+  }
 }
 
-export async function setSort(sort: sendersApi.Sort) {
+export function setSort(sort: sendersApi.Sort) {
   senders.sort = sort;
-  await load();
+  return fetchList().catch(fail);
 }
 
-/** Senders whose name or address contains the query. */
-export function search(list: sendersApi.Sender[], query: string) {
-  const q = query.trim().toLowerCase();
-  return q ? list.filter((s) => (s.name + ' ' + s.address).toLowerCase().includes(q)) : list;
+export function setQuery(q: string) {
+  senders.q = q.trim();
+  return fetchList().catch(fail);
 }
+
+export async function more() {
+  const mine = latest;
+  try {
+    const page = await sendersApi.list({ sort: senders.sort, q: senders.q, cursor: senders.next ?? undefined });
+    if (mine !== latest) return;
+    senders.list.push(...page.items);
+    senders.next = page.next_cursor;
+  } catch (e) {
+    fail(e);
+  }
+}
+
+export const nameOf = (s: Sender) => s.name || s.value;
 
 // The routing select speaks one value: 'auto', 'keep', 'trash' or a rule id.
-const toRouting = (r?: sendersApi.SenderRule) =>
-  !r ? 'auto' : r.verdict === 'keep' ? 'keep' : r.verdict === 'block' ? 'trash' : (r.ruleId ?? 'auto');
-
-export const routingOf = (s: sendersApi.Sender) =>
-  toRouting(
-    senders.rules.find((r) => r.value === (r.type === 'domain' ? sendersApi.domainOf(s.address) : s.address)),
-  );
+export const routingOf = (s: Sender) =>
+  s.verdict === 'keep' ? 'keep' : s.verdict === 'block' ? 'trash' : s.verdict === 'route' ? String(s.rule_id) : 'auto';
 
 const routeName = (routing: string) =>
   routing === 'keep'
     ? 'Keep in Inbox'
     : routing === 'trash'
       ? 'Trash'
-      : (rules.list.find((r) => r.id === routing)?.name ?? routing);
+      : (rules.list.find((r) => String(r.id) === routing)?.name ?? routing);
 
-export const targetOf = (r: sendersApi.SenderRule) => routeName(toRouting(r));
+export const targetOf = (s: Sender) => routeName(routingOf(s));
 
-export async function setRouting(s: sendersApi.Sender, routing: string) {
-  const domain = sendersApi.domainOf(s.address);
-  if (routing === 'auto') await sendersApi.remove('domain', domain);
-  else if (routing === 'keep' || routing === 'trash')
-    await sendersApi.put('domain', domain, { verdict: routing === 'keep' ? 'keep' : 'block', ruleId: null });
-  else await sendersApi.put('domain', domain, { verdict: 'route', ruleId: routing });
-  await load();
-  flash(routing === 'auto' ? s.name + ' goes back to your rules' : 'Mail from ' + s.name + ': ' + routeName(routing));
+const toPut = (routing: string): sendersApi.SenderPut =>
+  routing === 'keep' ? { verdict: 'keep' } : routing === 'trash' ? { verdict: 'block' } : { verdict: 'route', rule_id: Number(routing) };
+
+// Whatever the user just set or removed is no longer a learned rule.
+function replace(s: Sender) {
+  senders.list = senders.list.map((x) => (same(x, s) ? s : x));
+  senders.learned = senders.learned.filter((x) => !same(x, s));
 }
 
-export async function unsubscribe(s: sendersApi.Sender) {
-  await sendersApi.unsubscribe(s.address);
-  await load();
-  flash('Unsubscribed from ' + s.name + ' via List-Unsubscribe. Stragglers go to Trash.');
+// DELETE answers 204 with no body: the sender is what it was, minus its rule.
+async function removeRule(s: Sender) {
+  await sendersApi.remove(s);
+  replace({ ...s, verdict: null, rule_id: null, source: null, hits: 0 });
 }
 
-export async function forget(r: sendersApi.SenderRule) {
-  await sendersApi.remove(r.type, r.value);
-  await load();
+/** False when the daemon refused, so the screen can put the select back. */
+export async function setRouting(s: Sender, routing: string) {
+  try {
+    if (routing === 'auto') await removeRule(s);
+    else replace(await sendersApi.put(s, toPut(routing)));
+    flash(routing === 'auto' ? nameOf(s) + ' goes back to your rules' : 'Mail from ' + nameOf(s) + ': ' + routeName(routing));
+    return true;
+  } catch (e) {
+    fail(e);
+    return false;
+  }
 }
+
+export const forget = (s: Sender) => removeRule(s).catch(fail);

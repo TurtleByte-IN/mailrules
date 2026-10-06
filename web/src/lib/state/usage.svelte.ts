@@ -1,24 +1,39 @@
+import { notBuilt } from '../api/client';
+import { subscribe } from '../api/events';
 import * as usageApi from '../api/usage';
 
-export const usage = $state<{ summary: usageApi.Summary | null }>({ summary: null });
+export const usage = $state<{
+  status: 'loading' | 'ready' | 'not_built' | 'error';
+  error: string;
+  summary: usageApi.StatsUsage | null;
+}>({ status: 'loading', error: '', summary: null });
 
 export async function load() {
-  usage.summary = await usageApi.get();
+  try {
+    usage.summary = await usageApi.get();
+    usage.status = 'ready';
+  } catch (e) {
+    usage.status = notBuilt(e) ? 'not_built' : 'error';
+    usage.error = (e as Error).message;
+  }
 }
+
+// Only a screen that already shows numbers refetches them.
+subscribe('usage.updated', () => {
+  if (usage.status === 'ready') load();
+});
 
 const sum = (xs: number[]) => xs.reduce((a, x) => a + x, 0);
 
-/** The four tiles. Model calls count sorting only; the rule composer's calls still cost money. */
-export function totals(s: usageApi.Summary) {
-  const calls = (purpose: usageApi.ModelUsage['purpose']) => sum(s.models.filter((m) => m.purpose === purpose).map((m) => m.calls));
-  const decide = calls('decide');
-  const escalate = calls('escalate');
+/** The four tiles. Calls and cost are the API's totals; the split by purpose comes from by_model. */
+export function totals(s: usageApi.StatsUsage) {
+  const calls = (purpose: usageApi.ModelUsage['purpose']) => sum(s.by_model.filter((m) => m.purpose === purpose).map((m) => m.calls));
   return {
     emails: s.emails,
-    freePct: s.emails ? Math.round((s.freeEmails / s.emails) * 100) : 0,
-    decide,
-    escalate,
-    calls: decide + escalate,
-    costUsd: sum(s.models.map((m) => m.costUsd)),
+    freePct: s.emails ? Math.round((s.without_model / s.emails) * 100) : 0,
+    decide: calls('decide'),
+    escalate: calls('escalate'),
+    calls: s.calls,
+    costUsd: s.cost_usd,
   };
 }
