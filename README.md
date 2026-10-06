@@ -10,5 +10,6 @@ Contents
 - `CLAUDE.md`: project rules Claude Code loads automatically
 - `docs/prd.md` + `prd.pdf`: PRD (the PDF includes the diagrams)
 - `docs/backend-plan.md` + `backend-plan.pdf`: backend build plan with milestones
+- `docs/frontend-plan.md`: web UI build plan with phases
 - `docs/design/prototype.dc.html`, `canvas.json`: UI prototype source
 - `docs/design/README.md`: screen list and design tokens
