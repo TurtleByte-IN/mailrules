@@ -21,7 +21,9 @@
   </div>
   <p class="text-[13px] break-words text-nav">{item.snippet}</p>
   <div class="flex flex-wrap items-center gap-2 text-[13px]">
-    <span class="chip chip-review text-[13px]">Best guess: {suggestName} · {confidence(item.decision?.confidence ?? 0)}</span>
+    {#if item.decision?.model}
+      <span class="chip chip-review text-[13px]">Best guess: {suggestName} · {confidence(item.decision.confidence)}</span>
+    {/if}
     <span class="text-muted">{item.decision?.reason}</span>
   </div>
   <div class="flex flex-wrap items-center gap-2">

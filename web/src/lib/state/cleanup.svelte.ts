@@ -186,7 +186,8 @@ export async function undo(b: cleanupApi.Batch) {
       cleanup.batch = r.batch;
       if (cleanup.phase === 'done' && r.batch.status === 'undone') cleanup.phase = 'idle';
     }
-    flash(r.undone.toLocaleString() + ' emails moved back where they were' + (r.failed ? '; ' + r.failed.toLocaleString() + ' could not be' : ''));
+    const n = (r.batch.total ?? 0).toLocaleString();
+    flash(r.failed ? r.undone.toLocaleString() + ' actions undone; ' + r.failed.toLocaleString() + ' could not be' : n + ' emails moved back where they were');
   } catch (e) {
     fail(e);
   }

@@ -128,5 +128,6 @@ export function english(b: Builder, only?: string) {
   let s = where ? 'Emails where ' + where : 'Emails';
   if (r.intent) s += (where ? ', and that are about ' : ' about ') + r.intent.replace(/^an? /i, (m) => m.toLowerCase());
   if (b.unless) s += ", unless you've replied to the sender before";
-  return s + ': ' + actionsText(r.actions).toLowerCase() + extrasText(b, only) + '.';
+  const does = actionsText(r.actions);
+  return s + ': ' + does[0].toLowerCase() + does.slice(1) + extrasText(b, only) + '.';
 }

@@ -41,12 +41,16 @@
     return day(ts) === day(today) ? clock(ts) : day(ts);
   };
 
+  const mailboxes = $derived(accounts.list.length + (accounts.list.length === 1 ? ' mailbox' : ' mailboxes'));
+
   const stage = (r: ActivityItem) => {
     const d = r.decision;
     if (r.correction) return 'you · corrected';
     if (!d) return '';
     if (d.stage === 'sender') return 'sender · learned';
     if (d.stage === 'condition') return 'condition · free';
+    // No model was asked (none is set): there is no confidence to show.
+    if (!d.model) return '';
     return [d.model, (d.stage === 'none' ? 'none ' : '') + confidence(d.confidence)].filter(Boolean).join(' · ');
   };
 
@@ -65,7 +69,7 @@
     <div class="flex flex-wrap items-center gap-2">
       <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={undoLastHour}>Undo the last hour</button>
       <span class="inline-flex h-9 items-center gap-2 rounded bg-selected px-3 text-[13px] font-semibold">
-        <span class="size-2 rounded-sm bg-live"></span>Live on {accounts.list.length} mailboxes
+        <span class="size-2 rounded-sm bg-live"></span>Live on {mailboxes}
       </span>
     </div>
   </header>
@@ -76,7 +80,7 @@
       <div class="card px-[18px] py-4">
         <div class="text-xs font-medium text-secondary">Sorted today</div>
         <div class="mt-1 text-[28px] font-semibold tracking-[-0.02em]">{stats.counts.sorted}</div>
-        <div class="text-xs text-muted">across {accounts.list.length} mailboxes</div>
+        <div class="text-xs text-muted">across {mailboxes}</div>
       </div>
     {/if}
     <a href="/review" use:link class={['block rounded-md border border-warn-line bg-warn-bg px-[18px] py-4 text-warn no-underline', !stats && 'sm:max-w-64']}>

@@ -124,7 +124,7 @@ it('past runs render with their scope, counts and Undo; Show more follows the cu
 
   const name = 'me@icloud.com · Inbox · since ' + day(SINCE);
   const first = (await screen.findByText(name)).closest('.border-t') as HTMLElement;
-  expect(first.textContent).toContain('310 done · 2 failed');
+  expect(first.textContent).toContain('actions: 310 done · 2 failed');
   expect(within(first).getByText('Done')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Undo batch ' + name })).toBeTruthy();
 

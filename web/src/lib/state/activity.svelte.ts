@@ -214,3 +214,5 @@ subscribe('message.processed', upsert);
 // Mail that goes to Needs review is announced by this event only.
 subscribe('message.review', upsert);
 subscribe('action.undone', applyAction);
+// The tiles count what these events change; refetch them once they are on screen.
+for (const name of ['message.processed', 'message.review', 'action.undone', 'usage.updated'] as const) subscribe(name, () => void (activity.stats && loadStats()));

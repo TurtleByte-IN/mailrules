@@ -31,11 +31,11 @@
   const mailbox = (b: Batch) => (b.account_id === null ? 'a removed mailbox' : accounts.list.find((a) => a.id === b.account_id)?.label);
   const label = (b: Batch) =>
     [mailbox(b), folderName(b.folder), b.since === null ? 'all time' : 'since ' + day(b.since)].filter(Boolean).join(' · ');
-  const counts = (b: Batch) =>
-    (['done', 'dry_run', 'failed', 'undone'] as const)
-      .filter((k) => b.actions[k])
-      .map((k) => b.actions[k].toLocaleString() + ' ' + k.replace('_', '-'))
-      .join(' · ') || 'no actions';
+  // These count actions, not emails: a move and a mark-read on one email are two.
+  const counts = (b: Batch) => {
+    const parts = (['done', 'dry_run', 'failed', 'undone'] as const).filter((k) => b.actions[k]).map((k) => b.actions[k].toLocaleString() + ' ' + k.replace('_', '-'));
+    return parts.length ? 'actions: ' + parts.join(' · ') : 'no actions';
+  };
   const statuses: Record<Batch['status'], string> = { running: 'Running', done: 'Done', failed: 'Cut short', undone: 'Undone' };
 </script>
 
@@ -109,11 +109,13 @@
             </ul>
           {/if}
         {/each}
-        <p class="text-[13px] text-secondary">
-          About {cleanup.preview.estimated_model_calls.toLocaleString()} model calls{cleanup.preview.estimated_cost_usd
-            ? ', around ' + money(cleanup.preview.estimated_cost_usd)
-            : ''}
-        </p>
+        {#if cleanup.preview.estimated_model_calls}
+          <p class="text-[13px] text-secondary">
+            About {cleanup.preview.estimated_model_calls.toLocaleString()} model calls{cleanup.preview.estimated_cost_usd
+              ? ', around ' + money(cleanup.preview.estimated_cost_usd)
+              : ''}
+          </p>
+        {/if}
         <p class="text-[13px] text-secondary">
           Nothing moves until you run it. Runs in the background, uses conditions and sender rules first, and can be undone as one batch.
         </p>

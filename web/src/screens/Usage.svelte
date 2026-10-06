@@ -22,7 +22,7 @@
   const calls = (d: Day, model?: string) => d.models.reduce((a, m) => a + (model === undefined || m.model === model ? m.calls : 0), 0);
 </script>
 
-<div class="flex flex-col gap-[18px]">
+<div class="flex min-w-0 flex-col gap-[18px]">
   <header>
     <h1>Usage</h1>
     <p class="mt-1 text-secondary">What sorting cost this month, and where the model calls went.</p>
@@ -38,7 +38,7 @@
     {@const t = totals(s)}
     {@const max = Math.max(1, ...s.days.map((d) => calls(d)))}
     {@const tiles = [
-      { label: 'Emails sorted', value: n(t.emails), sub: 'since ' + shortDay(s.since) + ', ' + accounts.list.length + ' mailboxes' },
+      { label: 'Emails sorted', value: n(t.emails), sub: 'since ' + shortDay(s.since) + ', ' + accounts.list.length + (accounts.list.length === 1 ? ' mailbox' : ' mailboxes') },
       { label: 'Decided for free', value: t.freePct + '%', sub: 'conditions and sender rules' },
       { label: 'Model calls', value: n(t.calls), sub: 'decision model ' + n(t.decide) + ' · fallback ' + n(t.escalate) },
       { label: 'Cost this month', value: money(t.costUsd), sub: '' },
@@ -53,7 +53,7 @@
       {/each}
     </section>
 
-    <section aria-label="Model calls by day" class="card flex flex-col gap-3 p-[18px]">
+    <section aria-label="Model calls by day" class="card flex min-w-0 flex-col gap-3 p-[18px]">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
         <h2 class="text-[15px]">Model calls per day</h2>
         <div class="flex gap-3.5 text-[12.5px] text-secondary">
@@ -65,7 +65,7 @@
       <ul class="flex h-40 items-end gap-1.5 overflow-x-auto">
         {#each s.days as d (d.day)}
           {@const text = date(d.day) + ': ' + (series.map((model) => model + ' ' + calls(d, model)).join(' · ') || 'no calls')}
-          <li class="flex flex-[1_0_28px] flex-col items-center gap-1" title={text}>
+          <li class="flex flex-[1_0_16px] flex-col items-center gap-1" title={text}>
             <span class="sr-only">{text}</span>
             <div class="flex h-[130px] w-full flex-col justify-end">
               <div class="flex flex-col-reverse overflow-hidden rounded-t" style:height="{(calls(d) / max) * 100}%">
@@ -95,7 +95,7 @@
           <tbody>
             {#each s.by_rule as r (r.rule_id ?? r.rule_name)}
               <tr class="border-t border-line-divider">
-                <td class="px-[18px] py-2.5 font-medium">{r.rule_name}</td>
+                <td class="px-[18px] py-2.5 font-medium">{r.rule_id === null ? 'No rule' : r.rule_name}</td>
                 <td class="px-2 py-2.5">{n(r.emails)}</td>
                 <td class="px-2 py-2.5">{n(r.calls)}</td>
                 <td class="px-[18px] py-2.5 text-right font-mono">{r.calls ? money(r.cost_usd) : 'Free'}</td>

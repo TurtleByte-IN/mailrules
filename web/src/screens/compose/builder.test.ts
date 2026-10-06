@@ -86,8 +86,8 @@ describe('builder', () => {
   });
 
   it.each<[Partial<Builder>, string]>([
-    [{}, "Emails where the sender domain is acme.com or bills.io or it has an attachment, and that are about an invoice or payment request, unless you've replied to the sender before: move to finance, mark read · stacks · only me@icloud.com."],
-    [{ rows: emptyBuilder().rows, unless: false, stack: false, action: 'trash' }, 'Emails about an invoice or payment request: move to trash · only me@icloud.com.'],
+    [{}, "Emails where the sender domain is acme.com or bills.io or it has an attachment, and that are about an invoice or payment request, unless you've replied to the sender before: move to Finance, mark read · stacks · only me@icloud.com."],
+    [{ rows: emptyBuilder().rows, unless: false, stack: false, action: 'trash' }, 'Emails about an invoice or payment request: move to Trash · only me@icloud.com.'],
     [{ intent: '', unless: false, stack: false, match: 'all', folder: '', markRead: false }, 'Emails where the sender domain is acme.com or bills.io and it has an attachment: move to [folder] · only me@icloud.com.'],
   ])('says it in plain words', (change, want) => {
     expect(english({ ...full, ...change }, 'me@icloud.com')).toBe(want);

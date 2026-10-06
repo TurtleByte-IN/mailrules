@@ -98,6 +98,17 @@ describe('tiles', () => {
     expect(s.activity.stats).toEqual(want);
     expect(s.activity.statsError).toBe(said);
   });
+
+  it('follow the feed once they are showing, and not before', async () => {
+    const calls = serve(() => [200, stats]);
+    events.dispatch('message.processed', item({ id: 7 }));
+    expect(calls).toEqual([]);
+
+    await s.loadStats();
+    events.dispatch('message.processed', item({ id: 8 }));
+    events.dispatch('action.undone', action({ message_id: 8, status: 'undone', undone_at: 2000 }));
+    expect(calls.filter((c) => c.call.includes('/stats/summary'))).toHaveLength(3);
+  });
 });
 
 describe('undo', () => {

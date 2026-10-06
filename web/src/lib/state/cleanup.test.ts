@@ -207,7 +207,7 @@ it('done → idle when the batch is undone', async () => {
   await m.undo(m.cleanup.batch!);
   expect(fetchMock.mock.calls.at(-1)![0]).toBe('/api/batches/3/undo');
   expect(m.cleanup).toMatchObject({ phase: 'idle', batch: { id: 3, status: 'undone' } });
-  expect(toast.text).toBe('310 emails moved back where they were');
+  expect(toast.text).toBe('412 emails moved back where they were');
 });
 
 it('an undo that could not put everything back keeps the batch on offer', async () => {
@@ -217,7 +217,7 @@ it('an undo that could not put everything back keeps the batch on offer', async 
   routes['POST /api/batches/3/undo'] = [200, { batch: finished, undone: 300, failed: 10 } satisfies UndoResult];
   await m.undo(m.cleanup.batch!);
   expect(m.cleanup).toMatchObject({ phase: 'done', batch: { status: 'done' } });
-  expect(toast.text).toBe('300 emails moved back where they were; 10 could not be');
+  expect(toast.text).toBe('300 actions undone; 10 could not be');
 });
 
 it.each([
