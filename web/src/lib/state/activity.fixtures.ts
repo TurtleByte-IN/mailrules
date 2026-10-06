@@ -31,10 +31,11 @@ export const detail = (over: Partial<MessageDetail> = {}): MessageDetail => ({
 });
 
 export const stats: StatsSummary = {
-  range: 'day', since: 0, counts: { processed: 40, sorted: 31, trashed: 2, review: 3 }, decided_without_model: 0.78, cost_usd: 0.01,
+  range: 'day', since: 0, counts: { processed: 40, sorted: 31, trashed: 2, review: 3 }, went: { sorted: 29, inbox: 6, review: 3, trashed: 2 }, decided_without_model: 0.78, cost_usd: 0.01,
   calls_by_model: [{ provider: 'jev', model: 'jev', purpose: 'decide', calls: 31, tokens_in: 12000, tokens_out: 400, cost_usd: 0.01 }],
   top_rules: [{ rule_id: 3, rule_name: 'Recruiters', hits: 9 }],
-  accounts: [{ account_id: 1, label: 'me@icloud.com', status: 'live', last_event_at: 1000, last_error: '' }],
+  quiet_rules: 0,
+  accounts: [{ account_id: 1, label: 'me@icloud.com', preset: 'icloud', username: 'me@icloud.com', folder_count: 14, status: 'live', last_event_at: 1000, last_error: '' }],
 };
 
 export const error = (code: string, message: string) => ({ error: { code, message } });

@@ -775,7 +775,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Counts, cost and account health for the Activity tiles
+         * Counts, cost and account health for the Overview screen and the Activity tiles
          * @description A range starts on a UTC day boundary, today included: `day` is today, `week` the
          *     last 7 days, `month` the last 30. An email is counted once, by its latest decision.
          */
@@ -1608,6 +1608,19 @@ export interface components {
                 /** @description Waiting in Needs review now */
                 review: number;
             };
+            /** @description Where the processed emails ended up, for the Overview bar. The four add up to `counts.processed` */
+            went: {
+                /** @description A rule was applied and it did not trash the email */
+                sorted: number;
+                /** @description Left in the inbox: no rule matched, or the email could not be handled */
+                inbox: number;
+                /** @description Of the processed emails, those waiting in Needs review */
+                review: number;
+                /** @description A rule was applied and it trashed the email */
+                trashed: number;
+            };
+            /** @description Enabled rules applied to no email in the range */
+            quiet_rules: number;
             /** @description Share of the processed emails settled without asking a model: by sender rules or conditions, or because no rule was in play. 0 when nothing was processed */
             decided_without_model: number;
             cost_usd: number;
@@ -1623,6 +1636,10 @@ export interface components {
                 /** Format: int64 */
                 account_id: number;
                 label: string;
+                /** @description icloud | fastmail | yahoo | zoho | generic */
+                preset: string;
+                username: string;
+                folder_count: number;
                 status: components["schemas"]["AccountStatus"];
                 /** Format: int64 */
                 last_event_at: number | null;
