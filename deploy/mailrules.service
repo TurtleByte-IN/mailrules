@@ -1,4 +1,5 @@
-# systemd unit for the single binary.
+# systemd unit for the single binary. From a checkout after `make build`, or from an
+# unpacked release archive (where the binary is ./mailrules rather than bin/mailrules):
 #
 #   sudo useradd --system --home-dir /var/lib/mailrules --shell /usr/sbin/nologin mailrules
 #   sudo install -m 0755 bin/mailrules /usr/local/bin/mailrules

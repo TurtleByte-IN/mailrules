@@ -4,7 +4,7 @@ A manual check against real mailboxes, run before each release. The automated te
 
 Run the whole list twice: once with an iCloud account and once with a Fastmail account. Use test mailboxes, not ones you depend on. Each needs an app-specific password, and a second address to send test mail from.
 
-Use the binary or image you are about to release, with a fresh data directory. Steps name the screen to use; where the web UI is not built in, the endpoint in brackets does the same thing (see `docs/api.md`).
+Use the binary or image you are about to release, with a fresh data directory: build the release archives without publishing with `goreleaser release --snapshot --clean --skip=publish` (they land in `dist/`), or the image with `docker build -f deploy/Dockerfile .`. Steps name the screen to use; where the web UI is not built in, the endpoint in brackets does the same thing (see `docs/api.md`).
 
 Record the result at the bottom. Any unticked box blocks the release.
 
@@ -54,6 +54,14 @@ Switch dry-run off in Settings [`PATCH /api/settings {"dry_run": false}`, or `ma
 - [ ] The log, run at `LOG_LEVEL=debug`, contains no password, no API key and no email body, subject or sender (search it for the app password and for a phrase and the address of a test mail).
 - [ ] Deleting the account removes it and its history [`DELETE /api/accounts/{id}`].
 - [ ] Revoke the test app passwords.
+
+## 5. After tagging
+
+Pushing the tag (`git tag v0.1.0 && git push origin v0.1.0`) runs the release workflow.
+
+- [ ] The `release` workflow passed, and the GitHub Release lists four archives (linux and darwin, amd64 and arm64) and `checksums.txt`.
+- [ ] A downloaded archive passes `sha256sum --ignore-missing -c checksums.txt`, and its `mailrules version` prints the tag without the `v`.
+- [ ] `ghcr.io/turtlebyte-in/mailrules` has the version tag and `latest`, each for amd64 and arm64. After the first release only: the package starts private, so make it public in its package settings, then check `docker pull ghcr.io/turtlebyte-in/mailrules:latest` works signed out.
 
 ## Result
 

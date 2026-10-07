@@ -1,5 +1,6 @@
 data/
 bin/
+/dist/
 web/dist/
 internal/web/dist/app/
 web/node_modules/

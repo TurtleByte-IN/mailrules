@@ -4,32 +4,53 @@ MailRules is a small daemon that sorts incoming email over IMAP, in real time, u
 
 It starts safe: it listens on this machine only, and dry-run is on, so it records what it would do and changes no mailbox until you switch dry-run off.
 
-> **Status.** Nothing is released yet: there are no downloadable binaries, no published Docker image and no Homebrew package. Build from source as shown below. The web UI is developed in `web/`; a build from a checkout without that directory still runs the daemon, the HTTP API and the command line, and its web page says the UI is not built in.
+> **Status.** Releases are cut by pushing a version tag. From the first release on, each one is published on the [GitHub Releases page](https://github.com/TurtleByte-IN/mailrules/releases) with binaries for Linux and macOS (amd64 and arm64) and a Docker image at `ghcr.io/turtlebyte-in/mailrules`. Until a release appears there, build from source as shown below. The web UI is developed in `web/`; a build from a checkout without that directory still runs the daemon, the HTTP API and the command line, and its web page says the UI is not built in.
 
 ## Quickstart with Docker
 
-You need Docker with Compose, and a checkout of this repository.
+From the first release on, the image `ghcr.io/turtlebyte-in/mailrules` is published for amd64 and arm64, tagged with each version (for example `0.1.0`, without the `v`) and `latest`:
+
+```bash
+docker run -d --name mailrules --restart unless-stopped \
+  --read-only --tmpfs /tmp -p 127.0.0.1:8080:8080 \
+  -e MAILRULES_COOKIE_SECURE=false -v mailrules-data:/data \
+  ghcr.io/turtlebyte-in/mailrules:latest
+```
+
+Or use Compose, with Docker Compose and a checkout of this repository. This builds the image from the checkout:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
+To run a published image with Compose instead, put `MAILRULES_IMAGE=ghcr.io/turtlebyte-in/mailrules:latest` in `deploy/.env` and run the same command without `--build`.
+
 Open <http://127.0.0.1:8080> on the same machine. The image is distroless, runs as a non-root user with a read-only root filesystem, and keeps everything it writes in the `mailrules-data` volume.
 
-Settings are environment variables. Put the ones you need in `deploy/.env` (never in the compose file), for example a model key; or leave them out and enter the keys in the browser.
+Settings are environment variables. Put the ones you need in `deploy/.env` (never in the compose file), for example a model key; or leave them out and enter the keys in the browser. With `docker run`, pass them with `-e`.
 
-Inside the container the daemon listens on every interface, and Compose publishes the port to `127.0.0.1` only, over plain HTTP. The Compose file therefore sets `MAILRULES_COOKIE_SECURE=false` so you can stay signed in at `http://127.0.0.1:8080`. On a server (a VPS such as Hetzner), put a TLS reverse proxy in front and set `MAILRULES_COOKIE_SECURE=true` in `.env`, so the login cookie only ever travels over HTTPS.
+Inside the container the daemon listens on every interface, and the port is published to `127.0.0.1` only, over plain HTTP. That is why both commands set `MAILRULES_COOKIE_SECURE=false`, so you can stay signed in at `http://127.0.0.1:8080`. On a server (a VPS such as Hetzner), put a TLS reverse proxy in front and set `MAILRULES_COOKIE_SECURE=true`, so the login cookie only ever travels over HTTPS.
 
 ## Quickstart with a single binary
 
-You need Go 1.27 or newer, and Node.js 24 if the checkout has the `web/` directory.
+**From a release.** From the first release on, download the archive for your system (`mailrules_<version>_<os>_<arch>.tar.gz`, where `<os>` is `linux` or `darwin` and `<arch>` is `amd64` or `arm64`) and `checksums.txt` from the [Releases page](https://github.com/TurtleByte-IN/mailrules/releases), check it and unpack it:
+
+```bash
+sha256sum --ignore-missing -c checksums.txt   # on macOS: shasum -a 256 --ignore-missing -c checksums.txt
+tar xzf mailrules_<version>_linux_amd64.tar.gz
+./mailrules serve
+```
+
+The archive holds the `mailrules` binary with the web UI built in, `LICENSE`, this README and the systemd unit `deploy/mailrules.service`. The macOS binaries are not signed: if macOS refuses to open it, run `xattr -d com.apple.quarantine mailrules`.
+
+**From source.** You need Go 1.27 or newer, and Node.js 24 if the checkout has the `web/` directory.
 
 ```bash
 make build
 ./bin/mailrules serve
 ```
 
-Open <http://127.0.0.1:8080>. The data directory is `./data` unless you set `MAILRULES_DATA_DIR`.
+Open <http://127.0.0.1:8080>. The data directory is `./data` unless you set `MAILRULES_DATA_DIR`. `mailrules version` prints the version it was built as.
 
 To run it as a service on Linux, `deploy/mailrules.service` is a hardened systemd unit; the steps to install it are at the top of that file. It keeps its data in `/var/lib/mailrules`.
 
@@ -105,9 +126,9 @@ Every setting is an environment variable that also works as a `--flag` (the vari
 - **Secrets stay put.** Passwords and keys are encrypted at rest, never returned by the API and never logged.
 - `/healthz`, `/readyz` and `/metrics` need no sign-in. Keep `/metrics` off the public side of your proxy.
 
-## Release channels (planned)
+## Releases
 
-Tagged releases with binaries for Linux and macOS (amd64 and arm64), a published Docker image and a Homebrew tap are planned. `.goreleaser.yaml` is the release configuration; no release has been cut with it. Until one has, build from source.
+Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yml`: it runs `make check`, then GoReleaser (`.goreleaser.yaml`) builds the web app and the binaries and publishes the GitHub Release with the archives and `checksums.txt`, and finally the multi-arch image is built from `deploy/Dockerfile` and pushed to `ghcr.io/turtlebyte-in/mailrules`. GitHub creates that package as private the first time; make it public once in its package settings. A Homebrew cask is configured for the tap `TurtleByte-IN/homebrew-tap`, which does not exist yet; until it does and the repository has a `HOMEBREW_TAP_TOKEN` secret that can push to it, releases skip the cask. To try the release build without publishing anything: `goreleaser release --snapshot --clean --skip=publish`.
 
 ## Developing
 
