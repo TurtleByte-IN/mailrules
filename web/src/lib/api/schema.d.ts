@@ -1405,7 +1405,7 @@ export interface components {
         /** @description A draft carries every field of RuleInput, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything */
         RuleDraft: {
             name: string;
-            /** @description The exact span of the user's words this rule came from */
+            /** @description The user's exact words this rule came from, cut from the text by the server (separate parts joined with ' … '). A re-optimized rule keeps its wording, with the new words on a line under it */
             said: string;
             intent: string | null;
             conditions: components["schemas"]["Condition"];
@@ -1443,7 +1443,7 @@ export interface components {
         };
         ComposeResult: {
             rules: components["schemas"]["RuleDraft"][];
-            /** @description Parts of the text that could not be turned into a rule */
+            /** @description The user's exact words that could not be turned into a rule, one entry per run of the text */
             unparsed: string[];
         };
         RuleBatchRequest: {

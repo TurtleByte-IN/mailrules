@@ -122,12 +122,12 @@ func TestRulesBatch(t *testing.T) {
 }
 
 const fiveDrafts = `{"rules":[
- {"name":"Food","said":"Put all Swiggy and Zomato stuff in Food","intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"}],"min_confidence":null,"new_folders":["Food"],"question":null,"conflicts":[]},
- {"name":"Jobs","said":"recruiter emails go to Jobs unless I've talked to them before","intent":"Recruiter outreach about job openings","conditions":{},"exceptions":{"field":"replied_before","op":"eq","value":true},"actions":[{"type":"move","folder":"Jobs"}],"min_confidence":null,"new_folders":["Jobs"],"question":null,"conflicts":[]},
- {"name":"Scams","said":"trash anything that looks like a fake bank alert","intent":"Fake bank alerts and phishing","conditions":{},"exceptions":{},"actions":[{"type":"trash"}],"min_confidence":0.9,"new_folders":[],"question":"Trash, or move to Junk?","conflicts":[]},
- {"name":"Promos","said":"","intent":"Promotions","conditions":{},"exceptions":{},"actions":[{"type":"move","folder":"Promotions"}],"min_confidence":null,"new_folders":["Promotions"],"question":null,"conflicts":[]},
- {"name":"LinkedIn","said":"archive LinkedIn notifications","intent":null,"conditions":{"field":"from_domain","op":"eq","value":"linkedin.com"},"exceptions":{},"actions":[{"type":"archive"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]}
-],"unparsed":["and do something about the rest"]}`
+ {"name":"Food","parts":[1],"intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"}],"min_confidence":null,"new_folders":["Food"],"question":null,"conflicts":[]},
+ {"name":"Jobs","parts":[2],"intent":"Recruiter outreach about job openings","conditions":{},"exceptions":{"field":"replied_before","op":"eq","value":true},"actions":[{"type":"move","folder":"Jobs"}],"min_confidence":null,"new_folders":["Jobs"],"question":null,"conflicts":[]},
+ {"name":"Scams","parts":[3],"intent":"Fake bank alerts and phishing","conditions":{},"exceptions":{},"actions":[{"type":"trash"}],"min_confidence":0.9,"new_folders":[],"question":"Trash, or move to Junk?","conflicts":[]},
+ {"name":"Promos","parts":[],"intent":"Promotions","conditions":{},"exceptions":{},"actions":[{"type":"move","folder":"Promotions"}],"min_confidence":null,"new_folders":["Promotions"],"question":null,"conflicts":[]},
+ {"name":"LinkedIn","parts":[4],"intent":null,"conditions":{"field":"from_domain","op":"eq","value":"linkedin.com"},"exceptions":{},"actions":[{"type":"archive"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]}
+],"unparsed":[5]}`
 
 const paragraph = "Put all Swiggy and Zomato stuff in Food, recruiter emails go to Jobs unless I've talked to them before, " +
 	"trash anything that looks like a fake bank alert, and archive LinkedIn notifications. And do something about the rest."
@@ -202,7 +202,7 @@ func TestComposeAndReoptimize(t *testing.T) {
 	}
 
 	// Re-optimize the first rule: one draft comes back, built from its first wording and the new text.
-	answer = `{"rules":[{"name":"Food","said":"Put all Swiggy and Zomato stuff in Food, and mark it read","intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"},{"type":"read"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[{"rule_id":2,"kind":"overlap","note":"x"}]}],"unparsed":[]}`
+	answer = `{"rules":[{"name":"Food","parts":[1],"intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"},{"type":"read"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[{"rule_id":2,"kind":"overlap","note":"x"}]}],"unparsed":[]}`
 	re := e.call(http.MethodPost, "/api/rules/1/compose", `{"text":"and mark it read"}`, http.StatusOK)["rule"].(map[string]any)
 	conform(t, e.doc, "RuleDraft", re)
 	if len(re["actions"].([]any)) != 2 || re["match_count"] != float64(2) || len(re["conflicts"].([]any)) != 1 || len(re["new_folders"].([]any)) != 0 ||

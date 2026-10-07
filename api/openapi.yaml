@@ -1637,7 +1637,7 @@ components:
       description: 'A draft carries every field of RuleInput, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything'
       properties:
         name: { type: string }
-        said: { type: string, description: The exact span of the user's words this rule came from }
+        said: { type: string, description: "The user's exact words this rule came from, cut from the text by the server (separate parts joined with ' … '). A re-optimized rule keeps its wording, with the new words on a line under it" }
         intent: { type: [string, 'null'] }
         conditions: { $ref: '#/components/schemas/Condition' }
         exceptions: { $ref: '#/components/schemas/Condition' }
@@ -1673,7 +1673,7 @@ components:
       required: [rules, unparsed]
       properties:
         rules: { type: array, items: { $ref: '#/components/schemas/RuleDraft' } }
-        unparsed: { type: array, items: { type: string }, description: Parts of the text that could not be turned into a rule }
+        unparsed: { type: array, items: { type: string }, description: "The user's exact words that could not be turned into a rule, one entry per run of the text" }
     RuleBatchRequest:
       type: object
       required: [rules]
