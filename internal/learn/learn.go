@@ -20,19 +20,26 @@ type Example struct {
 }
 
 // A sender is learned after After model decisions in a row to the same rule, each at
-// Confidence or above and none corrected.
+// Confidence or above and none corrected. Bulk mail that passed DMARC (a newsletter-type
+// sender, PRD R15) needs only AfterBulk, as long as every recent decision for the sender
+// agrees with it.
 const (
 	After      = 3
+	AfterBulk  = 1
 	Confidence = 0.9
 )
 
-// Observe runs after a model decided for mail from sender. When the sender's last After
+// Observe runs after a model decided for mail from sender. When the sender's recent
 // decisions qualify, it creates a learned sender rule that routes the address to that rule
-// without a model call, and reports true. Corrections delete the rule again
-// (store.AddCorrection).
-func Observe(ctx context.Context, st *store.Store, userID int64, sender string, now int64) (bool, error) {
+// without a model call, and reports true. bulk says the email just decided was bulk mail
+// that passed DMARC. Corrections delete the rule again (store.AddCorrection).
+func Observe(ctx context.Context, st *store.Store, userID int64, sender string, bulk bool, now int64) (bool, error) {
+	need := After
+	if bulk {
+		need = AfterBulk
+	}
 	recent, err := st.RecentSenderDecisions(ctx, userID, sender, After)
-	if err != nil || len(recent) < After {
+	if err != nil || len(recent) < need {
 		return false, err
 	}
 	for _, d := range recent {
