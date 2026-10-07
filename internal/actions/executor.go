@@ -33,6 +33,11 @@ const TrashFolder = "MailRules Trash"
 // MailRules left it. The HTTP layer answers 409 with this text.
 var ErrGone = errors.New("message was moved or deleted outside MailRules")
 
+// ErrLeftReview means an answer to Needs review found the email no longer where MailRules
+// saw it, so it was taken off the queue (state skipped) and nothing else was done. It
+// wraps ErrGone. The HTTP layer answers 409 message_gone with its own text.
+var ErrLeftReview = fmt.Errorf("taken off Needs review: %w", ErrGone)
+
 // ErrTooOld means an action was made more than store.UndoDays ago and can no longer be
 // undone. The HTTP layer answers 409 too_old.
 var ErrTooOld = errors.New("the action is too old to undo")
@@ -329,12 +334,18 @@ func (x *Exec) undo(ctx context.Context, actionID int64) error {
 // UIDVALIDITY has changed since, by Message-ID. A flag action's message may also have
 // been moved on by a later MailRules action, so its last known location is tried too.
 func locate(ctx context.Context, mb mail.Mailbox, a store.Action, msg store.Message) (mail.MsgRef, error) {
-	missing := func(err error) bool { return errors.Is(err, mail.ErrNotFound) || errors.Is(err, mail.ErrNoFolder) }
 	want := a.After.Ref(a.AccountID)
 	tries := []mail.MsgRef{want}
 	if !isMove(a.Kind) && msg.Location() != want {
 		tries = append(tries, msg.Location())
 	}
+	return find(ctx, mb, want, msg.MessageID, tries...)
+}
+
+// find returns the first of tries the message is at, or, when want's folder has a new
+// UIDVALIDITY, where a Message-ID search of that folder finds it. ErrGone when neither.
+func find(ctx context.Context, mb mail.Mailbox, want mail.MsgRef, messageID string, tries ...mail.MsgRef) (mail.MsgRef, error) {
+	missing := func(err error) bool { return errors.Is(err, mail.ErrNotFound) || errors.Is(err, mail.ErrNoFolder) }
 	for _, ref := range tries {
 		if _, err := mb.Flags(ctx, ref); err == nil {
 			return ref, nil
@@ -343,9 +354,9 @@ func locate(ctx context.Context, mb mail.Mailbox, a store.Action, msg store.Mess
 		}
 	}
 	st, err := mb.Status(ctx, want.Folder)
-	if err == nil && st.UIDValidity != want.UIDValidity && msg.MessageID != "" {
+	if err == nil && st.UIDValidity != want.UIDValidity && messageID != "" {
 		var ref mail.MsgRef
-		if ref, err = mb.FindByMessageID(ctx, want.Folder, msg.MessageID); err == nil {
+		if ref, err = mb.FindByMessageID(ctx, want.Folder, messageID); err == nil {
 			return ref, nil
 		}
 	}
@@ -422,6 +433,8 @@ type Correction struct {
 // waiting in Needs review. When the new actions cannot be applied, what was undone stays
 // undone; the row as it now is goes out as message.processed all the same, after the
 // action.undone events, so a screen that shows the email does not keep the old picture.
+// An email waiting in Needs review that is no longer where MailRules saw it is taken off
+// the queue instead, with nothing done to any mailbox, and the error is ErrLeftReview.
 func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err error) {
 	msg, err := x.Store.Message(ctx, c.MessageID)
 	if err != nil {
@@ -441,6 +454,14 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 	}
 	defer x.Accounts.Lock(msg.AccountID)()
 
+	// An email waiting in Needs review has not been touched by MailRules, so it should be
+	// where its row saw it. If the user moved or deleted it since, there is nothing to answer.
+	at := msg.Location()
+	if msg.State == store.StateReview {
+		if at, err = x.reviewed(ctx, msg); err != nil {
+			return 0, err
+		}
+	}
 	row, err := x.Store.ActivityFor(ctx, msg.ID)
 	if err != nil {
 		return 0, err
@@ -462,10 +483,17 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 			return batchID, fmt.Errorf("undo action %d: %w", a.ID, err)
 		}
 	}
+	seen := msg.Location()
 	if msg, err = x.Store.Message(ctx, msg.ID); err != nil { // the undo may have moved it
 		return batchID, err
 	}
-	if _, err := x.Apply(ctx, DecisionRecord{MessageID: msg.ID, Ref: msg.Location()}, acts, batchID); err != nil {
+	if msg.Location() != seen {
+		at = msg.Location()
+	}
+	if _, err := x.Apply(ctx, DecisionRecord{MessageID: msg.ID, Ref: at}, acts, batchID); err != nil {
+		if errors.Is(err, mail.ErrNotFound) { // moved or deleted outside MailRules since it was left there
+			return batchID, errors.Join(ErrGone, err)
+		}
 		return batchID, err
 	}
 
@@ -490,6 +518,35 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 	}
 	status = store.BatchDone
 	return batchID, nil
+}
+
+// reviewed returns where an email waiting in Needs review is now. When it is no longer
+// there (and a Message-ID search of a rebuilt folder does not find it), the email leaves
+// the queue as skipped, the state of an email no longer where its row saw it, the row goes
+// out as message.processed, and the error is ErrLeftReview. In dry-run the server is not
+// asked, as Apply does not ask it either.
+func (x *Exec) reviewed(ctx context.Context, msg store.Message) (mail.MsgRef, error) {
+	at := msg.Location()
+	dry, err := x.Store.DryRun(ctx, x.DryRunDefault)
+	if err != nil || dry {
+		return at, err
+	}
+	mb, err := x.Accounts.Mailbox(msg.AccountID)
+	if err != nil {
+		return at, err
+	}
+	ref, err := find(ctx, mb, at, msg.MessageID, at)
+	if !errors.Is(err, ErrGone) {
+		return ref, err
+	}
+	recCtx := context.WithoutCancel(ctx)
+	if err := x.Store.SetMessageState(recCtx, msg.ID, store.StateSkipped, msg.Attempts, 0); err != nil {
+		return at, err
+	}
+	if row, err := x.Store.ActivityFor(recCtx, msg.ID); err == nil {
+		x.Hub.Publish(events.MessageProcessed, row)
+	}
+	return at, ErrLeftReview
 }
 
 // UndoSince reverses every action made at or after since that is still in effect, newest

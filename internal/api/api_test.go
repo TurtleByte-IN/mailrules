@@ -653,6 +653,40 @@ func TestReview(t *testing.T) {
 	e.refuse(http.MethodPost, fmt.Sprintf("/api/review/%d/resolve", id(second["id"])+1), `{"rule":2}`, http.StatusConflict, "not_in_review", "")
 }
 
+// An email in Needs review that the user moved in their mail client is taken off the
+// queue when answered, with a plain reason; fixing it from the feed afterwards is refused
+// as gone too, and nothing is changed.
+func TestReviewOfMailMovedElsewhere(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/import", rulesYAML, http.StatusOK)
+	e.decider.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{RuleID: 2, Confidence: 0.4, Reason: "Might be a newsletter"}, models.Usage{Provider: "fake", Model: "fake-1"}, nil
+	}
+	ref := e.deliver("hello@news.example", "weekly digest")
+	it := e.item("weekly digest", "review")
+	if _, err := e.mb.Move(t.Context(), ref, "Archive"); err != nil { // the user's mail client
+		t.Fatal(err)
+	}
+	resolve := fmt.Sprintf("/api/review/%d/resolve", id(it["id"]))
+	r := e.do(http.MethodPost, resolve, `{"rule_id":2}`)
+	if r.status != http.StatusConflict || r.body.Error.Code != "message_gone" ||
+		r.body.Error.Message != "This email was moved or deleted outside MailRules, so it was taken off the list." {
+		t.Fatalf("resolve = %d %s", r.status, r.raw)
+	}
+	if q := e.call(http.MethodGet, "/api/review", "", http.StatusOK); q["total"] != float64(0) {
+		t.Errorf("the queue still holds %v", q["total"])
+	}
+	if row := e.item("weekly digest", "skipped"); len(row["actions"].([]any)) != 0 || row["correction"] != nil {
+		t.Errorf("row = %v", row)
+	}
+	e.refuse(http.MethodPost, resolve, `{"rule_id":2}`, http.StatusConflict, "not_in_review", "")
+	e.refuse(http.MethodPost, fmt.Sprintf("/api/messages/%d/correct", id(it["id"])), `{"rule_id":2}`, http.StatusConflict, "message_gone", "")
+	if e.folderOf("weekly digest") != "Archive" || e.hasFolder("Reading") {
+		t.Errorf("the email is in %q; Reading made %v", e.folderOf("weekly digest"), e.hasFolder("Reading"))
+	}
+}
+
 // In dry-run, which is the default, decisions are recorded and the mailbox is not touched.
 func TestDryRunIsTheDefault(t *testing.T) {
 	e := newEnv(t)

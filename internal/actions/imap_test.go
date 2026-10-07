@@ -2,18 +2,23 @@ package actions
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	goimap "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
+	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
@@ -398,5 +403,87 @@ func TestUnreadableTrashSetting(t *testing.T) {
 	// Without a trash action the setting is not read at all.
 	if _, err := e.x.Apply(ctx, d, act("read"), 0); err != nil {
 		t.Errorf("a read with an unreadable trash setting: %v", err)
+	}
+}
+
+// An email waiting in Needs review that the user moved or deleted in their mail client
+// (a second connection here) is not where MailRules saw it. Answering it takes it off the
+// queue as skipped, touches no mailbox and says why; one still there is answered as usual.
+func TestAnswerReviewForMailGoneElsewhere(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		client func(t *testing.T, c *imapclient.Client, uid goimap.UID)
+		gone   bool
+	}{
+		{"moved to another folder", func(t *testing.T, c *imapclient.Client, uid goimap.UID) {
+			if _, err := c.Move(goimap.UIDSetNum(uid), "Archive").Wait(); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"deleted", func(t *testing.T, c *imapclient.Client, uid goimap.UID) {
+			store := &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Flags: []goimap.Flag{goimap.FlagDeleted}, Silent: true}
+			if err := c.Store(goimap.UIDSetNum(uid), store, nil).Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Expunge().Close(); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"still in the inbox", func(*testing.T, *imapclient.Client, goimap.UID) {}, false},
+	} {
+		for _, keep := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, keep %v", tc.name, keep), func(t *testing.T) {
+				e, srv := imapEnv(t, goimap.CapMove, goimap.CapUIDPlus)
+				ctx := t.Context()
+				if err := srv.User.Create("Archive", nil); err != nil {
+					t.Fatal(err)
+				}
+				food, err := e.st.CreateRule(ctx, rules.Rule{UserID: e.user.ID, Name: "Food", Intent: "Food", Actions: act("move:Food"), Enabled: true}, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				d := e.arrive(srv, "1")
+				if _, err := e.st.AddDecision(ctx, store.Decision{MessageID: d.MessageID, Stage: "decider", RuleID: food.ID, Confidence: 0.4, CreatedAt: 1}, store.StateReview); err != nil {
+					t.Fatal(err)
+				}
+
+				// The mail client: its own connection, as the user's phone would be.
+				c, err := imapclient.DialTLS(net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port)), &imapclient.Options{TLSConfig: srv.TLS})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer c.Close()
+				if err := c.Login(imaptest.Username, imaptest.Password).Wait(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+					t.Fatal(err)
+				}
+				tc.client(t, c, goimap.UID(d.Ref.UID))
+
+				right := food.ID
+				if keep {
+					right = 0
+				}
+				_, err = e.x.Correct(ctx, Correction{MessageID: d.MessageID, RightRuleID: right, Review: true})
+				m, _ := e.st.Message(ctx, d.MessageID)
+				corrs, _ := e.st.MessageCorrections(ctx, d.MessageID)
+				if !tc.gone {
+					if err != nil || m.State != store.StateActed || len(corrs) != 1 {
+						t.Fatalf("answer = %v; state %s, %d corrections", err, m.State, len(corrs))
+					}
+					return
+				}
+				if !errors.Is(err, ErrLeftReview) || !errors.Is(err, ErrGone) {
+					t.Errorf("answer = %v, want ErrLeftReview", err)
+				}
+				if m.State != store.StateSkipped || len(corrs) != 0 || len(e.actions(d.MessageID)) != 0 {
+					t.Errorf("state %s, %d corrections, actions %+v; want skipped and nothing recorded", m.State, len(corrs), e.actions(d.MessageID))
+				}
+				if e.onServer("Food") || e.count("INBOX") != 0 {
+					t.Errorf("the mailbox was touched: Food made %v, INBOX holds %d", e.onServer("Food"), e.count("INBOX"))
+				}
+			})
+		}
 	}
 }

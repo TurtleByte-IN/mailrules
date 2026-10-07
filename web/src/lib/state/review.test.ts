@@ -74,6 +74,16 @@ describe('review queue', () => {
     expect(badges['/review']).toBe(2);
   });
 
+  it('takes off the queue an email moved or deleted outside MailRules (409 message_gone), and says so', async () => {
+    const said = 'This email was moved or deleted outside MailRules, so it was taken off the list.';
+    serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [409, error('message_gone', said)]));
+    await s.load();
+    expect(await s.resolve(8, 3)).toBe('');
+    expect(toast.text).toBe(said);
+    expect(ids()).toEqual([9]);
+    expect(badges['/review']).toBe(1);
+  });
+
   it('says so when the account has no folder for the rule (422), and keeps the email in the queue', async () => {
     const said = 'This mail account has no Archive folder, so that action cannot be carried out. Choose a rule that moves the mail to a named folder instead.';
     serve((call) => (call.startsWith('GET') ? [200, queue([9, 8], 2)] : [422, error('no_special_folder', said)]));

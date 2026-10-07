@@ -1,5 +1,6 @@
 import type { ActivityItem, FixRequest } from '../api/activity';
 import { subscribe } from '../api/events';
+import { ApiError } from '../api/client';
 import * as reviewApi from '../api/review';
 import { failed, outcome, refused, upsert } from './activity.svelte';
 import { badges } from './badges.svelte';
@@ -61,6 +62,8 @@ export async function resolve(id: number, ruleId: number | null, alwaysFor?: Fix
     flash(ruleId === null ? 'Kept in Inbox' : 'Done: ' + outcome(item));
     return '';
   } catch (e) {
+    // Moved or deleted in another mail app: the daemon took it off the queue, and says so.
+    if (e instanceof ApiError && e.code === 'message_gone') drop(id);
     return refused(e);
   }
 }

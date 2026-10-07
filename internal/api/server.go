@@ -334,6 +334,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error, what string) {
 		notFound(w, what)
 	case errors.Is(err, actions.ErrTooOld):
 		writeError(w, http.StatusConflict, "too_old", fmt.Sprintf("This was done more than %d days ago, so it can no longer be undone.", store.UndoDays), "")
+	case errors.Is(err, actions.ErrLeftReview):
+		writeError(w, http.StatusConflict, "message_gone", "This email was moved or deleted outside MailRules, so it was taken off the list.", "")
 	case errors.Is(err, actions.ErrGone):
 		writeError(w, http.StatusConflict, "message_gone", "The message was moved or deleted outside MailRules, so this cannot be undone.", "")
 	case errors.As(err, &noFolder):

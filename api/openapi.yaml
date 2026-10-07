@@ -850,7 +850,7 @@ paths:
       tags: [Review]
       operationId: resolveReview
       summary: Approve the suggested rule, choose another, or keep the email in the inbox
-      description: The same as `/api/messages/{id}/correct`, for an email that is in Needs review.
+      description: The same as `/api/messages/{id}/correct`, for an email that is in Needs review. When the email was moved or deleted outside MailRules since it arrived, it is taken off the queue (state `skipped`) with nothing done to the mailbox, and the answer is 409 `message_gone` saying so.
       requestBody:
         required: true
         content:
