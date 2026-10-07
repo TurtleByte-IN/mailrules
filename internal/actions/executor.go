@@ -76,7 +76,6 @@ var flagOf = map[string]struct {
 }{
 	rules.ActFlag: {`\Flagged`, true}, rules.ActUnflag: {`\Flagged`, false},
 	rules.ActRead: {`\Seen`, true}, rules.ActUnread: {`\Seen`, false},
-	KindReview: {ReviewKeyword, true},
 }
 
 func isMove(kind string) bool { return kind == rules.ActMove || moveRole[kind] != "" }
@@ -505,7 +504,7 @@ func (x *Exec) UndoMessage(ctx context.Context, messageID int64) (batchID int64,
 	}
 	var acts []store.Action
 	for _, a := range slices.Backward(all) {
-		if a.Status == store.ActionDone && a.Kind != KindReview { // as in "undo everything since"
+		if a.Status == store.ActionDone { // as in "undo everything since"
 			acts = append(acts, a)
 		}
 	}

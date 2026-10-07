@@ -11,8 +11,8 @@ const UndoDays = 30
 
 // KeepMessagesDays is how long a message's row is kept. After that it is deleted with its
 // decisions and actions, unless one of its actions can still be undone: a move or a flag
-// change that is in effect and was made in the last UndoDays. A recorded "keep" and the
-// Needs review tag changed nothing worth putting back, so they do not hold a row.
+// change that is in effect and was made in the last UndoDays. A recorded "keep" changed
+// nothing worth putting back, so it does not hold a row.
 const KeepMessagesDays = 180
 
 const day = 24 * 3600
@@ -30,7 +30,7 @@ func (s *Store) Retain(ctx context.Context, now int64, retentionDays int) (blank
 	blanked, _ = res.RowsAffected()
 	res, err = s.db.ExecContext(ctx,
 		`DELETE FROM messages WHERE created_at < ? AND NOT EXISTS
-		   (SELECT 1 FROM actions a WHERE a.message_id = messages.id AND a.status = 'done' AND a.kind NOT IN ('review', 'keep')
+		   (SELECT 1 FROM actions a WHERE a.message_id = messages.id AND a.status = 'done' AND a.kind <> 'keep'
 		    AND a.created_at >= ?)`,
 		now-KeepMessagesDays*day, now-UndoDays*day)
 	if err != nil {

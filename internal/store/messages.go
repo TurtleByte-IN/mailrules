@@ -322,7 +322,7 @@ var Outcomes = []string{"sorted", "trashed", "inbox", "review"}
 // undone is back in the inbox.
 func outcomeSQL(state, id string) map[string]string {
 	inEffect := func(more string) string {
-		return `EXISTS (SELECT 1 FROM actions x WHERE x.message_id = ` + id + ` AND x.kind <> 'review' AND x.status IN ('done', 'dry_run')` + more + `)`
+		return `EXISTS (SELECT 1 FROM actions x WHERE x.message_id = ` + id + ` AND x.status IN ('done', 'dry_run')` + more + `)`
 	}
 	acted, trash := state+` = 'acted' AND `+inEffect(""), inEffect(` AND x.kind = 'trash'`)
 	return map[string]string{

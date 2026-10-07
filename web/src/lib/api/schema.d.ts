@@ -669,7 +669,7 @@ export interface paths {
          *     `message_gone` when the email was moved or deleted outside MailRules, `too_old` when
          *     what was done is older than 30 days. With nothing
          *     in effect (already undone, only recorded in dry-run, or no action at all) it does
-         *     nothing and answers 200 with zero counts. The Needs review tag is left alone. Each
+         *     nothing and answers 200 with zero counts. Each
          *     undone action is also sent as `action.undone`. Undo ignores dry-run.
          */
         post: operations["undoMessage"];
@@ -735,7 +735,7 @@ export interface paths {
         put?: never;
         /**
          * Undo everything done since a time ("Undo the last hour")
-         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. The Needs review tag is not an undoable action and is left alone. Actions older than 30 days are not undoable and are left out, however far back `since` reaches.
+         * @description Recorded as one batch of kind `undo`. An action that cannot be undone does not stop the rest. Actions older than 30 days are not undoable and are left out, however far back `since` reaches.
          */
         post: operations["undoSince"];
         delete?: never;
@@ -1625,15 +1625,12 @@ export interface components {
          */
         Stage: "sender" | "condition" | "decider" | "fallback" | "none";
         /**
-         * @description `acted`: a rule was applied (or recorded, in dry-run). `review`: waiting in Needs review. `skipped`: no rule matched, or the email was gone. `error`: failed; it is retried. `new` and `decided` are in progress
+         * @description `acted`: a rule was applied (or recorded, in dry-run). `review`: waiting in Needs review, untouched in the mailbox. `skipped`: no rule matched, or the email was gone. `error`: failed; it is retried. `new` and `decided` are in progress
          * @enum {string}
          */
         MessageState: "new" | "decided" | "acted" | "review" | "skipped" | "error";
-        /**
-         * @description `review` is the Needs review tag MailRules sets itself; no rule can name it
-         * @enum {string}
-         */
-        ActionKind: "move" | "archive" | "trash" | "junk" | "flag" | "unflag" | "read" | "unread" | "keep" | "review";
+        /** @enum {string} */
+        ActionKind: "move" | "archive" | "trash" | "junk" | "flag" | "unflag" | "read" | "unread" | "keep";
         /** @enum {string} */
         ActionStatus: "done" | "dry_run" | "failed" | "undone";
         Decision: {

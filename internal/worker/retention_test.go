@@ -54,8 +54,8 @@ func TestRetentionJob(t *testing.T) {
 	oldTooOld := seen(200, "move", store.ActionDone)       // moved 200 days ago: past the 30 days an undo is good for
 	oldDryRun := seen(200, "move", store.ActionDryRun)
 	oldUndone := seen(181, "move", store.ActionUndone)
-	oldReviewTag := seen(200, "review", store.ActionDone)
-	edge := seen(180, "move", store.ActionDryRun) // exactly 180 days: not yet older than that
+	oldKept := seen(200, "keep", store.ActionDone, 10) // a keep recorded 10 days ago changed nothing to undo
+	edge := seen(180, "move", store.ActionDryRun)      // exactly 180 days: not yet older than that
 
 	blanked, deleted, err := job.Once(ctx)
 	if err != nil || blanked != 7 || deleted != 4 {
@@ -72,7 +72,7 @@ func TestRetentionJob(t *testing.T) {
 	if snippet(fresh) == "" || snippet(month) != "" || snippet(oldUndoable) != "" || snippet(edge) != "" {
 		t.Errorf("snippets: fresh %q, 40 days %q, undoable %q", snippet(fresh), snippet(month), snippet(oldUndoable))
 	}
-	for _, m := range []store.Message{oldTooOld, oldDryRun, oldUndone, oldReviewTag} {
+	for _, m := range []store.Message{oldTooOld, oldDryRun, oldUndone, oldKept} {
 		if _, err := e.st.Message(ctx, m.ID); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("message %d is still there: %v", m.ID, err)
 		}

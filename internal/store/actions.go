@@ -441,12 +441,11 @@ func (s *Store) SetBatchProgress(ctx context.Context, id int64, total, done int)
 
 // DoneActionsSince lists the actions made at or after since that are still in effect,
 // newest first: the ones "undo everything since" reverses. With ruleID, only those a
-// decision for that rule led to. The Needs review tag is left out: taking it off would not
-// take the message out of review.
+// decision for that rule led to.
 func (s *Store) DoneActionsSince(ctx context.Context, ruleID, since int64) ([]Action, error) {
 	return s.listActions(ctx,
 		`SELECT `+actionCols+` FROM actions
-		 WHERE status = 'done' AND kind <> 'review' AND created_at >= ?1
+		 WHERE status = 'done' AND created_at >= ?1
 		   AND (?2 = 0 OR decision_id IN (SELECT id FROM decisions WHERE rule_id = ?2))
 		 ORDER BY id DESC`, since, ruleID)
 }

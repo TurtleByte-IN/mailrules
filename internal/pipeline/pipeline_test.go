@@ -25,7 +25,7 @@ import (
 // apply and changes nothing.
 type recorder struct {
 	calls []call
-	err   error // returned by Apply for rule actions (not for the review tag)
+	err   error // returned by Apply
 }
 
 type call struct {
@@ -35,23 +35,30 @@ type call struct {
 
 func (r *recorder) Apply(_ context.Context, d actions.DecisionRecord, acts []rules.Action, _ int64) ([]actions.ActionRecord, error) {
 	r.calls = append(r.calls, call{d, acts})
-	if acts[0].Type == actions.KindReview {
-		return nil, nil
-	}
 	return nil, r.err
 }
 
-// applied lists the rule actions applied so far, e.g. "move:Food", leaving out review tags.
+// applied lists the actions applied so far, e.g. "move:Food".
 func (r *recorder) applied() []string {
 	var out []string
 	for _, c := range r.calls {
 		for _, a := range c.acts {
-			if a.Type != actions.KindReview {
-				out = append(out, a.String())
-			}
+			out = append(out, a.String())
 		}
 	}
 	return out
+}
+
+// addCutOff adds a condition-only rule for swiggy.example below the intent rules: the
+// cut-off, the default when the decider picks none of them.
+func (e *env) addCutOff() rules.Rule {
+	r, err := e.st.CreateRule(e.t.Context(), rules.Rule{UserID: e.user.ID, Name: "Orders", Priority: 9, Enabled: true,
+		Conditions: rules.Cond{Field: "from_domain", Op: rules.OpEq, Value: "swiggy.example"},
+		Actions:    []rules.Action{{Type: rules.ActMove, Folder: "Orders"}}}, 1)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return r
 }
 
 type env struct {
@@ -207,6 +214,23 @@ func TestProcessEndToEnd(t *testing.T) {
 			wantCalls: 2, wantReason: `Matched "Food"`, wantEvent: events.MessageReview,
 		},
 		{
+			// MAI-62: an unsure pick is never handed to the cut-off rule; nothing is done.
+			name: "below the threshold with a cut-off still goes to review", from: "orders@swiggy.example",
+			setup: func(e *env) {
+				e.reading = e.addCutOff()
+				e.primary.DecideFunc = answer(e.food.ID, 0.5)
+				e.fallback.DecideFunc = answer(e.food.ID, 0.6)
+			},
+			wantStage: "fallback", wantRule: func(e *env) int64 { return e.food.ID }, wantState: store.StateReview,
+			wantCalls: 2, wantReason: `Matched "Food"`, wantEvent: events.MessageReview,
+		},
+		{
+			name: "the decider says none with a cut-off: the cut-off acts", from: "orders@swiggy.example",
+			setup:     func(e *env) { e.reading = e.addCutOff() },
+			wantStage: "condition", wantRule: func(e *env) int64 { return e.reading.ID }, wantState: store.StateActed,
+			wantApplied: []string{"move:Orders"}, wantCalls: 1, wantReason: `the default rule "Orders" applied`, wantEvent: events.MessageProcessed,
+		},
+		{
 			name: "escalation is recorded", from: "orders@swiggy.example",
 			setup: func(e *env) {
 				e.primary.DecideFunc = answer(e.food.ID, 0.5)
@@ -235,13 +259,7 @@ func TestProcessEndToEnd(t *testing.T) {
 			name: "no decision model: a condition rule below the intent rules still acts", from: "orders@swiggy.example",
 			setup: func(e *env) {
 				e.p.Router = nil
-				var err error
-				e.reading, err = e.st.CreateRule(e.t.Context(), rules.Rule{UserID: e.user.ID, Name: "Orders", Priority: 9, Enabled: true,
-					Conditions: rules.Cond{Field: "from_domain", Op: rules.OpEq, Value: "swiggy.example"},
-					Actions:    []rules.Action{{Type: rules.ActMove, Folder: "Orders"}}}, 1)
-				if err != nil {
-					e.t.Fatal(err)
-				}
+				e.reading = e.addCutOff()
 			},
 			wantStage: "condition", wantRule: func(e *env) int64 { return e.reading.ID }, wantState: store.StateActed,
 			wantApplied: []string{"move:Orders"}, wantReason: `Matched "Orders" by its conditions`, wantEvent: events.MessageProcessed,
@@ -282,10 +300,9 @@ func TestProcessEndToEnd(t *testing.T) {
 			if f, err := e.st.Folder(t.Context(), m.AccountID, "INBOX"); err != nil || f.LastUID != m.UID || f.UIDValidity != m.UIDValidity {
 				t.Errorf("folder position = %+v, %v; want uid %d", f, err, m.UID)
 			}
-			// Review tags go through the executor like every other mailbox change.
-			tagged := slices.ContainsFunc(e.exec.calls, func(c call) bool { return c.acts[0].Type == actions.KindReview })
-			if tagged != (tt.wantState == store.StateReview) {
-				t.Errorf("review tag applied = %v in state %s", tagged, m.State)
+			// Needs review leaves the mailbox alone: the executor is not even asked.
+			if tt.wantState == store.StateReview && len(e.exec.calls) != 0 {
+				t.Errorf("executor called %d times for an email in review", len(e.exec.calls))
 			}
 			var names []string
 			for len(live) > 0 {
@@ -629,33 +646,28 @@ func TestLiveProcessingWithTheExecutor(t *testing.T) {
 	}
 }
 
-func TestReviewTagAndRetryWithTheExecutor(t *testing.T) {
+func TestReviewAndRetryWithTheExecutor(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
 	e.withExecutor(false)
+	e.addCutOff() // even with a default rule to fall back on
 	e.fallback.DecideFunc = answer(e.food.ID, 0.5)
 	e.primary.DecideFunc = answer(e.food.ID, 0.5)
 
-	// Live: a message in review gets the keyword, as an action that can be undone.
-	row := e.process("orders@swiggy.example", "order 1")
-	flags, _ := e.mb.Flags(ctx, row.Message.Location())
-	if row.Message.State != store.StateReview || !slices.Equal(flags, []string{actions.ReviewKeyword}) ||
-		len(row.Actions) != 1 || row.Actions[0].Kind != actions.KindReview || row.Actions[0].Status != store.ActionDone {
-		t.Errorf("review live: state %s, flags %v, actions %+v", row.Message.State, flags, row.Actions)
+	// Live, below the threshold: Needs review, and the mailbox is not touched at all.
+	for _, dry := range []bool{false, true} {
+		if err := e.st.SetDryRun(ctx, dry); err != nil {
+			t.Fatal(err)
+		}
+		row := e.process("orders@swiggy.example", fmt.Sprintf("unsure dry-run %v", dry))
+		flags, _ := e.mb.Flags(ctx, row.Message.Location())
+		if row.Message.State != store.StateReview || row.Message.Location().Folder != "INBOX" || len(flags) != 0 || len(row.Actions) != 0 {
+			t.Errorf("review, dry-run %v: state %s in %s, flags %v, actions %+v", dry, row.Message.State, row.Message.Location().Folder, flags, row.Actions)
+		}
 	}
-
-	// Dry-run: never.
-	if err := e.st.SetDryRun(ctx, true); err != nil {
-		t.Fatal(err)
-	}
-	row = e.process("orders@swiggy.example", "order 2")
-	flags, _ = e.mb.Flags(ctx, row.Message.Location())
-	if row.Message.State != store.StateReview || len(flags) != 0 || row.Actions[0].Status != store.ActionDryRun {
-		t.Errorf("review in dry-run: state %s, flags %v, actions %+v", row.Message.State, flags, row.Actions)
-	}
-	// And a rule's actions are recorded, not run.
+	// In dry-run a rule's actions are recorded, not run.
 	e.primary.DecideFunc = answer(e.food.ID, 0.9)
-	row = e.process("orders@swiggy.example", "order 3")
+	row := e.process("orders@swiggy.example", "order 3")
 	if row.Message.State != store.StateActed || row.Message.Location().Folder != "INBOX" || row.Actions[0].Status != store.ActionDryRun || row.Actions[0].Folder != "Food" {
 		t.Errorf("dry-run: %+v, actions %+v", row.Message, row.Actions)
 	}
