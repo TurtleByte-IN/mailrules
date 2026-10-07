@@ -5,6 +5,7 @@
   import { confidence } from '../lib/format';
   import { rules } from '../lib/state/rules.svelte';
   import { load, patch, setKey, settings, setUrl, setWorkspace, toggleDryRun } from '../lib/state/settings.svelte';
+  import { choose, stored, type Choice } from '../lib/theme';
 
   // Digest and Notification channels (P2) are added here with their backend, behind
   // features.digest and features.notifications.
@@ -381,4 +382,14 @@
       </section>
     {/if}
   {/if}
+
+  <section aria-label="Appearance" class="card flex flex-col gap-1.5 p-5">
+    <label for="set-theme" class="text-[13px] font-semibold">Appearance</label>
+    <select id="set-theme" class="field h-11 max-w-[360px] px-2.5" value={stored()} onchange={(e) => choose(e.currentTarget.value as Choice)}>
+      <option value="system">System</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+    <div class="text-[12.5px] text-secondary">System follows your device's light or dark setting. Saved in this browser only.</div>
+  </section>
 </div>

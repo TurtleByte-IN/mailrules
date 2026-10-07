@@ -20,8 +20,8 @@
   class="flex flex-[1_1_240px] flex-col gap-5 border-r border-line-card px-3.5 py-5 max-md:sticky max-md:top-0 max-md:z-10 max-md:max-h-dvh max-md:flex-none max-md:gap-3 max-md:overflow-y-auto max-md:border-r-0 max-md:border-b max-md:bg-surface max-md:py-2"
 >
   <div class="flex items-center gap-2.5 px-1.5">
-    <span class="grid size-7 place-items-center rounded bg-signal">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <span class="grid size-7 place-items-center rounded bg-signal text-on-signal">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" />
       </svg>
     </span>
