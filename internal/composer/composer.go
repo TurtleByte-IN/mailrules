@@ -424,9 +424,17 @@ How to write the rules:
 	if rule == nil {
 		fmt.Fprintf(&usr, "\n\nThe owner said (the [n] markers number the pieces):\n<text>\n%s\n</text>", clean(text))
 	} else {
-		fmt.Fprintf(&usr, "\n\nRewrite this one rule. Answer with exactly one rule in \"rules\".\n<current>%s</current>\n"+
-			"What the owner said when they made it:\n<text>\n%s\n</text>\nWhat the owner says now (the [n] markers number the pieces):\n<text>\n%s\n</text>",
-			ruleLine(*rule), clean(rule.Said), clean(text))
+		fmt.Fprintf(&usr, "\n\nRewrite this one rule. Answer with exactly one rule in \"rules\".\n<current>%s</current>\n", ruleLine(*rule))
+		// A rule added from the gallery, or imported without a said, has none of the owner's words to show.
+		switch said := clean(rule.Said); {
+		case said != "":
+			fmt.Fprintf(&usr, "What the owner said when they made it:\n<text>\n%s\n</text>\n", said)
+		case rule.Template != "":
+			fmt.Fprintf(&usr, "The owner added it from the template gallery (the %q template) without describing it in words.\n", clean(rule.Template))
+		default:
+			usr.WriteString("The owner made it without describing it in words.\n")
+		}
+		fmt.Fprintf(&usr, "What the owner says now (the [n] markers number the pieces):\n<text>\n%s\n</text>", clean(text))
 	}
 
 	str, nullable, list := schemaTypes()

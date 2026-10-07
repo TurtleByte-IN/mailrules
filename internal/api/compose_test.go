@@ -121,6 +121,53 @@ func TestRulesBatch(t *testing.T) {
 	}
 }
 
+// Every gallery template saves as it is served (MAI-73). The rule names its template and
+// has no words of the user's; an edit, a rewrite's new words, an export and an import keep
+// the template.
+func TestTemplateRules(t *testing.T) {
+	e := newEnv(t)
+	e.noDecider = true
+	e.connect()
+
+	var rs []string
+	names := map[string]bool{}
+	for _, it := range e.call(http.MethodGet, "/api/templates", "", http.StatusOK)["items"].([]any) {
+		tpl := it.(map[string]any)
+		conform(t, e.doc, "Template", tpl)
+		b, _ := json.Marshal(tpl["rule"])
+		rs = append(rs, string(b))
+		names[tpl["name"].(string)] = true
+	}
+	saved := e.call(http.MethodPost, "/api/rules/batch", `{"rules":[`+strings.Join(rs, ",")+`]}`, http.StatusCreated)["items"].([]any)
+	if len(saved) != 9 {
+		t.Fatalf("saved %d of the 9 templates", len(saved))
+	}
+	for _, s := range saved {
+		r := s.(map[string]any)
+		conform(t, e.doc, "Rule", r)
+		if r["said"] != "" || !names[r["template"].(string)] {
+			t.Errorf("%v: said %q, template %q", r["name"], r["said"], r["template"])
+		}
+	}
+
+	receipts := saved[1].(map[string]any)
+	path := fmt.Sprintf("/api/rules/%d", id(receipts["id"]))
+	patched := e.call(http.MethodPatch, path, `{"said":"also the ones from Amazon","enabled":false}`, http.StatusOK)["rule"].(map[string]any)
+	if patched["template"] != "Receipts" || patched["said"] != "also the ones from Amazon" {
+		t.Errorf("after an edit: %v", patched)
+	}
+
+	r := e.do(http.MethodGet, "/api/rules/export", "")
+	if !strings.Contains(string(r.raw), "template: Receipts") {
+		t.Fatalf("export lacks the template:\n%s", r.raw)
+	}
+	e.call(http.MethodPatch, path, `{"said":""}`, http.StatusOK)
+	e.call(http.MethodPost, "/api/rules/import", string(r.raw), http.StatusOK)
+	if back := e.call(http.MethodGet, path, "", http.StatusOK)["rule"].(map[string]any); back["template"] != "Receipts" || back["said"] != "also the ones from Amazon" {
+		t.Errorf("after an import: %v", back)
+	}
+}
+
 const fiveDrafts = `{"rules":[
  {"name":"Food","parts":[1],"intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"}],"min_confidence":null,"new_folders":["Food"],"question":null,"conflicts":[]},
  {"name":"Jobs","parts":[2],"intent":"Recruiter outreach about job openings","conditions":{},"exceptions":{"field":"replied_before","op":"eq","value":true},"actions":[{"type":"move","folder":"Jobs"}],"min_confidence":null,"new_folders":["Jobs"],"question":null,"conflicts":[]},

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
@@ -56,6 +57,9 @@ type Message struct {
 	Attempts      int   // retries made after a failure
 	NextAttemptAt int64 // 0 = not waiting for the retry job
 	CreatedAt     int64
+	// ActedAt is when MailRules last decided the message, or CreatedAt until a decision is
+	// made. The feed is ordered by it.
+	ActedAt int64
 
 	// Where the executor last left the message; zero while it is still where it arrived.
 	CurFolder      string
@@ -76,12 +80,12 @@ const messageCols = `m.id, m.account_id, m.folder, m.uidvalidity, m.uid, COALESC
 	COALESCE(m.from_addr, ''), COALESCE(m.from_domain, ''), COALESCE(m.to_addrs, '[]'), COALESCE(m.subject, ''),
 	COALESCE(m.snippet, ''), COALESCE(m.received_at, 0), COALESCE(m.list_id, ''), m.has_attachment, COALESCE(m.size, 0),
 	COALESCE(m.signals, '{}'), m.state, m.attempts, COALESCE(m.next_attempt_at, 0), m.created_at,
-	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0), COALESCE(m.from_name, '')`
+	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0), COALESCE(m.from_name, ''), m.acted_at`
 
 func messageDest(m *Message, to, signals *string) []any {
 	return []any{&m.ID, &m.AccountID, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.FromAddr, &m.FromDomain, to,
 		&m.Subject, &m.Snippet, &m.ReceivedAt, &m.ListID, &m.HasAttachment, &m.Size, signals, &m.State, &m.Attempts,
-		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName}
+		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName, &m.ActedAt}
 }
 
 func (m *Message) decode(to, signals string) error {
@@ -116,8 +120,8 @@ func (s *Store) IngestMessage(ctx context.Context, ref mail.MsgRef, now int64) (
 		return Message{}, false, fmt.Errorf("ingest message: %w", err)
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO messages (account_id, folder, uidvalidity, uid, created_at) VALUES (?, ?, ?, ?, ?)`,
-		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID, now)
+		`INSERT OR IGNORE INTO messages (account_id, folder, uidvalidity, uid, created_at, acted_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID, now, now)
 	if err != nil {
 		return Message{}, false, fmt.Errorf("ingest message: %w", err)
 	}
@@ -302,7 +306,7 @@ func decisionDest(d *Decision) []any {
 }
 
 // AddDecision records a decision and moves its message to state in one transaction, and
-// returns the decision's id.
+// returns the decision's id. The message's ActedAt becomes the decision's time.
 func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -327,7 +331,7 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 		return 0, fmt.Errorf("add decision: %w", err)
 	}
 	id, _ := res.LastInsertId()
-	if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = ?, next_attempt_at = NULL WHERE id = ?`, state, d.MessageID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = ?, next_attempt_at = NULL, acted_at = ? WHERE id = ?`, state, d.CreatedAt, d.MessageID); err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -338,14 +342,27 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 
 // ActivityFilter narrows Activity. Zero fields do not filter.
 type ActivityFilter struct {
+	ID        int64 // only this message
 	AccountID int64
 	RuleID    int64
 	Stage     string
 	State     string // a message state; StateReview lists Needs review
 	Action    string // an action kind: only messages with such an action
 	Outcome   string // one of Outcomes: where the message ended up, as the stats count it
-	Before    int64  // cursor: only messages with a smaller id
-	Limit     int    // 0 = 50
+	After     FeedCursor
+	Limit     int // 0 = 50
+}
+
+// FeedCursor is where a page of Activity ends: the ActedAt and ID of its last row. The
+// next page starts after it in the feed's order. The zero value is the first page.
+type FeedCursor struct {
+	ActedAt int64
+	ID      int64
+}
+
+// Cursor is the position of this row in the feed, for the page after it.
+func (r ActivityRow) Cursor() FeedCursor {
+	return FeedCursor{ActedAt: r.Message.ActedAt, ID: r.Message.ID}
 }
 
 // ActivityRow is a message with its latest decision and every action taken on it, oldest
@@ -378,27 +395,51 @@ func outcomeSQL(state, id string) map[string]string {
 	}
 }
 
-// Activity lists messages, newest first, each with its latest decision.
+// Activity lists messages, each with its latest decision, by when MailRules acted on them
+// (ActedAt), newest first; messages acted on in the same second come newest row first.
 func (s *Store) Activity(ctx context.Context, f ActivityFilter) ([]ActivityRow, error) {
 	if f.Limit <= 0 {
 		f.Limit = 50
 	}
-	outcome := "1"
+	// Only the filters in force go into the query, so the planner can walk messages_acted
+	// from the cursor, or look one message up by its id.
+	where, args := []string{"1"}, []any{}
+	add := func(cond string, arg ...any) { where, args = append(where, cond), append(args, arg...) }
+	if f.ID != 0 {
+		add(`m.id = ?`, f.ID)
+	}
+	if f.AccountID != 0 {
+		add(`m.account_id = ?`, f.AccountID)
+	}
+	if f.RuleID != 0 {
+		add(`d.rule_id = ?`, f.RuleID)
+	}
+	if f.Stage != "" {
+		add(`d.stage = ?`, f.Stage)
+	}
+	if f.State != "" {
+		add(`m.state = ?`, f.State)
+	}
+	if f.After != (FeedCursor{}) {
+		add(`(m.acted_at, m.id) < (?, ?)`, f.After.ActedAt, f.After.ID)
+	}
+	if f.Action != "" {
+		add(`EXISTS (SELECT 1 FROM actions a WHERE a.message_id = m.id AND a.kind = ?)`, f.Action)
+	}
 	if f.Outcome != "" {
-		var ok bool
-		if outcome, ok = outcomeSQL("m.state", "m.id")[f.Outcome]; !ok {
+		outcome, ok := outcomeSQL("m.state", "m.id")[f.Outcome]
+		if !ok {
 			return nil, fmt.Errorf("list activity: unknown outcome %q", f.Outcome)
 		}
+		add(outcome)
 	}
+	//nolint:gosec // G202: every condition is a constant of this function; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+messageCols+`, `+decisionCols+`
 		 FROM messages m LEFT JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
-		 WHERE (?1 = 0 OR m.account_id = ?1) AND (?2 = 0 OR d.rule_id = ?2) AND (?3 = '' OR d.stage = ?3)
-		   AND (?4 = '' OR m.state = ?4) AND (?5 = 0 OR m.id < ?5)
-		   AND (?7 = '' OR EXISTS (SELECT 1 FROM actions a WHERE a.message_id = m.id AND a.kind = ?7))
-		   AND (`+outcome+`)
-		 ORDER BY m.id DESC LIMIT ?6`,
-		f.AccountID, f.RuleID, f.Stage, f.State, f.Before, f.Limit, f.Action)
+		 WHERE `+strings.Join(where, " AND ")+`
+		 ORDER BY m.acted_at DESC, m.id DESC LIMIT ?`,
+		append(args, f.Limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("list activity: %w", err)
 	}
@@ -433,11 +474,11 @@ func (s *Store) Activity(ctx context.Context, f ActivityFilter) ([]ActivityRow, 
 
 // ActivityFor returns one message's activity row, or ErrNotFound.
 func (s *Store) ActivityFor(ctx context.Context, messageID int64) (ActivityRow, error) {
-	rows, err := s.Activity(ctx, ActivityFilter{Before: messageID + 1, Limit: 1})
+	rows, err := s.Activity(ctx, ActivityFilter{ID: messageID, Limit: 1})
 	if err != nil {
 		return ActivityRow{}, err
 	}
-	if len(rows) == 0 || rows[0].Message.ID != messageID {
+	if len(rows) == 0 {
 		return ActivityRow{}, ErrNotFound
 	}
 	return rows[0], nil

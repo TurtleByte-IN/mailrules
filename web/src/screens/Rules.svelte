@@ -249,6 +249,9 @@
           <input id="rule-name" class="field" value={sel.name} onchange={rename} />
           {@render problem('name')}
         </div>
+        {#if sel.template}
+          <div class="text-[13px] text-secondary">Added from the {sel.template} template</div>
+        {/if}
         {#if sel.said}
           <div class="border-l-[3px] border-line-card py-1 pl-3">
             <div class="text-xs text-muted">You said</div>

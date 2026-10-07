@@ -21,7 +21,7 @@ func TestRules(t *testing.T) {
 	if err != nil || food.ID == 0 || food.Version != 1 || food.CreatedAt != 100 {
 		t.Fatalf("create: %+v %v", food, err)
 	}
-	scams, err := s.CreateRule(ctx, rules.Rule{UserID: u.ID, Name: "scams", Intent: "Fake bank alerts", Priority: 10, Enabled: true,
+	scams, err := s.CreateRule(ctx, rules.Rule{UserID: u.ID, Name: "scams", Template: "Cold sales", Intent: "Fake bank alerts", Priority: 10, Enabled: true,
 		Model: "clef", MinConfidence: &threshold, Actions: []rules.Action{{Type: rules.ActTrash}}}, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func TestRules(t *testing.T) {
 	// Unset optional columns are NULL, as the schema documents, not empty strings.
 	var nulls int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rules WHERE id = ? AND account_id IS NULL AND intent IS NULL
-		AND model IS NULL AND min_confidence IS NULL AND exceptions != '{}'`, food.ID).Scan(&nulls); err != nil || nulls != 1 {
+		AND model IS NULL AND min_confidence IS NULL AND template IS NULL AND exceptions != '{}'`, food.ID).Scan(&nulls); err != nil || nulls != 1 {
 		t.Errorf("optional columns not NULL: %d %v", nulls, err)
 	}
 
@@ -85,6 +85,44 @@ func TestRules(t *testing.T) {
 	}
 	if err := s.DeleteRule(ctx, u.ID, food.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleting twice: got %v", err)
+	}
+}
+
+// Migration 0007: a rule added from a template before it had its own column carried
+// "Template: <name>" in said. The name moves to template; words the user added below it
+// in a rewrite stay in said, and a said of the user's own is left alone.
+func TestMigrationRuleTemplate(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 6)
+	s := New(db)
+	u, _ := s.CreateFirstUser(ctx, "me@icloud.com", "hash", 100)
+	ids := map[string]int64{}
+	for name, said := range map[string]any{
+		"template":  "Template: Receipts",
+		"rewritten": "Template: Cold sales\nalso pitches about SEO",
+		"own words": "Swiggy goes to Food",
+		"no words":  nil,
+	} {
+		res, err := db.ExecContext(ctx, `INSERT INTO rules (user_id, name, said, actions, priority, created_at, updated_at) VALUES (?, ?, ?, '[{"type":"keep"}]', 1, 1, 1)`,
+			u.ID, name, said)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[name], _ = res.LastInsertId()
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string][2]string{
+		"template":  {"", "Receipts"},
+		"rewritten": {"also pitches about SEO", "Cold sales"},
+		"own words": {"Swiggy goes to Food", ""},
+		"no words":  {"", ""},
+	} {
+		r, err := s.Rule(ctx, u.ID, ids[name])
+		if err != nil || r.Said != want[0] || r.Template != want[1] {
+			t.Errorf("%s: said %q, template %q, %v; want %q, %q", name, r.Said, r.Template, err, want[0], want[1])
+		}
 	}
 }
 

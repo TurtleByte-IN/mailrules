@@ -32,15 +32,16 @@ type yamlFile struct {
 	Rules    []yamlRule `yaml:"rules"`
 }
 
-// yamlRule is one rule as written in the file. id is the rule's name; stack
+// yamlRule is one rule as written in the file. id is the rule's name; template, stack
 // and enabled are additions to the PRD shape so an export loses nothing.
 type yamlRule struct {
 	ID            string   `yaml:"id"`
 	Said          string   `yaml:"said,omitempty"`
-	When          string   `yaml:"when,omitempty"`   // intent
-	Match         any      `yaml:"match,omitempty"`  // conditions: tree or map shorthand
-	Unless        any      `yaml:"unless,omitempty"` // exceptions: tree or map shorthand
-	Actions       []any    `yaml:"actions"`          // "move:Food" or {type, folder}
+	Template      string   `yaml:"template,omitempty"` // the gallery template it was added from
+	When          string   `yaml:"when,omitempty"`     // intent
+	Match         any      `yaml:"match,omitempty"`    // conditions: tree or map shorthand
+	Unless        any      `yaml:"unless,omitempty"`   // exceptions: tree or map shorthand
+	Actions       []any    `yaml:"actions"`            // "move:Food" or {type, folder}
 	MinConfidence *float64 `yaml:"min_confidence,omitempty"`
 	Model         string   `yaml:"model,omitempty"`
 	Stack         bool     `yaml:"stack,omitempty"`
@@ -104,7 +105,7 @@ func ParseYAML(data []byte) (File, error) {
 }
 
 func (yr yamlRule) rule() (Rule, *ValidationError) {
-	r := Rule{Name: yr.ID, Said: yr.Said, Intent: yr.When, MinConfidence: yr.MinConfidence,
+	r := Rule{Name: yr.ID, Said: yr.Said, Template: yr.Template, Intent: yr.When, MinConfidence: yr.MinConfidence,
 		Model: yr.Model, Stack: yr.Stack, Enabled: yr.Enabled == nil || *yr.Enabled}
 	var err error
 	if r.Conditions, err = condFromYAML(yr.Match); err != nil {
@@ -217,7 +218,7 @@ func MarshalYAML(f File) ([]byte, error) {
 	slices.SortStableFunc(rs, func(a, b Rule) int { return a.Priority - b.Priority })
 	yf := yamlFile{Defaults: f.Defaults, Rules: make([]yamlRule, 0, len(rs))}
 	for _, r := range rs {
-		yr := yamlRule{ID: r.Name, Said: r.Said, When: r.Intent, MinConfidence: r.MinConfidence, Model: r.Model, Stack: r.Stack}
+		yr := yamlRule{ID: r.Name, Said: r.Said, Template: r.Template, When: r.Intent, MinConfidence: r.MinConfidence, Model: r.Model, Stack: r.Stack}
 		if !r.Enabled {
 			yr.Enabled = new(bool)
 		}

@@ -73,7 +73,7 @@ describe('builder', () => {
   ])('loads a saved rule back into the same form: %s', (_, change) => {
     const b = { ...full, ...change };
     // The daemon's reply to saving this form, shaped as the contract's Rule.
-    const saved: Rule = { ...toRule(b), id: 9, said: '', priority: 3, model: '', enabled: true, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null };
+    const saved: Rule = { ...toRule(b), id: 9, said: '', template: '', priority: 3, model: '', enabled: true, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null };
     expect(fromRule(saved)).toEqual({ ...b, editingId: 9 });
   });
 

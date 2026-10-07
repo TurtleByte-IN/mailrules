@@ -1,7 +1,7 @@
 <script lang="ts">
   import { link, router } from 'svelte-spa-router';
   import type { ActivityItem } from '../lib/api/activity';
-  import { clock, confidence, day, money } from '../lib/format';
+  import { clock, confidence, dayHeading, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type Outcome } from '../lib/state/activity.svelte';
   import { load as loadReview, review } from '../lib/state/review.svelte';
@@ -21,10 +21,19 @@
   loadStats();
   loadReview();
 
-  const today = Math.floor(Date.now() / 1000);
-
   let selected = $state<number | null>(null);
   const rows = $derived(activity.list);
+  // The feed comes in the order MailRules acted, newest first, and runs past today: one group
+  // per day, each row showing when it was acted on. An old email decided today is today's.
+  const days = $derived.by(() => {
+    const out: { key: string; heading: string; rows: ActivityItem[] }[] = [];
+    for (const r of rows) {
+      const key = new Date(r.acted_at * 1000).toDateString();
+      if (out.at(-1)?.key !== key) out.push({ key, heading: dayHeading(r.acted_at), rows: [] });
+      out.at(-1)!.rows.push(r);
+    }
+    return out;
+  });
   const filtered = $derived(Boolean(activity.filter.rule || activity.filter.account || activity.filter.outcome));
   // Wide screens always show one decision beside the feed, the first row until one is picked.
   // Narrow screens open it under the row that was tapped.
@@ -41,12 +50,6 @@
   $effect(() => {
     if (shownId) open(shownId);
   });
-
-  // The feed runs past today: older rows show their date instead of the time.
-  const when = (r: ActivityItem) => {
-    const ts = r.received_at ?? r.created_at;
-    return day(ts) === day(today) ? clock(ts) : day(ts);
-  };
 
   // Only mailboxes being watched right now count as live; paused, failing or reconnecting
   // ones are not sorting mail.
@@ -95,7 +98,7 @@
   <section aria-label="Today at a glance" class="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
     {#if stats}
       <div class="card px-[18px] py-4">
-        <div class="text-xs font-medium text-secondary">Sorted today</div>
+        <div class="text-xs font-medium text-secondary">Acted on today</div>
         <div class="mt-1 text-[28px] font-semibold tracking-[-0.02em]">{stats.counts.sorted}</div>
         <div class="text-xs text-muted">across {accounts.list.length} {noun(accounts.list.length)}</div>
       </div>
@@ -122,7 +125,7 @@
   <div class="grid items-start gap-[18px] xl:grid-cols-[2fr_1fr]">
     <section aria-label="Activity feed" class="card min-w-0 overflow-hidden">
       <div class="flex items-center justify-between px-[18px] py-3.5">
-        <h2 class="text-[15px]">Today, {new Date().toLocaleDateString([], { weekday: 'short' })} {day(today)}</h2>
+        <h2 class="text-[15px]">{days[0]?.heading ?? dayHeading(Date.now() / 1000)}</h2>
         <span class="text-xs text-muted">Latest first</span>
       </div>
       <div class="flex flex-wrap gap-3 px-[18px] pb-3.5">
@@ -158,48 +161,53 @@
         <div class="border-t border-line-divider p-[18px]"><LoadError message={activity.error} retry={load} /></div>
       {/if}
       <ul>
-        {#each rows as row (row.id)}
-          {@const on = row.id === shownId}
-          {@const inReview = row.state === 'review'}
-          <li class="border-t border-l-[3px] border-t-line-divider {on ? 'border-l-signal bg-selected-row' : 'border-l-transparent'}">
-            <div class="flex flex-wrap gap-x-4 gap-y-2.5 py-3.5 pr-[18px] pl-[15px]">
-              <div class="w-11 shrink-0 pt-0.5 font-mono text-xs text-muted">{when(row)}</div>
-              <button
-                type="button"
-                aria-current={on ? 'true' : undefined}
-                class="min-w-0 flex-[1_1_200px] border-0 bg-transparent p-0 text-left text-inherit"
-                onclick={() => (selected = row.id)}
-              >
-                <div class="break-words"><span class="font-semibold">{row.from_name || row.from}</span><span class="text-nav"> · {row.subject}</span></div>
-                <div class="mt-0.5 text-xs text-muted">{row.decision?.reason}</div>
-                <div class="mt-2 flex flex-wrap gap-1.5">
-                  <span class="chip max-md:whitespace-normal {chip(row)}">{ruleName(row)}</span>
-                  {#if stage(row)}<span class="chip chip-neutral font-mono font-normal">{stage(row)}</span>{/if}
+        {#each days as d, i (d.key)}
+          {#if i > 0}
+            <li class="border-t border-line-divider px-[18px] pt-5 pb-2"><h2 class="text-[15px]">{d.heading}</h2></li>
+          {/if}
+          {#each d.rows as row (row.id)}
+            {@const on = row.id === shownId}
+            {@const inReview = row.state === 'review'}
+            <li class="border-t border-l-[3px] border-t-line-divider {on ? 'border-l-signal bg-selected-row' : 'border-l-transparent'}">
+              <div class="flex flex-wrap gap-x-4 gap-y-2.5 py-3.5 pr-[18px] pl-[15px]">
+                <div class="w-11 shrink-0 pt-0.5 font-mono text-xs text-muted">{clock(row.acted_at)}</div>
+                <button
+                  type="button"
+                  aria-current={on ? 'true' : undefined}
+                  class="min-w-0 flex-[1_1_200px] border-0 bg-transparent p-0 text-left text-inherit"
+                  onclick={() => (selected = row.id)}
+                >
+                  <div class="break-words"><span class="font-semibold">{row.from_name || row.from}</span><span class="text-nav"> · {row.subject}</span></div>
+                  <div class="mt-0.5 text-xs text-muted">{row.decision?.reason}</div>
+                  <div class="mt-2 flex flex-wrap gap-1.5">
+                    <span class="chip max-md:whitespace-normal {chip(row)}">{ruleName(row)}</span>
+                    {#if stage(row)}<span class="chip chip-neutral font-mono font-normal">{stage(row)}</span>{/if}
+                  </div>
+                </button>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="mr-1 text-[13px]">{outcome(row)}</span>
+                  {#if inReview}
+                    <a href="/review" use:link class="btn-primary min-h-9 px-3.5 text-[13px] no-underline">Review</a>
+                  {/if}
+                  {#if canUndo(row)}
+                    <button type="button" class="btn min-h-9 gap-1.5 px-3 text-[13px]" onclick={() => undo(row)}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-3" />
+                      </svg>Undo
+                    </button>
+                  {/if}
+                  {#if !inReview && !undone(row)}
+                    <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={() => (selected = row.id)}>Wrong?</button>
+                  {/if}
                 </div>
-              </button>
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="mr-1 text-[13px]">{outcome(row)}</span>
-                {#if inReview}
-                  <a href="/review" use:link class="btn-primary min-h-9 px-3.5 text-[13px] no-underline">Review</a>
-                {/if}
-                {#if canUndo(row)}
-                  <button type="button" class="btn min-h-9 gap-1.5 px-3 text-[13px]" onclick={() => undo(row)}>
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-3" />
-                    </svg>Undo
-                  </button>
-                {/if}
-                {#if !inReview && !undone(row)}
-                  <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={() => (selected = row.id)}>Wrong?</button>
-                {/if}
               </div>
-            </div>
-            {#if selected === row.id && (detail || activity.detailError)}
-              <div role="group" aria-label="Decision details" class="flex flex-col gap-4 border-t border-line-divider bg-surface p-[18px] xl:hidden">
-                {@render panel('inline')}
-              </div>
-            {/if}
-          </li>
+              {#if selected === row.id && (detail || activity.detailError)}
+                <div role="group" aria-label="Decision details" class="flex flex-col gap-4 border-t border-line-divider bg-surface p-[18px] xl:hidden">
+                  {@render panel('inline')}
+                </div>
+              {/if}
+            </li>
+          {/each}
         {:else}
           {#if activity.loaded && !activity.error}
             <li class="border-t border-line-divider px-[18px] py-10 text-center text-secondary">

@@ -26,6 +26,7 @@ const rule = (id: number, over: Partial<Rule> = {}): Rule => ({
   account_id: null,
   name: 'Rule ' + id,
   said: '',
+  template: '',
   intent: '',
   conditions: { all: [{ field: 'from_domain', op: 'in', value: ['swiggy.in'] }] },
   exceptions: {},

@@ -551,7 +551,7 @@ func TestActivityAndFixes(t *testing.T) {
 	if cursor == "" || page2["next_cursor"] != nil || page2["items"].([]any)[0].(map[string]any)["subject"] != "order one" {
 		t.Errorf("page 1 cursor %q, page 2 = %v", cursor, page2)
 	}
-	for _, query := range []string{"stage=maybe", "status=done", "action=burn", "limit=0", "limit=101", "cursor=x", "account=-1", "rule=x"} {
+	for _, query := range []string{"stage=maybe", "status=done", "action=burn", "limit=0", "limit=101", "cursor=x", "cursor=5", "cursor=5_0", "account=-1", "rule=x"} {
 		e.refuse(http.MethodGet, "/api/activity?"+query, "", http.StatusBadRequest, "invalid_input", strings.SplitN(query, "=", 2)[0])
 	}
 

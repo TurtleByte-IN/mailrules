@@ -110,12 +110,17 @@ export async function open(id: number) {
 // ponytail: with a filter on, a live row is updated in place but never added, because the
 // daemon does the filtering and the browser does not repeat its rules. Changing the filter
 // refetches. If live rows under a filter matter, have the stream take the same parameters.
-/** A new or re-decided row: replace it in place, or put it on top. */
+/**
+ * A new or re-decided row: put it where it now belongs in the daemon's order (when MailRules
+ * acted, newest first; the newer row first within a second), which for a new decision is the top.
+ */
 export function upsert(row: Item) {
   const i = activity.list.findIndex((r) => r.id === row.id);
   const f = activity.filter;
-  if (i >= 0) activity.list[i] = row;
-  else if (!f.rule && !f.account && !f.outcome) activity.list.unshift(row);
+  if (i < 0 && (f.rule || f.account || f.outcome)) return;
+  if (i >= 0) activity.list.splice(i, 1);
+  const at = activity.list.findIndex((r) => row.acted_at > r.acted_at || (row.acted_at === r.acted_at && row.id > r.id));
+  activity.list.splice(at < 0 ? activity.list.length : at, 0, row);
   if (activity.detail?.id === row.id) open(row.id);
 }
 

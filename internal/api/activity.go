@@ -59,6 +59,7 @@ type activityJSON struct {
 	Snippet       string        `json:"snippet"`
 	ReceivedAt    *int64        `json:"received_at"`
 	CreatedAt     int64         `json:"created_at"`
+	ActedAt       int64         `json:"acted_at"`
 	HasAttachment bool          `json:"has_attachment"`
 	State         string        `json:"state"`
 	Decision      *decisionJSON `json:"decision"`
@@ -161,7 +162,7 @@ func toActionJSON(a store.Action) actionJSON {
 func (s *server) activityJSON(ctx context.Context, row store.ActivityRow) activityJSON {
 	m := row.Message
 	out := activityJSON{ID: m.ID, AccountID: m.AccountID, From: m.FromAddr, FromName: m.FromName, FromDomain: m.FromDomain, Subject: m.Subject,
-		Snippet: m.Snippet, ReceivedAt: ts(m.ReceivedAt), CreatedAt: m.CreatedAt, HasAttachment: m.HasAttachment, State: m.State,
+		Snippet: m.Snippet, ReceivedAt: ts(m.ReceivedAt), CreatedAt: m.CreatedAt, ActedAt: m.ActedAt, HasAttachment: m.HasAttachment, State: m.State,
 		Actions: make([]actionJSON, 0, len(row.Actions)), Outcome: outcome(row)}
 	if r := []rune(out.Snippet); len(r) > maxSnippet {
 		out.Snippet = string(r[:maxSnippet])
@@ -195,7 +196,7 @@ var (
 func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilter, bool) {
 	q := r.URL.Query()
 	f := store.ActivityFilter{Stage: q.Get("stage"), State: q.Get("status"), Action: q.Get("action"), Outcome: q.Get("outcome"), Limit: 50}
-	for name, dst := range map[string]*int64{"account": &f.AccountID, "rule": &f.RuleID, "cursor": &f.Before} {
+	for name, dst := range map[string]*int64{"account": &f.AccountID, "rule": &f.RuleID} {
 		if v := q.Get(name); v != "" {
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil || n <= 0 {
@@ -203,6 +204,13 @@ func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilte
 				return f, false
 			}
 			*dst = n
+		}
+	}
+	if v := q.Get("cursor"); v != "" {
+		var ok bool
+		if f.After, ok = parseFeedCursor(v); !ok {
+			invalid(w, "cursor", "The cursor is not one this list gave out.")
+			return f, false
 		}
 	}
 	if v := q.Get("limit"); v != "" {
@@ -225,8 +233,23 @@ func activityFilter(w http.ResponseWriter, r *http.Request) (store.ActivityFilte
 	return f, true
 }
 
+// feedCursor writes where a page of the feed ends as "<acted_at>_<id>"; it is opaque to
+// clients.
+func feedCursor(c store.FeedCursor) string {
+	return strconv.FormatInt(c.ActedAt, 10) + "_" + strconv.FormatInt(c.ID, 10)
+}
+
+func parseFeedCursor(s string) (store.FeedCursor, bool) {
+	at, id, found := strings.Cut(s, "_")
+	var c store.FeedCursor
+	var errAt, errID error
+	c.ActedAt, errAt = strconv.ParseInt(at, 10, 64)
+	c.ID, errID = strconv.ParseInt(id, 10, 64)
+	return c, found && errAt == nil && errID == nil && c.ActedAt >= 0 && c.ID > 0
+}
+
 // page lists one page of the feed. It asks for one row more than the page holds: when that
-// row exists there is a next page, and the cursor is the id of the last row shown.
+// row exists there is a next page, and the cursor is where the last row shown sits.
 func (s *server) page(w http.ResponseWriter, r *http.Request, f store.ActivityFilter) (map[string]any, bool) {
 	limit := f.Limit
 	f.Limit++
@@ -238,7 +261,7 @@ func (s *server) page(w http.ResponseWriter, r *http.Request, f store.ActivityFi
 	var next *string
 	if len(rows) > limit {
 		rows = rows[:limit]
-		c := strconv.FormatInt(rows[limit-1].Message.ID, 10)
+		c := feedCursor(rows[limit-1].Cursor())
 		next = &c
 	}
 	items := make([]activityJSON, len(rows))

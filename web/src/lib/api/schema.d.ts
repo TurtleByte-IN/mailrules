@@ -588,8 +588,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The feed, newest first
-         * @description Every email MailRules has seen, with its latest decision and all actions taken on it.
+         * The feed, by when MailRules acted, newest first
+         * @description Every email MailRules has seen, with its latest decision and all actions taken on it, ordered by `acted_at`, newest first. An old email decided today (by a cleanup, say) is listed with today's.
          */
         get: operations["listActivity"];
         put?: never;
@@ -688,7 +688,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Mail waiting in Needs review, newest first
+         * Mail waiting in Needs review, newest first (by `acted_at`, when it was sent there)
          * @description Each row's `decision` names the rule the model would have picked (`rule_id` null when it had none) and why it was unsure.
          */
         get: operations["listReview"];
@@ -1319,8 +1319,10 @@ export interface components {
              */
             account_id: number | null;
             name: string;
-            /** @description The user's original wording; may be empty */
+            /** @description The user's original wording; empty when they gave none (a template */
             said: string;
+            /** @description The name of the gallery template the rule was added from ("Receipts"); empty when it was not. Set when the rule is created or imported, and kept through edits */
+            template: string;
             /** @description Plain-English intent for the decision model; empty = condition-only */
             intent: string;
             conditions: components["schemas"]["Condition"];
@@ -1380,6 +1382,8 @@ export interface components {
         RuleInput: {
             name: string;
             said?: string;
+            /** @description The gallery template this rule comes from; left out = none. A template's `rule` carries it */
+            template?: string;
             intent?: string | null;
             conditions?: components["schemas"]["Condition"];
             exceptions?: components["schemas"]["Condition"];
@@ -1705,13 +1709,21 @@ export interface components {
             subject: string;
             /** @description The first characters of the text; blank once retention has purged it */
             snippet: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description When the email arrived in the mailbox
+             */
             received_at: number | null;
             /**
              * Format: int64
              * @description When MailRules first saw it
              */
             created_at: number;
+            /**
+             * Format: int64
+             * @description When MailRules last decided it: the time of `decision`, or `created_at` while none is made yet. The feed and Needs review are ordered by it
+             */
+            acted_at: number;
             has_attachment: boolean;
             state: components["schemas"]["MessageState"];
             /** @description The latest decision; null until one is made */
@@ -2036,7 +2048,7 @@ export interface components {
             counts: {
                 /** @description Emails decided in the range */
                 processed: number;
-                /** @description Of those, a rule or sender rule was applied (or recorded, in dry-run) and at least one of its actions is still in effect. An email whose actions were all undone is not counted */
+                /** @description Of those, a rule or sender rule was applied (or recorded, in dry-run) and at least one of its actions is still in effect: the emails acted on, trashed ones included (`went.sorted` plus `went.trashed`). An email whose actions were all undone is not counted */
                 sorted: number;
                 /** @description Emails with a trash action from the range that is in effect (or recorded, in dry-run) */
                 trashed: number;
@@ -2089,7 +2101,7 @@ export interface components {
             since: number;
             /** @description Emails decided in the range, whatever came of them. The base of `without_model` */
             processed: number;
-            /** @description Of the processed emails, those a rule or sender rule was applied to and not undone since (sorted) */
+            /** @description Of the processed emails, those a rule or sender rule was applied to and not undone since: the emails acted on, trashed ones included, as `StatsSummary.counts.sorted` counts them */
             emails: number;
             calls: number;
             cost_usd: number;

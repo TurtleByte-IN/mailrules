@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"testing"
 
@@ -63,14 +65,14 @@ func TestMessagesAndDecisions(t *testing.T) {
 		t.Errorf("missing activity row: %v", err)
 	}
 	for name, f := range map[string]ActivityFilter{
-		"account": {AccountID: a.ID}, "rule": {RuleID: rule.ID}, "stage": {Stage: "decider"}, "state": {State: StateDecided}, "cursor": {Before: m.ID + 1},
+		"account": {AccountID: a.ID}, "rule": {RuleID: rule.ID}, "stage": {Stage: "decider"}, "state": {State: StateDecided}, "cursor": {After: FeedCursor{300, m.ID + 1}},
 	} {
 		if rows, err := s.Activity(ctx, f); err != nil || len(rows) != 1 {
 			t.Errorf("filter by %s: %d rows, %v", name, len(rows), err)
 		}
 	}
 	for name, f := range map[string]ActivityFilter{
-		"account": {AccountID: a.ID + 1}, "rule": {RuleID: rule.ID + 1}, "stage": {Stage: "sender"}, "state": {State: StateReview}, "cursor": {Before: m.ID},
+		"account": {AccountID: a.ID + 1}, "rule": {RuleID: rule.ID + 1}, "stage": {Stage: "sender"}, "state": {State: StateReview}, "cursor": {After: FeedCursor{300, m.ID}},
 	} {
 		if rows, err := s.Activity(ctx, f); err != nil || len(rows) != 0 {
 			t.Errorf("filter by another %s: %d rows, %v", name, len(rows), err)
@@ -114,6 +116,121 @@ func TestMessagesAndDecisions(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM messages) + (SELECT COUNT(*) FROM decisions) + (SELECT COUNT(*) FROM corrections)`).Scan(&left); err != nil || left != 0 {
 		t.Errorf("%d rows left behind, %v", left, err)
 	}
+}
+
+// The feed is in the order MailRules acted (MAI-74): by the time of each email's latest
+// decision, or when it was first seen while undecided, newest first, however long ago the
+// email arrived or was first seen. Same-second rows come newest row first, and paging
+// through the cursor one row at a time lists every row once, in that order.
+func TestActivityOrder(t *testing.T) {
+	s, _ := open(t)
+	ctx := t.Context()
+	a := newAccount(t, s, "me@icloud.com", "pw")
+	ingest := func(uid uint32, seen int64) Message {
+		m, _, err := s.IngestMessage(ctx, mail.MsgRef{AccountID: a.ID, Folder: "INBOX", UIDValidity: 1, UID: uid}, seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	decide := func(m Message, at int64) {
+		if _, err := s.AddDecision(ctx, Decision{MessageID: m.ID, Stage: "none", CreatedAt: at}, StateSkipped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old, mid, undecided, same := ingest(1, 100), ingest(2, 200), ingest(3, 300), ingest(4, 400)
+	if undecided.ActedAt != 300 {
+		t.Errorf("an undecided email acted at %d, want when it was seen (300)", undecided.ActedAt)
+	}
+	decide(old, 150)
+	decide(mid, 250)
+	decide(same, 900)
+	decide(old, 900) // decided again today, by a cleanup: it comes first again
+	want := []int64{same.ID, old.ID, undecided.ID, mid.ID}
+
+	all, err := s.Activity(ctx, ActivityFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int64
+	for _, r := range all {
+		got = append(got, r.Message.ID)
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("feed = %v, want %v", got, want)
+	}
+	if all[1].Message.ActedAt != 900 || all[1].Decision.CreatedAt != 900 {
+		t.Errorf("the re-decided email acted at %d, decision at %d; want 900", all[1].Message.ActedAt, all[1].Decision.CreatedAt)
+	}
+
+	got = nil
+	for after := (FeedCursor{}); ; {
+		page, err := s.Activity(ctx, ActivityFilter{After: after, Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		got = append(got, page[0].Message.ID)
+		after = page[0].Cursor()
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("paged one at a time = %v, want %v", got, want)
+	}
+}
+
+// Migration 0006: every email gets acted_at, the time of its latest decision, or when it
+// was first seen if it has none.
+func TestMigrationActedAt(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 5)
+	s := New(db)
+	a := newAccount(t, s, "me@icloud.com", "pw")
+	exec := func(q string, args ...any) int64 {
+		res, err := db.ExecContext(ctx, q, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	addMessage := func(uid int, seen int64) int64 {
+		return exec(`INSERT INTO messages (account_id, folder, uidvalidity, uid, state, created_at) VALUES (?, 'INBOX', 1, ?, 'new', ?)`, a.ID, uid, seen)
+	}
+	twice, never := addMessage(1, 100), addMessage(2, 200)
+	exec(`INSERT INTO decisions (message_id, stage, created_at) VALUES (?, 'none', 500)`, twice)
+	exec(`INSERT INTO decisions (message_id, stage, created_at) VALUES (?, 'none', 700)`, twice)
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[int64]int64{twice: 700, never: 200} {
+		if m, err := s.Message(ctx, id); err != nil || m.ActedAt != want {
+			t.Errorf("message %d acted at %d, %v; want %d", id, m.ActedAt, err, want)
+		}
+	}
+}
+
+// migratedTo opens a database migrated up to version n only.
+func migratedTo(t *testing.T, n int64) *sql.DB {
+	t.Helper()
+	db, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(t.Context(), n); err != nil {
+		t.Fatal(err)
+	}
+	return db
 }
 
 // An email that came back under a new UID keeps its one row (MAI-77): the row MailRules
@@ -193,22 +310,7 @@ func TestRebind(t *testing.T) {
 // waits there once; the older row stays, as skipped, with its decision.
 func TestMigrationOneReviewRowPerEmail(t *testing.T) {
 	ctx := t.Context()
-	db, err := Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	fsys, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 4); err != nil {
-		t.Fatal(err)
-	}
+	db := migratedTo(t, 4)
 	s := New(db)
 	a := newAccount(t, s, "me@icloud.com", "pw")
 	rows := []struct {
@@ -224,18 +326,16 @@ func TestMigrationOneReviewRowPerEmail(t *testing.T) {
 	}
 	ids := make([]int64, len(rows))
 	for i, r := range rows {
-		m, _, err := s.IngestMessage(ctx, mail.MsgRef{AccountID: a.ID, Folder: "INBOX", UIDValidity: 1, UID: uint32(i + 1)}, 100)
+		// The rows are written as the schema of version 4 has them.
+		res, err := db.ExecContext(ctx, `INSERT INTO messages (account_id, folder, uidvalidity, uid, message_id, state, created_at) VALUES (?, 'INBOX', 1, ?, ?, ?, 100)`,
+			a.ID, i+1, r.messageID, r.state)
 		if err != nil {
 			t.Fatal(err)
 		}
-		m.MessageID = r.messageID
-		if err := s.SaveMessageSummary(ctx, m); err != nil {
+		ids[i], _ = res.LastInsertId()
+		if _, err := db.ExecContext(ctx, `INSERT INTO decisions (message_id, stage, created_at) VALUES (?, 'decider', 100)`, ids[i]); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.AddDecision(ctx, Decision{MessageID: m.ID, Stage: "decider", CreatedAt: 100}, r.state); err != nil {
-			t.Fatal(err)
-		}
-		ids[i] = m.ID
 	}
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)

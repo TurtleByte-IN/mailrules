@@ -42,7 +42,7 @@
     {@const t = totals(s)}
     {@const max = Math.max(1, ...s.days.map((d) => calls(d)))}
     {@const tiles = [
-      { label: 'Emails sorted', value: n(t.emails), sub: 'since ' + shortDay(s.since) + ', ' + accounts.list.length + (accounts.list.length === 1 ? ' mailbox' : ' mailboxes') },
+      { label: 'Emails acted on', value: n(t.emails), sub: 'since ' + shortDay(s.since) + ', ' + accounts.list.length + (accounts.list.length === 1 ? ' mailbox' : ' mailboxes') },
       { label: 'Decided for free', value: t.freePct + '%', sub: 'conditions and sender rules' },
       { label: 'Model calls', value: n(t.calls), sub: 'decision model ' + n(t.decide) + ' · fallback ' + n(t.escalate) },
       { label: 'Cost this month', value: money(t.costUsd), sub: '' },
@@ -106,7 +106,7 @@
               </tr>
             {:else}
               <tr class="border-t border-line-divider">
-                <td colspan="4" class="px-[18px] py-2.5 text-[13px] text-muted">No emails sorted yet.</td>
+                <td colspan="4" class="px-[18px] py-2.5 text-[13px] text-muted">No emails decided yet.</td>
               </tr>
             {/each}
           </tbody>

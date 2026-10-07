@@ -25,7 +25,7 @@ describe('feed', () => {
     await s.load();
     expect(s.activity).toMatchObject({ loaded: true, next: '7', error: '' });
 
-    events.dispatch('message.processed', item({ id: 7 }));
+    events.dispatch('message.processed', item({ id: 7, acted_at: 2000 }));
     await s.loadMore();
     expect(ids()).toEqual([7, 9, 8, 6]);
     expect(s.activity.next).toBeNull();
@@ -240,6 +240,13 @@ describe('live events', () => {
     events.dispatch('message.processed', item({ id: 2, subject: 'Changed' }));
     expect(ids()).toEqual([4, 3, 2, 1]);
     expect(s.activity.list[2].subject).toBe('Changed');
+  });
+
+  it('a row decided again moves to where its new decision puts it; a correction leaves it in place', () => {
+    events.dispatch('message.processed', item({ id: 1, acted_at: 2000 }));
+    expect(ids()).toEqual([1, 3, 2]);
+    events.dispatch('message.processed', item({ id: 2, correction: { kind: 'correction', rule_id: 4, rule_name: 'Scams', created_at: 3000 } }));
+    expect(ids()).toEqual([1, 3, 2]);
   });
 
   it('message.review puts the waiting email in the feed', () => {

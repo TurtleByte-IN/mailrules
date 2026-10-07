@@ -23,6 +23,7 @@ const food: Rule = {
   account_id: null,
   name: 'Food',
   said: 'Swiggy goes to Food',
+  template: '',
   intent: '',
   conditions: { all: [{ field: 'from_domain', op: 'in', value: ['swiggy.in'] }] },
   exceptions: {},

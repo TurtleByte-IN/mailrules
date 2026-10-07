@@ -155,7 +155,7 @@
       </div>
       {#each overview.latest as row (row.id)}
         <a href="/activity" use:link class="flex min-h-11 items-center gap-2.5 border-t border-line-divider px-[18px] text-[13px] text-ink no-underline max-md:flex-wrap max-md:gap-y-0.5 max-md:py-2.5">
-          <span class="flex-[0_0_62px] font-mono text-xs text-muted">{clock(row.created_at)}</span>
+          <span class="flex-[0_0_62px] font-mono text-xs text-muted">{clock(row.acted_at)}</span>
           <span class="min-w-0 flex-[0_0_130px] truncate font-medium max-md:flex-1">{row.from}</span>
           <span class="min-w-0 flex-[1_1_160px] truncate text-nav max-md:order-last max-md:basis-full">{row.subject}</span>
           <span class="chip {chips[kind(row)]}">{outcome(row)}</span>

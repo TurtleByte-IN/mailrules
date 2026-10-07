@@ -52,7 +52,8 @@ type Rule struct {
 	UserID        int64
 	AccountID     int64 // 0 = all accounts
 	Name          string
-	Said          string // the user's original wording
+	Said          string // the user's original wording; "" when they gave none
+	Template      string // the name of the gallery template it was added from; "" = none
 	Intent        string // plain-English intent for the decider; "" = condition-only
 	Conditions    Cond
 	Exceptions    Cond // "unless"

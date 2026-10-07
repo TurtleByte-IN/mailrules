@@ -221,6 +221,7 @@ func (s *server) handleRecompose(w http.ResponseWriter, r *http.Request) {
 type ruleInput struct {
 	Name          string         `json:"name"`
 	Said          string         `json:"said"`
+	Template      string         `json:"template"`
 	Intent        *string        `json:"intent"`
 	Conditions    rules.Cond     `json:"conditions"`
 	Exceptions    rules.Cond     `json:"exceptions"`
@@ -247,7 +248,7 @@ func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.R
 			return nil, nil, false
 		}
 		in := ins[i]
-		rule := rules.Rule{UserID: user(r).ID, Name: strings.TrimSpace(in.Name), Said: in.Said, Conditions: in.Conditions,
+		rule := rules.Rule{UserID: user(r).ID, Name: strings.TrimSpace(in.Name), Said: in.Said, Template: strings.TrimSpace(in.Template), Conditions: in.Conditions,
 			Exceptions: in.Exceptions, Actions: in.Actions, Stack: in.Stack, Model: strings.TrimSpace(in.Model),
 			MinConfidence: in.MinConfidence, Enabled: in.Enabled == nil || *in.Enabled}
 		if in.Intent != nil {

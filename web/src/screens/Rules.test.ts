@@ -11,6 +11,7 @@ const rule = (id: number, name: string): Rule => ({
   account_id: null,
   name,
   said: '',
+  template: '',
   intent: '',
   conditions: { all: [{ field: 'from_domain', op: 'in', value: ['swiggy.in'] }] },
   exceptions: {},
@@ -94,4 +95,17 @@ it('lists the rules in order, and asks for a mailbox before testing one', async 
   await fireEvent.click(screen.getByRole('button', { name: 'Test on last 200 emails' }));
   expect(screen.getByRole('link', { name: 'Connect a mailbox' }).getAttribute('href')).toBe('#/accounts');
   expect(f).toHaveBeenCalledOnce();
+});
+
+it('a rule added from a template says so instead of quoting words the user never said', async () => {
+  respond(200, { items: [{ ...rule(1, 'Receipts'), template: 'Receipts' }, { ...rule(2, 'Food'), said: 'Swiggy goes to Food' }] });
+  await load();
+  render(Rules);
+  const editor = screen.getByRole('complementary', { name: 'Edit rule' });
+  expect(editor.textContent).toContain('Added from the Receipts template');
+  expect(editor.textContent).not.toContain('You said');
+
+  await fireEvent.click(screen.getByRole('button', { name: /^Food/ }));
+  expect(editor.textContent).toContain('You said');
+  expect(editor.textContent).not.toContain('template');
 });

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clock, dayHeading, weekday } from '../lib/format';
 import { detail, error, inReview, item, serve, stats } from '../lib/state/activity.fixtures';
 import { activity } from '../lib/state/activity.svelte';
 import { review } from '../lib/state/review.svelte';
@@ -96,9 +97,9 @@ it('shows the rows, the tiles and what the model gave each rule', async () => {
   expect(feed.getAllByRole('button', { name: 'Undo' })).toHaveLength(2);
 
   const tiles = screen.getByRole('region', { name: 'Today at a glance' });
-  await within(tiles).findByText('Sorted today');
+  await within(tiles).findByText('Acted on today');
   expect([...tiles.children].map((t) => t.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
-    'Sorted today 31 across 0 mailboxes',
+    'Acted on today 31 across 0 mailboxes',
     'Needs review 3 Still in your inbox · Review now',
     'Decided without a model 78% sender rules and conditions',
     'Model cost today $0.01 jev 31 calls',
@@ -107,6 +108,32 @@ it('shows the rows, the tiles and what the model gave each rule', async () => {
   const why = within(await screen.findByRole('complementary', { name: 'Decision details' }));
   expect(why.getByText('Recruiters 0.62')).toBeTruthy();
   expect(why.getByText('No rule 0.30')).toBeTruthy();
+});
+
+it('groups the feed by the day MailRules acted, newest first, each row at the time it was acted on; the details say when it arrived', async () => {
+  const midnight = new Date().setHours(0, 0, 0, 0) / 1000;
+  const day = 86400;
+  daemon([
+    // A cleanup today decided an email that arrived ten days ago: it is today's.
+    item({ id: 1, subject: 'old mail decided today', received_at: midnight - 10 * day, acted_at: midnight + 120 }),
+    item({ id: 4, subject: 'today', received_at: midnight + 30, acted_at: midnight + 60 }),
+    item({ id: 3, subject: 'yesterday', received_at: midnight - 3600, acted_at: midnight - 3500 }),
+    item({ id: 2, subject: 'last week', received_at: midnight - 6 * day, acted_at: midnight - 6 * day }),
+  ]);
+  render(Activity);
+  const feed = within(screen.getByRole('region', { name: 'Activity feed' }));
+  await feed.findByText(/old mail decided today/);
+
+  const headings = feed.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+  expect(headings).toEqual([dayHeading(midnight + 120), dayHeading(midnight - 3500), dayHeading(midnight - 6 * day)]);
+  expect([headings[0]?.startsWith('Today, '), headings[1]?.startsWith('Yesterday, '), headings[2]]).toEqual([true, true, weekday(midnight - 6 * day)]);
+  // Under each heading only that day's rows, in the order they were acted on.
+  const shown = [...feed.getByRole('list').children].map((li) => li.querySelector('h2')?.textContent ?? li.textContent?.match(/· ([a-z ]+)/)?.[1].trim());
+  expect(shown).toEqual(['old mail decided today', 'today', dayHeading(midnight - 3500), 'yesterday', dayHeading(midnight - 6 * day), 'last week']);
+  expect(feed.getByText(/old mail decided today/).closest('li')?.textContent).toContain(clock(midnight + 120));
+
+  const why = within(await screen.findByRole('complementary', { name: 'Decision details' }));
+  expect(why.getByText(`Arrived ${weekday(withCandidates.received_at!)}, ${clock(withCandidates.received_at!)}`)).toBeTruthy();
 });
 
 const feedCalls = (calls: { call: string }[]) => calls.map((c) => c.call).filter((c) => c.includes('/api/activity'));

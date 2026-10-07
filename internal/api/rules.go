@@ -23,6 +23,7 @@ type ruleJSON struct {
 	AccountID     *int64         `json:"account_id"` // null = every account
 	Name          string         `json:"name"`
 	Said          string         `json:"said"`
+	Template      string         `json:"template"`
 	Intent        string         `json:"intent"`
 	Conditions    rules.Cond     `json:"conditions"`
 	Exceptions    rules.Cond     `json:"exceptions"`
@@ -40,7 +41,7 @@ type ruleJSON struct {
 }
 
 func toRuleJSON(r rules.Rule, st store.RuleStat) ruleJSON {
-	return ruleJSON{ID: r.ID, AccountID: ts(r.AccountID), Name: r.Name, Said: r.Said, Intent: r.Intent,
+	return ruleJSON{ID: r.ID, AccountID: ts(r.AccountID), Name: r.Name, Said: r.Said, Template: r.Template, Intent: r.Intent,
 		Conditions: r.Conditions, Exceptions: r.Exceptions, Actions: r.Actions, Priority: r.Priority, Stack: r.Stack,
 		Model: r.Model, MinConfidence: r.MinConfidence, Enabled: r.Enabled, Version: r.Version,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, HitsWeek: st.Hits, LastMatchAt: ts(st.LastMatchAt)}

@@ -86,6 +86,18 @@ func TestPromptsAreStable(t *testing.T) {
 	}
 }
 
+// A rule added from the gallery has no words of the owner's (MAI-73): rewriting it names
+// the template and shows no empty "what the owner said" block, nor a template marker as
+// if the owner had said it.
+func TestRewritePromptForTemplateRule(t *testing.T) {
+	receipts := rules.Rule{ID: 12, Name: "Receipts", Template: "Receipts", Intent: "Receipts and invoices for purchases",
+		Actions: []rules.Action{{Type: rules.ActMove, Folder: "Receipts"}}}
+	_, user, _ := prompt(newWording("also mark them read", receipts.Said), []rules.Rule{receipts}, []string{"INBOX", "Receipts"}, &receipts)
+	if strings.Count(user, "<text>") != 1 || !strings.Contains(user, `"Receipts" template`) || strings.Contains(user, "Template: ") {
+		t.Errorf("rewrite prompt for a template rule:\n%s", user)
+	}
+}
+
 func TestSegment(t *testing.T) {
 	for name, tc := range map[string]struct {
 		text string

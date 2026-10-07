@@ -51,10 +51,10 @@ func createRule(ctx context.Context, q execer, r rules.Rule, now int64) (rules.R
 		return rules.Rule{}, err
 	}
 	res, err := q.ExecContext(ctx,
-		`INSERT INTO rules (user_id, account_id, name, said, intent, conditions, exceptions, actions,
+		`INSERT INTO rules (user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
 		                    priority, stack, model, min_confidence, enabled, version, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		r.UserID, null(r.AccountID), r.Name, null(r.Said), null(r.Intent), string(conditions), string(exceptions), string(actions),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		r.UserID, null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
 		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, now, now)
 	if err != nil {
 		return rules.Rule{}, fmt.Errorf("create rule: %w", err)
@@ -76,11 +76,11 @@ func updateRule(ctx context.Context, q execer, r rules.Rule, now int64) error {
 		return err
 	}
 	res, err := q.ExecContext(ctx,
-		`UPDATE rules SET account_id = ?, name = ?, said = ?, intent = ?, conditions = ?, exceptions = ?, actions = ?,
+		`UPDATE rules SET account_id = ?, name = ?, said = ?, template = ?, intent = ?, conditions = ?, exceptions = ?, actions = ?,
 		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?,
 		                  version = version + 1, updated_at = ?
 		 WHERE id = ? AND user_id = ?`,
-		null(r.AccountID), r.Name, null(r.Said), null(r.Intent), string(conditions), string(exceptions), string(actions),
+		null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
 		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, now, r.ID, r.UserID)
 	if err != nil {
 		return fmt.Errorf("update rule: %w", err)
@@ -91,20 +91,20 @@ func updateRule(ctx context.Context, q execer, r rules.Rule, now int64) error {
 	return nil
 }
 
-const ruleColumns = `id, user_id, account_id, name, said, intent, conditions, exceptions, actions,
+const ruleColumns = `id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
 	priority, stack, model, min_confidence, enabled, version, created_at, updated_at`
 
 func scanRule(row interface{ Scan(...any) error }) (rules.Rule, error) {
 	var r rules.Rule
 	var accountID sql.NullInt64
-	var said, intent, model sql.NullString
+	var said, template, intent, model sql.NullString
 	var minConfidence sql.NullFloat64
 	var conditions, exceptions, actions string
-	if err := row.Scan(&r.ID, &r.UserID, &accountID, &r.Name, &said, &intent, &conditions, &exceptions, &actions,
+	if err := row.Scan(&r.ID, &r.UserID, &accountID, &r.Name, &said, &template, &intent, &conditions, &exceptions, &actions,
 		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return rules.Rule{}, err
 	}
-	r.AccountID, r.Said, r.Intent, r.Model = accountID.Int64, said.String, intent.String, model.String
+	r.AccountID, r.Said, r.Template, r.Intent, r.Model = accountID.Int64, said.String, template.String, intent.String, model.String
 	if minConfidence.Valid {
 		r.MinConfidence = &minConfidence.Float64
 	}

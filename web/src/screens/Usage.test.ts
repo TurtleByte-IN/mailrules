@@ -41,13 +41,13 @@ it('a failed load shows an alert, and Retry fetches again', async () => {
 
   reply = [200, stats()];
   await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-  expect(await screen.findByText('Emails sorted')).toBeTruthy();
+  expect(await screen.findByText('Emails acted on')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
 });
 
-it('a month with nothing sorted says so', async () => {
+it('a month with nothing decided says so', async () => {
   render(Usage);
-  expect(await screen.findByText('No emails sorted yet.')).toBeTruthy();
+  expect(await screen.findByText('No emails decided yet.')).toBeTruthy();
   expect(screen.getByText('$0.00')).toBeTruthy();
 });
 

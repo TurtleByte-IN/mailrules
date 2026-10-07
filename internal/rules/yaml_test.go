@@ -85,6 +85,7 @@ rules:
     stack: true
     enabled: false
   - id: scams
+    template: Cold sales
     when: Fake bank alerts
     actions: [trash]
     min_confidence: 0.9
@@ -117,7 +118,7 @@ rules:
 	f, _ := ParseYAML([]byte(full))
 	f.Rules[1].Priority, f.Rules[2].Priority = 3, 2 // export follows priority, not slice order
 	out, _ := MarshalYAML(f)
-	for _, want := range []string{"is_contact: true", "- 'move:Money: 2026'", "- flag", "op: not_contains", "stack: true", "enabled: false", "model: clef"} {
+	for _, want := range []string{"is_contact: true", "- 'move:Money: 2026'", "- flag", "op: not_contains", "stack: true", "enabled: false", "model: clef", "template: Cold sales"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("export lacks %q:\n%s", want, out)
 		}

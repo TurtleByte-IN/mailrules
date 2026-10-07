@@ -14,7 +14,7 @@ export const action = (over: Partial<MessageAction> = {}): MessageAction => ({
 
 export const item = (over: Partial<ActivityItem> = {}): ActivityItem => ({
   id: 1, account_id: 1, from: 'priya@talentbridge.in', from_name: 'Priya Nair', from_domain: 'talentbridge.in', subject: 'Senior backend role', snippet: 'Hi, I came across your profile',
-  received_at: 1000, created_at: 1001, has_attachment: false, state: 'acted', decision: decision(), actions: [action()], outcome: 'Moved to Jobs', undoable: true, correction: null, ...over,
+  received_at: 1000, created_at: 1001, acted_at: 1000, has_attachment: false, state: 'acted', decision: decision(), actions: [action()], outcome: 'Moved to Jobs', undoable: true, correction: null, ...over,
 });
 
 export const inReview = (id: number): ActivityItem =>

@@ -724,8 +724,8 @@ paths:
     get:
       tags: [Activity]
       operationId: listActivity
-      summary: The feed, newest first
-      description: Every email MailRules has seen, with its latest decision and all actions taken on it.
+      summary: The feed, by when MailRules acted, newest first
+      description: Every email MailRules has seen, with its latest decision and all actions taken on it, ordered by `acted_at`, newest first. An old email decided today (by a cleanup, say) is listed with today's.
       parameters:
         - { name: account, in: query, schema: { type: integer, format: int64 }, description: Only this account }
         - { name: rule, in: query, schema: { type: integer, format: int64 }, description: Only mail whose latest decision names this rule }
@@ -830,7 +830,7 @@ paths:
     get:
       tags: [Review]
       operationId: listReview
-      summary: Mail waiting in Needs review, newest first
+      summary: Mail waiting in Needs review, newest first (by `acted_at`, when it was sent there)
       description: Each row's `decision` names the rule the model would have picked (`rule_id` null when it had none) and why it was unsure.
       parameters:
         - { name: account, in: query, schema: { type: integer, format: int64 } }
@@ -1553,12 +1553,13 @@ components:
         folder: { type: string, description: 'For move only: 1 to 200 characters, no wildcards' }
     Rule:
       type: object
-      required: [id, account_id, name, said, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, version, created_at, updated_at, hits_week, last_match_at]
+      required: [id, account_id, name, said, template, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, version, created_at, updated_at, hits_week, last_match_at]
       properties:
         id: { type: integer, format: int64 }
         account_id: { type: [integer, 'null'], format: int64, description: null = every account }
         name: { type: string }
-        said: { type: string, description: The user's original wording; may be empty }
+        said: { type: string, description: The user's original wording; empty when they gave none (a template, say) }
+        template: { type: string, description: 'The name of the gallery template the rule was added from ("Receipts"); empty when it was not. Set when the rule is created or imported, and kept through edits' }
         intent: { type: string, description: Plain-English intent for the decision model; empty = condition-only }
         conditions: { $ref: '#/components/schemas/Condition' }
         exceptions: { $ref: '#/components/schemas/Condition' }
@@ -1617,6 +1618,7 @@ components:
       properties:
         name: { type: string }
         said: { type: string }
+        template: { type: string, description: 'The gallery template this rule comes from; left out = none. A template''s `rule` carries it' }
         intent: { type: [string, 'null'] }
         conditions: { $ref: '#/components/schemas/Condition' }
         exceptions: { $ref: '#/components/schemas/Condition' }
@@ -1859,7 +1861,7 @@ components:
         undone_at: { type: [integer, 'null'], format: int64 }
     ActivityItem:
       type: object
-      required: [id, account_id, from, from_name, from_domain, subject, snippet, received_at, created_at, has_attachment, state, decision, actions, outcome, undoable, correction]
+      required: [id, account_id, from, from_name, from_domain, subject, snippet, received_at, created_at, acted_at, has_attachment, state, decision, actions, outcome, undoable, correction]
       description: One email in the feed. `id` is the message id used by `/api/messages/{id}` and the fix endpoints.
       properties:
         id: { type: integer, format: int64 }
@@ -1869,8 +1871,9 @@ components:
         from_domain: { type: string }
         subject: { type: string }
         snippet: { type: string, maxLength: 200, description: The first characters of the text; blank once retention has purged it }
-        received_at: { type: [integer, 'null'], format: int64 }
+        received_at: { type: [integer, 'null'], format: int64, description: When the email arrived in the mailbox }
         created_at: { type: integer, format: int64, description: When MailRules first saw it }
+        acted_at: { type: integer, format: int64, description: 'When MailRules last decided it: the time of `decision`, or `created_at` while none is made yet. The feed and Needs review are ordered by it' }
         has_attachment: { type: boolean }
         state: { $ref: '#/components/schemas/MessageState' }
         decision:
@@ -2115,7 +2118,7 @@ components:
           required: [processed, sorted, trashed, review]
           properties:
             processed: { type: integer, description: Emails decided in the range }
-            sorted: { type: integer, description: 'Of those, a rule or sender rule was applied (or recorded, in dry-run) and at least one of its actions is still in effect. An email whose actions were all undone is not counted' }
+            sorted: { type: integer, description: 'Of those, a rule or sender rule was applied (or recorded, in dry-run) and at least one of its actions is still in effect: the emails acted on, trashed ones included (`went.sorted` plus `went.trashed`). An email whose actions were all undone is not counted' }
             trashed: { type: integer, description: 'Emails with a trash action from the range that is in effect (or recorded, in dry-run)' }
             review: { type: integer, description: Waiting in Needs review now }
         went:
@@ -2162,7 +2165,7 @@ components:
         range: { type: string, enum: [month] }
         since: { type: integer, format: int64 }
         processed: { type: integer, description: 'Emails decided in the range, whatever came of them. The base of `without_model`' }
-        emails: { type: integer, description: 'Of the processed emails, those a rule or sender rule was applied to and not undone since (sorted)' }
+        emails: { type: integer, description: 'Of the processed emails, those a rule or sender rule was applied to and not undone since: the emails acted on, trashed ones included, as `StatsSummary.counts.sorted` counts them' }
         calls: { type: integer }
         cost_usd: { type: number }
         days:

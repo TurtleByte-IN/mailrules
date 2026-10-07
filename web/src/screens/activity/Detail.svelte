@@ -1,7 +1,7 @@
 <script lang="ts">
   import { link } from 'svelte-spa-router';
   import type { MessageDetail, TraceStep } from '../../lib/api/activity';
-  import { clock, confidence, money } from '../../lib/format';
+  import { clock, confidence, money, weekday } from '../../lib/format';
   import { accounts } from '../../lib/state/accounts.svelte';
   import { correct } from '../../lib/state/activity.svelte';
   import { rules } from '../../lib/state/rules.svelte';
@@ -36,9 +36,11 @@
 <div>
   <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">Why this happened</div>
   <h2 class="mt-1.5 text-base">{message.subject}</h2>
-  <div class="mt-1 text-[13px] break-words text-secondary">
-    {[message.from, clock(message.received_at ?? message.created_at), account].filter(Boolean).join(' · ')}
-  </div>
+  <div class="mt-1 text-[13px] break-words text-secondary">{[message.from, account].filter(Boolean).join(' · ')}</div>
+  <!-- The feed shows when MailRules acted; this is when the email itself arrived, which may be days before. -->
+  {#if message.received_at !== null}
+    <div class="mt-0.5 text-xs text-muted">Arrived {weekday(message.received_at)}, {clock(message.received_at)}</div>
+  {/if}
 </div>
 <ol class="flex flex-col gap-3.5">
   {#each message.trace as step, i (i)}
