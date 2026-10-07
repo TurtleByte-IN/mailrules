@@ -423,19 +423,19 @@ func TestTesterNeverTouchesTheMailbox(t *testing.T) {
 
 // Reader has no method that could change a mailbox; this keeps it that way.
 var _ Reader = (interface {
-	Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error)
+	FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int) ([]*message.Raw, error)
 	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, int, error)
 })(nil)
 
-// lagging is a Reader whose Fetch takes a while.
+// lagging is a Reader whose fetches take a while.
 type lagging struct {
 	Reader
 	lag time.Duration
 }
 
-func (l lagging) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error) {
+func (l lagging) FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int) ([]*message.Raw, error) {
 	time.Sleep(l.lag)
-	return l.Reader.Fetch(ctx, ref, maxBody)
+	return l.Reader.FetchMany(ctx, refs, maxBody)
 }
 
 // A test run at debug level says what it is doing, and none of it is the mail: not a

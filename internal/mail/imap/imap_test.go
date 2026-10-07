@@ -344,6 +344,55 @@ func TestFetchLeavesMailUnread(t *testing.T) {
 	}
 }
 
+// FetchMany reads several messages in one request: the result lines up with the refs asked
+// for, a message that is gone comes back nil, and nothing is marked read.
+func TestFetchManyLinesUpWithRefs(t *testing.T) {
+	ctx := t.Context()
+	s := imaptest.Start(t, capsMove)
+	for i := 1; i <= 3; i++ {
+		s.Append(t, "INBOX", eml(i))
+	}
+	m := open(t, config(s))
+	st, _ := m.Status(ctx, "INBOX")
+	ref := func(uid uint32) mail.MsgRef {
+		return mail.MsgRef{AccountID: 7, Folder: "INBOX", UIDValidity: st.UIDValidity, UID: uid}
+	}
+
+	raws, err := m.FetchMany(ctx, []mail.MsgRef{ref(3), ref(99), ref(1)}, 4)
+	if err != nil || len(raws) != 3 {
+		t.Fatalf("fetch many = %d raws, %v", len(raws), err)
+	}
+	if raws[0] == nil || !strings.Contains(string(raws[0].Header), "Subject: message 3") || string(raws[0].Text) != "body" {
+		t.Errorf("first = %+v, want message 3 with its text cut to 4 bytes", raws[0])
+	}
+	if raws[1] != nil {
+		t.Errorf("a missing uid came back as %+v, want nil", raws[1])
+	}
+	if raws[2] == nil || !strings.Contains(string(raws[2].Header), "Subject: message 1") || raws[2].InternalDate.IsZero() {
+		t.Errorf("third = %+v, want message 1", raws[2])
+	}
+	for _, uid := range []uint32{1, 3} {
+		if flags, err := m.Flags(ctx, ref(uid)); err != nil || slices.Contains(flags, `\Seen`) {
+			t.Fatalf("fetching marked message %d read: flags = %v, %v", uid, flags, err)
+		}
+	}
+
+	// A batch from before a UIDVALIDITY change must never reach other messages.
+	stale := ref(1)
+	stale.UIDValidity++
+	if raws, err := m.FetchMany(ctx, []mail.MsgRef{stale}, 0); err != nil || raws[0] != nil {
+		t.Errorf("stale uidvalidity = %+v, %v; want nil", raws, err)
+	}
+	if _, err := m.FetchMany(ctx, []mail.MsgRef{ref(1), stale}, 0); err == nil {
+		t.Error("refs of two UIDVALIDITYs were fetched as one batch")
+	}
+	gone := ref(1)
+	gone.Folder = "Nowhere"
+	if _, err := m.FetchMany(ctx, []mail.MsgRef{gone}, 0); !errors.Is(err, mail.ErrNoFolder) {
+		t.Errorf("missing folder: err = %v, want ErrNoFolder", err)
+	}
+}
+
 func TestFoldersAndEnsureFolder(t *testing.T) {
 	ctx := t.Context()
 	s := imaptest.Start(t, capsMove)

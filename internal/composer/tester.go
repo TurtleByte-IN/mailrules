@@ -6,7 +6,6 @@ package composer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -22,10 +21,10 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-// Reader is the read-only part of mail.Mailbox. Fetch reads with BODY.PEEK, so a tested
+// Reader is the read-only part of mail.Mailbox. FetchMany reads with BODY.PEEK, so a tested
 // message stays unread; there is no method here that could move or flag one.
 type Reader interface {
-	Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error)
+	FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int) ([]*message.Raw, error)
 	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, int, error)
 }
 
@@ -36,13 +35,17 @@ const (
 	// workers is how many messages are in flight at once; the model calls among them
 	// are capped again, daemon-wide, by models.Caller.
 	workers = 8
+	// fetchBatch is how many messages one request to the mail server reads (MAI-59). The
+	// connector runs one command at a time, so one request per message would make a scan
+	// as many round trips as it has emails.
+	fetchBatch = 100
 )
 
-// slowFetch is how long one message may take to read before the read is logged on its own.
+// slowFetch is how long one request to the mail server may take before it is logged on its own.
 var slowFetch = 2 * time.Second
 
 // Tester runs rules over the newest mail of one folder and reports what each email would
-// get. Bodies are held in memory for the length of one message's evaluation only.
+// get. Bodies are held in memory for one batch of fetched messages only.
 type Tester struct {
 	Store     *store.Store // the contacts index, for the is_contact and replied_before signals
 	Mailbox   Reader
@@ -170,36 +173,43 @@ func (t Tester) each(ctx context.Context, refs []mail.MsgRef, work func(ctx cont
 	})
 }
 
-// eachRaw fetches every message with BODY.PEEK, at most maxBody bytes of its text (0 = as
-// much as the connector reads), and hands it to work, several messages at a time, so work
-// is called concurrently. A message that is gone is handed over as nil. The first failure
-// ends the run and is returned.
+// eachRaw fetches every message with BODY.PEEK, fetchBatch to a request, at most maxBody
+// bytes of its text (0 = as much as the connector reads), and hands it to work, several
+// messages at a time, so work is called concurrently. A message that is gone is handed over
+// as nil. The first failure ends the run and is returned.
 func (t Tester) eachRaw(ctx context.Context, refs []mail.MsgRef, maxBody int, work func(ctx context.Context, i int, raw *message.Raw) error) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	var reads readStats
 	defer func() { reads.log(ctx, t.AccountID) }()
+	type fetched struct {
+		i   int
+		raw *message.Raw
+	}
 	var wg sync.WaitGroup
-	next := make(chan int)
+	next := make(chan fetched)
 	for range min(workers, len(refs)) {
 		wg.Go(func() {
-			for i := range next {
-				raw, err := t.fetch(ctx, refs[i], maxBody, &reads)
-				if err == nil {
-					err = work(ctx, i, raw)
-				}
-				if err != nil {
+			for f := range next {
+				if err := work(ctx, f.i, f.raw); err != nil {
 					cancel(err)
 				}
 			}
 		})
 	}
 feed:
-	for i := range refs {
-		select {
-		case next <- i:
-		case <-ctx.Done():
-			break feed
+	for lo := 0; lo < len(refs) && ctx.Err() == nil; lo += fetchBatch {
+		raws, err := t.fetch(ctx, refs[lo:min(lo+fetchBatch, len(refs))], maxBody, &reads)
+		if err != nil {
+			cancel(err)
+			break
+		}
+		for k, raw := range raws {
+			select {
+			case next <- fetched{lo + k, raw}:
+			case <-ctx.Done():
+				break feed
+			}
 		}
 	}
 	close(next)
@@ -207,22 +217,20 @@ feed:
 	return context.Cause(ctx)
 }
 
-// fetch reads one message with BODY.PEEK. nil means it is gone.
-func (t Tester) fetch(ctx context.Context, ref mail.MsgRef, maxBody int, stats *readStats) (*message.Raw, error) {
+// fetch reads a batch of messages with BODY.PEEK, lined up with refs. nil means it is gone.
+func (t Tester) fetch(ctx context.Context, refs []mail.MsgRef, maxBody int, stats *readStats) ([]*message.Raw, error) {
 	start := time.Now()
-	raw, err := t.Mailbox.Fetch(ctx, ref, maxBody)
+	raws, err := t.Mailbox.FetchMany(ctx, refs, maxBody)
 	took := time.Since(start)
 	stats.add(took)
 	if took >= slowFetch {
-		slog.DebugContext(ctx, "slow mail fetch", "account", t.AccountID, "folder", ref.Folder, "uid", ref.UID, "duration_ms", took.Milliseconds(), "ok", err == nil)
-	}
-	if errors.Is(err, mail.ErrNotFound) {
-		return nil, nil
+		slog.DebugContext(ctx, "slow mail fetch", "account", t.AccountID, "folder", refs[0].Folder, "messages", len(refs),
+			"first_uid", refs[0].UID, "duration_ms", took.Milliseconds(), "ok", err == nil)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
-	return raw, nil
+	return raws, nil
 }
 
 // parse reads a fetched message as an email, its text cut to bodyChars characters (0 = all

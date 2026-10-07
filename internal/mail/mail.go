@@ -98,6 +98,10 @@ type Mailbox interface {
 	Watch(ctx context.Context, folder string, lastUID uint32, out chan<- NewMail) error
 	// Fetch reads headers and at most maxBody bytes of body without marking the message read.
 	Fetch(ctx context.Context, ref MsgRef, maxBody int) (*message.Raw, error)
+	// FetchMany reads several messages of one folder in one request, each like Fetch. The
+	// result lines up with refs; a message that is gone is nil. refs must all name the same
+	// folder and UIDVALIDITY.
+	FetchMany(ctx context.Context, refs []MsgRef, maxBody int) ([]*message.Raw, error)
 	// FetchSince lists messages received on or after since's date, oldest first.
 	// A positive limit keeps only the newest limit messages. matched is how many messages
 	// the folder holds in that range before the limit was applied, so a caller can say

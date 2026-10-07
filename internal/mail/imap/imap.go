@@ -399,36 +399,96 @@ func (m *Mailbox) Status(ctx context.Context, folder string) (mail.FolderStatus,
 	return st, err
 }
 
-// Fetch reads one message with BODY.PEEK only, so it stays unread.
-func (m *Mailbox) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error) {
+// fetchItems is what Fetch and FetchMany ask for: BODY.PEEK only, so nothing is marked read.
+type fetchItems struct {
+	opts         *imap.FetchOptions
+	header, text *imap.FetchItemBodySection
+}
+
+func newFetchItems(maxBody int) fetchItems {
 	if maxBody <= 0 || maxBody > maxText {
 		maxBody = maxText
 	}
 	header := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, Peek: true}
 	text := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierText, Peek: true,
 		Partial: &imap.SectionPartial{Offset: 0, Size: int64(maxBody)}}
-	opts := &imap.FetchOptions{
+	return fetchItems{header: header, text: text, opts: &imap.FetchOptions{
 		UID: true, Flags: true, InternalDate: true, RFC822Size: true,
 		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 		BodySection:   []*imap.FetchItemBodySection{header, text},
+	}}
+}
+
+func (f fetchItems) raw(b *imapclient.FetchMessageBuffer) *message.Raw {
+	raw := &message.Raw{
+		Header:       b.FindBodySection(f.header),
+		Text:         b.FindBodySection(f.text),
+		Flags:        flagStrings(b.Flags),
+		InternalDate: b.InternalDate,
+		Size:         b.RFC822Size,
 	}
+	raw.HasAttachment, raw.AttachmentExts = attachments(b.BodyStructure)
+	return raw
+}
+
+// Fetch reads one message with BODY.PEEK only, so it stays unread.
+func (m *Mailbox) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error) {
+	items := newFetchItems(maxBody)
 	var raw *message.Raw
 	err := m.onMessage(ctx, "fetch", ref, func(c *imapclient.Client, uid imap.UIDSet) error {
-		b, err := fetchOne(c, uid, opts)
+		b, err := fetchOne(c, uid, items.opts)
 		if err != nil {
 			return err
 		}
-		raw = &message.Raw{
-			Header:       b.FindBodySection(header),
-			Text:         b.FindBodySection(text),
-			Flags:        flagStrings(b.Flags),
-			InternalDate: b.InternalDate,
-			Size:         b.RFC822Size,
-		}
-		raw.HasAttachment, raw.AttachmentExts = attachments(b.BodyStructure)
+		raw = items.raw(b)
 		return nil
 	})
 	return raw, err
+}
+
+// FetchMany reads the messages with one UID FETCH, BODY.PEEK only, so they stay unread. A
+// UID the server does not return, or a folder whose UIDVALIDITY has changed, means gone.
+func (m *Mailbox) FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int) ([]*message.Raw, error) {
+	out := make([]*message.Raw, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	folder, validity := refs[0].Folder, refs[0].UIDValidity
+	var uids imap.UIDSet
+	at := make(map[imap.UID][]int, len(refs))
+	for i, ref := range refs {
+		if ref.Folder != folder || ref.UIDValidity != validity {
+			return nil, fmt.Errorf("fetch %q: the messages are not all in one folder", folder)
+		}
+		uid := imap.UID(ref.UID)
+		if at[uid] == nil {
+			uids.AddNum(uid)
+		}
+		at[uid] = append(at[uid], i)
+	}
+	items := newFetchItems(maxBody)
+	err := m.do(ctx, fmt.Sprintf("fetch %q", folder), func(c *imapclient.Client) error {
+		if err := m.selectFolder(c, folder); err != nil {
+			return err
+		}
+		if validity != m.selValidity {
+			return nil // every UID now means another message, or none
+		}
+		msgs, err := c.Fetch(uids, items.opts).Collect()
+		if err != nil {
+			return err
+		}
+		for _, b := range msgs {
+			for _, i := range at[b.UID] {
+				out[i] = items.raw(b)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // fetchOne returns the FETCH data for exactly the UID asked for, or ErrNotFound.

@@ -439,7 +439,7 @@ func TestDryRun(t *testing.T) {
 // The Mailbox interface gives the executor no way to delete or expunge: the only
 // mailbox-changing methods are the three the invariants are checked against.
 func TestMailboxOffersNoDelete(t *testing.T) {
-	readOnly := []string{"Capabilities", "Close", "Fetch", "FetchSince", "FindByMessageID", "Flags", "Folders", "SentRecipients", "Status", "Watch"}
+	readOnly := []string{"Capabilities", "Close", "Fetch", "FetchMany", "FetchSince", "FindByMessageID", "Flags", "Folders", "SentRecipients", "Status", "Watch"}
 	changing := []string{"EnsureFolder", "Move", "SetFlags"}
 	typ := reflect.TypeFor[mail.Mailbox]()
 	for i := range typ.NumMethod() {

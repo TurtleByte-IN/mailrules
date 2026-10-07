@@ -7,6 +7,7 @@ package mailtest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	netmail "net/mail"
 	"slices"
@@ -190,6 +191,33 @@ func (m *Mailbox) Watch(ctx context.Context, name string, lastUID uint32, out ch
 func (m *Mailbox) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	raw, err := m.fetch(ref, maxBody)
+	if err != nil {
+		return nil, err
+	}
+	return raw, ctx.Err()
+}
+
+// FetchMany returns a copy of each message, like Fetch, and nil for one that is gone.
+func (m *Mailbox) FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int) ([]*message.Raw, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*message.Raw, len(refs))
+	for i, ref := range refs {
+		if ref.Folder != refs[0].Folder || ref.UIDValidity != refs[0].UIDValidity {
+			return nil, fmt.Errorf("fetch %q: the messages are not all in one folder", refs[0].Folder)
+		}
+		raw, err := m.fetch(ref, maxBody)
+		if err != nil && !errors.Is(err, mail.ErrNotFound) {
+			return nil, err
+		}
+		out[i] = raw
+	}
+	return out, ctx.Err()
+}
+
+// fetch copies one message. Callers hold m.mu.
+func (m *Mailbox) fetch(ref mail.MsgRef, maxBody int) (*message.Raw, error) {
 	f, i, err := m.find(ref)
 	if err != nil {
 		return nil, err
@@ -199,7 +227,7 @@ func (m *Mailbox) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*mes
 	if maxBody > 0 && len(raw.Text) > maxBody {
 		raw.Text = raw.Text[:maxBody]
 	}
-	return &raw, ctx.Err()
+	return &raw, nil
 }
 
 // FetchSince lists messages delivered at or after since, oldest first, newest limit only.
