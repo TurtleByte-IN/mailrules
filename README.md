@@ -69,7 +69,31 @@ Everything lives in the data directory (`./data`, the `mailrules-data` volume, o
 
 ## Configuration
 
-Every setting is an environment variable that also works as a `--flag`. The full table, with defaults, is in [`docs/backend-plan.md`](docs/backend-plan.md) under Configuration. The model, its thresholds, the provider keys and dry-run can also be changed in the browser, and what is saved there wins over the environment.
+Every setting is an environment variable that also works as a `--flag` (the variable name in lower case, without `MAILRULES_` and with `-` for `_`). The model, its thresholds, the provider keys and dry-run can also be changed in the browser, and what is saved there wins over the environment.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MAILRULES_DATA_DIR` | `./data` | Where the database and the generated master key live |
+| `MAILRULES_LISTEN` | `127.0.0.1:8080` | HTTP address; anything non-local logs a warning |
+| `MAILRULES_MASTER_KEY` / `MAILRULES_MASTER_KEY_FILE` | generated into the data directory on first run | 32-byte base64 key that encrypts stored passwords and keys |
+| `MAILRULES_DRY_RUN` | `true` | Dry-run until it is switched in the browser or with `mailrules dry-run on\|off` |
+| `MAILRULES_DECIDER` | `jev` | Decision model: `jev`, `clef`, `anthropic`, `openai` or `ollama` |
+| `MAILRULES_DECIDER_MODEL` | provider's default | The decider's model; `openai` and `ollama` need one |
+| `MAILRULES_FALLBACK_MODEL` | `claude-haiku-4-5` | Asked when the decider is unsure; empty turns it off |
+| `MAILRULES_COMPOSER_MODEL` | `claude-haiku-4-5` | Writes rules from your words: a Claude model, or `openai:<model>` or `ollama:<model>` |
+| `MAILRULES_ESCALATE_BELOW` | `0.75` | Decider confidence below which the fallback is asked |
+| `MAILRULES_MIN_CONFIDENCE` | `0.75` | Default confidence a rule needs to act; each rule can set its own |
+| `MAILRULES_BODY_CHARS` | `2000` | Characters of an email's text sent to a model |
+| `MAILRULES_MODEL_CONCURRENCY` | `8` | Model calls in flight at once |
+| `OPENROUTER_API_KEY` |  | Jev, through OpenRouter |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |  | Clef |
+| `ANTHROPIC_API_KEY` |  | Claude, for the fallback and the composer |
+| `ANTHROPIC_WORKSPACE_ID` |  | The Claude workspace (`wrkspc_…`), needed only for a key that covers a whole organisation |
+| `OPENAI_BASE_URL`, `OPENAI_API_KEY` |  | Any OpenAI-compatible endpoint |
+| `OLLAMA_URL` |  | Local models through Ollama |
+| `MAILRULES_PRICES_FILE` | built-in table | JSON file of per-model prices in USD per million tokens, laid over the built-in table, for the cost estimate |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; logs are JSON lines on stderr and never contain mail text or keys |
+| `MAILRULES_COOKIE_SECURE` | `auto` | Mark login cookies HTTPS-only: `auto` (yes unless listening on localhost), `true` or `false` |
 
 ## Security
 
@@ -89,4 +113,4 @@ Tagged releases with binaries for Linux and macOS (amd64 and arm64), a published
 - `make dev`: the daemon, plus the Vite dev server when `web/` exists
 - `make build`: builds the web app when `web/` exists, then the single binary
 
-The product requirements are in [`docs/prd.md`](docs/prd.md), the build plan in [`docs/backend-plan.md`](docs/backend-plan.md), the HTTP API in [`docs/api.md`](docs/api.md) and the pre-release checklist in [`docs/smoke.md`](docs/smoke.md).
+The HTTP API is described in [`docs/api.md`](docs/api.md) and the pre-release checklist is [`docs/smoke.md`](docs/smoke.md).

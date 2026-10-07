@@ -5,3 +5,12 @@ internal/web/dist/app/
 web/node_modules/
 .DS_Store
 .tmp-data/
+
+# The owner's own documents: never committed or pushed.
+CLAUDE.md
+docs/prd.md
+docs/prd.pdf
+docs/backend-plan.md
+docs/backend-plan.pdf
+docs/frontend-plan.md
+docs/design/

@@ -31,7 +31,7 @@ const (
 // replacing (and cancelling) the previous one, deleted once Sort has used it or the user
 // discards it, and lost on a daemon restart (accepted, no time-based expiry). Its rows
 // carry display fields (sender, subject) that must never be logged or written to the
-// database. See docs/backend-plan.md.
+// database.
 type CheckStore struct {
 	mu        sync.Mutex
 	byAccount map[int64]*Check

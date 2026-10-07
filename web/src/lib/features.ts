@@ -1,4 +1,4 @@
-// P2 features stay off until their backend milestone exists (docs/frontend-plan.md → Feature flags).
+// Later-phase features stay off until their backend exists.
 // This is the only place one is switched on.
 export const features = {
   digest: false,

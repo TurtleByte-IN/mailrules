@@ -1,5 +1,5 @@
 // The one EventSource for the app (GET /api/events). State modules subscribe by event
-// name and patch their own data; see docs/frontend-plan.md → SSE events to state.
+// name and patch their own data.
 // The shell calls open() after sign-in. EventSource reconnects by itself and sends
 // Last-Event-ID, so the daemon replays what was missed.
 import type { components } from './schema';

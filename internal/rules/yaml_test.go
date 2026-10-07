@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// prdExample is the "Rule format" example from docs/prd.md.
+// prdExample is the rule file example from the product requirements.
 const prdExample = `
 defaults:
   decision_model: jev            # or clef

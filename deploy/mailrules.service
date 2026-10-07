@@ -6,7 +6,7 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now mailrules
 #
 # Optional settings go in /etc/mailrules/env as NAME=value lines (mode 0600, owned by
-# root); see docs/backend-plan.md, Configuration. The database and master.key live in
+# root); see Configuration in the README. The database and master.key live in
 # /var/lib/mailrules.
 
 [Unit]

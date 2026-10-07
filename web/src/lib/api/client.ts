@@ -1,5 +1,5 @@
 // The only module that calls fetch. Owns the CSRF header and the error shape
-// (docs/backend-plan.md → HTTP API, Conventions).
+// ({"error": {"code", "message", "path"}}, docs/api.md).
 
 // Cookie name set by the daemon (internal/api/auth.go, csrfCookie).
 const CSRF_COOKIE = 'mailrules_csrf';

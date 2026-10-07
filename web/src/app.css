@@ -3,7 +3,7 @@
 @import '@fontsource/ibm-plex-mono/500.css';
 @import 'tailwindcss';
 
-/* Tokens from docs/design/README.md. Components use these utilities, never raw hex.
+/* Design tokens. Components use these utilities, never raw hex.
    Each colour is light-dark(light, dark): which half applies follows color-scheme on <html>
    (below), so no component needs its own dark-mode classes. */
 @theme {
