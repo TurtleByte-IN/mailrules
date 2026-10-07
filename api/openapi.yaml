@@ -1141,7 +1141,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Settings' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | openai_base_url | ollama_url | keys.<name>), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | trash_to_folder | openai_base_url | ollama_url | keys.<name>), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
   /api/events:
@@ -1302,8 +1302,8 @@ components:
     Unprocessable:
       description: |
         The request is understood but cannot be carried out on this mail account.
-        `no_special_folder`: the right rule archives, trashes or junks, and the account has no
-        folder the server marks for that use (MailRules never guesses one). What had been done
+        `no_special_folder`: the right rule archives, trashes (with `trash_to_folder` off) or
+        junks, and the account has no folder the server marks for that use (MailRules never guesses one). What had been done
         to the email before was already undone, and the correction itself was not recorded.
         The daemon sends the events for what it undid all the same: one `action.undone` per
         action, then `message.processed` with the row as it now is.
@@ -1686,7 +1686,7 @@ components:
         decision_id: { type: [integer, 'null'], format: int64, description: null for a correction }
         batch_id: { type: [integer, 'null'], format: int64 }
         kind: { $ref: '#/components/schemas/ActionKind' }
-        folder: { type: string, description: The destination a move names; empty otherwise }
+        folder: { type: string, description: 'The destination a move names, or "MailRules Trash" for a trash that went to MailRules'' own folder (`trash_to_folder` on when it was recorded); empty otherwise, so an empty trash went to the server''s Trash' }
         from_folder: { type: string, description: Where the email was just before this action }
         to_folder: { type: string, description: Where it was afterwards; empty unless the action was done }
         status: { $ref: '#/components/schemas/ActionStatus' }
@@ -1715,7 +1715,7 @@ components:
             - { type: 'null' }
           description: The latest decision; null until one is made
         actions: { type: array, items: { $ref: '#/components/schemas/MessageAction' }, description: Every action taken on it, oldest first }
-        outcome: { type: string, description: 'What became of the email, as a sentence ready to show, from the actions of the latest decision or correction: "Moved to Food · read", "Kept in Inbox" (no rule matched), "In Inbox" (not decided yet, or waiting in Needs review), "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed: no Archive folder"' }
+        outcome: { type: string, description: 'What became of the email, as a sentence ready to show, from the actions of the latest decision or correction: "Moved to Food · read", "Moved to MailRules Trash" (a trash with `trash_to_folder` on; "Moved to Trash" with it off), "Kept in Inbox" (no rule matched), "In Inbox" (not decided yet, or waiting in Needs review), "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed: no Archive folder"' }
         undoable: { type: boolean, description: At least one action is in effect and can be undone }
         correction:
           oneOf:
@@ -2059,7 +2059,7 @@ components:
         path: { type: string, description: 'The setting to fill in, as SettingsPatch spells it: `ollama_url`, `keys.openrouter_api_key`' }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, openai_base_url, ollama_url, keys, warnings, server, features]
+      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, openai_base_url, ollama_url, keys, warnings, server, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged and no mailbox is changed }
         decider: { $ref: '#/components/schemas/Decider' }
@@ -2069,6 +2069,7 @@ components:
         escalate_below: { type: number, minimum: 0, maximum: 1, description: Decider confidence below this asks the fallback }
         min_confidence: { type: number, minimum: 0, maximum: 1, description: Default act threshold; a rule may set its own }
         retention_days: { type: integer, minimum: 1, maximum: 3650, description: How long message snippets are kept }
+        trash_to_folder: { type: boolean, description: 'While true (the default, for new and existing installs), a trash action moves the email to an ordinary folder named "MailRules Trash", made on first use, instead of the server''s Trash, which providers empty on their own. Junk is unaffected. No environment variable sets it' }
         openai_base_url: { type: string, description: 'The OpenAI-compatible endpoint the openai decider talks to; empty = api.openai.com. Not a secret' }
         ollama_url: { type: string, description: 'The Ollama server the ollama decider talks to, e.g. http://localhost:11434; empty = not set. Not a secret' }
         keys: { $ref: '#/components/schemas/ProviderKeys' }
@@ -2111,6 +2112,7 @@ components:
         escalate_below: { type: [number, 'null'], minimum: 0, maximum: 1 }
         min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
         retention_days: { type: [integer, 'null'], minimum: 1, maximum: 3650 }
+        trash_to_folder: { type: [boolean, 'null'], description: '`null` puts the default (true) back' }
         openai_base_url: { type: [string, 'null'], description: An http or https URL. Empty = api.openai.com }
         ollama_url: { type: [string, 'null'], description: 'An http or https URL. Empty = no server, so the ollama decider cannot run (a warning says so)' }
         keys:

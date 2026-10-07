@@ -1,8 +1,9 @@
 // Package settings owns the settings a user changes while the daemon runs: the dry-run
-// switch, the decision models and thresholds, retention, and the model provider keys. They
-// live in the settings table and lie over the environment (internal/config), which supplies
-// the defaults. Provider keys are stored encrypted under the master key and are never
-// handed back out of this package except inside the config the model adapters are built from.
+// switch, the decision models and thresholds, retention, where trashed mail goes, and the
+// model provider keys. They live in the settings table and lie over the environment
+// (internal/config), which supplies the defaults. Provider keys are stored encrypted under
+// the master key and are never handed back out of this package except inside the config
+// the model adapters are built from.
 package settings
 
 import (
@@ -90,6 +91,7 @@ type View struct {
 	EscalateBelow float64
 	MinConfidence float64
 	RetentionDays int
+	TrashToFolder bool              // trash goes to actions.TrashFolder, not the server's Trash
 	OpenAIBaseURL string            // an OpenAI-compatible endpoint; empty = api.openai.com
 	OllamaURL     string            // a local Ollama server
 	Keys          map[string]string // KeyStored | KeyEnvironment | KeyNone
@@ -112,6 +114,7 @@ type Patch struct {
 	EscalateBelow *float64
 	MinConfidence *float64
 	RetentionDays *int
+	TrashToFolder *bool
 	OpenAIBaseURL *string // empty = api.openai.com
 	OllamaURL     *string // empty = none
 	Keys          map[string]string
@@ -175,19 +178,25 @@ func (s *Settings) open(name, stored string) (string, error) {
 	return string(plain), nil
 }
 
+// own are the settings no environment variable sets: they have a built-in default only.
+type own struct {
+	retention     int
+	trashToFolder bool
+}
+
 // effective lays the stored rows over the environment.
-func (s *Settings) effective(rows map[string]string) (config.Config, int, error) {
+func (s *Settings) effective(rows map[string]string) (config.Config, own, error) {
 	cfg := *s.Env
-	retention := DefaultRetentionDays
+	o := own{retention: DefaultRetentionDays, trashToFolder: store.DefaultTrashToFolder}
 	for key, dst := range map[string]any{
 		"dry_run": &cfg.DryRun, "decider": &cfg.Decider, "decider_model": &cfg.DeciderModel,
 		"fallback_model": &cfg.FallbackModel, "composer_model": &cfg.ComposerModel,
-		"escalate_below": &cfg.EscalateBelow, "min_confidence": &cfg.MinConfidence, "retention_days": &retention,
-		"openai_base_url": &cfg.OpenAIBaseURL, "ollama_url": &cfg.OllamaURL,
+		"escalate_below": &cfg.EscalateBelow, "min_confidence": &cfg.MinConfidence, "retention_days": &o.retention,
+		store.SettingTrashToFolder: &o.trashToFolder, "openai_base_url": &cfg.OpenAIBaseURL, "ollama_url": &cfg.OllamaURL,
 	} {
 		if v, ok := rows[key]; ok {
 			if err := json.Unmarshal([]byte(v), dst); err != nil {
-				return cfg, 0, fmt.Errorf("decode the %s setting: %w", key, err)
+				return cfg, own{}, fmt.Errorf("decode the %s setting: %w", key, err)
 			}
 		}
 	}
@@ -195,12 +204,12 @@ func (s *Settings) effective(rows map[string]string) (config.Config, int, error)
 		if v, ok := rows[keyPrefix+name]; ok {
 			plain, err := s.open(name, v)
 			if err != nil {
-				return cfg, 0, err
+				return cfg, own{}, err
 			}
 			*field(&cfg) = plain
 		}
 	}
-	return cfg, retention, nil
+	return cfg, o, nil
 }
 
 // Effective returns the configuration in force: the environment with the stored settings
@@ -215,11 +224,11 @@ func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
 	return cfg, err
 }
 
-func (s *Settings) view(rows map[string]string, cfg config.Config, retention int) View {
+func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
 		ComposerModel: cfg.ComposerModel, EscalateBelow: cfg.EscalateBelow, MinConfidence: cfg.MinConfidence,
-		RetentionDays: retention, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL, Keys: map[string]string{},
-		Warnings: warnings(cfg)}
+		RetentionDays: o.retention, TrashToFolder: o.trashToFolder, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
+		Keys: map[string]string{}, Warnings: warnings(cfg)}
 	for name, field := range keyFields {
 		switch _, stored := rows[keyPrefix+name]; {
 		case stored:
@@ -265,20 +274,20 @@ func (s *Settings) View(ctx context.Context) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	cfg, retention, err := s.effective(rows)
+	cfg, o, err := s.effective(rows)
 	if err != nil {
 		return View{}, err
 	}
-	return s.view(rows, cfg, retention), nil
+	return s.view(rows, cfg, o), nil
 }
 
 // resettable are the settings Patch.Reset may name.
 var resettable = []string{"dry_run", "decider", "decider_model", "fallback_model", "composer_model", "escalate_below",
-	"min_confidence", "retention_days", "openai_base_url", "ollama_url"}
+	"min_confidence", "retention_days", store.SettingTrashToFolder, "openai_base_url", "ollama_url"}
 
 // Apply validates a change against the settings it would produce and stores it in one
 // transaction. A problem the user can fix comes back as *Invalid. Nothing needs a restart:
-// the executor reads dry-run before every action and Live rebuilds the router.
+// the executor reads dry-run and trash_to_folder before every action and Live rebuilds the router.
 func (s *Settings) Apply(ctx context.Context, p Patch) error {
 	rows, err := s.Store.Settings(ctx)
 	if err != nil {
@@ -292,7 +301,7 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		delete(rows, name) // the environment's default shows through
 		set[name] = nil
 	}
-	cfg, retention, err := s.effective(rows)
+	cfg, o, err := s.effective(rows)
 	if err != nil {
 		return err
 	}
@@ -323,8 +332,12 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		}
 	}
 	if p.RetentionDays != nil {
-		retention = *p.RetentionDays
-		put("retention_days", retention)
+		o.retention = *p.RetentionDays
+		put("retention_days", o.retention)
+	}
+	if p.TrashToFolder != nil {
+		o.trashToFolder = *p.TrashToFolder
+		put(store.SettingTrashToFolder, o.trashToFolder)
 	}
 	for key, f := range map[string]struct{ in, dst *string }{
 		"openai_base_url": {p.OpenAIBaseURL, &cfg.OpenAIBaseURL}, "ollama_url": {p.OllamaURL, &cfg.OllamaURL},
@@ -365,7 +378,7 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		return &Invalid{"escalate_below", "The escalation threshold must be between 0 and 1."}
 	case cfg.MinConfidence < 0 || cfg.MinConfidence > 1:
 		return &Invalid{"min_confidence", "The confidence threshold must be between 0 and 1."}
-	case retention < 1 || retention > maxRetentionDays:
+	case o.retention < 1 || o.retention > maxRetentionDays:
 		return &Invalid{"retention_days", fmt.Sprintf("Retention must be between 1 and %d days.", maxRetentionDays)}
 	}
 	if err := cfg.Validate(); err != nil { // whatever config.Validate learns to check later

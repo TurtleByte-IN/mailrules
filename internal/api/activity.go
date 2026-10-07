@@ -77,11 +77,19 @@ type correctionJSON struct {
 }
 
 // What one action did, and what it would do, as the words of an outcome sentence. A move
-// names its folder.
+// names its folder, and so does a trash: see trashFolder.
 var outcomeWords = map[string][2]string{
-	rules.ActMove: {"moved to ", "move to "}, rules.ActArchive: {"archived", "archive"}, rules.ActTrash: {"moved to Trash", "move to Trash"},
+	rules.ActMove: {"moved to ", "move to "}, rules.ActArchive: {"archived", "archive"}, rules.ActTrash: {"moved to ", "move to "},
 	rules.ActJunk: {"moved to Junk", "move to Junk"}, rules.ActFlag: {"flagged", "flag"}, rules.ActUnflag: {"unflagged", "unflag"},
 	rules.ActRead: {"read", "mark read"}, rules.ActUnread: {"unread", "mark unread"}, rules.ActKeep: {"kept in Inbox", "keep in Inbox"},
+}
+
+// trashFolder is the folder a trash action names in words: the one it recorded, or Trash.
+func trashFolder(a store.Action) string {
+	if a.Folder != "" {
+		return a.Folder
+	}
+	return "Trash"
 }
 
 // outcome says in one sentence what became of an email: "Moved to Food · read", "Kept in
@@ -113,7 +121,11 @@ func outcome(row store.ActivityRow) string {
 		case store.ActionUndone:
 			continue
 		}
-		parts = append(parts, outcomeWords[a.Kind][dry]+a.Folder) // only a move has a folder
+		folder := a.Folder // only a move, or a trash, has a folder
+		if a.Kind == rules.ActTrash {
+			folder = trashFolder(a)
+		}
+		parts = append(parts, outcomeWords[a.Kind][dry]+folder)
 	}
 	if len(parts) == 0 {
 		return "Undone · back in Inbox"
@@ -338,14 +350,17 @@ type messageJSON struct {
 var stageLabels = map[string]string{"sender": "Sender rules", "condition": "Conditions", "decider": "Decision model",
 	"fallback": "Fallback model", "none": "No rule"}
 
-var actionWords = map[string]string{rules.ActArchive: "Archived", rules.ActTrash: "Moved to Trash", rules.ActJunk: "Moved to Junk",
+var actionWords = map[string]string{rules.ActArchive: "Archived", rules.ActJunk: "Moved to Junk",
 	rules.ActFlag: "Flagged", rules.ActUnflag: "Unflagged", rules.ActRead: "Marked read", rules.ActUnread: "Marked unread",
 	rules.ActKeep: "Kept in the inbox", actions.KindReview: "Tagged for review"}
 
 func actionDetail(a store.Action) string {
 	text := actionWords[a.Kind]
-	if a.Kind == rules.ActMove {
+	switch a.Kind {
+	case rules.ActMove:
 		text = "Moved to " + a.Folder
+	case rules.ActTrash:
+		text = "Moved to " + trashFolder(a)
 	}
 	switch a.Status {
 	case store.ActionDryRun:

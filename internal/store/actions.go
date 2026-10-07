@@ -54,7 +54,7 @@ type Action struct {
 	MessageID  int64
 	AccountID  int64
 	Kind       string // move | trash | archive | junk | flag | unflag | read | unread | keep | review
-	Folder     string // params.folder: the destination of a move
+	Folder     string // params.folder: the destination of a move, or of a trash sent to MailRules' own folder (trash_to_folder)
 	Before     Snapshot
 	After      *Snapshot // nil unless the action is done (or was, before an undo)
 	Status     string
@@ -383,10 +383,41 @@ func (s *Store) LiveBatch(ctx context.Context, now time.Time) (int64, error) {
 // settingDryRun is the settings key of the global dry-run switch.
 const settingDryRun = "dry_run"
 
+// SettingTrashToFolder is the settings key of the switch that sends trashed mail to an
+// ordinary folder of MailRules' own instead of the server's Trash, which providers empty
+// on their own. DefaultTrashToFolder is in force until it is set, for a new install and
+// an existing one alike.
+const (
+	SettingTrashToFolder = "trash_to_folder"
+	DefaultTrashToFolder = true
+)
+
 // DryRun reports whether the global dry-run switch is on. def is used until the switch
 // has been set (MAILRULES_DRY_RUN).
 func (s *Store) DryRun(ctx context.Context, def bool) (bool, error) {
-	v, err := s.Setting(ctx, settingDryRun)
+	return s.boolSetting(ctx, settingDryRun, def)
+}
+
+// SetDryRun turns the global dry-run switch on or off. A running daemon reads it before
+// every action, so it takes effect at once.
+func (s *Store) SetDryRun(ctx context.Context, on bool) error {
+	return s.SetSetting(ctx, settingDryRun, fmt.Sprint(on))
+}
+
+// TrashToFolder reports whether trashed mail goes to MailRules' own folder rather than the
+// server's Trash. The executor reads it before every trash action.
+func (s *Store) TrashToFolder(ctx context.Context) (bool, error) {
+	return s.boolSetting(ctx, SettingTrashToFolder, DefaultTrashToFolder)
+}
+
+// SetTrashToFolder turns the trash_to_folder switch on or off.
+func (s *Store) SetTrashToFolder(ctx context.Context, on bool) error {
+	return s.SetSetting(ctx, SettingTrashToFolder, fmt.Sprint(on))
+}
+
+// boolSetting reads a stored switch; def is used until it has been set.
+func (s *Store) boolSetting(ctx context.Context, key string, def bool) (bool, error) {
+	v, err := s.Setting(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return def, nil
 	}
@@ -395,15 +426,9 @@ func (s *Store) DryRun(ctx context.Context, def bool) (bool, error) {
 	}
 	var on bool
 	if err := json.Unmarshal([]byte(v), &on); err != nil {
-		return false, fmt.Errorf("decode the dry_run setting %q: %w", v, err)
+		return false, fmt.Errorf("decode the %s setting %q: %w", key, v, err)
 	}
 	return on, nil
-}
-
-// SetDryRun turns the global dry-run switch on or off. A running daemon reads it before
-// every action, so it takes effect at once.
-func (s *Store) SetDryRun(ctx context.Context, on bool) error {
-	return s.SetSetting(ctx, settingDryRun, fmt.Sprint(on))
 }
 
 // SetBatchProgress records how far a batch has come.

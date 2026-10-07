@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Batch, CleanupCheckRow } from '../lib/api/cleanup';
+  import { TRASH_FOLDER } from '../lib/api/settings';
   import Waiting from '../lib/components/Waiting.svelte';
   import { clock, day, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
@@ -83,7 +84,9 @@
   const ticked = (r: CleanupCheckRow) => r.selectable && !cleanup.excluded.has(r.index);
   // Only where a rule took the email, or it waits in Needs review, is the model's confidence about a rule worth showing; a left-alone row's is not.
   const confidencePct = (r: CleanupCheckRow) => (r.confidence === null || !(r.selectable || r.review) ? '' : Math.round(r.confidence * 100) + '%');
-  const actionText = (r: CleanupCheckRow) => (r.review ? 'Needs review' : r.selectable ? actionsText(r.actions) : '—');
+  // Sort is about to move these: a trash goes where the setting says, so the cell names that folder.
+  const trashTo = $derived(settings.value.trash_to_folder ? TRASH_FOLDER : undefined);
+  const actionText = (r: CleanupCheckRow) => (r.review ? 'Needs review' : r.selectable ? actionsText(r.actions, trashTo) : '—');
 
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
 

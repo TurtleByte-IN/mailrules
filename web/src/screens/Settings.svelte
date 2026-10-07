@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Decider, KeyName, UrlName } from '../lib/api/settings';
+  import { TRASH_FOLDER, type Decider, type KeyName, type UrlName } from '../lib/api/settings';
   import { keysInUse } from './settings/keysInUse';
   import { confidence } from '../lib/format';
   import { rules } from '../lib/state/rules.svelte';
@@ -65,6 +65,12 @@
   async function saveField(e: Event & { currentTarget: HTMLInputElement }, name: 'fallback_model' | 'composer_model' | 'retention_days') {
     const el = e.currentTarget;
     if (!(await patch({ [name]: name === 'retention_days' ? el.valueAsNumber : el.value.trim() }))) el.value = String(s[name]);
+  }
+
+  /** A refused change unticks or reticks the box to what is saved. */
+  async function saveTrashToFolder(e: Event & { currentTarget: HTMLInputElement }) {
+    const el = e.currentTarget;
+    if (!(await patch({ trash_to_folder: el.checked }))) el.checked = s.trash_to_folder;
   }
 
   function saveKey(e: SubmitEvent, id: KeyName, label: string) {
@@ -210,6 +216,10 @@
       <label class="flex cursor-pointer items-center gap-2.5">
         <input type="checkbox" checked={s.dry_run} onchange={toggleDryRun} />
         <span><span class="font-semibold">Dry-run</span><span class="text-secondary"> · log decisions without touching the mailbox</span></span>
+      </label>
+      <label class="flex cursor-pointer items-center gap-2.5">
+        <input type="checkbox" checked={s.trash_to_folder} onchange={saveTrashToFolder} />
+        <span><span class="font-semibold">Send trashed mail to {TRASH_FOLDER}</span><span class="text-secondary"> · providers empty Trash on their own; MailRules' folder is never emptied, so mail trashed by mistake can still be found</span></span>
       </label>
     </section>
 

@@ -1490,7 +1490,7 @@ export interface components {
             /** Format: int64 */
             batch_id: number | null;
             kind: components["schemas"]["ActionKind"];
-            /** @description The destination a move names; empty otherwise */
+            /** @description The destination a move names, or "MailRules Trash" for a trash that went to MailRules' own folder (`trash_to_folder` on when it was recorded); empty otherwise, so an empty trash went to the server's Trash */
             folder: string;
             /** @description Where the email was just before this action */
             from_folder: string;
@@ -1531,7 +1531,7 @@ export interface components {
             decision: components["schemas"]["Decision"] | null;
             /** @description Every action taken on it */
             actions: components["schemas"]["MessageAction"][];
-            /** @description What became of the email, as a sentence ready to show, from the actions of the latest decision or correction: "Moved to Food · read", "Kept in Inbox" (no rule matched), "In Inbox" (not decided yet, or waiting in Needs review), "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed: no Archive folder" */
+            /** @description What became of the email, as a sentence ready to show, from the actions of the latest decision or correction: "Moved to Food · read", "Moved to MailRules Trash" (a trash with `trash_to_folder` on; "Moved to Trash" with it off), "Kept in Inbox" (no rule matched), "In Inbox" (not decided yet, or waiting in Needs review), "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed: no Archive folder" */
             outcome: string;
             /** @description At least one action is in effect and can be undone */
             undoable: boolean;
@@ -1982,6 +1982,8 @@ export interface components {
             min_confidence: number;
             /** @description How long message snippets are kept */
             retention_days: number;
+            /** @description While true (the default, for new and existing installs), a trash action moves the email to an ordinary folder named "MailRules Trash", made on first use, instead of the server's Trash, which providers empty on their own. Junk is unaffected. No environment variable sets it */
+            trash_to_folder: boolean;
             /** @description The OpenAI-compatible endpoint the openai decider talks to; empty = api.openai.com. Not a secret */
             openai_base_url: string;
             /** @description The Ollama server the ollama decider talks to, e.g. http://localhost:11434; empty = not set. Not a secret */
@@ -2020,6 +2022,8 @@ export interface components {
             escalate_below?: number | null;
             min_confidence?: number | null;
             retention_days?: number | null;
+            /** @description `null` puts the default (true) back */
+            trash_to_folder?: boolean | null;
             /** @description An http or https URL. Empty = api.openai.com */
             openai_base_url?: string | null;
             /** @description An http or https URL. Empty = no server, so the ollama decider cannot run (a warning says so) */
@@ -2133,8 +2137,8 @@ export interface components {
         };
         /**
          * @description The request is understood but cannot be carried out on this mail account.
-         *     `no_special_folder`: the right rule archives, trashes or junks, and the account has no
-         *     folder the server marks for that use (MailRules never guesses one). What had been done
+         *     `no_special_folder`: the right rule archives, trashes (with `trash_to_folder` off) or
+         *     junks, and the account has no folder the server marks for that use (MailRules never guesses one). What had been done
          *     to the email before was already undone, and the correction itself was not recorded.
          *     The daemon sends the events for what it undid all the same: one `action.undone` per
          *     action, then `message.processed` with the row as it now is.

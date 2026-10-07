@@ -67,8 +67,10 @@ func TestSenders(t *testing.T) {
 	}
 	e.call(http.MethodPut, "/api/senders/address/spam%40junk.example", `{"verdict":"block","rule_id":1}`, http.StatusOK)
 	e.deliver("spam@junk.example", "you won")
-	if it := e.item("you won", "acted"); it["decision"].(map[string]any)["stage"] != "sender" || e.folderOf("you won") != "Trash" {
-		t.Errorf("a blocked sender's mail: %v in %q", it["decision"], e.folderOf("you won"))
+	// A block trashes, and with trash_to_folder on (the default) that is MailRules' own folder.
+	if it := e.item("you won", "acted"); it["decision"].(map[string]any)["stage"] != "sender" || e.folderOf("you won") != "MailRules Trash" ||
+		it["outcome"] != "Moved to MailRules Trash" || it["actions"].([]any)[0].(map[string]any)["kind"] != "trash" {
+		t.Errorf("a blocked sender's mail: %v in %q, outcome %q", it["decision"], e.folderOf("you won"), it["outcome"])
 	}
 
 	for query, want := range map[string][]string{
