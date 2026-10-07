@@ -166,7 +166,10 @@ async function loadCheck() {
     cleanup.check = null;
     dropSelectionSave();
     cleanup.excluded = new Set();
-    if (cleanup.phase !== 'done') cleanup.phase = 'idle';
+    if (cleanup.phase !== 'done') {
+      stopCheckPoll();
+      cleanup.phase = 'idle';
+    }
     return;
   }
   cleanup.scope.folder = c.folder;
@@ -221,7 +224,11 @@ function stopCheckPoll() {
 // once ready or stale, so no second call is needed here.
 async function checkTick() {
   const id = cleanup.scope.accountId;
-  if (!id || cleanup.phase !== 'checking') return;
+  // The check this timer belonged to is gone (state reset, discarded, finished): stop asking.
+  if (!id || cleanup.phase !== 'checking') {
+    stopCheckPoll();
+    return;
+  }
   const c = await cleanupApi.getCheck(Number(id)).catch(() => null);
   if (!c || cleanup.phase !== 'checking' || String(c.account_id) !== cleanup.scope.accountId) return;
   if (c.status === 'running') {
@@ -384,12 +391,24 @@ function follow(b: cleanupApi.Batch) {
   cleanup.phase = 'sorting';
   cleanup.batch = b;
   // batch.progress moves the bar; the poll covers a stream that is closed or missed an event.
+  stopBatchPoll();
   batchTimer = setInterval(tick, POLL_MS);
+}
+
+function stopBatchPoll() {
+  clearInterval(batchTimer);
+  batchTimer = undefined;
 }
 
 // A failed poll is not a failed batch: the next poll or event tries again.
 async function tick() {
-  const b = await cleanupApi.get(cleanup.batch!.id).catch(() => null);
+  const id = cleanup.batch?.id;
+  // The sort this timer belonged to is gone (state reset, finished): stop asking.
+  if (id === undefined || cleanup.phase !== 'sorting') {
+    stopBatchPoll();
+    return;
+  }
+  const b = await cleanupApi.get(id).catch(() => null);
   if (b) progress(b);
 }
 
@@ -399,7 +418,7 @@ function progress(b: cleanupApi.Batch) {
   if (cleanup.phase !== 'sorting' || b.id !== cleanup.batch?.id) return;
   cleanup.batch = b;
   if (b.status === 'running') return;
-  clearInterval(batchTimer);
+  stopBatchPoll();
   cleanup.phase = 'done';
   flash(outcome(b));
 }

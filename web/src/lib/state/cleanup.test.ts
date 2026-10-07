@@ -420,6 +420,66 @@ it('check → ready → sort → done, by polling the batch', async () => {
   expect(toast.text).toBe('Cleanup done: 412 emails sorted. Undo it as one batch below.');
 });
 
+// Anything that resets the state while a poll runs (a screen's teardown, sign-out) must not leave the
+// poll asking for a sort or check that is no longer there, nor throw from it: in the browser that is an
+// unhandled rejection every two seconds.
+// Let the timers run well past several polls, so a poll that was left running would show.
+const settle = async () => {
+  await vi.advanceTimersByTimeAsync(POLL * 5);
+  await vi.advanceTimersByTimeAsync(0);
+};
+
+it.each([
+  ['the batch is emptied', { phase: 'idle', batch: null }],
+  ['the batch is emptied but the phase stays sorting', { batch: null }],
+  ['the phase leaves sorting but the batch stays', { phase: 'idle' }],
+] as const)('a state reset mid-sort stops the batch poll: %s', async (_name, reset) => {
+  await toReady();
+  await m.sort();
+  expect(m.cleanup.phase).toBe('sorting');
+  await vi.advanceTimersByTimeAsync(POLL);
+  const polls = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/batches/3').length;
+  expect(polls()).toBe(1);
+
+  Object.assign(m.cleanup, reset);
+  await settle();
+
+  expect(polls()).toBe(1);
+  // A poll that threw on the missing state would be an unhandled rejection, which fails the whole vitest run.
+});
+
+it.each([
+  ['the check is emptied', { phase: 'idle', check: null }],
+  ['the phase leaves checking', { phase: 'idle' }],
+  ['the mailbox is cleared', { scope: { ...{ accountId: '', folder: 'INBOX', mode: 'newest', newest: 200, days: 90 } } }],
+] as const)('a state reset mid-check stops the check poll: %s', async (_name, reset) => {
+  await m.check();
+  expect(m.cleanup.phase).toBe('checking');
+  const polls = () => fetchMock.mock.calls.filter((c) => (c[1] as RequestInit).method === 'GET' && c[0] === '/api/cleanup/check?account_id=7').length;
+  const before = polls();
+  await vi.advanceTimersByTimeAsync(POLL);
+  expect(polls()).toBe(before + 1);
+
+  Object.assign(m.cleanup, reset);
+  await settle();
+
+  expect(polls()).toBe(before + 1);
+  // A poll that threw on the missing state would be an unhandled rejection, which fails the whole vitest run.
+});
+
+it('starting a second sort does not leave two batch polls running', async () => {
+  await toReady();
+  await m.sort();
+  events.dispatch('batch.progress', finished);
+  expect(m.cleanup.phase).toBe('done');
+  await toReady();
+  routes['GET /api/batches/3'] = [200, { batch: batch({ done: 5 }) }];
+  await m.sort();
+  const before = fetchMock.mock.calls.filter((c) => c[0] === '/api/batches/3').length;
+  await vi.advanceTimersByTimeAsync(POLL);
+  expect(fetchMock.mock.calls.filter((c) => c[0] === '/api/batches/3').length).toBe(before + 1);
+});
+
 it('sort sends the unticked selectable rows as exclude', async () => {
   await toReady();
   m.toggleRow(1);
