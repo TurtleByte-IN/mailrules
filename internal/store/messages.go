@@ -408,13 +408,16 @@ type SenderDecision struct {
 
 // RecentSenderDecisions returns the decisions of the newest n decided emails from one
 // address across the user's accounts, newest first. An email decided more than once (a
-// retry, a cleanup run) counts once, by its latest decision.
+// retry, a cleanup run) counts once, by its latest decision. A decision whose actions were
+// recorded in dry-run is left out, so a dry-run period teaches the learner nothing, then
+// or once MailRules is live.
 func (s *Store) RecentSenderDecisions(ctx context.Context, userID int64, address string, n int) ([]SenderDecision, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.stage, COALESCE(d.rule_id, 0), COALESCE(d.confidence, 0),
 		        EXISTS (SELECT 1 FROM corrections c WHERE c.message_id = m.id)
 		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN accounts a ON a.id = m.account_id
 		 WHERE a.user_id = ? AND m.from_addr = ? AND d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
+		   AND NOT EXISTS (SELECT 1 FROM actions x WHERE x.message_id = m.id AND x.decision_id = d.id AND x.status = 'dry_run')
 		 ORDER BY d.id DESC LIMIT ?`, userID, address, n)
 	if err != nil {
 		return nil, fmt.Errorf("list sender decisions: %w", err)

@@ -46,7 +46,7 @@ Without the web UI, the same steps are `POST /api/auth/setup` and the rest of th
 
 ## Dry-run, and going live
 
-Dry-run is on by default. While it is on, every decision is recorded and shown, and no email is moved, flagged or deleted.
+Dry-run is on by default. While it is on, every decision is recorded and shown, and no email is moved, flagged or deleted. Nothing is learned from those decisions either: MailRules learns a sender rule only from decisions it made live, so a sender is still decided by the model after you go live until it has seen enough of that sender's mail.
 
 When the decisions look right, switch it off in Settings, or:
 
