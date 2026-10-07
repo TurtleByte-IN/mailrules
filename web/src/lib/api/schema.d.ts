@@ -540,10 +540,10 @@ export interface paths {
          * Senders by volume, with how each is routed
          * @description Every address mail was seen from in the last 30 days, every address that has a sender
          *     rule even if it has been quiet, and every domain that has a sender rule (counted over
-         *     its addresses). `source=learned` lists the rules MailRules learned by itself,
-         *     `source=user` the ones the user set. The cursor is an offset into the sorted list (a
-         *     plain number: `50` is the second page of 50), not an opaque token, so the list can
-         *     shift under it when mail arrives between two pages.
+         *     its addresses). `source=learned` lists the rules MailRules learned by itself (never
+         *     from a decision recorded in dry-run), `source=user` the ones the user set. The cursor
+         *     is an offset into the sorted list (a plain number: `50` is the second page of 50), not
+         *     an opaque token, so the list can shift under it when mail arrives between two pages.
          */
         get: operations["listSenders"];
         put?: never;
@@ -912,7 +912,7 @@ export interface paths {
          *     `batch.progress` events carry `done`, `total`, `skipped` and the counts as they grow,
          *     and `GET /api/batches/{id}` says the same. An email no longer where the check found
          *     it is passed over and counted in `skipped`. Honours dry-run: the actions are then
-         *     recorded as `dry_run` and nothing moves. Undo the whole run with
+         *     recorded as `dry_run`, nothing moves and no sender rule is learned. Undo the whole run with
          *     `POST /api/batches/{id}/undo`. The check is deleted once it has been used. One run per
          *     account at a time.
          */

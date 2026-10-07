@@ -660,10 +660,10 @@ paths:
       description: |
         Every address mail was seen from in the last 30 days, every address that has a sender
         rule even if it has been quiet, and every domain that has a sender rule (counted over
-        its addresses). `source=learned` lists the rules MailRules learned by itself,
-        `source=user` the ones the user set. The cursor is an offset into the sorted list (a
-        plain number: `50` is the second page of 50), not an opaque token, so the list can
-        shift under it when mail arrives between two pages.
+        its addresses). `source=learned` lists the rules MailRules learned by itself (never
+        from a decision recorded in dry-run), `source=user` the ones the user set. The cursor
+        is an offset into the sorted list (a plain number: `50` is the second page of 50), not
+        an opaque token, so the list can shift under it when mail arrives between two pages.
       parameters:
         - { name: sort, in: query, schema: { type: string, enum: [volume, recent], default: volume } }
         - { name: q, in: query, schema: { type: string }, description: Matches the address or display name }
@@ -1081,7 +1081,7 @@ paths:
         `batch.progress` events carry `done`, `total`, `skipped` and the counts as they grow,
         and `GET /api/batches/{id}` says the same. An email no longer where the check found
         it is passed over and counted in `skipped`. Honours dry-run: the actions are then
-        recorded as `dry_run` and nothing moves. Undo the whole run with
+        recorded as `dry_run`, nothing moves and no sender rule is learned. Undo the whole run with
         `POST /api/batches/{id}/undo`. The check is deleted once it has been used. One run per
         account at a time.
       requestBody:
@@ -2235,7 +2235,7 @@ components:
       type: object
       required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, server, features]
       properties:
-        dry_run: { type: boolean, description: While true, decisions are logged and no mailbox is changed }
+        dry_run: { type: boolean, description: While true, decisions are logged, no mailbox is changed and no sender rule is learned from them }
         decider: { $ref: '#/components/schemas/Decider' }
         decider_model: { type: string, description: 'Empty = the provider''s default; openai and ollama have none' }
         fallback_model: { type: string, description: Asked when the decider is unsure; empty = off }

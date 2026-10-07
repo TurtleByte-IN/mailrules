@@ -13,6 +13,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
+	"github.com/TurtleByte-IN/mailrules/internal/learn"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
@@ -164,6 +165,34 @@ func (e *env) row(ref mail.MsgRef) store.ActivityRow {
 		row.Decision = &store.Decision{}
 	}
 	return row
+}
+
+// settle decides an email as a cleanup check does (Decider.Settle, the model asked once),
+// recording nothing, and returns the answer Pipeline.SortSaved replays.
+func (e *env) settle(ref mail.MsgRef) Outcome {
+	e.t.Helper()
+	ctx := e.t.Context()
+	rs, err := e.st.Rules(ctx, e.user.ID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	senders, err := e.st.SenderRules(ctx, e.user.ID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	raw, err := e.mb.Fetch(ctx, ref, 0)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	sum, err := message.Parse(raw, e.p.Account.ID, 2000)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	out, err := Decider{Router: e.p.Router, MinConfidence: 0.75, Now: e.now}.Settle(ctx, *sum, rs, senders)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return out
 }
 
 func TestProcessEndToEnd(t *testing.T) {
@@ -684,6 +713,63 @@ func TestBulkSenderLearnedAfterOne(t *testing.T) {
 	}
 }
 
+// MAI-45: a decision recorded in dry-run teaches the learner nothing, whichever way it was
+// made. No sender rule is learned while dry-run is on, and once MailRules is live the
+// dry-run decisions do not count either, so a dry-run period never makes a later email
+// from that sender skip the model.
+func TestDryRunLearnsNothing(t *testing.T) {
+	const sender = "orders@swiggy.example"
+	for name, decide := range map[string]func(e *env, subject string){
+		"new mail": func(e *env, subject string) { e.process(sender, subject) },
+		"cleanup Sort of a check's answers": func(e *env, subject string) {
+			ref := e.deliver(sender, subject)
+			if applied, err := e.p.SortSaved(e.t.Context(), ref, e.settle(ref)); err != nil || !applied {
+				e.t.Fatalf("SortSaved = %v, %v", applied, err)
+			}
+		},
+		"Sort of existing mail": func(e *env, subject string) {
+			if err := e.p.Sort(e.t.Context(), e.deliver(sender, subject)); err != nil {
+				e.t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := t.Context()
+			e.withExecutor(true)
+			e.primary.DecideFunc = answer(e.food.ID, 0.95) // confident enough to learn from
+			learned := func() []rules.SenderRule {
+				srs, err := e.st.SenderRules(ctx, e.user.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return srs
+			}
+			for i := range learn.After {
+				decide(e, fmt.Sprintf("dry %d", i))
+			}
+			if got := learned(); len(got) != 0 {
+				t.Fatalf("dry-run decisions learned a sender rule: %+v", got)
+			}
+
+			if err := e.st.SetDryRun(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			for i := range learn.After {
+				if got := learned(); len(got) != 0 {
+					t.Fatalf("learned after %d live decisions, counting the dry-run ones: %+v", i, got)
+				}
+				if row := e.process(sender, fmt.Sprintf("live %d", i)); row.Decision.Stage != "decider" || row.Actions[0].Status != store.ActionDone {
+					t.Fatalf("live email %d: %+v, actions %+v", i, row.Decision, row.Actions)
+				}
+			}
+			if got := learned(); len(got) != 1 || got[0].Source != "learned" || got[0].RuleID != e.food.ID {
+				t.Fatalf("after %d live decisions, learned = %+v", learn.After, got)
+			}
+		})
+	}
+}
+
 // While leave_own_mail is on, an email from the mailbox's own address is left alone: no
 // sender rule, rule, model or action, no Needs review and no lesson. Each email is bulk mail
 // that passed DMARC and the model is confident, so one decision would teach a sender rule.
@@ -1037,26 +1123,7 @@ func TestSortSavedReplaysTheCheck(t *testing.T) {
 	// The check path: Decider.Settle settles the answer (one model call), then SortSaved
 	// replays it with no further call.
 	refB := e.deliver("orders@swiggy.example", "order B")
-	rs, err := e.st.Rules(ctx, e.user.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	senders, err := e.st.SenderRules(ctx, e.user.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := e.mb.Fetch(ctx, refB, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum, err := message.Parse(raw, e.p.Account.ID, 2000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := Decider{Router: e.p.Router, MinConfidence: 0.75, Now: e.now}.Settle(ctx, *sum, rs, senders)
-	if err != nil {
-		t.Fatal(err)
-	}
+	out := e.settle(refB)
 	callsBefore := len(e.primary.Requests())
 	applied, err := e.p.SortSaved(ctx, refB, out)
 	if err != nil || !applied {

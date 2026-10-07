@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
@@ -177,7 +178,8 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	sum, err := message.Parse(raw, m.AccountID, p.BodyChars)
 	if err != nil {
 		dec.Reason = "This message could not be read"
-		return p.finish(ctx, m, dec, rules.Result{Review: true})
+		_, err := p.finish(ctx, m, dec, rules.Result{Review: true})
+		return err
 	}
 	if err := contacts.Fill(ctx, p.Store, sum); err != nil {
 		return err
@@ -221,10 +223,13 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		}
 	}
 	dec = decisionFrom(out, m.ID, now)
-	if err := p.finish(ctx, m, dec, res); err != nil {
+	dry, err := p.finish(ctx, m, dec, res)
+	if err != nil {
 		return err
 	}
-	p.learnFrom(ctx, dec, res, m)
+	if !dry {
+		p.learnFrom(ctx, dec, res, m)
+	}
 	return nil
 }
 
@@ -245,6 +250,8 @@ func decisionFrom(out Outcome, messageID int64, now time.Time) store.Decision {
 // learnFrom teaches the sender index from a model's own confident pick, as the only thing
 // that tells us anything new about a sender. Bulk mail that passed DMARC is learned from
 // sooner (learn.AfterBulk). A failure is logged and costs the lesson, not the decision.
+// It is not called for a decision whose actions were recorded in dry-run: dry-run changes
+// nothing that would change what MailRules does later, so no sender is learned from it.
 func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.Result, m *store.Message) {
 	if (dec.Stage == string(rules.StageDecider) || dec.Stage == "fallback") && !res.Review && m.FromAddr != "" {
 		bulk := m.Signals.Bulk && m.Signals.DMARC == "pass"
@@ -289,20 +296,22 @@ func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) 
 	}
 	dec := decisionFrom(out, m.ID, now)
 	dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = 0, 0, 0, 0 // paid once, on the check's ledger
-	if err := p.finish(ctx, &m, dec, out.Result); err != nil {
+	dry, err := p.finish(ctx, &m, dec, out.Result)
+	if err != nil {
 		return false, err
 	}
-	p.learnFrom(ctx, dec, out.Result, &m)
+	if !dry {
+		p.learnFrom(ctx, dec, out.Result, &m)
+	}
 	return true, nil
 }
 
 // finish records the decision, acts on it or parks the message in Needs review, sets the
 // final state and publishes the event. A message parked in Needs review is not touched in
-// the mailbox at all.
-func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) error {
-	var err error
+// the mailbox at all. dry reports that the executor recorded the actions as dry-run.
+func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) (dry bool, err error) {
 	if dec.ID, err = p.Store.AddDecision(ctx, dec, store.StateDecided); err != nil {
-		return err
+		return false, err
 	}
 	rec := actions.DecisionRecord{DecisionID: dec.ID, MessageID: m.ID, Ref: m.Location()}
 	state, event := store.StateSkipped, events.MessageProcessed
@@ -317,21 +326,22 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 		// Live processing shares one batch per day, so "undo today" is one batch undo.
 		batch := p.Batch
 		if batch == 0 {
-			var err error
 			if batch, err = p.Store.LiveBatch(ctx, p.now()); err != nil {
-				return err
+				return false, err
 			}
 		}
-		if _, err := p.Exec.Apply(ctx, rec, acts, batch); err != nil {
-			return fmt.Errorf("apply: %w", err)
+		recs, err := p.Exec.Apply(ctx, rec, acts, batch)
+		if err != nil {
+			return false, fmt.Errorf("apply: %w", err)
 		}
+		dry = slices.ContainsFunc(recs, func(a actions.ActionRecord) bool { return a.Status == store.ActionDryRun })
 	}
 	if err := p.Store.SetMessageState(ctx, m.ID, state, m.Attempts, 0); err != nil {
-		return err
+		return false, err
 	}
 	m.State, m.NextAttemptAt = state, 0
 	p.Hub.Publish(event, store.ActivityRow{Message: *m, Decision: &dec})
-	return nil
+	return dry, nil
 }
 
 // fill copies what is kept of a parsed email onto its row. The body is not: only its
