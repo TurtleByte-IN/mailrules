@@ -163,7 +163,7 @@
                 <div class="break-words"><span class="font-semibold">{row.from_name || row.from}</span><span class="text-nav"> · {row.subject}</span></div>
                 <div class="mt-0.5 text-xs text-muted">{row.decision?.reason}</div>
                 <div class="mt-2 flex flex-wrap gap-1.5">
-                  <span class="chip {chip(row)}">{ruleName(row)}</span>
+                  <span class="chip max-md:whitespace-normal {chip(row)}">{ruleName(row)}</span>
                   {#if stage(row)}<span class="chip chip-neutral font-mono font-normal">{stage(row)}</span>{/if}
                 </div>
               </button>

@@ -29,9 +29,9 @@
     <h1>Add rules</h1>
     <p class="mt-1 text-secondary">Describe rules in your own words, build one from exact conditions, or let the AI suggest rules from the mail you already have.</p>
   </header>
-  <div role="group" aria-label="How to add rules" class="inline-flex gap-1 self-start rounded-md bg-line-divider p-1">
+  <div role="group" aria-label="How to add rules" class="inline-flex gap-1 self-start rounded-md bg-line-divider p-1 max-md:grid max-md:grid-cols-2 max-md:self-stretch">
     {#each modes as [id, label] (id)}
-      <button type="button" aria-pressed={mode === id} class="min-h-10 rounded border px-4 font-semibold {mode === id ? 'border-ink bg-surface text-ink' : 'border-transparent bg-transparent text-secondary'}" onclick={() => (mode = id)}>{label}</button>
+      <button type="button" aria-pressed={mode === id} class="min-h-10 rounded border px-4 font-semibold max-md:min-h-11 max-md:px-2 {mode === id ? 'border-ink bg-surface text-ink' : 'border-transparent bg-transparent text-secondary'}" onclick={() => (mode = id)}>{label}</button>
     {/each}
   </div>
   {#if mode === 'templates'}

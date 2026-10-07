@@ -127,13 +127,13 @@
           {#if def.type !== 'bool'}
             <input aria-label="Value" class="field min-w-0 flex-[2_1_200px] font-mono text-[13px]" {...bad('row' + i, 'value')} bind:value={row.value} placeholder={def.ph} />
           {/if}
-          <button type="button" aria-label="Remove condition {i + 1}" class="grid size-10 place-items-center rounded border border-line-card bg-surface p-0 text-muted" onclick={() => b.rows.splice(i, 1)}>
+          <button type="button" aria-label="Remove condition {i + 1}" class="grid size-10 place-items-center rounded border border-line-card bg-surface p-0 text-muted max-md:size-11" onclick={() => b.rows.splice(i, 1)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
           </button>
           {@render why('row' + i)}
         </div>
       {/each}
-      <button type="button" class="inline-flex min-h-10 items-center gap-1.5 self-start rounded border border-dashed border-line-input bg-selected-row px-3.5 font-semibold" onclick={() => b.rows.push(b.rows.length ? { field: 'subject', op: 'contains_any', value: '' } : { field: 'from_domain', op: 'in', value: '' })}>
+      <button type="button" class="inline-flex min-h-10 items-center gap-1.5 self-start rounded border border-dashed border-line-input bg-selected-row px-3.5 font-semibold max-md:min-h-11" onclick={() => b.rows.push(b.rows.length ? { field: 'subject', op: 'contains_any', value: '' } : { field: 'from_domain', op: 'in', value: '' })}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         Add condition
       </button>
@@ -172,7 +172,7 @@
     </div>
 
     <details class="border-t border-line-divider pt-3.5" bind:open={more}>
-      <summary class="min-h-8 cursor-pointer font-semibold">More options: mailbox, stacking{b.intent.trim() ? ', threshold' : ''}</summary>
+      <summary class="min-h-8 cursor-pointer font-semibold max-md:min-h-11">More options: mailbox, stacking{b.intent.trim() ? ', threshold' : ''}</summary>
       <div class="flex flex-col gap-3.5 pt-3">
         <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" {problem} />
         {#if b.intent.trim()}

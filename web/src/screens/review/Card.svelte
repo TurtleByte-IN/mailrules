@@ -47,6 +47,6 @@
   </div>
   <div class="flex flex-wrap items-center gap-x-[18px] gap-y-2 border-t border-line-divider pt-2.5">
     <Always bind:this={always} {item} />
-    <a href="/compose" use:link class="inline-flex min-h-8 items-center text-[13px] font-semibold text-ink no-underline">Create a rule for emails like this</a>
+    <a href="/compose" use:link class="inline-flex min-h-8 items-center text-[13px] font-semibold text-ink no-underline max-md:min-h-11">Create a rule for emails like this</a>
   </div>
 </article>

@@ -3,37 +3,40 @@
 @import '@fontsource/ibm-plex-mono/500.css';
 @import 'tailwindcss';
 
-/* Tokens from docs/design/README.md. Components use these utilities, never raw hex. */
+/* Tokens from docs/design/README.md. Components use these utilities, never raw hex.
+   Each colour is light-dark(light, dark): which half applies follows color-scheme on <html>
+   (below), so no component needs its own dark-mode classes. */
 @theme {
   --color-*: initial;
-  --color-surface: #ffffff;
-  --color-ink: #16130f;
-  --color-nav: #3a342c;
-  --color-secondary: #5a5247;
-  --color-muted: #776e61;
-  --color-line-input: #cbc3b3;
-  --color-line-card: #dcd4c4;
-  --color-line-divider: #e9e3d6;
-  --color-selected: #e6dfcc;
-  --color-selected-row: #faf1e1;
-  --color-signal: #e2471c;
-  --color-trash-bg: #fee4e2;
-  --color-trash: #9f1d14;
-  --color-review-bg: #fef3c7;
-  --color-review: #92400e;
-  --color-live: #2f7a3e;
-  --color-live-bg: #eaf3ec;
-  --color-live-strong: #1f5a2b;
-  --color-attention: #c27a0e;
-  --color-idle: #a39a8c;
-  --color-ink-soft: #221e19;
-  --color-neutral: #ece6d9;
-  --color-both-bg: #e3e6f2;
-  --color-both: #27346e;
-  --color-warn-bg: #fffbeb;
-  --color-warn-line: #fde68a;
-  --color-warn-strong: #f59e0b;
-  --color-warn: #78350f;
+  --color-surface: light-dark(#ffffff, #171411);
+  --color-ink: light-dark(#16130f, #f2ede4);
+  --color-nav: light-dark(#3a342c, #d9d1c4);
+  --color-secondary: light-dark(#5a5247, #c4bbac);
+  --color-muted: light-dark(#776e61, #a9a091);
+  --color-line-input: light-dark(#cbc3b3, #6e6658);
+  --color-line-card: light-dark(#dcd4c4, #3b352d);
+  --color-line-divider: light-dark(#e9e3d6, #2d2822);
+  --color-selected: light-dark(#e6dfcc, #3a332a);
+  --color-selected-row: light-dark(#faf1e1, #262019);
+  --color-signal: light-dark(#e2471c, #f0663e);
+  --color-on-signal: #ffffff;
+  --color-trash-bg: light-dark(#fee4e2, #3f1b17);
+  --color-trash: light-dark(#9f1d14, #ffa197);
+  --color-review-bg: light-dark(#fef3c7, #3b2a0e);
+  --color-review: light-dark(#92400e, #f5c46a);
+  --color-live: light-dark(#2f7a3e, #5bb46c);
+  --color-live-bg: light-dark(#eaf3ec, #163020);
+  --color-live-strong: light-dark(#1f5a2b, #94d6a0);
+  --color-attention: light-dark(#c27a0e, #e3a03a);
+  --color-idle: light-dark(#a39a8c, #857c6d);
+  --color-ink-soft: light-dark(#221e19, #e8e2d7);
+  --color-neutral: light-dark(#ece6d9, #2f2a24);
+  --color-both-bg: light-dark(#e3e6f2, #1e2442);
+  --color-both: light-dark(#27346e, #b3bdf2);
+  --color-warn-bg: light-dark(#fffbeb, #2a2110);
+  --color-warn-line: light-dark(#fde68a, #6b5013);
+  --color-warn-strong: light-dark(#f59e0b, #e0960f);
+  --color-warn: light-dark(#78350f, #f6d891);
 
   --font-sans: 'Schibsted Grotesk Variable', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -44,6 +47,19 @@
   --radius-md: 4px;
 
   --shadow-*: initial;
+}
+
+/* Appearance (lib/theme.ts, and the inline script in index.html before first paint) sets
+   data-theme to light or dark. Without it the device's setting decides. color-scheme also
+   gives native controls, scrollbars and select menus the matching look. */
+:root {
+  color-scheme: light dark;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 @layer base {
@@ -102,5 +118,15 @@
   }
   .label {
     @apply text-[13px] font-medium text-secondary;
+  }
+}
+
+/* Phone width (below md): primary controls are at least 44px tall to tap, whatever height a
+   screen gives them on desktop. Unlayered so it wins over the h-* and min-h-* utilities. */
+@media (width < 48rem) {
+  .btn,
+  .btn-primary,
+  .field {
+    min-height: 2.75rem;
   }
 }

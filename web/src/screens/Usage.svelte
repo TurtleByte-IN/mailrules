@@ -20,6 +20,10 @@
   // ponytail: four fills; a fifth model repeats the first. Add a token when someone runs that many.
   const fills = ['bg-ink', 'bg-signal', 'bg-review', 'bg-trash'];
   const calls = (d: Day, model?: string) => d.models.reduce((a, m) => a + (model === undefined || m.model === model ? m.calls : 0), 0);
+  // When the month does not fit (a phone), the chart scrolls sideways and opens on the latest days.
+  const latest = (ul: HTMLElement) => {
+    ul.scrollLeft = ul.scrollWidth;
+  };
 </script>
 
 <div class="flex min-w-0 flex-col gap-[18px]">
@@ -56,13 +60,13 @@
     <section aria-label="Model calls by day" class="card flex min-w-0 flex-col gap-3 p-[18px]">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
         <h2 class="text-[15px]">Model calls per day</h2>
-        <div class="flex gap-3.5 text-[12.5px] text-secondary">
+        <div class="flex flex-wrap gap-3.5 text-[12.5px] text-secondary">
           {#each series as model, i (model)}
             <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded {fills[i % fills.length]}"></span>{model}</span>
           {/each}
         </div>
       </div>
-      <ul class="flex h-40 items-end gap-1.5 overflow-x-auto">
+      <ul class="relative flex h-40 items-end gap-1.5 overflow-x-auto" {@attach latest}>
         {#each s.days as d (d.day)}
           {@const text = date(d.day) + ': ' + (series.map((model) => model + ' ' + calls(d, model)).join(' · ') || 'no calls')}
           <li class="flex flex-[1_0_16px] flex-col items-center gap-1" title={text}>

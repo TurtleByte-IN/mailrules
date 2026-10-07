@@ -81,7 +81,7 @@
       </div>
       <div class="flex flex-wrap gap-x-3.5 gap-y-1 text-[12.5px] text-secondary">
         {#each parts as p (p.label)}
-          <a href="/activity?outcome={p.outcome}" use:link class="inline-flex items-center gap-[5px] text-secondary no-underline"><span class="size-2.5 rounded-sm {p.fill}"></span>{p.label} {p.n}</a>
+          <a href="/activity?outcome={p.outcome}" use:link class="inline-flex items-center gap-[5px] text-secondary no-underline max-md:min-h-11"><span class="size-2.5 rounded-sm {p.fill}"></span>{p.label} {p.n}</a>
         {/each}
       </div>
     </section>
@@ -130,7 +130,7 @@
           <span class="text-[12.5px] text-muted">by matches</span>
         </div>
         {#each stats.top_rules as r (r.rule_id)}
-          <a href={r.rule_id === null ? '/rules' : '/rules?id=' + r.rule_id} use:link class="flex items-center gap-3 text-ink no-underline">
+          <a href={r.rule_id === null ? '/rules' : '/rules?id=' + r.rule_id} use:link class="flex items-center gap-3 text-ink no-underline max-md:min-h-11">
             <span class="flex-[0_0_110px] truncate font-medium">{r.rule_name}</span>
             <span class="h-2 flex-auto overflow-hidden rounded-sm bg-line-divider"><span class="block h-2 bg-ink" style:width="{Math.max(3, (r.hits / most) * 100)}%"></span></span>
             <span class="flex-[0_0_32px] text-right font-mono text-[12.5px]">{r.hits}</span>
@@ -154,10 +154,10 @@
         <a href="/activity" use:link class="btn min-h-9 px-3 text-[13px] no-underline">Open activity</a>
       </div>
       {#each overview.latest as row (row.id)}
-        <a href="/activity" use:link class="flex min-h-11 items-center gap-2.5 border-t border-line-divider px-[18px] text-[13px] text-ink no-underline">
+        <a href="/activity" use:link class="flex min-h-11 items-center gap-2.5 border-t border-line-divider px-[18px] text-[13px] text-ink no-underline max-md:flex-wrap max-md:gap-y-0.5 max-md:py-2.5">
           <span class="flex-[0_0_62px] font-mono text-xs text-muted">{clock(row.created_at)}</span>
-          <span class="flex-[0_0_130px] truncate font-medium">{row.from}</span>
-          <span class="min-w-0 flex-[1_1_160px] truncate text-nav">{row.subject}</span>
+          <span class="min-w-0 flex-[0_0_130px] truncate font-medium max-md:flex-1">{row.from}</span>
+          <span class="min-w-0 flex-[1_1_160px] truncate text-nav max-md:order-last max-md:basis-full">{row.subject}</span>
           <span class="chip {chips[kind(row)]}">{outcome(row)}</span>
         </a>
       {:else}

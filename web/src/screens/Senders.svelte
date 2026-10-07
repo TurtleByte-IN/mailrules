@@ -48,14 +48,14 @@
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 px-[18px] py-3.5 {i ? 'border-t border-line-divider' : ''}">
           <div class="min-w-0 flex-[1_1_220px]">
             <div class="font-semibold">{nameOf(s)}</div>
-            <div class="font-mono text-[12.5px] text-muted">{s.type === 'domain' ? 'Domain: all its addresses' : s.value}</div>
+            <div class="font-mono text-[12.5px] text-muted max-md:break-words">{s.type === 'domain' ? 'Domain: all its addresses' : s.value}</div>
           </div>
           <div class="w-[130px]">
             <div class="font-semibold">{s.messages.toLocaleString()} emails</div>
             <div class="text-[12.5px] text-muted">30 days</div>
           </div>
           <label class="sr-only" for="sd-{s.type}-{s.value}">What happens to mail from {nameOf(s)}</label>
-          <select id="sd-{s.type}-{s.value}" class="field flex-[1_1_200px] px-2.5" value={routingOf(s)} onchange={(e) => route(s, e.currentTarget)}>
+          <select id="sd-{s.type}-{s.value}" class="field flex-[1_1_200px] px-2.5 max-md:min-w-0" value={routingOf(s)} onchange={(e) => route(s, e.currentTarget)}>
             <option value="auto">Let my rules decide</option>
             <option value="keep">Always keep in Inbox</option>
             {#each rules.list as r (r.id)}
@@ -81,7 +81,7 @@
       <h2 class="text-[15px]">Learned from your corrections and consistent decisions</h2>
       {#each senders.learned as r (r.type + r.value)}
         <div class="flex flex-wrap items-center justify-between gap-2 text-[13.5px]">
-          <span><span class="font-mono">{r.value}</span> → {targetOf(r)}</span>
+          <span class="max-md:min-w-0 max-md:break-words"><span class="font-mono">{r.value}</span> → {targetOf(r)}</span>
           <button type="button" class="btn min-h-9 px-3" aria-label="Forget {r.value}" onclick={() => forget(r)}>Forget</button>
         </div>
       {:else}

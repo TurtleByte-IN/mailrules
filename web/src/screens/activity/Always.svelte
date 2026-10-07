@@ -24,13 +24,13 @@
 </script>
 
 <div class="flex flex-col gap-1">
-  <label id="{uid}-for" class="flex min-h-8 items-center gap-2 text-[13px] text-nav">
+  <label id="{uid}-for" class="flex min-h-8 items-center gap-2 text-[13px] text-nav max-md:min-h-11">
     <input type="checkbox" bind:checked={ticked} />Always do this for {domain || item.from}
   </label>
   {#if ticked && domain}
     <div role="radiogroup" aria-labelledby="{uid}-for" class="flex flex-col pl-6 text-[13px] text-nav" onchange={() => (refusal = '')}>
-      <label class="flex min-h-8 items-center gap-2"><input type="radio" name={uid} value="domain" bind:group={scope} />Everyone at {domain}</label>
-      <label class="flex min-h-8 items-center gap-2"><input type="radio" name={uid} value="address" bind:group={scope} />Only {item.from}</label>
+      <label class="flex min-h-8 items-center gap-2 max-md:min-h-11"><input type="radio" name={uid} value="domain" bind:group={scope} />Everyone at {domain}</label>
+      <label class="flex min-h-8 items-center gap-2 max-md:min-h-11"><input type="radio" name={uid} value="address" bind:group={scope} />Only {item.from}</label>
       {#if refusal}<p role="alert" class="rounded bg-trash-bg px-3 py-2 break-words text-trash">{refusal}</p>{/if}
     </div>
   {/if}
