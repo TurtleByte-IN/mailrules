@@ -2,12 +2,14 @@
   import { tick } from 'svelte';
   import { router } from 'svelte-spa-router';
   import { ApiError } from '../lib/api/client';
+  import { TRASH_FOLDER } from '../lib/api/settings';
   import * as rulesApi from '../lib/api/rules';
   import TestRunner from '../lib/components/TestRunner.svelte';
   import Waiting from '../lib/components/Waiting.svelte';
   import { day } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
+  import { settings } from '../lib/state/settings.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import MoreOptions from './rules/MoreOptions.svelte';
   import Rewrite from './rules/Rewrite.svelte';
@@ -33,6 +35,8 @@
   let undoing = $state(false);
 
   const fail = (e: unknown) => flash((e as Error).message);
+  // Where a trash rule's mail goes, the same words Cleanup uses for it.
+  const trashTo = $derived(settings.value.trash_to_folder ? TRASH_FOLDER : undefined);
   const only = (r: rulesApi.Rule) => accounts.list.find((a) => String(a.id) === String(r.account_id))?.label;
 
   // The rule whose Rewrite with AI box is open.
@@ -227,7 +231,7 @@
             <button type="button" class="flex min-w-0 flex-[1_1_260px] flex-col gap-0.5 border-0 bg-transparent p-0 text-left" aria-pressed={r.id === sel.id} onclick={() => select(r.id)}>
               <span class="flex flex-wrap items-center gap-2"><span class="font-semibold">{r.name}</span><span class={k.chip}>{k.label}</span></span>
               <span class="text-[12.5px] text-secondary">{summary(r)}</span>
-              <span class="text-[12.5px] text-muted">Then: {actionsText(r.actions)}{extrasText(r, only(r))} · {r.hits_week} this week{r.last_match_at ? ' · last match ' + day(r.last_match_at) : ''}</span>
+              <span class="text-[12.5px] text-muted">Then: {actionsText(r.actions, trashTo)}{extrasText(r, only(r))} · {r.hits_week} this week{r.last_match_at ? ' · last match ' + day(r.last_match_at) : ''}</span>
             </button>
             <label class="flex items-center gap-2 text-[12.5px] text-secondary max-md:min-h-11">
               <input type="checkbox" checked={r.enabled} onchange={(e) => toggle(r, e.currentTarget)} />On
@@ -271,7 +275,7 @@
         {#if treeWords(sel.exceptions)}
           <div class="text-[13px]"><span class="font-semibold">Unless</span> <span class="text-nav">{treeWords(sel.exceptions)}</span></div>
         {/if}
-        <div class="text-[13px]"><span class="font-semibold">Then</span> <span class="text-nav">{actionsText(sel.actions)}</span></div>
+        <div class="text-[13px]"><span class="font-semibold">Then</span> <span class="text-nav">{actionsText(sel.actions, trashTo)}</span></div>
         <div class="flex flex-col gap-2.5 rounded-md border border-line-divider bg-selected-row p-3">
           <MoreOptions id="rule" value={sel} onchange={save} stackLabel="Stacks: also applies after another rule matched" />
           {@render problem('account_id')}

@@ -42,7 +42,9 @@ export async function loadPresets() {
   }
 }
 
-const put = (a: accountsApi.Account) => (accounts.list = accounts.list.map((x) => (x.id === a.id ? a : x)));
+const put = (a: accountsApi.Account) => {
+  accounts.list = accounts.list.map((x) => (x.id === a.id ? a : x));
+};
 
 // Only accounts already listed: an event that trails a removal must not bring the row back.
 subscribe('account.status', (a) => put(a as accountsApi.Account));

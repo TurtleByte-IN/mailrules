@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Rule } from '../lib/api/rules';
 import { load, rules } from '../lib/state/rules.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import Rules from './Rules.svelte';
 
 // A rule as GET /api/rules returns it.
@@ -59,6 +60,21 @@ it('says so when there are no rules', async () => {
   render(Rules);
   expect(screen.getByText('No rules yet.')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it.each([
+  [true, 'Then: Move to MailRules Trash'],
+  [false, 'Then: Move to Trash'],
+])('with trash_to_folder %s, a trash rule names where its mail goes: %s', async (on, text) => {
+  settings.value.trash_to_folder = on;
+  try {
+    respond(200, { items: [{ ...rule(1, 'Scams'), actions: [{ type: 'trash' }] }] });
+    await load();
+    render(Rules);
+    expect(screen.getByRole('region', { name: 'Rule list' }).querySelector('li')!.textContent).toContain(text);
+  } finally {
+    settings.value.trash_to_folder = true;
+  }
 });
 
 it('lists the rules in order, and asks for a mailbox before testing one', async () => {

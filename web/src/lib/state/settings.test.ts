@@ -68,6 +68,29 @@ it('reports a failed load and recovers on retry', async () => {
   expect(settings.error).toBe('');
 });
 
+it('keeps the newest load when an older one answers late', async () => {
+  const answers: ((r: Response) => void)[] = [];
+  fetchMock.mockImplementationOnce(() => new Promise((r) => answers.push(r)));
+  fetchMock.mockImplementationOnce(() => new Promise((r) => answers.push(r)));
+  const first = load();
+  const second = load();
+  answers[1](new Response(JSON.stringify({ ...fresh(), dry_run: false }), { status: 200 }));
+  await second;
+  answers[0](new Response(JSON.stringify({ error: { code: 'internal', message: 'Old failure.' } }), { status: 500 }));
+  await first;
+  expect(settings).toMatchObject({ value: { dry_run: false }, error: '' });
+});
+
+it('keeps a saved change over a load that was sent before it', async () => {
+  let answer!: (r: Response) => void;
+  fetchMock.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+  const slow = load();
+  await patch({ dry_run: false });
+  answer(new Response(JSON.stringify(fresh()), { status: 200 }));
+  await slow;
+  expect(settings.value.dry_run).toBe(false);
+});
+
 it.each<[string, SettingsPatch]>([
   ['decider with its model', { decider: 'ollama', decider_model: 'llama3.2' }],
   ['fallback off', { fallback_model: '' }],

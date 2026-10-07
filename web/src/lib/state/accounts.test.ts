@@ -103,9 +103,13 @@ it.each<[string, () => Promise<void>, string, Reply, string]>([
 });
 
 it('follows account.status events for listed mailboxes only', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   dispatch('account.status', acct({ id: 2, status: 'auth_failed', last_error: 'The mail server refused the sign-in.' }));
   dispatch('account.status', acct({ id: 9 }));
   expect(accounts.list.map((a) => [a.id, a.status])).toEqual([[1, 'live'], [2, 'auth_failed']]);
+  // Svelte warns in dev when the value of an assignment to state is used (assignment_value_stale).
+  expect(warn.mock.calls.flat().join(' ')).not.toContain('assignment_value_stale');
+  warn.mockRestore();
 });
 
 it('has a label and a dot for every status in the contract', () => {

@@ -100,9 +100,9 @@ func TestEvaluate(t *testing.T) {
 		{name: "below threshold with no cut-off goes to review", rules: []Rule{receipts, promos},
 			candidates: []int64{1, 2}, pick: pick{2, 0.8},
 			want: Result{Stage: StageDecider, RuleID: 2, Confidence: 0.8, Review: true}},
-		{name: "decider picks none with no cut-off: nothing happens", rules: []Rule{receipts, promos},
+		{name: "decider picks none with no cut-off: nothing happens, with how sure it was", rules: []Rule{receipts, promos},
 			candidates: []int64{1, 2}, pick: pick{0, 0.6},
-			want: Result{Stage: StageNone}},
+			want: Result{Stage: StageNone, Confidence: 0.6}},
 
 		// Step 6: stacking.
 		{name: "stacking rules append after the cut-off's actions", rules: []Rule{food, flagBulk, readPDF},

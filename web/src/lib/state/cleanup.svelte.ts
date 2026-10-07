@@ -224,9 +224,9 @@ async function onCheckProgress(c: cleanupApi.CleanupCheck) {
   adopt(full);
 }
 
-/** Every selectable row's index, across all pages and filters. */
-function selectableIndices(): number[] {
-  return (cleanup.check?.rows ?? []).filter((r) => r.selectable).map((r) => r.index);
+/** Every selectable row's index across all pages, or only those of the rule named by `rule`. */
+function selectableIndices(rule?: string): number[] {
+  return (cleanup.check?.rows ?? []).filter((r) => r.selectable && (!rule || r.rule_name === rule)).map((r) => r.index);
 }
 
 /** Selectable rows the user kept ticked: what Sort will act on. */
@@ -302,13 +302,19 @@ export function chartTitle(c: cleanupApi.CleanupCheck, here = 'Inbox') {
   return emails(n) + ' in ' + here + range + ' would be sorted like this';
 }
 
-export function selectAll() {
-  cleanup.excluded = new Set();
+/**
+ * Ticks every selectable row, or with `rule` only that rule's rows (the table's rule filter);
+ * rows the filter hides keep their ticks.
+ */
+export function selectAll(rule?: string) {
+  const shown = new Set(selectableIndices(rule));
+  cleanup.excluded = new Set([...cleanup.excluded].filter((i) => !shown.has(i)));
   ticksChanged();
 }
 
-export function selectNone() {
-  cleanup.excluded = new Set(selectableIndices());
+/** Unticks every selectable row, or with `rule` only that rule's rows, as selectAll. */
+export function selectNone(rule?: string) {
+  cleanup.excluded = new Set([...cleanup.excluded, ...selectableIndices(rule)]);
   ticksChanged();
 }
 

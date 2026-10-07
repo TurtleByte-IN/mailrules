@@ -290,6 +290,38 @@ it('the rule filter narrows the visible rows without changing the selection coun
   expect(screen.getByText('2 selected of 2')).toBeTruthy();
 });
 
+it('Select none and Select all act on the rows the rule filter shows, and leave the others as they are', async () => {
+  routes[CHECK] = [
+    200,
+    {
+      check: check({
+        rows: [
+          checkRow({ index: 0, from: 'news@substack.com', subject: 'Weekly Go', rule_name: 'Newsletters' }),
+          checkRow({ index: 1, from: 'billing@shop.com', subject: 'Your receipt', rule_name: 'Receipts', uid: 101 }),
+          checkRow({ index: 2, from: 'news@go.dev', subject: 'Go news', rule_name: 'Newsletters', uid: 102 }),
+        ],
+      }),
+    },
+  ];
+  render(Cleanup);
+
+  await openList();
+  expect(await screen.findByText('3 selected of 3')).toBeTruthy();
+  await fireEvent.change(screen.getByRole('combobox', { name: 'Rule' }), { target: { value: 'Newsletters' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Select none' }));
+  expect(screen.getByText('1 selected of 3')).toBeTruthy();
+
+  await fireEvent.change(screen.getByRole('combobox', { name: 'Rule' }), { target: { value: '' } });
+  expect(screen.getByRole<HTMLInputElement>('checkbox', { name: /Your receipt/ }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>('checkbox', { name: /Weekly Go/ }).checked).toBe(false);
+
+  await fireEvent.change(screen.getByRole('combobox', { name: 'Rule' }), { target: { value: 'Receipts' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Select none' }));
+  await fireEvent.change(screen.getByRole('combobox', { name: 'Rule' }), { target: { value: 'Newsletters' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+  expect(screen.getByText('2 selected of 3')).toBeTruthy();
+});
+
 it('pages the rows in fifties', async () => {
   const rows = Array.from({ length: 60 }, (_, i) => checkRow({ index: i, from: `a${i}@x.com`, subject: 'Subject ' + i, uid: 100 + i }));
   routes[CHECK] = [200, { check: check({ rows }) }];

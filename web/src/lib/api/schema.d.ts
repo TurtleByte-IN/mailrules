@@ -1996,7 +1996,7 @@ export interface components {
             rule_name: string;
             /** @description What would be done; empty for review and left-alone rows */
             actions: components["schemas"]["RuleAction"][];
-            /** @description How sure the model was, 0..1; null where no model was asked. Meaningful only where a rule took the email or it is `review`; for a left-alone row the model answered "no rule" and it is 0 */
+            /** @description How sure the model was, 0..1; null where no model was asked. Where a rule took the email or it is `review` it is about that rule; for a left-alone row it is how sure the model was that no rule applies */
             confidence: number | null;
             /** @description Whether the row can be ticked for Sort: a rule settled it with an action and it would not wait in Needs review. Ticked by default */
             selectable: boolean;

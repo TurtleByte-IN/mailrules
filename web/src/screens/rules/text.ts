@@ -55,7 +55,7 @@ const actionWords: Partial<Record<Action['type'], string>> = { archive: 'Archive
 
 /**
  * Move to Food, mark read. `trashTo` names the folder a trash goes to when it is not the
- * server's Trash (`trash_to_folder`), for text about mail that is about to be moved.
+ * server's Trash (`trash_to_folder`), for text about where mail goes or is about to go.
  */
 export const actionsText = (actions: Action[], trashTo?: string) =>
   actions

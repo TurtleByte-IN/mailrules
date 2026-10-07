@@ -136,12 +136,17 @@ func Evaluate(e message.Summary, rs []Rule, senders []SenderRule, opt Options) E
 
 // Resolve turns the decider's answer into the final result (step 5). A pick
 // outside the candidates counts as "none of these", for which the cut-off rule
+// applies; when none does, the result keeps the decider's confidence that no rule
 // applies. A pick below its threshold goes to Needs review with no action at all,
 // even when there is a cut-off rule.
 func (ev Evaluation) Resolve(ruleID int64, confidence float64) Result {
 	i := slices.IndexFunc(ev.Candidates, func(r Rule) bool { return r.ID == ruleID })
 	if i < 0 {
-		return ev.result(ev.CutOff, StageCondition, 1)
+		res := ev.result(ev.CutOff, StageCondition, 1)
+		if res.Stage == StageNone {
+			res.Confidence = confidence // how sure the decider was that no rule applies
+		}
+		return res
 	}
 	pick := &ev.Candidates[i]
 	threshold := ev.minConfidence

@@ -65,7 +65,8 @@
     }
   }
 
-  // The table reads over every row; the filter and paging are view-only and never change what Sort acts on.
+  // The table reads over every row; the filter and paging are view-only and never change what Sort acts on,
+  // except that Select all and Select none act on the rows the filter shows.
   const PAGE = 50;
   let ruleFilter = $state('');
   let pageIndex = $state(0);
@@ -206,8 +207,8 @@
         {#if choosing}
           <div id="cleanup-emails" class="flex min-w-0 flex-col gap-3">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <button type="button" class="btn min-h-9 px-3" onclick={selectAll}>Select all</button>
-              <button type="button" class="btn min-h-9 px-3" onclick={selectNone}>Select none</button>
+              <button type="button" class="btn min-h-9 px-3" onclick={() => selectAll(ruleFilter)}>Select all</button>
+              <button type="button" class="btn min-h-9 px-3" onclick={() => selectNone(ruleFilter)}>Select none</button>
               {#if ruleNames.length}
                 <label class="flex items-center gap-1.5 text-[13px] max-md:w-full">
                   <span>Rule</span>

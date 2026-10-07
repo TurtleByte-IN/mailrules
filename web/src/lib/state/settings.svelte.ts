@@ -50,20 +50,33 @@ export async function findWorkspace() {
   }
 }
 
+// Bumped by every load and every saved change: an answer to an older request is dropped, so a
+// slow load cannot put older values, or an error, back over newer ones.
+let generation = 0;
+
 export async function load() {
+  const mine = ++generation;
   try {
-    settings.value = await settingsApi.get();
+    const value = await settingsApi.get();
+    if (mine !== generation) return;
+    settings.value = value;
     settings.loaded = true;
     settings.error = '';
   } catch (e) {
-    settings.error = message(e);
+    if (mine === generation) settings.error = message(e);
   }
+}
+
+/** Keeps the settings a saved change answered with, and makes any load still on its way stale. */
+function keep(value: settingsApi.Settings) {
+  generation++;
+  settings.value = value;
 }
 
 /** Resolves false, after a toast with the daemon's reason, when the change was refused. */
 export async function patch(p: settingsApi.SettingsPatch) {
   try {
-    settings.value = await settingsApi.patch(p);
+    keep(await settingsApi.patch(p));
     return true;
   } catch (e) {
     flash(message(e));
@@ -78,7 +91,7 @@ export async function patch(p: settingsApi.SettingsPatch) {
  */
 export async function setUrl(name: settingsApi.UrlName, url: string) {
   try {
-    settings.value = await settingsApi.patch({ [name]: url || null });
+    keep(await settingsApi.patch({ [name]: url || null }));
   } catch (e) {
     if (e instanceof ApiError && e.path === name) return e.message;
     flash(message(e));
@@ -92,7 +105,7 @@ export async function setUrl(name: settingsApi.UrlName, url: string) {
  */
 export async function setWorkspace(id: string | null) {
   try {
-    settings.value = await settingsApi.patch({ anthropic_workspace_id: id });
+    keep(await settingsApi.patch({ anthropic_workspace_id: id }));
   } catch (e) {
     if (e instanceof ApiError && e.path === 'anthropic_workspace_id') return e.message;
     flash(message(e));
