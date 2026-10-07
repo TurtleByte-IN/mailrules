@@ -290,7 +290,8 @@ func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) 
 }
 
 // finish records the decision, acts on it or parks the message in Needs review, sets the
-// final state and publishes the event.
+// final state and publishes the event. A message parked in Needs review is not touched in
+// the mailbox at all.
 func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) error {
 	var err error
 	if dec.ID, err = p.Store.AddDecision(ctx, dec, store.StateDecided); err != nil {
@@ -302,7 +303,6 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 	switch {
 	case res.Review:
 		state, event = store.StateReview, events.MessageReview
-		acts = []rules.Action{{Type: actions.KindReview}}
 	case len(res.Actions) > 0:
 		state, acts = store.StateActed, res.Actions
 	}
@@ -315,12 +315,7 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 				return err
 			}
 		}
-		switch _, err := p.Exec.Apply(ctx, rec, acts, batch); {
-		case err == nil:
-		case res.Review:
-			// The keyword only helps mail clients show the message; review works without it.
-			slog.WarnContext(ctx, "could not tag a message for review", "account", m.AccountID, "message", m.ID, "error", err.Error())
-		default:
+		if _, err := p.Exec.Apply(ctx, rec, acts, batch); err != nil {
 			return fmt.Errorf("apply: %w", err)
 		}
 	}

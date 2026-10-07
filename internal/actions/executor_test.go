@@ -255,7 +255,6 @@ func TestApply(t *testing.T) {
 		{"flags after a move land on the moved message", false, nil, act("move:Food", "read", "flag"),
 			[]string{"flags", "ensure Food", "move Food", `store +\Seen`, `store +\Flagged`}, "Food", []string{`\Flagged`, `\Seen`}},
 		{"a move to where it already is does nothing", false, nil, act("move:INBOX", "read"), []string{"flags", "ensure INBOX", `store +\Seen`}, "INBOX", []string{`\Seen`}},
-		{"review adds the keyword", false, nil, act(KindReview), []string{"flags", "store +" + ReviewKeyword}, "INBOX", []string{ReviewKeyword}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -372,7 +371,7 @@ func TestDryRun(t *testing.T) {
 	ctx := t.Context()
 	e.x.DryRunDefault = true // MAILRULES_DRY_RUN's default; nothing stored yet
 	d := e.deliver("1")
-	all := act("move:Food", "trash", "archive", "junk", "flag", "unflag", "read", "unread", "keep", KindReview)
+	all := act("move:Food", "trash", "archive", "junk", "flag", "unflag", "read", "unread", "keep")
 
 	batch, err := e.st.CreateBatch(ctx, store.BatchLive, store.BatchDone, 1)
 	if err != nil {
@@ -677,12 +676,7 @@ func TestUndoSince(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ref, _ := e.where(recent.MessageID)
-	tag := DecisionRecord{MessageID: recent.MessageID, Ref: ref}
-	if _, err := e.x.Apply(ctx, tag, []rules.Action{{Type: KindReview}}, 0); err != nil { // the review tag is not undone
-		t.Fatal(err)
-	}
-	ref, _ = e.where(gone.MessageID)
+	ref, _ := e.where(gone.MessageID)
 	if _, err := e.raw.Move(ctx, ref, "Archive"); err != nil { // filed by hand since
 		t.Fatal(err)
 	}
@@ -694,7 +688,7 @@ func TestUndoSince(t *testing.T) {
 	if b, _ := e.st.Batch(ctx, batch); b.Kind != store.BatchUndo || b.Status != store.BatchFailed || b.Total != 4 || b.Done != 2 {
 		t.Errorf("undo batch = %+v", b)
 	}
-	if ref, flags := e.where(recent.MessageID); ref.Folder != "INBOX" || !slices.Equal(flags, []string{ReviewKeyword}) {
+	if ref, flags := e.where(recent.MessageID); ref.Folder != "INBOX" || len(flags) != 0 {
 		t.Errorf("the recent message is in %s with %v", ref.Folder, flags)
 	}
 	if ref, _ := e.where(old.MessageID); ref.Folder != "Food" {

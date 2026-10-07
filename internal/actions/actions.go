@@ -10,13 +10,6 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-// KindReview is the one action kind no rule can name: it adds the IMAP keyword
-// ReviewKeyword to a message waiting in Needs review, so mail clients can show it.
-const (
-	KindReview    = "review"
-	ReviewKeyword = "$MailRulesReview"
-)
-
 // DecisionRecord says which message to act on and for which decision.
 type DecisionRecord struct {
 	DecisionID int64       // 0 = no decision, e.g. a correction

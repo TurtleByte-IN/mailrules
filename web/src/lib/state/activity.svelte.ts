@@ -125,8 +125,6 @@ function current(r: Item) {
   return r.actions.filter((a) => a.batch_id === last?.batch_id && a.decision_id === last?.decision_id);
 }
 
-const inEffect = (r: Item) => r.actions.filter((a) => a.status === 'done' && a.kind !== 'review');
-
 /** Everything the latest decision did has been undone. */
 export const undone = (r: Item) => current(r).length > 0 && current(r).every((a) => a.status === 'undone');
 
@@ -155,7 +153,7 @@ function applyAction(a: activityApi.MessageAction) {
   if (!r) return;
   const i = r.actions.findIndex((x) => x.id === a.id);
   if (i >= 0) r.actions[i] = a;
-  r.undoable = inEffect(r).length > 0;
+  r.undoable = r.actions.some((x) => x.status === 'done');
 }
 
 export async function undo(row: Item) {

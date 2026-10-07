@@ -99,7 +99,7 @@ func trashFolder(a store.Action) string {
 func outcome(row store.ActivityRow) string {
 	var current []store.Action
 	for _, a := range row.Actions {
-		if last := row.Actions[len(row.Actions)-1]; a.BatchID == last.BatchID && a.DecisionID == last.DecisionID && a.Kind != actions.KindReview {
+		if last := row.Actions[len(row.Actions)-1]; a.BatchID == last.BatchID && a.DecisionID == last.DecisionID {
 			current = append(current, a)
 		}
 	}
@@ -172,7 +172,7 @@ func (s *server) activityJSON(ctx context.Context, row store.ActivityRow) activi
 	}
 	for _, a := range row.Actions {
 		out.Actions = append(out.Actions, toActionJSON(a))
-		out.Undoable = out.Undoable || a.Status == store.ActionDone && a.Kind != actions.KindReview && s.now().Unix()-a.CreatedAt <= store.UndoDays*24*3600
+		out.Undoable = out.Undoable || a.Status == store.ActionDone && s.now().Unix()-a.CreatedAt <= store.UndoDays*24*3600
 	}
 	if slices.ContainsFunc(row.Actions, func(a store.Action) bool { return a.DecisionID == 0 }) {
 		if cs, err := s.store.MessageCorrections(ctx, m.ID); err == nil && len(cs) > 0 {
@@ -187,7 +187,7 @@ var (
 	stages = []string{"sender", "condition", "decider", "fallback", "none"}
 	states = []string{store.StateNew, store.StateDecided, store.StateActed, store.StateReview, store.StateSkipped, store.StateError}
 	kinds  = []string{rules.ActMove, rules.ActArchive, rules.ActTrash, rules.ActJunk, rules.ActFlag, rules.ActUnflag,
-		rules.ActRead, rules.ActUnread, rules.ActKeep, actions.KindReview}
+		rules.ActRead, rules.ActUnread, rules.ActKeep}
 )
 
 // activityFilter reads the list parameters shared by the feed and Needs review:
@@ -352,7 +352,7 @@ var stageLabels = map[string]string{"sender": "Sender rules", "condition": "Cond
 
 var actionWords = map[string]string{rules.ActArchive: "Archived", rules.ActJunk: "Moved to Junk",
 	rules.ActFlag: "Flagged", rules.ActUnflag: "Unflagged", rules.ActRead: "Marked read", rules.ActUnread: "Marked unread",
-	rules.ActKeep: "Kept in the inbox", actions.KindReview: "Tagged for review"}
+	rules.ActKeep: "Kept in the inbox"}
 
 func actionDetail(a store.Action) string {
 	text := actionWords[a.Kind]
