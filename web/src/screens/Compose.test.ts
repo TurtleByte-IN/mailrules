@@ -161,6 +161,45 @@ it('saves an AI-only rule with no conditions in the payload', async () => {
   expect(sent.conditions).toEqual({});
 });
 
+it('offers the threshold only once the email is about something, and saves it', async () => {
+  const saved = { ...drafted('Invoices'), id: 3 };
+  const f = serve({ 'POST /api/rules/batch': [200, { rules: [saved] }] });
+  render(Compose);
+  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  // A conditions-only rule asks no model, so there is nothing for a threshold to do.
+  expect(screen.queryByLabelText(/Act when sure above/)).toBeNull();
+  expect(screen.getByText('More options: mailbox, stacking')).toBeTruthy();
+
+  await fireEvent.input(screen.getByLabelText('Rule name'), { target: { value: 'Invoices' } });
+  await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'an invoice' } });
+  expect(screen.getByText('More options: mailbox, stacking, threshold')).toBeTruthy();
+  const slider = screen.getByLabelText('Act when sure above your default');
+  await fireEvent.input(slider, { target: { value: '90' } });
+  expect(screen.getByLabelText('Act when sure above 0.90')).toBe(slider);
+  await fireEvent.change(slider, { target: { value: '90' } });
+  await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+
+  await vi.waitFor(() => expect(f).toHaveBeenCalledOnce());
+  expect(JSON.parse(f.mock.calls[0][1].body as string).rules[0].min_confidence).toBe(0.9);
+});
+
+it('opens More options and marks the threshold when the daemon refuses it', async () => {
+  const message = 'A rule that trashes on meaning needs to act only when sure above 0.85.';
+  serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].min_confidence' } }] });
+  render(Compose);
+  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'cold sales' } });
+  await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'trash' } });
+  const slider = screen.getByLabelText(/Act when sure above/);
+  await fireEvent.change(slider, { target: { value: '60' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+
+  expect((await screen.findByRole('alert')).textContent).toBe(message);
+  expect(slider.getAttribute('aria-invalid')).toBe('true');
+  expect(slider.closest('details')?.open).toBe(true);
+});
+
 // A draft as POST /api/rules/compose returns it.
 const drafted = (name: string): Draft => ({
   name,

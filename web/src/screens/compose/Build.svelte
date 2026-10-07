@@ -7,6 +7,7 @@
   import { add, edit, rules } from '../../lib/state/rules.svelte';
   import { flash } from '../../lib/state/toast.svelte';
   import MoreOptions from '../rules/MoreOptions.svelte';
+  import Threshold from '../rules/Threshold.svelte';
   import { condText, fields } from '../rules/text';
   import { emptyBuilder, english, filled, fromRule, opsFor, refusedPart, toCondition, toRule, type Builder } from './builder';
 
@@ -75,7 +76,7 @@
       const at = e instanceof ApiError && e.path ? refusedPart(b, e.path) : undefined;
       if (!at) return flash((e as Error).message);
       refused = { ...at, message: (e as Error).message, was: snapshot(at.part) };
-      if (at.part === 'account_id' || at.part === 'stack') more = true;
+      if (at.part === 'account_id' || at.part === 'stack' || at.part === 'min_confidence') more = true;
     } finally {
       saving = false;
     }
@@ -171,9 +172,15 @@
     </div>
 
     <details class="border-t border-line-divider pt-3.5" bind:open={more}>
-      <summary class="min-h-8 cursor-pointer font-semibold">More options: mailbox, stacking</summary>
+      <summary class="min-h-8 cursor-pointer font-semibold">More options: mailbox, stacking{b.intent.trim() ? ', threshold' : ''}</summary>
       <div class="flex flex-col gap-3.5 pt-3">
         <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" {problem} />
+        {#if b.intent.trim()}
+          <div class="flex max-w-[420px] flex-col gap-1.5">
+            <Threshold id="b-thr" value={b.min_confidence} onchange={(v) => (b.min_confidence = v)} invalid={bad('min_confidence')} />
+            {@render why('min_confidence')}
+          </div>
+        {/if}
       </div>
     </details>
     <div class="flex flex-wrap gap-2 border-t border-line-divider pt-3.5">

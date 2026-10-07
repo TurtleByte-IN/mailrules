@@ -69,21 +69,31 @@ describe('builder', () => {
     ['keep and flag', { action: 'flag', folder: '' }],
     ['conditions only', { intent: '', unless: false, match: 'all' }],
     ['AI only, no conditions', { rows: [], match: 'all', unless: false }],
+    ['a threshold of its own', { min_confidence: 0.9 }],
   ])('loads a saved rule back into the same form: %s', (_, change) => {
     const b = { ...full, ...change };
     // The daemon's reply to saving this form, shaped as the contract's Rule.
-    const saved: Rule = { ...toRule(b), id: 9, said: '', priority: 3, model: '', min_confidence: null, enabled: true, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null };
+    const saved: Rule = { ...toRule(b), id: 9, said: '', priority: 3, model: '', enabled: true, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null };
     expect(fromRule(saved)).toEqual({ ...b, editingId: 9 });
   });
 
   it('is a RuleInput once it has its wording', () => {
     const input: RuleInput = { ...toRule(full), said: 'Built with conditions', enabled: true };
-    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'enabled', 'exceptions', 'intent', 'name', 'said', 'stack']);
+    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'enabled', 'exceptions', 'intent', 'min_confidence', 'name', 'said', 'stack']);
   });
 
   it('leaves out rows with no value and names an unnamed rule', () => {
     const r = toRule({ ...emptyBuilder(), rows: [{ field: 'subject', op: 'in', value: ' ' }], action: 'archive' });
     expect(r).toMatchObject({ name: 'Condition rule', conditions: {}, intent: '', actions: [{ type: 'archive' }] });
+  });
+
+  // Only the decision model reads the threshold, so a rule with no "is about" carries none.
+  it.each<[string, Partial<Builder>, number | null]>([
+    ['is about, own threshold', { min_confidence: 0.9 }, 0.9],
+    ['is about, the default', { min_confidence: null }, null],
+    ['conditions only, a threshold left from before', { intent: ' ', min_confidence: 0.9 }, null],
+  ])('sends the threshold only with "is about": %s', (_, change, want) => {
+    expect(toRule({ ...full, ...change }).min_confidence).toBe(want);
   });
 
   it.each<[Partial<Builder>, string]>([
@@ -111,8 +121,8 @@ describe('refusedPart', () => {
     ['rules[0].new_folders[0]', { part: 'folder' }],
     ['rules[0].actions[0].type', { part: 'action' }],
     ['rules[0].actions', { part: 'action' }],
-    ['rules[0].min_confidence', { part: 'action' }],
-    ['min_confidence', { part: 'action' }],
+    ['rules[0].min_confidence', { part: 'min_confidence' }],
+    ['min_confidence', { part: 'min_confidence' }],
     ['rules[0].name', { part: 'name' }],
     ['rules[0].stack', { part: 'stack' }],
     ['rules[0].account_id', { part: 'account_id' }],

@@ -4,12 +4,13 @@
   import * as rulesApi from '../lib/api/rules';
   import TestRunner from '../lib/components/TestRunner.svelte';
   import Waiting from '../lib/components/Waiting.svelte';
-  import { confidence, day } from '../lib/format';
+  import { day } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import MoreOptions from './rules/MoreOptions.svelte';
   import Rewrite from './rules/Rewrite.svelte';
+  import Threshold from './rules/Threshold.svelte';
   import { actionsText, condText, extrasText, kind, summary, treeWords } from './rules/text';
 
   // Add rules sends people back here with the rule they just saved selected.
@@ -20,9 +21,6 @@
   // The last test: `ok` is false for one the daemon would not run, and `text` is empty when
   // there is no mailbox to test on.
   let result = $state<{ text: string; ok: boolean } | null>(null);
-  // The slider's value while it is being dragged; saved on release.
-  let thr = $state<number | null>(null);
-  const sure = $derived(thr ?? sel?.min_confidence ?? null);
   // The field the daemon refused in the last edit, and why; shown beside that field.
   let refused = $state<{ path: string; message: string } | null>(null);
   const editorFields = ['name', 'intent', 'account_id', 'stack', 'model', 'min_confidence'];
@@ -286,21 +284,7 @@
             {@render problem('model')}
           </div>
           <div class="flex flex-[1_1_160px] flex-col gap-1.5">
-            <label for="rule-thr" class="text-[13px] font-semibold">Act when sure above {sure === null ? 'your default' : confidence(sure)}</label>
-            <input
-              id="rule-thr"
-              type="range"
-              min="50"
-              max="99"
-              class="h-10 accent-ink"
-              disabled={!sel.intent}
-              value={Math.round((sel.min_confidence ?? 0.75) * 100)}
-              oninput={(e) => (thr = +e.currentTarget.value / 100)}
-              onchange={(e) => {
-                thr = null;
-                save({ min_confidence: +e.currentTarget.value / 100 });
-              }}
-            />
+            <Threshold id="rule-thr" value={sel.min_confidence} disabled={!sel.intent} onchange={(v) => save({ min_confidence: v })} />
             {@render problem('min_confidence')}
           </div>
         </div>
