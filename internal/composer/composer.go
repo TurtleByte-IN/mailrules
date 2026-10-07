@@ -430,7 +430,7 @@ How to write the rules:
 				"type": "object",
 				"properties": map[string]any{
 					"name": str, "parts": list(map[string]any{"type": "integer"}), "intent": nullable("string"),
-					"conditions": map[string]any{"type": "object"}, "exceptions": map[string]any{"type": "object"},
+					"conditions": condSchema(), "exceptions": condSchema(),
 					"actions": actionsSchema(), "min_confidence": nullable("number"), "new_folders": list(str), "question": nullable("string"),
 					"conflicts": list(map[string]any{"type": "object", "required": []string{"rule_id", "kind", "note"},
 						"properties": map[string]any{"rule_id": map[string]any{"type": "integer"},
@@ -451,6 +451,7 @@ How to write the rules:
 func ruleGrammar() string {
 	var b strings.Builder
 	b.WriteString(`Conditions are a tree: {"all": [nodes]}, {"any": [nodes]}, or one leaf {"field": ..., "op": ..., "value": ...}. {} means no conditions.
+A leaf is written as it is, never inside an object named after its field. One leaf: {"field": "from_domain", "op": "eq", "value": "swiggy.in"}. Two together: {"all": [{"field": "from_domain", "op": "eq", "value": "swiggy.in"}, {"field": "subject", "op": "contains", "value": "order"}]}. Exceptions are written the same way as conditions.
 String comparisons ignore case. "in", "contains_any" and "not_contains" take a list. "matches" takes an RE2 pattern of at most 200 characters. from_domain also matches subdomains.
 Fields and the operators each accepts:
 `)
@@ -475,6 +476,19 @@ func actionsSchema() map[string]any {
 	str, _, list := schemaTypes()
 	return list(map[string]any{"type": "object", "required": []string{"type"},
 		"properties": map[string]any{"type": map[string]any{"type": "string", "enum": rules.ActionTypes()}, "folder": str}})
+}
+
+// condSchema is a condition tree in an output schema: a leaf or an all/any group, with no
+// other keys, two levels deep (deeper nodes are any object), so a model cannot wrap a leaf in
+// an object named after its field. {} (no conditions) fits it too.
+func condSchema() map[string]any {
+	node := func(items map[string]any) map[string]any {
+		return map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+			"field": map[string]any{"type": "string"}, "op": map[string]any{"type": "string"}, "value": map[string]any{},
+			"all": map[string]any{"type": "array", "items": items}, "any": map[string]any{"type": "array", "items": items},
+		}}
+	}
+	return node(node(map[string]any{"type": "object"}))
 }
 
 // CheckText says what is wrong with a text to compose from, or "" when it can be used.
