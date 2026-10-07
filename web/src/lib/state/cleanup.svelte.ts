@@ -2,7 +2,8 @@ import { ApiError } from '../api/client';
 import * as cleanupApi from '../api/cleanup';
 import { subscribe } from '../api/events';
 import { day } from '../format';
-import { CHECK_MAX, scopeProblem, startScope, toRequest, type Scope } from '../scope';
+import { scopeProblem, startScope, toRequest, type Scope } from '../scope';
+import { settings } from './settings.svelte';
 import { flash } from './toast.svelte';
 
 // idle → checking (a real check is running) → ready/stale (rows shown) or failed.
@@ -77,13 +78,13 @@ export async function more() {
 
 /**
  * The choice a check was made with, read back from its own `since` and `limit`. A start time is a number
- * of days (whole days to now, so a 90-day window restores as 90). With none, a limit below the cap is the
- * newest N. "Newest 2000" and "All mail" send the same request, so a check cannot tell them apart and
- * they are equal by design: it comes back as "All mail".
+ * of days (whole days to now, so a 90-day window restores as 90). With none, a limit below the daemon's
+ * cap (`limits.check_max`) is the newest N. "Newest 2000" and "All mail" send the same request, so a check
+ * cannot tell them apart and they are equal by design: it comes back as "All mail".
  */
 function choiceOf(c: cleanupApi.CleanupCheck): Pick<Scope, 'mode'> & Partial<Pick<Scope, 'newest' | 'days'>> {
   if (c.since !== null) return { mode: 'days', days: Math.max(1, Math.round((Date.now() / 1000 - c.since) / 86400)) };
-  return c.limit < CHECK_MAX ? { mode: 'newest', newest: c.limit } : { mode: 'all' };
+  return c.limit < settings.value.limits.check_max ? { mode: 'newest', newest: c.limit } : { mode: 'all' };
 }
 
 // Without the list only Inbox is offered, so a failure here costs the Archive choice and nothing else.
@@ -288,14 +289,14 @@ const emails = (n: number) => n.toLocaleString() + (n === 1 ? ' email' : ' email
 
 /**
  * The chart's heading: how many emails, from which range of `here`. A check that covered only the newest
- * 2,000 of a larger range says so.
+ * `limits.check_max` of a larger range says so.
  */
 export function chartTitle(c: cleanupApi.CleanupCheck, here = 'Inbox') {
   const n = c.rows.length;
   const choice = choiceOf(c);
   const range = choice.mode === 'days' ? (choice.days === 1 ? ' from the last day' : ' from the last ' + choice.days!.toLocaleString() + ' days') : '';
   if (!n) return 'No emails in ' + here + range + ' to sort';
-  if (c.limit >= CHECK_MAX && c.matched > c.total)
+  if (c.limit >= settings.value.limits.check_max && c.matched > c.total)
     return 'The newest ' + n.toLocaleString() + ' of ' + emails(c.matched) + ' in ' + here + range + ' would be sorted like this';
   if (choice.mode === 'newest') return (n === 1 ? 'The newest email' : 'The newest ' + emails(n)) + ' in ' + here + ' would be sorted like this';
   if (choice.mode === 'all') return (n === 1 ? 'The one email' : 'All ' + emails(n)) + ' in ' + here + ' would be sorted like this';

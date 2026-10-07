@@ -25,6 +25,7 @@ const fresh = (): Settings => ({
   keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
+  limits: { test_default: 200, test_max: 2000, check_max: 2000 },
   features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },
 });
 

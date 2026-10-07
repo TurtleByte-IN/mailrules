@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Rule } from '../lib/api/rules';
 import { load, rules } from '../lib/state/rules.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import Rules from './Rules.svelte';
 
 // A rule as GET /api/rules returns it.
@@ -33,7 +34,11 @@ function respond(status: number, body: unknown) {
   return fetchMock;
 }
 
-beforeEach(() => Object.assign(rules, { list: [], loaded: false, error: '' }));
+beforeEach(() => {
+  Object.assign(rules, { list: [], loaded: false, error: '' });
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

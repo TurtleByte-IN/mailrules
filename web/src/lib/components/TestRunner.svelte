@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { limitRefused, TEST_LIMIT, type TestProgress } from '../api/rules';
+  import { limitRefused, type TestProgress } from '../api/rules';
+  import { settings } from '../state/settings.svelte';
   import { limitProblem, testLimit } from '../state/testlimit.svelte';
   import Waiting from './Waiting.svelte';
 
@@ -46,7 +47,7 @@
   bind:this={box}
   type="number"
   min="1"
-  max={TEST_LIMIT.max}
+  max={settings.value.limits.test_max || undefined}
   step="1"
   inputmode="numeric"
   aria-label="How many emails to test"

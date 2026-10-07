@@ -84,7 +84,10 @@ type Draft struct {
 	Conflicts     []Conflict `json:"conflicts"`
 	Errors        []Problem  `json:"errors"`
 	MatchCount    int        `json:"match_count"`
-	Samples       []Row      `json:"samples"`
+	// Tested is how many emails MatchCount is out of: the newest ones the draft was tested
+	// on, or, for a suggestion, the emails scanned. 0 when it was not tested.
+	Tested  int   `json:"tested"`
+	Samples []Row `json:"samples"`
 }
 
 // Rule is the draft as a rule, enabled, to validate or to test.
@@ -322,9 +325,10 @@ func oneQuestion(raw json.RawMessage) *string {
 }
 
 // test runs the valid drafts, together and in the order given, over the account's newest
-// DefaultLimit messages, and gives each its match count and first samples. An email counts
-// for the draft that would take it. A test that cannot run leaves the drafts untested: the
-// model call that wrote them is already paid for.
+// DefaultLimit messages, and gives each its match count, the number of emails it was
+// tested on and its first samples. An email counts for the draft that would take it. A
+// test that cannot run leaves the drafts untested: the model call that wrote them is
+// already paid for.
 func (c Composer) test(ctx context.Context, req Request, drafts []Draft) {
 	if req.Mailbox == nil || req.Account == nil {
 		return
@@ -347,6 +351,9 @@ func (c Composer) test(ctx context.Context, req Request, drafts []Draft) {
 	if err != nil {
 		slog.WarnContext(ctx, "could not test the drafts on recent mail", "account", req.Account.ID, "error", err.Error())
 		return
+	}
+	for _, r := range rs {
+		drafts[-r.ID-1].Tested = res.Tested
 	}
 	for _, row := range res.Rows {
 		if row.rule >= 0 || row.Review {

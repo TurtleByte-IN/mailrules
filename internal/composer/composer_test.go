@@ -305,9 +305,10 @@ func TestFiveInstructionsBecomeFiveTestedDrafts(t *testing.T) {
 		t.Fatalf("%d drafts, unparsed %v", len(out.Drafts), out.Unparsed)
 	}
 	want := map[string]int{"Food": 4, "Jobs": 1, "Scams": 1, "Invoices": 1, "LinkedIn": 1}
+	const delivered = 9 // fewer than DefaultLimit: each card says it was tested on these 9 (MAI-42)
 	for _, d := range out.Drafts {
-		if len(d.Errors) != 0 || d.MatchCount != want[d.Name] || len(d.Samples) != d.MatchCount {
-			t.Errorf("draft %s: %d matches (want %d), %d samples, errors %v", d.Name, d.MatchCount, want[d.Name], len(d.Samples), d.Errors)
+		if len(d.Errors) != 0 || d.MatchCount != want[d.Name] || len(d.Samples) != d.MatchCount || d.Tested != delivered {
+			t.Errorf("draft %s: %d matches (want %d) of %d tested, %d samples, errors %v", d.Name, d.MatchCount, want[d.Name], d.Tested, len(d.Samples), d.Errors)
 		}
 		if !strings.Contains(paragraph, d.Said) || d.Said == "" || strings.HasSuffix(d.Said, ",") {
 			t.Errorf("draft %s: said %q is not the owner's words", d.Name, d.Said)
@@ -346,13 +347,13 @@ func TestFiveInstructionsBecomeFiveTestedDrafts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range out.Drafts {
-		if d.Intent != nil && d.MatchCount != 0 || d.Intent == nil && d.MatchCount != want[d.Name] {
-			t.Errorf("without a model, draft %s has %d matches", d.Name, d.MatchCount)
+		if d.Intent != nil && (d.MatchCount != 0 || d.Tested != 0) || d.Intent == nil && (d.MatchCount != want[d.Name] || d.Tested != delivered) {
+			t.Errorf("without a model, draft %s has %d matches of %d tested", d.Name, d.MatchCount, d.Tested)
 		}
 	}
 	// With the account offline the drafts still come back, untested.
 	req.Mailbox = nil
-	if out, err = c.Compose(ctx, req); err != nil || len(out.Drafts) != 5 || out.Drafts[0].MatchCount != 0 {
+	if out, err = c.Compose(ctx, req); err != nil || len(out.Drafts) != 5 || out.Drafts[0].MatchCount != 0 || out.Drafts[0].Tested != 0 {
 		t.Errorf("offline: %v, %+v", err, out.Drafts)
 	}
 }

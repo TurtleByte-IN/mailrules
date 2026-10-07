@@ -78,6 +78,8 @@ const DAY = 86400;
 const page = (items: Batch[], next: string | null = null): Reply => [200, { items, next_cursor: next }];
 
 beforeEach(() => {
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
   // Only the clock is set, so a batch's age does not depend on the day the tests run.
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW * 1000);
@@ -462,17 +464,17 @@ it.each([
   ['the newest 120 emails', async () => type('How many emails', '120'), { account_id: 7, folder: 'INBOX', since: null, limit: 120 }],
   ['the newest 5000 is refused before it is sent', async () => type('How many emails', '5000'), null],
   [
-    '45 days, with the most a check covers as the limit',
+    '45 days, with no limit: the daemon covers the most a check takes',
     async () => {
       await choose('days');
       await type('How many days', '45');
     },
-    { account_id: 7, folder: 'INBOX', since: NOW - 45 * DAY, limit: 2000 },
+    { account_id: 7, folder: 'INBOX', since: NOW - 45 * DAY },
   ],
   [
-    'all mail, with the most a check covers as the limit',
+    'all mail, with no limit: the daemon covers the most a check takes',
     async () => choose('all'),
-    { account_id: 7, folder: 'INBOX', since: null, limit: 2000 },
+    { account_id: 7, folder: 'INBOX', since: null },
   ],
 ] as const)('Check sends %s', async (_name, act, body) => {
   render(Cleanup);

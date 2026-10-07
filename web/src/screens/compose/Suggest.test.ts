@@ -4,6 +4,7 @@ import type { RuleSuggestion, SuggestResult } from '../../lib/api/suggest';
 import { startScope } from '../../lib/scope';
 import { accounts } from '../../lib/state/accounts.svelte';
 import { rules } from '../../lib/state/rules.svelte';
+import { settings } from '../../lib/state/settings.svelte';
 import { suggest } from '../../lib/state/suggest.svelte';
 import { toast } from '../../lib/state/toast.svelte';
 import Suggest from './Suggest.svelte';
@@ -42,6 +43,7 @@ const suggestion = (name: string, over: Partial<RuleSuggestion> = {}): RuleSugge
   conflicts: [],
   errors: [],
   match_count: 12,
+  tested: 40,
   samples: [],
   kind: 'exact',
   trashes: false,
@@ -56,7 +58,7 @@ const four = [
   suggestion('Acme news'),
   suggestion('Newsletters', { kind: 'meaning', intent: 'newsletters I never read', conditions: {}, match_count: 9, groups: Array.from({ length: 7 }, (_, i) => ({ id: 'g' + i, from: `n${i}@news.com`, domain: 'news.com', count: 7 - i })) }),
   suggestion('Cold pitches', { kind: 'meaning', intent: 'cold sales pitches', conditions: {}, actions: [{ type: 'trash' }], trashes: true, match_count: 4, samples: [row('Grow your pipeline'), row('Quick question')] }),
-  suggestion('Broken', { errors: [{ path: 'actions[0].folder', message: 'The folder name is empty.' }], match_count: 0 }),
+  suggestion('Broken', { errors: [{ path: 'actions[0].folder', message: 'The folder name is empty.' }], match_count: 0, tested: 0 }),
 ];
 
 const result = (suggestions: RuleSuggestion[], over: Partial<SuggestResult> = {}): SuggestResult => ({
@@ -73,6 +75,8 @@ const result = (suggestions: RuleSuggestion[], over: Partial<SuggestResult> = {}
 });
 
 beforeEach(() => {
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
   Object.assign(suggest, {
     phase: 'idle',
     scope: startScope(),
@@ -151,9 +155,9 @@ it.each([
   [
     'the last 30 days, every sample, the full body',
     [['Which emails', 'days', 'change'], ['How many days', '30', 'input'], ['Samples per sender', 'all', 'change'], ['Body sent to the AI', 'full', 'change']],
-    { folder: 'INBOX', since: 1790000000 - 30 * 86400, limit: 2000, samples: 'all', body: 'full' },
+    { folder: 'INBOX', since: 1790000000 - 30 * 86400, samples: 'all', body: 'full' },
   ],
-  ['all mail, 12 samples, 500 characters', [['Which emails', 'all', 'change'], ['How many samples per sender', '12', 'input'], ['Body sent to the AI', 'first500', 'change']], { folder: 'INBOX', since: null, limit: 2000, samples: 12, body: 'first500' }],
+  ['all mail, 12 samples, 500 characters', [['Which emails', 'all', 'change'], ['How many samples per sender', '12', 'input'], ['Body sent to the AI', 'first500', 'change']], { folder: 'INBOX', since: null, samples: 12, body: 'first500' }],
 ] as const)('asks for %s', async (_name, steps, request) => {
   vi.spyOn(Date, 'now').mockReturnValue(1790000000 * 1000);
   const f = serve({ 'GET /api/accounts/7/folders': FOLDERS, 'POST /api/rules/suggest': [200, result([])] });

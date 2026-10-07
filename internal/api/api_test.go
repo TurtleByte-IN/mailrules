@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
+	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
@@ -718,6 +719,10 @@ func TestSettings(t *testing.T) {
 	if srv := got["server"].(map[string]any); srv["version"] != "test" || srv["listen"] != "127.0.0.1:8080" || srv["mode"] != "selfhost" {
 		t.Errorf("server = %v", srv)
 	}
+	// The UI's number boxes read the bounds the daemon enforces from here (MAI-41).
+	if l := got["limits"].(map[string]any); l["test_default"] != float64(composer.DefaultLimit) || l["test_max"] != float64(composer.MaxLimit) || l["check_max"] != float64(composer.MaxLimit) {
+		t.Errorf("limits = %v", l)
+	}
 	for name, on := range got["features"].(map[string]any) {
 		if on != false {
 			t.Errorf("feature %s is on before its milestone", name)
@@ -744,6 +749,7 @@ func TestSettings(t *testing.T) {
 		`{"keys":{"stripe_secret":"sk-1"}}`: {"invalid_input", "keys.stripe_secret"},
 		`{"listen":"0.0.0.0:80"}`:           {"invalid_json", "listen"},
 		`{"server":{"version":"2"}}`:        {"invalid_json", "server"},
+		`{"limits":{"test_max":9}}`:         {"invalid_json", "limits"},
 	} {
 		e.refuse(http.MethodPatch, "/api/settings", body, http.StatusBadRequest, want[0], want[1])
 	}
