@@ -131,6 +131,51 @@ func (s *Store) IngestMessage(ctx context.Context, ref mail.MsgRef, now int64) (
 	return m, n == 1, nil
 }
 
+// MessageByMessageID returns the account's newest row, other than except, for the email
+// with this Message-ID header, or ErrNotFound.
+func (s *Store) MessageByMessageID(ctx context.Context, accountID int64, messageID string, except int64) (Message, error) {
+	m, err := scanMessage(s.db.QueryRowContext(ctx,
+		`SELECT `+messageCols+` FROM messages m WHERE m.account_id = ? AND m.message_id = ? AND m.id <> ? ORDER BY m.id DESC LIMIT 1`,
+		accountID, messageID, except))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	if err != nil {
+		return Message{}, fmt.Errorf("find message by message-id: %w", err)
+	}
+	return m, nil
+}
+
+// Rebind records that the email of row known is now at ref, where it was just ingested as
+// row fresh, and removes fresh, so the email keeps one row. fresh must be a row MailRules
+// has done nothing with yet: when it has a decision, an action or a correction, Rebind
+// changes nothing and reports false.
+func (s *Store) Rebind(ctx context.Context, fresh, known int64, ref mail.MsgRef) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("rebind message: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM messages WHERE id = ?1
+		   AND NOT EXISTS (SELECT 1 FROM decisions WHERE message_id = ?1)
+		   AND NOT EXISTS (SELECT 1 FROM actions WHERE message_id = ?1)
+		   AND NOT EXISTS (SELECT 1 FROM corrections WHERE message_id = ?1)`, fresh)
+	if err != nil {
+		return false, fmt.Errorf("rebind message: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if err := setLocation(ctx, tx, known, ref); err != nil {
+		return false, fmt.Errorf("rebind message: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("rebind message: %w", err)
+	}
+	return true, nil
+}
+
 // Message returns one message, or ErrNotFound.
 func (s *Store) Message(ctx context.Context, id int64) (Message, error) {
 	m, err := scanMessage(s.db.QueryRowContext(ctx, `SELECT `+messageCols+` FROM messages m WHERE m.id = ?`, id))
