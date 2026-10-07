@@ -3,7 +3,11 @@
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
   import { secretLabel, stepNames, Wizard } from './connect.svelte';
 
-  let { onclose }: { onclose: () => void } = $props();
+  /**
+   * `onclose` runs when the first step's `cancelLabel` button is pressed, and once the mailbox
+   * is saved unless `onconnected` is given.
+   */
+  let { onclose, onconnected, cancelLabel = 'Cancel' }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string } = $props();
 
   const w = new Wizard();
   const apple = $derived(w.presetId === 'icloud');
@@ -144,13 +148,13 @@
   {/if}
 
   <div class="flex flex-wrap justify-between gap-2 border-t border-line-divider pt-3.5">
-    <button type="button" class="btn min-h-11" onclick={() => (w.step === 0 ? onclose() : w.step--)}>{w.step === 0 ? 'Cancel' : 'Back'}</button>
+    <button type="button" class="btn min-h-11" onclick={() => (w.step === 0 ? onclose() : w.step--)}>{w.step === 0 ? cancelLabel : 'Back'}</button>
     <button
       type="button"
       class="btn-primary min-h-11 px-[18px]"
       disabled={w.busy || w.test === 'testing' || !w.preset}
       onclick={async () => {
-        if (await w.next()) onclose();
+        if (await w.next()) (onconnected ?? onclose)();
       }}
     >
       {w.nextLabel}

@@ -2,8 +2,9 @@
   import Router from 'svelte-spa-router';
   import { close as closeEvents, open as openEvents } from './lib/api/events';
   import Nav from './lib/components/Nav.svelte';
-  import { load as loadAccounts } from './lib/state/accounts.svelte';
+  import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
   import { auth, start } from './lib/state/auth.svelte';
+  import { firstRun, settle } from './lib/state/firstrun.svelte';
   import { load as loadReview } from './lib/state/review.svelte';
   import { load as loadRules } from './lib/state/rules.svelte';
   import { load as loadSettings, settings, toggleDryRun } from './lib/state/settings.svelte';
@@ -23,6 +24,12 @@
     } else {
       closeEvents();
     }
+  });
+
+  // Right after the admin account is created, the first-run guide opens once the mailboxes
+  // are listed, unless there already is one.
+  $effect(() => {
+    if (firstRun.offered && accounts.loaded) settle(accounts.list.length);
   });
 </script>
 
