@@ -20,4 +20,6 @@ var icloud = Preset{
 	HelpURL:    "https://support.apple.com/en-us/102654",
 	// Apple documents the username as the part before "@"; some accounts take the full address.
 	LocalPartLogin: true,
+	// An iCloud Mail name may also be in use at Apple's older me.com and mac.com domains.
+	Domains: []string{"icloud.com", "me.com", "mac.com"},
 }

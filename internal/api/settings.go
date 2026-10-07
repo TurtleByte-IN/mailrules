@@ -23,7 +23,8 @@ func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dry_run": v.DryRun, "decider": v.Decider, "decider_model": v.DeciderModel, "fallback_model": v.FallbackModel,
 		"composer_model": v.ComposerModel, "escalate_below": v.EscalateBelow, "min_confidence": v.MinConfidence,
-		"retention_days": v.RetentionDays, "trash_to_folder": v.TrashToFolder, "openai_base_url": v.OpenAIBaseURL, "ollama_url": v.OllamaURL,
+		"retention_days": v.RetentionDays, "trash_to_folder": v.TrashToFolder, "leave_own_mail": v.LeaveOwnMail,
+		"openai_base_url": v.OpenAIBaseURL, "ollama_url": v.OllamaURL,
 		"anthropic_workspace_id": v.AnthropicWorkspaceID, "anthropic_workspace_name": v.AnthropicWorkspaceName,
 		"anthropic_workspace_found": v.AnthropicWorkspaceFound,
 		"keys":                      v.Keys,     // where each provider key comes from; never the keys
@@ -51,7 +52,8 @@ func (s *server) handleSettingsPatch(w http.ResponseWriter, r *http.Request) {
 	dst := map[string]any{
 		"dry_run": &p.DryRun, "decider": &p.Decider, "decider_model": &p.DeciderModel, "fallback_model": &p.FallbackModel,
 		"composer_model": &p.ComposerModel, "escalate_below": &p.EscalateBelow, "min_confidence": &p.MinConfidence,
-		"retention_days": &p.RetentionDays, "trash_to_folder": &p.TrashToFolder, "openai_base_url": &p.OpenAIBaseURL, "ollama_url": &p.OllamaURL,
+		"retention_days": &p.RetentionDays, "trash_to_folder": &p.TrashToFolder, "leave_own_mail": &p.LeaveOwnMail,
+		"openai_base_url": &p.OpenAIBaseURL, "ollama_url": &p.OllamaURL,
 		"anthropic_workspace_id": &p.AnthropicWorkspaceID, "keys": &p.Keys,
 	}
 	sent, ok := readPatch(w, r, dst)

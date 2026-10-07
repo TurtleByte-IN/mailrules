@@ -2181,6 +2181,8 @@ export interface components {
             retention_days: number;
             /** @description While true (the default, for new and existing installs), a trash action moves the email to an ordinary folder named "MailRules Trash", made on first use, instead of the server's Trash, which providers empty on their own. Junk is unaffected. No environment variable sets it */
             trash_to_folder: boolean;
+            /** @description While true (the default), an email whose From address is the mailbox's own is left alone: no sender rule, rule, model call or action, and it never goes to Needs review or teaches a sender rule. Its decision has stage `none` and the reason "Sent from this mailbox's own address, so MailRules left it alone." The own address is the account's username, compared ignoring case; for iCloud, a username with or without its domain covers the same name at icloud.com, me.com and mac.com. Aliases are not known. Live sorting, cleanup checks and rule tests all honour it. No environment variable sets it */
+            leave_own_mail: boolean;
             /** @description The OpenAI-compatible endpoint the openai decider and an `openai:` composer model talk to; empty = api.openai.com. Not a secret */
             openai_base_url: string;
             /** @description The Ollama server the ollama decider and an `ollama:` composer model talk to, e.g. http://localhost:11434; empty = not set. Not a secret */
@@ -2227,6 +2229,8 @@ export interface components {
             retention_days?: number | null;
             /** @description `null` puts the default (true) back */
             trash_to_folder?: boolean | null;
+            /** @description `null` puts the default (true) back */
+            leave_own_mail?: boolean | null;
             /** @description An http or https URL. Empty = api.openai.com */
             openai_base_url?: string | null;
             /** @description An http or https URL. Empty = no server, so the ollama decider cannot run (a warning says so) */

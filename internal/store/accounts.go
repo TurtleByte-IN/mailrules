@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 )
 
 // Account is one mailbox the daemon watches. Its password is never part of this struct:
@@ -43,6 +46,30 @@ func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 		return Account{}, fmt.Errorf("decode capabilities: %w", err)
 	}
 	return a, nil
+}
+
+// OwnAddresses returns the account's own email addresses, lowercase: the username when it
+// is a full address and, for a provider whose domains are known (presets.Preset.Domains),
+// the name before "@" at each of them, so an iCloud username of only "jane" is
+// jane@icloud.com, jane@me.com and jane@mac.com. Aliases are not known. It is nil when no
+// address can be told: a username without "@" on a provider whose domains are not known.
+func (a Account) OwnAddresses() []string {
+	user := strings.ToLower(strings.TrimSpace(a.Username))
+	local, domain, full := strings.Cut(user, "@")
+	p, _ := presets.Get(a.Preset)
+	switch {
+	case local == "" || (full && domain == ""):
+		return nil
+	case full && !slices.Contains(p.Domains, domain):
+		return []string{user}
+	case len(p.Domains) == 0: // a name without "@", and no domain to put after it
+		return nil
+	}
+	out := make([]string, 0, len(p.Domains))
+	for _, d := range p.Domains {
+		out = append(out, local+"@"+d)
+	}
+	return out
 }
 
 // FirstUser returns the admin account, or ErrNotFound before first-run setup.

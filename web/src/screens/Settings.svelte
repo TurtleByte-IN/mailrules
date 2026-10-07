@@ -107,10 +107,10 @@
     if (!(await patch({ [name]: name === 'retention_days' ? el.valueAsNumber : el.value.trim() }))) el.value = String(s[name]);
   }
 
-  /** A refused change unticks or reticks the box to what is saved. */
-  async function saveTrashToFolder(e: Event & { currentTarget: HTMLInputElement }) {
+  /** Saves one switch; a refused change unticks or reticks the box to what is saved. */
+  async function saveSwitch(e: Event & { currentTarget: HTMLInputElement }, name: 'trash_to_folder' | 'leave_own_mail') {
     const el = e.currentTarget;
-    if (!(await patch({ trash_to_folder: el.checked }))) el.checked = s.trash_to_folder;
+    if (!(await patch({ [name]: el.checked }))) el.checked = s[name];
   }
 
   async function saveKey(e: SubmitEvent, id: KeyName, label: string) {
@@ -261,8 +261,12 @@
         <span><span class="font-semibold">Dry-run</span><span class="text-secondary"> · log decisions without touching the mailbox</span></span>
       </label>
       <label class="flex cursor-pointer items-center gap-2.5">
-        <input type="checkbox" checked={s.trash_to_folder} onchange={saveTrashToFolder} />
+        <input type="checkbox" checked={s.trash_to_folder} onchange={(e) => saveSwitch(e, 'trash_to_folder')} />
         <span><span class="font-semibold">Send trashed mail to {TRASH_FOLDER}</span><span class="text-secondary"> · providers empty Trash on their own; MailRules' folder is never emptied, so mail trashed by mistake can still be found</span></span>
+      </label>
+      <label class="flex cursor-pointer items-center gap-2.5">
+        <input type="checkbox" checked={s.leave_own_mail} onchange={(e) => saveSwitch(e, 'leave_own_mail')} />
+        <span><span class="font-semibold">Leave my own emails alone</span><span class="text-secondary"> · mail sent from this mailbox's own address is never sorted, trashed or sent to the AI</span></span>
       </label>
     </section>
 

@@ -1,63 +1,90 @@
 package settings
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-// trash_to_folder is on unless it was turned off, on a new install and on one whose
-// settings were saved before the setting existed; the screen and the executor read the
-// same value, and a reset puts the default back.
-func TestTrashToFolder(t *testing.T) {
+// trash_to_folder and leave_own_mail are on unless they were turned off, on a new install
+// and on one whose settings were saved before they existed; the screen and the step that
+// acts on each (the executor, the pipeline) read the same value, and a reset puts the
+// default back.
+func TestOwnSwitches(t *testing.T) {
 	off, on := false, true
-	tests := []struct {
-		name  string
-		rows  map[string]string // stored before the daemon reads them
-		patch Patch
-		want  bool
+	switches := []struct {
+		key   string
+		patch func(*bool) Patch
+		view  func(View) bool
+		read  func(*store.Store, context.Context) (bool, error)
 	}{
-		{"a new install", nil, Patch{}, true},
-		{"an existing install, saved without it", map[string]string{"dry_run": "false", "retention_days": "90"}, Patch{}, true},
-		{"turned off", nil, Patch{TrashToFolder: &off}, false},
-		{"turned off, then on", map[string]string{store.SettingTrashToFolder: "false"}, Patch{TrashToFolder: &on}, true},
-		{"reset after being turned off", map[string]string{store.SettingTrashToFolder: "false"}, Patch{Reset: []string{store.SettingTrashToFolder}}, true},
+		{store.SettingTrashToFolder, func(b *bool) Patch { return Patch{TrashToFolder: b} }, func(v View) bool { return v.TrashToFolder }, (*store.Store).TrashToFolder},
+		{store.SettingLeaveOwnMail, func(b *bool) Patch { return Patch{LeaveOwnMail: b} }, func(v View) bool { return v.LeaveOwnMail }, (*store.Store).LeaveOwnMail},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := t.Context()
-			db, err := store.Open(ctx, t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = db.Close() })
-			if err := store.Migrate(ctx, db); err != nil {
-				t.Fatal(err)
-			}
-			st := store.New(db)
-			for k, v := range tt.rows {
-				if err := st.SetSetting(ctx, k, v); err != nil {
+	tests := []struct {
+		name   string
+		other  bool  // other settings were saved before, not this one
+		stored *bool // this switch as stored before
+		set    *bool // the change
+		reset  bool
+		want   bool
+	}{
+		{name: "a new install", want: true},
+		{name: "an existing install, saved without it", other: true, want: true},
+		{name: "turned off", set: &off, want: false},
+		{name: "turned off, then on", stored: &off, set: &on, want: true},
+		{name: "reset after being turned off", stored: &off, reset: true, want: true},
+	}
+	for _, sw := range switches {
+		for _, tt := range tests {
+			t.Run(sw.key+"/"+tt.name, func(t *testing.T) {
+				ctx := t.Context()
+				db, err := store.Open(ctx, t.TempDir())
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			env, err := config.Load(nil, func(string) string { return "" })
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := &Settings{Store: st, Master: make([]byte, 32), Env: env}
-			if err := s.Apply(ctx, tt.patch); err != nil {
-				t.Fatal(err)
-			}
-			v, err := s.View(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			exec, err := st.TrashToFolder(ctx)
-			if err != nil || v.TrashToFolder != tt.want || exec != tt.want {
-				t.Errorf("the screen reads %v, the executor %v (%v); want %v", v.TrashToFolder, exec, err, tt.want)
-			}
-		})
+				t.Cleanup(func() { _ = db.Close() })
+				if err := store.Migrate(ctx, db); err != nil {
+					t.Fatal(err)
+				}
+				st := store.New(db)
+				rows := map[string]string{}
+				if tt.other {
+					rows["dry_run"], rows["retention_days"] = "false", "90"
+				}
+				if tt.stored != nil {
+					rows[sw.key] = fmt.Sprint(*tt.stored)
+				}
+				for k, v := range rows {
+					if err := st.SetSetting(ctx, k, v); err != nil {
+						t.Fatal(err)
+					}
+				}
+				env, err := config.Load(nil, func(string) string { return "" })
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := &Settings{Store: st, Master: make([]byte, 32), Env: env}
+				p := sw.patch(tt.set)
+				if tt.reset {
+					p.Reset = []string{sw.key}
+				}
+				if err := s.Apply(ctx, p); err != nil {
+					t.Fatal(err)
+				}
+				v, err := s.View(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				acting, err := sw.read(st, ctx)
+				if err != nil || sw.view(v) != tt.want || acting != tt.want {
+					t.Errorf("the screen reads %v, the step that acts on it %v (%v); want %v", sw.view(v), acting, err, tt.want)
+				}
+			})
+		}
 	}
 }
 

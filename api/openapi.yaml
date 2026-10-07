@@ -1216,7 +1216,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Settings' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | trash_to_folder | openai_base_url | ollama_url | anthropic_workspace_id | keys.<name>), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | trash_to_folder | leave_own_mail | openai_base_url | ollama_url | anthropic_workspace_id | keys.<name>), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
   /api/settings/anthropic-workspaces:
@@ -2233,7 +2233,7 @@ components:
         workspaces: { type: array, items: { $ref: '#/components/schemas/AnthropicWorkspace' }, description: 'For `one` and `several`, the organisation''s workspaces, the Default Workspace included; otherwise empty' }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, server, features]
+      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, server, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged and no mailbox is changed }
         decider: { $ref: '#/components/schemas/Decider' }
@@ -2244,6 +2244,7 @@ components:
         min_confidence: { type: number, minimum: 0, maximum: 1, description: Default act threshold; a rule may set its own }
         retention_days: { type: integer, minimum: 1, maximum: 3650, description: How long message snippets are kept }
         trash_to_folder: { type: boolean, description: 'While true (the default, for new and existing installs), a trash action moves the email to an ordinary folder named "MailRules Trash", made on first use, instead of the server''s Trash, which providers empty on their own. Junk is unaffected. No environment variable sets it' }
+        leave_own_mail: { type: boolean, description: 'While true (the default), an email whose From address is the mailbox''s own is left alone: no sender rule, rule, model call or action, and it never goes to Needs review or teaches a sender rule. Its decision has stage `none` and the reason "Sent from this mailbox''s own address, so MailRules left it alone." The own address is the account''s username, compared ignoring case; for iCloud, a username with or without its domain covers the same name at icloud.com, me.com and mac.com. Aliases are not known. Live sorting, cleanup checks and rule tests all honour it. No environment variable sets it' }
         openai_base_url: { type: string, description: 'The OpenAI-compatible endpoint the openai decider and an `openai:` composer model talk to; empty = api.openai.com. Not a secret' }
         ollama_url: { type: string, description: 'The Ollama server the ollama decider and an `ollama:` composer model talk to, e.g. http://localhost:11434; empty = not set. Not a secret' }
         anthropic_workspace_id: { type: string, description: 'The Claude workspace every Claude request names (`anthropic-workspace-id`); empty = none. Only a Claude key that covers a whole organisation needs one. Not a secret' }
@@ -2290,6 +2291,7 @@ components:
         min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
         retention_days: { type: [integer, 'null'], minimum: 1, maximum: 3650 }
         trash_to_folder: { type: [boolean, 'null'], description: '`null` puts the default (true) back' }
+        leave_own_mail: { type: [boolean, 'null'], description: '`null` puts the default (true) back' }
         openai_base_url: { type: [string, 'null'], description: An http or https URL. Empty = api.openai.com }
         ollama_url: { type: [string, 'null'], description: 'An http or https URL. Empty = no server, so the ollama decider cannot run (a warning says so)' }
         anthropic_workspace_id: { type: [string, 'null'], description: 'Empty, or `wrkspc_` followed by letters and digits; anything else is refused. Empty = none sent' }

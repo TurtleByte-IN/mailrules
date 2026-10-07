@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/learn"
@@ -29,6 +31,20 @@ type Decider struct {
 	// Examples returns the user's corrections to show the fallback model for this email,
 	// most similar first; candidates are the rule ids on offer. nil = show none.
 	Examples func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example
+	// Own are the mailbox's own addresses, whose mail is left alone: no sender rule, rule or
+	// model is consulted for it. Empty = none (the leave_own_mail setting is off). See OwnMail.
+	Own []string
+}
+
+// OwnMail returns the Decider.Own for an account: its own addresses while the
+// leave_own_mail setting is on, nil while it is off. The live pipeline reads it for every
+// email; a cleanup check and a test run once, as they start.
+func OwnMail(ctx context.Context, st *store.Store, a store.Account) ([]string, error) {
+	on, err := st.LeaveOwnMail(ctx)
+	if err != nil || !on {
+		return nil, err
+	}
+	return a.OwnAddresses(), nil
 }
 
 // Corrections is the Examples of a Decider that learns from the user's corrections. A
@@ -63,6 +79,9 @@ type Outcome struct {
 // email is decided by the model of the highest-priority candidate rule that names one
 // (and whose model can be used), otherwise by the default router.
 func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rule, senders []rules.SenderRule) (Outcome, error) {
+	if slices.ContainsFunc(d.Own, func(addr string) bool { return strings.EqualFold(addr, sum.From) }) {
+		return Outcome{Result: rules.Result{Stage: rules.StageNone}, Reason: ReasonOwnMail}, nil
+	}
 	names := map[int64]string{}
 	for _, r := range rs {
 		names[r.ID] = r.Name

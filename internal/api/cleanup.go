@@ -163,8 +163,18 @@ func (s *server) handleCleanupCheckStart(w http.ResponseWriter, r *http.Request)
 		internalError(w, r, err)
 		return
 	}
+	acct, err := s.store.Account(ctx, c.AccountID)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	decider, err := s.cleanupDecider(ctx, uid, acct)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
 	fp := rulesFingerprint(rs, senders)
-	t := composer.Tester{Store: s.store, Mailbox: mb, AccountID: c.AccountID, Decider: s.cleanupDecider(ctx, uid), BodyChars: s.Settings.Env.BodyChars}
+	t := composer.Tester{Store: s.store, Mailbox: mb, AccountID: c.AccountID, Decider: decider, BodyChars: s.Settings.Env.BodyChars}
 	run := func(ctx context.Context, report func(composer.CheckProgress)) ([]composer.CheckRow, error) {
 		return t.Check(ctx, rs, senders, c.Folder, c.Since, c.Limit, report)
 	}
@@ -430,14 +440,16 @@ func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 	return out
 }
 
-// cleanupDecider is the deciding step of a cleanup check: the routers in force, with their
-// calls booked under the "cleanup" purpose so Usage can tell them from live sorting.
-func (s *server) cleanupDecider(ctx context.Context, userID int64) pipeline.Decider {
+// cleanupDecider is the deciding step of a cleanup check of acct's mail: the routers in
+// force, with their calls booked under the "cleanup" purpose so Usage can tell them from
+// live sorting, leaving the account's own mail alone as live sorting does.
+func (s *server) cleanupDecider(ctx context.Context, userID int64, acct store.Account) (pipeline.Decider, error) {
 	src := s.modelSource()
 	router, minConfidence := src.Live(ctx)
-	return pipeline.Decider{Router: router.For("cleanup"), MinConfidence: minConfidence, Now: s.now(),
+	own, err := pipeline.OwnMail(ctx, s.store, acct)
+	return pipeline.Decider{Router: router.For("cleanup"), MinConfidence: minConfidence, Now: s.now(), Own: own,
 		Examples: pipeline.Corrections(s.store, userID),
-		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("cleanup") }}
+		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("cleanup") }}, err
 }
 
 var batchKinds = []string{store.BatchLive, store.BatchCleanup, "review", store.BatchCorrection, store.BatchUndo}

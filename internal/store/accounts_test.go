@@ -92,6 +92,32 @@ func TestAccountsCRUD(t *testing.T) {
 	}
 }
 
+func TestOwnAddresses(t *testing.T) {
+	icloud := []string{"jane@icloud.com", "jane@me.com", "jane@mac.com"}
+	for _, tt := range []struct {
+		name, preset, username string
+		want                   []string
+	}{
+		{"a full address", "generic", "jane@example.test", []string{"jane@example.test"}},
+		{"a full address, any case", "fastmail", " Jane@Example.TEST ", []string{"jane@example.test"}},
+		{"no domain, none known", "generic", "jane", nil},
+		{"an unknown preset", "", "jane@example.test", []string{"jane@example.test"}},
+		{"iCloud, the name only", "icloud", "Jane", icloud},
+		{"iCloud, the full address", "icloud", "jane@icloud.com", icloud},
+		{"iCloud, a me.com address", "icloud", "jane@me.com", icloud},
+		{"iCloud with a custom domain", "icloud", "jane@family.example", []string{"jane@family.example"}},
+		{"nothing before @", "icloud", "@icloud.com", nil},
+		{"nothing after @", "generic", "jane@", nil},
+		{"empty", "icloud", "", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (Account{Preset: tt.preset, Username: tt.username}).OwnAddresses(); !slices.Equal(got, tt.want) {
+				t.Errorf("OwnAddresses() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAccountSecretIsEncrypted(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()

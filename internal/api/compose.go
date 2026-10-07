@@ -89,14 +89,21 @@ func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// testDecider is the deciding step for a test run: the routers in force, with their calls
-// booked as tests.
-func (s *server) testDecider(r *http.Request) pipeline.Decider {
+// testDecider is the deciding step for a test run on acct's mail: the routers in force, with
+// their calls booked as tests, leaving the account's own mail alone as live sorting does.
+// acct may be nil when no mailbox is connected.
+func (s *server) testDecider(r *http.Request, acct *store.Account) (pipeline.Decider, error) {
 	src := s.modelSource()
 	router, minConfidence := src.Live(r.Context())
-	return pipeline.Decider{Router: router.For("test"), MinConfidence: minConfidence, Now: s.now(),
+	d := pipeline.Decider{Router: router.For("test"), MinConfidence: minConfidence, Now: s.now(),
 		Examples: pipeline.Corrections(s.store, user(r).ID),
 		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("test") }}
+	if acct == nil {
+		return d, nil
+	}
+	var err error
+	d.Own, err = pipeline.OwnMail(r.Context(), s.store, *acct)
+	return d, err
 }
 
 // reader returns the account's connection as the composer and tester may use it: read-only.
@@ -148,11 +155,16 @@ func (s *server) compose(w http.ResponseWriter, r *http.Request, text string, ac
 		s.modelFail(w, r, err)
 		return composer.Output{}, false
 	}
+	decider, err := s.testDecider(r, acct)
+	if err != nil {
+		internalError(w, r, err)
+		return composer.Output{}, false
+	}
 	c := composer.Composer{Store: s.store, Gen: gen, Now: s.now, BodyChars: s.Settings.Env.BodyChars}
 	began := time.Now()
 	slog.InfoContext(r.Context(), "compose started", "account", accountID, "reoptimize", rule != nil, "text_chars", len([]rune(text)))
 	out, err := c.Compose(r.Context(), composer.Request{UserID: user(r).ID, Text: strings.TrimSpace(text), Rule: rule,
-		Account: acct, Mailbox: mb, Decider: s.testDecider(r)})
+		Account: acct, Mailbox: mb, Decider: decider})
 	s.Hub.Publish(events.UsageUpdated, nil)
 	if err != nil {
 		if r.Context().Err() == nil {
@@ -446,7 +458,11 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 	}
 	set := append(saved, drafts...)
 
-	decider := s.testDecider(r)
+	decider, err := s.testDecider(r, &acct)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
 	if decider.Router == nil && slices.ContainsFunc(set, func(x rules.Rule) bool { return x.Enabled && x.Intent != "" }) {
 		noModel(w, nil)
 		return

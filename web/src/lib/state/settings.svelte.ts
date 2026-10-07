@@ -15,6 +15,7 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     min_confidence: 0,
     retention_days: 0,
     trash_to_folder: true,
+    leave_own_mail: true,
     openai_base_url: '',
     ollama_url: '',
     anthropic_workspace_id: '',

@@ -415,6 +415,20 @@ func (s *Store) SetTrashToFolder(ctx context.Context, on bool) error {
 	return s.SetSetting(ctx, SettingTrashToFolder, fmt.Sprint(on))
 }
 
+// SettingLeaveOwnMail is the settings key of the switch that leaves mail sent from the
+// mailbox's own address alone (Account.OwnAddresses): no rule, model or action touches it.
+// DefaultLeaveOwnMail is in force until it is set.
+const (
+	SettingLeaveOwnMail = "leave_own_mail"
+	DefaultLeaveOwnMail = true
+)
+
+// LeaveOwnMail reports whether mail from the mailbox's own address is left alone. The
+// pipeline reads it for every email.
+func (s *Store) LeaveOwnMail(ctx context.Context) (bool, error) {
+	return s.boolSetting(ctx, SettingLeaveOwnMail, DefaultLeaveOwnMail)
+}
+
 // boolSetting reads a stored switch; def is used until it has been set.
 func (s *Store) boolSetting(ctx context.Context, key string, def bool) (bool, error) {
 	v, err := s.Setting(ctx, key)

@@ -1,9 +1,9 @@
 // Package settings owns the settings a user changes while the daemon runs: the dry-run
-// switch, the decision models and thresholds, retention, where trashed mail goes, and the
-// model provider keys. They live in the settings table and lie over the environment
-// (internal/config), which supplies the defaults. Provider keys are stored encrypted under
-// the master key and are never handed back out of this package except inside the config
-// the model adapters are built from.
+// switch, the decision models and thresholds, retention, where trashed mail goes, whether
+// the mailbox's own mail is left alone, and the model provider keys. They live in the
+// settings table and lie over the environment (internal/config), which supplies the
+// defaults. Provider keys are stored encrypted under the master key and are never handed
+// back out of this package except inside the config the model adapters are built from.
 package settings
 
 import (
@@ -92,6 +92,7 @@ type View struct {
 	MinConfidence float64
 	RetentionDays int
 	TrashToFolder bool              // trash goes to actions.TrashFolder, not the server's Trash
+	LeaveOwnMail  bool              // mail from the mailbox's own address is left alone (pipeline.OwnMail)
 	OpenAIBaseURL string            // an OpenAI-compatible endpoint; empty = api.openai.com
 	OllamaURL     string            // a local Ollama server
 	Keys          map[string]string // KeyStored | KeyEnvironment | KeyNone
@@ -120,6 +121,7 @@ type Patch struct {
 	MinConfidence *float64
 	RetentionDays *int
 	TrashToFolder *bool
+	LeaveOwnMail  *bool
 	OpenAIBaseURL *string // empty = api.openai.com
 	OllamaURL     *string // empty = none
 	// AnthropicWorkspaceID is empty or a wrkspc_ ID (config.ValidWorkspaceID); empty = none.
@@ -216,17 +218,19 @@ func (s *Settings) open(name, stored string) (string, error) {
 type own struct {
 	retention     int
 	trashToFolder bool
+	leaveOwnMail  bool
 }
 
 // effective lays the stored rows over the environment.
 func (s *Settings) effective(rows map[string]string) (config.Config, own, error) {
 	cfg := *s.Env
-	o := own{retention: DefaultRetentionDays, trashToFolder: store.DefaultTrashToFolder}
+	o := own{retention: DefaultRetentionDays, trashToFolder: store.DefaultTrashToFolder, leaveOwnMail: store.DefaultLeaveOwnMail}
 	for key, dst := range map[string]any{
 		"dry_run": &cfg.DryRun, "decider": &cfg.Decider, "decider_model": &cfg.DeciderModel,
 		"fallback_model": &cfg.FallbackModel, "composer_model": &cfg.ComposerModel,
 		"escalate_below": &cfg.EscalateBelow, "min_confidence": &cfg.MinConfidence, "retention_days": &o.retention,
-		store.SettingTrashToFolder: &o.trashToFolder, "openai_base_url": &cfg.OpenAIBaseURL, "ollama_url": &cfg.OllamaURL,
+		store.SettingTrashToFolder: &o.trashToFolder, store.SettingLeaveOwnMail: &o.leaveOwnMail,
+		"openai_base_url": &cfg.OpenAIBaseURL, "ollama_url": &cfg.OllamaURL,
 		settingWorkspace: &cfg.AnthropicWorkspaceID,
 	} {
 		if v, ok := rows[key]; ok {
@@ -268,7 +272,8 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
 		ComposerModel: cfg.ComposerModel, EscalateBelow: cfg.EscalateBelow, MinConfidence: cfg.MinConfidence,
-		RetentionDays: o.retention, TrashToFolder: o.trashToFolder, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
+		RetentionDays: o.retention, TrashToFolder: o.trashToFolder, LeaveOwnMail: o.leaveOwnMail,
+		OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
 		Keys: map[string]string{}, Warnings: append(warnings(cfg), workspaceWarning(cfg, l)...),
 		AnthropicWorkspaceID: cfg.AnthropicWorkspaceID, AnthropicWorkspaceFound: l.Found != "" && l.Found == cfg.AnthropicWorkspaceID}
 	for _, w := range l.Workspaces {
@@ -354,11 +359,13 @@ func (s *Settings) View(ctx context.Context) (View, error) {
 
 // resettable are the settings Patch.Reset may name.
 var resettable = []string{"dry_run", "decider", "decider_model", "fallback_model", "composer_model", "escalate_below",
-	"min_confidence", "retention_days", store.SettingTrashToFolder, "openai_base_url", "ollama_url", settingWorkspace}
+	"min_confidence", "retention_days", store.SettingTrashToFolder, store.SettingLeaveOwnMail, "openai_base_url", "ollama_url",
+	settingWorkspace}
 
 // Apply validates a change against the settings it would produce and stores it in one
 // transaction. A problem the user can fix comes back as *Invalid. Nothing needs a restart:
-// the executor reads dry-run and trash_to_folder before every action and Live rebuilds the router.
+// the executor reads dry-run and trash_to_folder before every action, the pipeline reads
+// leave_own_mail for every email, and Live rebuilds the router.
 // A Claude key saved or replaced forgets what was learnt about the old one's workspace,
 // and a workspace MailRules found for it; then, with no workspace set, it is looked up.
 func (s *Settings) Apply(ctx context.Context, p Patch) error {
@@ -427,6 +434,10 @@ func (s *Settings) apply(ctx context.Context, p Patch) (newKey bool, err error) 
 	if p.TrashToFolder != nil {
 		o.trashToFolder = *p.TrashToFolder
 		put(store.SettingTrashToFolder, o.trashToFolder)
+	}
+	if p.LeaveOwnMail != nil {
+		o.leaveOwnMail = *p.LeaveOwnMail
+		put(store.SettingLeaveOwnMail, o.leaveOwnMail)
 	}
 	for key, f := range map[string]struct{ in, dst *string }{
 		"openai_base_url": {p.OpenAIBaseURL, &cfg.OpenAIBaseURL}, "ollama_url": {p.OllamaURL, &cfg.OllamaURL},

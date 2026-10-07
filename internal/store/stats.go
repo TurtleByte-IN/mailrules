@@ -71,7 +71,7 @@ type Totals struct {
 	WentSorted  int // a rule was applied and it did not trash the email
 	WentTrash   int // a rule was applied and it trashed the email
 	WentReview  int // waiting in Needs review
-	WentNowhere int // left in the inbox: no rule matched, it could not be handled, or all that was done to it was undone
+	WentNowhere int // left in the inbox: no rule matched, it was the mailbox's own mail, it could not be handled, or all that was done to it was undone
 }
 
 // StatsTotals counts the user's emails decided since `since`.

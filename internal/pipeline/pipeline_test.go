@@ -684,6 +684,84 @@ func TestBulkSenderLearnedAfterOne(t *testing.T) {
 	}
 }
 
+// While leave_own_mail is on, an email from the mailbox's own address is left alone: no
+// sender rule, rule, model or action, no Needs review and no lesson. Each email is bulk mail
+// that passed DMARC and the model is confident, so one decision would teach a sender rule.
+func TestOwnMailLeftAlone(t *testing.T) {
+	for name, tc := range map[string]struct {
+		preset, username, from string
+		off                    bool // leave_own_mail switched off
+		blocked                bool // a user sender rule blocks the sender's domain
+		alone                  bool
+	}{
+		"full address":                        {preset: "generic", username: "jane@example.test", from: "jane@example.test", alone: true},
+		"different case":                      {preset: "generic", username: "Jane@Example.TEST", from: "JANE@example.test", alone: true},
+		"iCloud local-part username":          {preset: "icloud", username: "jane", from: "jane@icloud.com", alone: true},
+		"iCloud username, me.com sender":      {preset: "icloud", username: "jane@icloud.com", from: "Jane@me.com", alone: true},
+		"iCloud local part, mac.com":          {preset: "icloud", username: "jane", from: "jane@mac.com", alone: true},
+		"a sender rule is passed over":        {preset: "generic", username: "jane@example.test", from: "jane@example.test", blocked: true, alone: true},
+		"setting off":                         {preset: "generic", username: "jane@example.test", from: "jane@example.test", off: true},
+		"setting off, the sender rule":        {preset: "generic", username: "jane@example.test", from: "jane@example.test", off: true, blocked: true},
+		"another sender":                      {preset: "generic", username: "jane@example.test", from: "orders@example.test"},
+		"another iCloud name":                 {preset: "icloud", username: "jane", from: "john@icloud.com"},
+		"local part, provider domain unknown": {preset: "generic", username: "jane", from: "jane@example.test"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := t.Context()
+			e.p.Account.Preset, e.p.Account.Username = tc.preset, tc.username
+			if tc.off {
+				if err := e.st.SetSetting(ctx, store.SettingLeaveOwnMail, "false"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, domain, _ := strings.Cut(strings.ToLower(tc.from), "@")
+			if tc.blocked {
+				if _, err := e.st.PutSenderRule(ctx, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: domain,
+					Verdict: rules.VerdictBlock, Source: "user"}, e.now.Unix()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.primary.DecideFunc = answer(e.food.ID, 0.95)
+			row := e.processWith(tc.from, "my reply", "List-Unsubscribe: <mailto:u@"+domain+">\r\n"+
+				"Authentication-Results: mx.example.test; dmarc=pass header.from="+domain+"\r\n")
+
+			srs, err := e.st.SenderRules(ctx, e.user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			learned := slices.ContainsFunc(srs, func(sr rules.SenderRule) bool { return sr.Source == "learned" })
+			asked := len(e.primary.Requests()) + len(e.fallback.Requests())
+			d := row.Decision
+			switch {
+			case tc.alone:
+				if d.Stage != "none" || d.Reason != ReasonOwnMail || d.RuleID != 0 || d.Model != "" {
+					t.Errorf("decision = %+v, want stage none with %q", d, ReasonOwnMail)
+				}
+				if asked != 0 || len(e.exec.calls) != 0 || learned || row.Message.State != store.StateSkipped {
+					t.Errorf("model calls %d, executor calls %d, learned %v, state %s", asked, len(e.exec.calls), learned, row.Message.State)
+				}
+				// Counted as an email left in the inbox, never as one decided without a model.
+				tot, err := e.st.StatsTotals(ctx, e.user.ID, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tot.Processed != 1 || tot.WithoutModel != 0 || tot.WentReview != 0 || tot.WentNowhere != 1 {
+					t.Errorf("stats = %+v", tot)
+				}
+			case tc.blocked:
+				if d.Stage != "sender" || asked != 0 || !slices.Equal(e.exec.applied(), []string{"trash"}) {
+					t.Errorf("decision = %+v, model calls %d, applied %v, want the sender rule's trash", d, asked, e.exec.applied())
+				}
+			default:
+				if d.Stage != "decider" || asked != 1 || !slices.Equal(e.exec.applied(), []string{"move:Food"}) || !learned {
+					t.Errorf("decision = %+v, model calls %d, applied %v, learned %v, want it sorted like any other", d, asked, e.exec.applied(), learned)
+				}
+			}
+		})
+	}
+}
+
 // oneBox is the executor's view of the test account.
 type oneBox struct{ mb mail.Mailbox }
 

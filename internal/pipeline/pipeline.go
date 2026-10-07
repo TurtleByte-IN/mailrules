@@ -32,6 +32,9 @@ const (
 	// ReasonUnreadable is the decision's reason when the model's answer could not be read
 	// after every try, and the email was kept.
 	ReasonUnreadable = "The AI's answer could not be read after 3 tries, so the email was left where it is."
+	// ReasonOwnMail is the decision's reason for an email sent from the mailbox's own
+	// address while the leave_own_mail setting is on (Decider.Own).
+	ReasonOwnMail = "Sent from this mailbox's own address, so MailRules left it alone."
 
 	snippetChars = 200
 )
@@ -196,6 +199,9 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		Examples: Corrections(p.Store, p.Account.UserID)}
 	if p.Live != nil {
 		d.Router, d.MinConfidence = p.Live(ctx)
+	}
+	if d.Own, err = OwnMail(ctx, p.Store, p.Account); err != nil {
+		return err
 	}
 	out, err := d.Settle(ctx, *sum, rs, senders)
 	if err != nil {

@@ -29,6 +29,10 @@ type Preset struct {
 	PasteLabel string
 	// LocalPartLogin: the server may want the part before "@" as the username.
 	LocalPartLogin bool
+	// Domains are the domains one account's address is known by, lowercase: the same name
+	// before "@" receives mail at each of them. Empty = not known, and only a username that
+	// is a full address says what the account's address is.
+	Domains []string
 }
 
 // commonFolders are names seen across providers; every preset falls back to them.

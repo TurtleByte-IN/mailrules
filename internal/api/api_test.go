@@ -675,7 +675,8 @@ func TestSettings(t *testing.T) {
 	got := e.call(http.MethodGet, "/api/settings", "", http.StatusOK)
 	conform(t, e.doc, "Settings", got)
 	for key, want := range map[string]any{"dry_run": true, "decider": "jev", "decider_model": "", "fallback_model": "claude-haiku-4-5",
-		"composer_model": "claude-haiku-4-5", "escalate_below": 0.75, "min_confidence": 0.75, "retention_days": float64(30), "trash_to_folder": true} {
+		"composer_model": "claude-haiku-4-5", "escalate_below": 0.75, "min_confidence": 0.75, "retention_days": float64(30), "trash_to_folder": true,
+		"leave_own_mail": true} {
 		if got[key] != want {
 			t.Errorf("default %s = %v, want %v", key, got[key], want)
 		}
