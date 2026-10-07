@@ -819,10 +819,13 @@ export interface paths {
         /**
          * Undo every action of a batch, newest first
          * @description An action that cannot be undone does not stop the rest; `failed` counts them and the
-         *     batch becomes `undone` only when every action was. A batch stays undoable for 30
-         *     days from when it was created; after that the answer is 409 `too_old`. Undoing a
-         *     batch that never changed a mailbox (all its actions were recorded as `dry_run`) is a
-         *     no-op: it answers 200 with `undone` 0 and `failed` 0, and the batch stays as it is.
+         *     batch becomes `undone` only when every action was. `emails` is how many emails the
+         *     call put back: a cleanup row that was passed over (`skipped`) or only recorded in
+         *     dry-run was never changed, so it is not among them, and the batch's `total` is not
+         *     that count. A batch stays undoable for 30 days from when it was created; after that
+         *     the answer is 409 `too_old`. Undoing a batch that never changed a mailbox (all its
+         *     actions were recorded as `dry_run`) is a no-op: it answers 200 with `undone`,
+         *     `emails` and `failed` 0, and the batch stays as it is.
          */
         post: operations["undoBatch"];
         delete?: never;
@@ -1896,6 +1899,8 @@ export interface components {
             batch: components["schemas"]["Batch"];
             /** @description Actions undone by this call */
             undone: number;
+            /** @description Emails at least one action was undone on by this call: put back as they were. An email that was passed over, only recorded in dry-run, or whose actions all failed is not counted, and one with several actions counts once */
+            emails: number;
             /** @description Actions that could not be undone: the email is gone, or its account is not connected */
             failed: number;
         };

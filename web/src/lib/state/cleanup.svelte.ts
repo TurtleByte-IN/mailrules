@@ -442,9 +442,15 @@ export async function undo(b: cleanupApi.Batch) {
       cleanup.batch = r.batch;
       if (cleanup.phase === 'done' && r.batch.status === 'undone') cleanup.phase = 'idle';
     }
-    const n = (r.batch.total ?? 0).toLocaleString();
-    flash(r.failed ? r.undone.toLocaleString() + ' actions undone; ' + r.failed.toLocaleString() + ' could not be' : n + ' emails moved back where they were');
+    flash(undoneText(r));
   } catch (e) {
     fail(e);
   }
+}
+
+/** The toast after a batch undo: the emails it really put back, never the batch's ticked rows (some may have been skipped or only recorded in dry-run). */
+export function undoneText(r: cleanupApi.UndoResult) {
+  if (r.failed) return r.undone.toLocaleString() + ' actions undone; ' + r.failed.toLocaleString() + ' could not be';
+  if (!r.emails) return 'Nothing to undo';
+  return r.emails === 1 ? '1 email moved back where it was' : r.emails.toLocaleString() + ' emails moved back where they were';
 }
