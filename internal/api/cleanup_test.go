@@ -262,6 +262,10 @@ checked:
 	body, _ := json.Marshal(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": excludeReading})
 	run := e.call(http.MethodPost, "/api/cleanup/run", string(body), http.StatusAccepted)["batch"].(map[string]any)
 	conform(t, e.doc, "Batch", run)
+	// The batch remembers what the check covered, so its label can be truthful (MAI-48).
+	if id(run["limit"]) != composer.MaxLimit || id(run["matched"]) != int64(total) || run["since"] != nil {
+		t.Errorf("batch covered limit %v, matched %v, since %v; want %d, %d, null", run["limit"], run["matched"], run["since"], composer.MaxLimit, total)
+	}
 	batchID := id(run["id"])
 	sorted := food + (reading - 20) + block
 	if run["kind"] != "cleanup" || run["status"] != "running" || id(run["total"]) != int64(sorted) || id(run["account_id"]) != 1 {
@@ -555,6 +559,36 @@ func TestCleanupCheckReportsMatchedBeforeTheLimit(t *testing.T) {
 		})
 	}
 	e.refuse(http.MethodPost, "/api/cleanup/check", `{"account_id":1,"limit":2001}`, http.StatusBadRequest, "invalid_input", "limit")
+}
+
+// A batch says how much mail its check covered: the newest 5 of 12 reads limit 5, matched 12,
+// and one made before that was recorded says nothing (null), never a made-up number.
+func TestCleanupBatchRecordsWhatTheCheckCovered(t *testing.T) {
+	e := newEnv(t)
+	for i := range 12 {
+		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
+	}
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated)
+
+	chk := e.checkReady(`{"account_id":1,"limit":5}`)
+	run, _ := json.Marshal(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{}})
+	started := e.call(http.MethodPost, "/api/cleanup/run", string(run), http.StatusAccepted)["batch"].(map[string]any)
+	b := e.batchDone(id(started["id"]))
+	conform(t, e.doc, "Batch", b)
+	if id(b["limit"]) != 5 || id(b["matched"]) != 12 || b["total"] != float64(5) || b["since"] != nil {
+		t.Errorf("batch = limit %v, matched %v, total %v, since %v; want 5, 12, 5, null", b["limit"], b["matched"], b["total"], b["since"])
+	}
+
+	old, err := e.st.CreateCleanupBatch(t.Context(), 1, "INBOX", 0, 0, 0, 3, time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := e.call(http.MethodGet, fmt.Sprintf("/api/batches/%d", old.ID), "", http.StatusOK)["batch"].(map[string]any)
+	conform(t, e.doc, "Batch", got)
+	if got["limit"] != nil || got["matched"] != nil {
+		t.Errorf("a batch with no record of its check says limit %v, matched %v; want null", got["limit"], got["matched"])
+	}
 }
 
 // A check of an offline account is refused; the scope is validated like the old preview was.

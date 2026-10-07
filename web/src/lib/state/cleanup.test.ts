@@ -27,6 +27,8 @@ const batch = (over: Partial<Batch> = {}): Batch => ({
   tokens: 0,
   cost_usd: 0,
   skipped: 0,
+  limit: 2000,
+  matched: 412,
   ...over,
 });
 const finished = batch({ status: 'done', done: 412, actions: { done: 310, dry_run: 0, failed: 0, undone: 0 } });
@@ -380,6 +382,19 @@ it('Discard, Sort and a new check drop an unsent save', async () => {
   expect(sent(SAVE)).toEqual([]);
   expect(sent('/api/cleanup/run').at(-1)).toEqual({ account_id: 7, check_id: 'chk1', exclude: [0] });
 });
+
+const NOON = 1790000000;
+it.each([
+  ['the newest 25 of a bigger folder', { since: null, limit: 25, matched: 4310 }, 'newest 25 emails'],
+  ['the newest 1 of a bigger folder', { since: null, limit: 1, matched: 30 }, 'newest 1 email'],
+  ['the newest 25 of a folder that holds exactly 25: all of it', { since: null, limit: 25, matched: 25 }, 'all time'],
+  ['all mail that fits in the cap', { since: null, limit: 2000, matched: 1500 }, 'all time'],
+  ['all mail the cap cut', { since: null, limit: 2000, matched: 4310 }, 'newest 2,000 emails'],
+  ['days that fit in the cap', { since: NOON, limit: 2000, matched: 90 }, 'since ' + new Date(NOON * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' })],
+  ['days the cap cut', { since: NOON, limit: 2000, matched: 4310 }, 'since ' + new Date(NOON * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' · newest 2,000 emails'],
+  ['a batch made before the daemon recorded this, no start: all it can say', { since: null, limit: null, matched: null }, 'all time'],
+  ['a batch made before the daemon recorded this, with a start', { since: NOON, limit: null, matched: null }, 'since ' + new Date(NOON * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' })],
+] as const)('a run of %s is labelled "%s"', (_name, own, text) => expect(m.coverage(batch({ ...own }))).toBe(text));
 
 it('a check being run refuses a new scope', async () => {
   await m.check();

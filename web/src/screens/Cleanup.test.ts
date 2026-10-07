@@ -26,6 +26,8 @@ const batch = (over: Partial<Batch> = {}): Batch => ({
   tokens: 0,
   cost_usd: 0,
   skipped: 0,
+  limit: 2000,
+  matched: 412,
   ...over,
 });
 
@@ -339,7 +341,7 @@ it('reports the skipped count in the toast after a sort finishes', async () => {
 });
 
 it('past runs render with their scope, counts and Undo; Show more follows the cursor', async () => {
-  const cut = batch({ id: 2, status: 'failed', done: 90, since: null, account_id: null, actions: { done: 5, dry_run: 90, failed: 0, undone: 0 } });
+  const cut = batch({ id: 2, status: 'failed', done: 90, since: null, limit: null, matched: null, account_id: null, actions: { done: 5, dry_run: 90, failed: 0, undone: 0 } });
   const undone = batch({ id: 1, status: 'undone', actions: { done: 0, dry_run: 0, failed: 0, undone: 310 } });
   routes[PAST] = page([batch(), cut], '2');
   routes[PAST + '&cursor=2'] = page([undone]);
@@ -393,6 +395,19 @@ const startBody = () => {
 const choose = (name: string) => fireEvent.change(screen.getByRole('combobox', { name: 'Which emails' }), { target: { value: name } });
 const type = (name: string, value: string) => fireEvent.input(screen.getByRole('spinbutton', { name }), { target: { value } });
 const checkButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Check what would move' });
+
+it('labels past runs by what they covered, not "all time" for every run without a start', async () => {
+  routes[PAST] = page([
+    batch({ id: 5, since: null, limit: 25, matched: 4310 }),
+    batch({ id: 4, since: null, limit: 2000, matched: 4310 }),
+    batch({ id: 3, since: null, limit: 2000, matched: 90 }),
+    batch({ id: 2, since: null, limit: null, matched: null }),
+  ]);
+  render(Cleanup);
+  expect(await screen.findByText('me@icloud.com · Inbox · newest 25 emails')).toBeTruthy();
+  expect(screen.getByText('me@icloud.com · Inbox · newest 2,000 emails')).toBeTruthy();
+  expect(screen.getAllByText('me@icloud.com · Inbox · all time')).toHaveLength(2);
+});
 
 it('offers three entries; only the chosen one shows its number box, starting at 200 and 90', async () => {
   render(Cleanup);

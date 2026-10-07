@@ -7,6 +7,7 @@
     acted,
     check,
     cleanup,
+    coverage,
     CHECK_MAX,
     discard,
     load,
@@ -89,7 +90,7 @@
   // account_id is null once the mailbox is deleted.
   const mailbox = (b: Batch) => (b.account_id === null ? 'a removed mailbox' : accounts.list.find((a) => a.id === b.account_id)?.label);
   const label = (b: Batch) =>
-    [mailbox(b), folderName(b.folder), b.since === null ? 'all time' : 'since ' + day(b.since)].filter(Boolean).join(' · ');
+    [mailbox(b), folderName(b.folder), coverage(b)].filter(Boolean).join(' · ');
   // These count actions, not emails: a move and a mark-read on one email are two.
   const counts = (b: Batch) => {
     const parts = (['done', 'dry_run', 'failed', 'undone'] as const).filter((k) => b.actions[k]).map((k) => b.actions[k].toLocaleString() + ' ' + k.replace('_', '-'));

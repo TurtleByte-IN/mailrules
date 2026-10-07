@@ -180,7 +180,7 @@ func TestManagerSortCutShort(t *testing.T) {
 	m.Wait()
 
 	// What a daemon that stopped mid-run left behind is closed at the next start.
-	left, err := e.st.CreateCleanupBatch(ctx, id, "Old", 0, 9, 1)
+	left, err := e.st.CreateCleanupBatch(ctx, id, "Old", 0, 0, 0, 9, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

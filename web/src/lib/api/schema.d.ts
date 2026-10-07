@@ -1697,6 +1697,10 @@ export interface components {
             tokens: number;
             /** @description Cleanup: model cost so far. 0 for the other kinds */
             cost_usd: number;
+            /** @description Cleanup: the most emails its check was allowed to cover (the newest of its range). null for the other kinds, and for a cleanup made before this was recorded */
+            limit: number | null;
+            /** @description Cleanup: how many emails the folder held in the range before `limit` cut it. With `since`, `limit` and this the batch can say what it covered: more than `limit` means the check took only the newest `limit`. null when `limit` is */
+            matched: number | null;
             /** @description Cleanup Sort: selected emails passed over because they were no longer where the check found them. 0 for the other kinds */
             skipped: number;
             /** @description How many of the batch's own actions have each status. An undo batch has none of its own */

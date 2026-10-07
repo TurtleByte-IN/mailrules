@@ -776,7 +776,7 @@ func TestSortExistingMail(t *testing.T) {
 	ctx := t.Context()
 	e.primary.DecideFunc = answer(e.food.ID, 0.95)
 	ref := e.deliver("orders@swiggy.example", "order 1")
-	batch, err := e.st.CreateCleanupBatch(ctx, e.p.Account.ID, "INBOX", 0, 1, e.now.Unix())
+	batch, err := e.st.CreateCleanupBatch(ctx, e.p.Account.ID, "INBOX", 0, 0, 0, 1, e.now.Unix())
 	if err != nil {
 		t.Fatal(err)
 	}

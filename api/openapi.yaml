@@ -1820,7 +1820,7 @@ components:
         failed: { type: integer, description: 'Actions that could not be undone and are still in effect; `item.actions` says which' }
     Batch:
       type: object
-      required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd, skipped]
+      required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd, skipped, limit, matched]
       properties:
         id: { type: integer, format: int64 }
         kind: { type: string, enum: [live, cleanup, review, correction, undo], description: '`live` is one per UTC day of live processing, so "undo today" is one batch undo' }
@@ -1833,6 +1833,8 @@ components:
         since: { type: [integer, 'null'], format: int64, description: 'Cleanup: only mail received from this time on; null = all of it' }
         tokens: { type: integer, description: 'Cleanup: model tokens used so far, in and out. 0 for the other kinds' }
         cost_usd: { type: number, description: 'Cleanup: model cost so far. 0 for the other kinds' }
+        limit: { type: [integer, 'null'], description: 'Cleanup: the most emails its check was allowed to cover (the newest of its range). null for the other kinds, and for a cleanup made before this was recorded' }
+        matched: { type: [integer, 'null'], description: 'Cleanup: how many emails the folder held in the range before `limit` cut it. With `since`, `limit` and this the batch can say what it covered: more than `limit` means the check took only the newest `limit`. null when `limit` is' }
         skipped: { type: integer, description: 'Cleanup Sort: selected emails passed over because they were no longer where the check found them. 0 for the other kinds' }
         actions:
           type: object

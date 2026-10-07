@@ -33,7 +33,10 @@ type SortRun struct {
 	AccountID int64
 	Folder    string
 	Since     int64 // only mail received from this time on; 0 = all of it. Recorded on the batch.
-	Rows      []composer.CheckRow
+	// Limit and Matched are the check's: the most emails it covered and how many the range
+	// held before that cut. Recorded on the batch, so it can say what it covered (MAI-48).
+	Limit, Matched int
+	Rows           []composer.CheckRow
 }
 
 // Sort starts applying a check's kept rows in the background and returns the run's batch at
@@ -88,7 +91,7 @@ func (m *Manager) Sort(ctx context.Context, sr SortRun) (store.Batch, error) {
 		}
 		return cmp.Compare(a.Ref.UID, b.Ref.UID)
 	})
-	batch, err := s.Store.CreateCleanupBatch(ctx, sr.AccountID, sr.Folder, sr.Since, len(rows), now().Unix())
+	batch, err := s.Store.CreateCleanupBatch(ctx, sr.AccountID, sr.Folder, sr.Since, sr.Limit, sr.Matched, len(rows), now().Unix())
 	if err != nil {
 		return store.Batch{}, err
 	}

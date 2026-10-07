@@ -2,6 +2,7 @@ import { ApiError } from '../api/client';
 import * as cleanupApi from '../api/cleanup';
 import { subscribe } from '../api/events';
 import { TEST_LIMIT } from '../api/rules';
+import { day } from '../format';
 import { flash } from './toast.svelte';
 
 // idle → checking (a real check is running) → ready/stale (rows shown) or failed.
@@ -419,6 +420,19 @@ export const outcome = (b: cleanupApi.Batch) =>
     : b.actions.dry_run
       ? 'Dry run: ' + acted(b).toLocaleString() + ' emails checked, nothing moved' + skippedTail(b) + '.'
       : 'Cleanup done: ' + acted(b).toLocaleString() + ' emails sorted' + skippedTail(b) + '. Undo it as one batch below.';
+
+/**
+ * What a past run covered, for its label in "Batches you can undo". A start time reads "since <date>". A
+ * check that held more mail than its limit took only the newest `limit` of it, which is said ("newest 25
+ * emails"), so "all time" is kept for a run that really saw the whole range. A run made before the daemon
+ * recorded this (`limit` null) has nothing to go on: with no start time it is "all time", as it always was.
+ */
+export function coverage(b: cleanupApi.Batch) {
+  const since = b.since === null ? '' : 'since ' + day(b.since);
+  const capped = b.limit !== null && b.matched !== null && b.matched > b.limit;
+  const newest = capped ? `newest ${b.limit!.toLocaleString()} ${b.limit === 1 ? 'email' : 'emails'}` : '';
+  return [since, newest].filter(Boolean).join(' · ') || 'all time';
+}
 
 // Mirrors the daemon's store.UndoDays (internal/store/retention.go): a batch created more
 // than this many days ago is refused whole with 409 too_old.

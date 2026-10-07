@@ -327,7 +327,7 @@ func (s *server) handleCleanupRun(w http.ResponseWriter, r *http.Request) {
 			rows = append(rows, row)
 		}
 	}
-	b, err := s.Sort(ctx, worker.SortRun{AccountID: in.AccountID, Folder: st.Folder, Since: st.Since, Rows: rows})
+	b, err := s.Sort(ctx, worker.SortRun{AccountID: in.AccountID, Folder: st.Folder, Since: st.Since, Limit: st.Limit, Matched: st.Matched, Rows: rows})
 	if errors.Is(err, worker.ErrCleanupRunning) {
 		writeError(w, http.StatusConflict, "cleanup_running", "A cleanup is already running for this account. Wait for it to finish.", "")
 		return

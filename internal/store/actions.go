@@ -231,22 +231,35 @@ type Batch struct {
 	// Skipped is how many selected emails a cleanup Sort passed over because they were no
 	// longer where its check found them (MAI-44). 0 for the other kinds.
 	Skipped int
+	// ScanLimit is the most emails the cleanup's check was allowed to cover, and ScanMatched
+	// how many the folder held in the range before that cut (MAI-48). ScanLimit 0 = not
+	// recorded (a batch made before this), and then ScanMatched means nothing.
+	ScanLimit   int
+	ScanMatched int
 }
 
 const batchCols = `id, kind, status, COALESCE(total, 0), done, created_at,
-	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd, skipped`
+	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd, skipped,
+	COALESCE(scan_limit, 0), COALESCE(scan_matched, 0)`
 
 func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
 	var b Batch
-	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped)
+	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped, &b.ScanLimit, &b.ScanMatched)
 	return b, err
 }
 
 // CreateCleanupBatch opens the batch of one cleanup run over total emails, running.
-func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder string, since int64, total int, now int64) (Batch, error) {
+//
+// scanLimit and scanMatched say how much mail the check behind it covered: the most emails it
+// was allowed and how many the range held before that cut. scanLimit 0 records nothing.
+func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder string, since int64, scanLimit, scanMatched, total int, now int64) (Batch, error) {
+	var matched any // an empty range (0) is a fact when a limit was recorded
+	if scanLimit > 0 {
+		matched = scanMatched
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO batches (kind, status, total, account_id, folder, since, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		BatchCleanup, BatchRunning, total, accountID, folder, null(since), now)
+		`INSERT INTO batches (kind, status, total, account_id, folder, since, scan_limit, scan_matched, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		BatchCleanup, BatchRunning, total, accountID, folder, null(since), null(scanLimit), matched, now)
 	if err != nil {
 		return Batch{}, fmt.Errorf("create cleanup batch: %w", err)
 	}
