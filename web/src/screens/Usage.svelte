@@ -8,8 +8,8 @@
 
   type Day = StatsUsage['days'][number];
 
-  // The prototype names three purposes; any other shows as the API sends it.
-  const purposes: Partial<Record<ModelUsage['purpose'], string>> = { decide: 'decision model', escalate: 'fallback', compose: 'rule composer' };
+  // The prototype names three purposes, plus rule suggestions; any other shows as the API sends it.
+  const purposes: Partial<Record<ModelUsage['purpose'], string>> = { decide: 'decision model', escalate: 'fallback', compose: 'rule composer', suggest: 'rule suggestions' };
   const n = (x: number) => x.toLocaleString();
   // Days are UTC dates, so they are formatted in UTC rather than shifted into the browser's zone.
   const date = (day: string) => new Date(day).toLocaleDateString([], { day: 'numeric', month: 'short', timeZone: 'UTC' });

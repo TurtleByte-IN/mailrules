@@ -31,7 +31,7 @@
   const shownId = $derived((rows.find((r) => r.id === selected) ?? rows[0])?.id);
   const detail = $derived(activity.detail?.id === shownId ? activity.detail : null);
   const stats = $derived(activity.stats);
-  // The daemon lists a model once per purpose (decide, escalate, compose, test); the tile shows one figure per model.
+  // The daemon lists a model once per purpose (decide, escalate, compose, test, cleanup, suggest); the tile shows one figure per model.
   const calls = $derived.by(() => {
     const by = new Map<string, number>();
     for (const m of stats?.calls_by_model ?? []) by.set(m.model, (by.get(m.model) ?? 0) + m.calls);

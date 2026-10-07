@@ -450,6 +450,65 @@ paths:
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '409': { $ref: '#/components/responses/Conflict' } # account_offline, no_composer_model
         '502': { $ref: '#/components/responses/Upstream' } # model_error, mailbox_error
+  /api/rules/suggest:
+    post:
+      tags: [Rules]
+      operationId: suggestRules
+      summary: Scan the mail already in a folder and have the AI suggest rules
+      description: |
+        Nothing is saved and the mailbox is not changed: mail is read with BODY.PEEK, so it
+        stays unread and where it is. The scope is the one a cleanup check takes (one
+        folder, the mail from `since` on, the newest `limit` of it, at most 2000). The body
+        of an email is fetched only when `body` is not `none`.
+
+        MailRules groups the scanned emails by sender address itself and sends the rule
+        composer model (the one Settings names for Describe it) a digest per group: the
+        address, its domain and display name, how many emails, how many are read, how many
+        carry a List-Unsubscribe header, the folder, whether the owner has written to the
+        address (the contacts index), the date range, and up to `samples` samples (date,
+        subject and, per `body`, none, the first 500 characters or the whole text). A
+        digest too big for one request is split into several, never splitting a sender
+        group unless that group alone is too big (then fewer of its samples are sent, and
+        `notes` says so). With more than one request, the answers are merged: identical
+        suggestions (same actions, conditions and exceptions) first, then one more call
+        that sends the candidate suggestions only, no mail, to merge overlapping ones.
+        Every call is booked on the usage ledger under the `suggest` purpose. An answer
+        that is not the JSON asked for is asked for once more.
+
+        Each suggestion is a `RuleSuggestion`: a `RuleDraft` (validated like a composed
+        one, `account_id` set to the scanned account) plus its `kind`, whether it
+        `trashes`, the AI's `reason` and the sender `groups` it covers. Its preview: for an
+        `exact` rule, `match_count` and `samples` are its conditions run over the scanned
+        emails (no model); for a rule by `meaning`, they are the scanned emails of the
+        groups the AI assigned to it, not a test of the rule, so no extra model call is
+        made. At most 12 suggestions come back.
+
+        **Progress.** As `/api/rules/test`: a client that sends `Accept: text/event-stream`
+        gets `progress` events carrying `SuggestProgress` (the first once the mail is
+        listed, 0 of `total`), then one `done` event carrying `SuggestResult`, or one
+        `error` event carrying `ErrorBody` (code `suggest_failed`) if the scan fails
+        midway. Any other client gets the `SuggestResult` as one JSON body. A scan that
+        cannot start (no model, no such folder, account offline, invalid input) is
+        answered as plain JSON with its usual status. A client that drops the request ends
+        the scan; the daemon logs that as cancelled, not as an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuggestRequest' }
+      responses:
+        '200':
+          description: The suggestions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuggestResult' }
+            text/event-stream:
+              schema: { type: string, description: '`progress` events (SuggestProgress), then `done` (SuggestResult) or `error` (ErrorBody)' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | folder | since | limit | samples | body), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_offline, no_composer_model
+        '502': { $ref: '#/components/responses/Upstream' } # model_error, mailbox_error
   /api/rules/export:
     get:
       tags: [Rules]
@@ -1080,7 +1139,7 @@ paths:
       summary: Model calls and cost by day, rule and model for the Usage screen
       description: |
         `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
-        every model call under its purpose (decide, escalate, compose, test, cleanup). `by_rule` comes
+        every model call under its purpose (decide, escalate, compose, test, cleanup, suggest). `by_rule` comes
         from the decisions, which know which rule a call was for, so it leaves out composing
         and testing and its costs add up to less than `cost_usd`.
       parameters:
@@ -1622,6 +1681,67 @@ components:
         matched: { type: integer, description: 'Of those, the emails one of the tested rules would be applied to. Only the rules this request tested count (`rule_ids` and `rules`, or the saved set when it names neither): a rule that was left out matches nothing here, and an email that would go to Needs review is not counted' }
         model_calls: { type: integer }
         cost_usd: { type: number }
+    SuggestRequest:
+      type: object
+      required: [account_id]
+      additionalProperties: false
+      description: The scope of a cleanup check (CleanupCheckRequest), plus what of each email is sent to the AI
+      properties:
+        account_id: { type: integer, format: int64 }
+        folder: { type: string, description: 'One folder of the account; left out = INBOX' }
+        since: { type: [integer, 'null'], format: int64, description: Only mail received on or after this time's date; null = all of it }
+        limit: { type: integer, minimum: 1, maximum: 2000, description: 'Only the newest N emails of the range. Left out = 2000, the most a scan covers; `SuggestResult.matched` says how many the range held' }
+        samples:
+          description: 'Samples sent per sender group, newest first: a number from 1, or "all". Left out = 5.'
+          oneOf:
+            - { type: integer, minimum: 1 }
+            - { type: string, enum: [all] }
+        body: { type: string, enum: [none, first500, full], description: 'How much of each sample''s body is sent: none (bodies are not even fetched), the first 500 characters of its text, or its whole text (as much as MailRules reads of an email, 64 KB). Left out = none.' }
+    SuggestProgress:
+      type: object
+      required: [phase, read, total, matched, requests_done, requests_total, tokens, cost_usd]
+      properties:
+        phase: { type: string, enum: [reading, asking, merging], description: 'reading the mail, asking the model about the digest, or merging the answers of several requests' }
+        read: { type: integer, description: 'Emails read so far, or passed over because they are gone or cannot be read' }
+        total: { type: integer, description: 'Emails the scan goes through; known once the mail is listed, so the first event is 0 of `total`' }
+        matched: { type: integer, description: 'Emails the folder holds in the chosen range before `limit` cut it' }
+        requests_done: { type: integer, description: Model requests answered so far }
+        requests_total: { type: integer, description: 'Model requests the scan makes: 0 while reading, then the digest parts plus one merge call when there is more than one part. It grows by one when an answer has to be asked for again' }
+        tokens: { type: integer, description: Model tokens so far, in and out }
+        cost_usd: { type: number, description: Model cost so far }
+    SuggestionGroup:
+      type: object
+      required: [id, from, domain, count]
+      description: One sender group of the scan
+      properties:
+        id: { type: string, description: 'The group''s id in the digest, such as "g12"' }
+        from: { type: string, description: The sender's address }
+        domain: { type: string }
+        count: { type: integer, description: Scanned emails from this address }
+    RuleSuggestion:
+      description: 'A RuleDraft the AI suggested from the scanned mail. Send the fields of RuleInput to /api/rules/batch to create it'
+      allOf:
+        - $ref: '#/components/schemas/RuleDraft'
+        - type: object
+          required: [kind, trashes, reason, groups]
+          properties:
+            kind: { type: string, enum: [exact, meaning], description: '`exact`: conditions only; it runs with no model, and `match_count` and `samples` are its conditions run over the scanned emails. `meaning`: it has an intent and a model decides each email; `match_count` and `samples` are the scanned emails of the groups the AI assigned to it, not a test of the rule' }
+            trashes: { type: boolean, description: 'One of its actions is trash' }
+            reason: { type: string, description: 'The AI''s one-line reason, for the user' }
+            groups: { type: array, items: { $ref: '#/components/schemas/SuggestionGroup' }, description: 'The sender groups the AI says it is for' }
+    SuggestResult:
+      type: object
+      required: [suggestions, scanned, total, matched, groups, requests, tokens, cost_usd, notes]
+      properties:
+        suggestions: { type: array, maxItems: 12, items: { $ref: '#/components/schemas/RuleSuggestion' } }
+        scanned: { type: integer, description: Emails read and grouped }
+        total: { type: integer, description: 'Emails listed for the scan: the newest `limit` of the range' }
+        matched: { type: integer, description: 'Emails the folder holds in the chosen range before `limit` cut it; more than `total` when the scan covered only the newest of them' }
+        groups: { type: integer, description: Sender groups found }
+        requests: { type: integer, description: Model requests made }
+        tokens: { type: integer, description: Model tokens, in and out }
+        cost_usd: { type: number }
+        notes: { type: array, items: { type: string }, description: 'Plain sentences about how the scan went: fewer samples sent for some senders, suggestions left out over the cap, answers that could not be merged' }
 
     Sender:
       type: object
@@ -1934,7 +2054,7 @@ components:
       properties:
         provider: { type: string }
         model: { type: string }
-        purpose: { type: string, enum: [decide, escalate, compose, test, cleanup] }
+        purpose: { type: string, enum: [decide, escalate, compose, test, cleanup, suggest] }
         calls: { type: integer }
         tokens_in: { type: integer }
         tokens_out: { type: integer }
@@ -2017,7 +2137,7 @@ components:
                   properties:
                     provider: { type: string }
                     model: { type: string }
-                    purpose: { type: string, enum: [decide, escalate, compose, test, cleanup] }
+                    purpose: { type: string, enum: [decide, escalate, compose, test, cleanup, suggest] }
                     calls: { type: integer }
                     cost_usd: { type: number }
         by_rule:

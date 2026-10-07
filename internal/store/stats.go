@@ -162,7 +162,7 @@ type UsageRow struct {
 	Day       string // YYYY-MM-DD, UTC
 	Provider  string
 	Model     string
-	Purpose   string // decide | escalate | compose | test | cleanup
+	Purpose   string // decide | escalate | compose | test | cleanup | suggest
 	Calls     int
 	TokensIn  int
 	TokensOut int

@@ -44,7 +44,8 @@ export async function optimize() {
 /** A draft the daemon found a problem in cannot be saved as it is. */
 export const savable = (d: Draft) => !d.rejected && !d.errors.length;
 
-const toInput = ({ name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders }: Draft): RuleInput => ({
+/** The fields of a drafted or suggested rule that create it; the card's own extras are left behind. */
+export const toInput = ({ name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders }: composeApi.Draft): RuleInput => ({
   name,
   said,
   intent,

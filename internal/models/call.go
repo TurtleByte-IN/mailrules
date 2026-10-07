@@ -22,7 +22,8 @@ type Call struct {
 type purposeKey struct{}
 
 // WithPurpose says why the calls made under ctx are made ("decide", "escalate", "test",
-// "compose"): the cost ledger's purposes, which the debug line of every call repeats.
+// "compose", "cleanup", "suggest"): the cost ledger's purposes, which the debug line of every
+// call repeats.
 func WithPurpose(ctx context.Context, purpose string) context.Context {
 	return context.WithValue(ctx, purposeKey{}, purpose)
 }

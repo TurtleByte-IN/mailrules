@@ -1,14 +1,15 @@
 <script lang="ts">
   import type { Batch, CleanupCheckRow } from '../lib/api/cleanup';
+  import ScopePicker from '../lib/components/ScopePicker.svelte';
   import Waiting from '../lib/components/Waiting.svelte';
   import { clock, day, money } from '../lib/format';
+  import { archiveFolder, CHECK_MAX, scopeProblem } from '../lib/scope';
   import { accounts } from '../lib/state/accounts.svelte';
   import {
     acted,
     check,
     cleanup,
     coverage,
-    CHECK_MAX,
     discard,
     load,
     more,
@@ -16,14 +17,12 @@
     outcome,
     selectAll,
     selectedCount,
-    scopeProblem,
     selectNone,
     setScope,
     sort,
     toggleRow,
     undo,
     UNDO_DAYS,
-    type Scope,
   } from '../lib/state/cleanup.svelte';
   import { settings } from '../lib/state/settings.svelte';
   import { actionsText } from './rules/text';
@@ -35,18 +34,14 @@
     if (!cleanup.scope.accountId && accounts.list.length) setScope({ accountId: String(accounts.list[0].id) });
   });
 
-  const choices: Record<Scope['mode'], string> = { newest: 'Newest emails', days: 'From the last days', all: 'All mail' };
   const problem = $derived(scopeProblem(cleanup.scope));
-  // The number of the chosen entry, for the box; all mail has none.
-  const boxed = $derived(cleanup.scope.mode === 'all' ? null : cleanup.scope.mode);
-  const typed = (e: Event & { currentTarget: HTMLInputElement }) => (Number.isNaN(e.currentTarget.valueAsNumber) ? null : e.currentTarget.valueAsNumber);
   // A check covers at most the newest CHECK_MAX emails of its range; say so when the range held more.
   const capped = $derived(!!cleanup.check && cleanup.check.limit >= CHECK_MAX && cleanup.check.matched > cleanup.check.total);
   const capText = (verb: string) =>
     cleanup.check ? `${verb} the newest ${cleanup.check.total.toLocaleString()} of ${cleanup.check.matched.toLocaleString()}. Run another check for the rest.` : '';
 
   // Archive goes by a different name on every server; the mailbox's folder list knows which.
-  const archive = $derived(cleanup.folders.find((f) => f.special_use === '\\Archive')?.name);
+  const archive = $derived(archiveFolder(cleanup.folders));
   const folderName = (folder: string) => (folder === 'INBOX' ? 'Inbox' : folder === archive ? 'Archive' : folder);
 
   const checking = $derived(cleanup.phase === 'checking');
@@ -117,56 +112,7 @@
   </header>
 
   <section class="card flex flex-col gap-4 p-5">
-    <div class="flex flex-wrap gap-3">
-      <label class="flex flex-[1_1_200px] flex-col gap-1.5">
-        <span class="text-[13px] font-semibold">Mailbox</span>
-        <select class="field h-11 px-2.5" disabled={busy} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
-          {#each accounts.list as a (a.id)}
-            <option value={String(a.id)}>{a.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-[1_1_160px] flex-col gap-1.5">
-        <span class="text-[13px] font-semibold">Folder</span>
-        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.folder} onchange={(e) => setScope({ folder: e.currentTarget.value })}>
-          <option value="INBOX">Inbox</option>
-          {#if archive}
-            <option value={archive}>Archive</option>
-          {/if}
-        </select>
-      </label>
-      <label class="flex flex-[1_1_160px] flex-col gap-1.5">
-        <span class="text-[13px] font-semibold">Which emails</span>
-        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.mode} onchange={(e) => setScope({ mode: e.currentTarget.value as Scope['mode'] })}>
-          {#each Object.entries(choices) as [value, name] (value)}
-            <option {value}>{name}</option>
-          {/each}
-        </select>
-      </label>
-      {#if boxed}
-        <div class="flex flex-[0_1_140px] flex-col gap-1.5">
-          <span class="text-[13px] font-semibold">{boxed === 'newest' ? 'Emails' : 'Days'}</span>
-          <input
-            type="number"
-            min="1"
-            max={boxed === 'newest' ? CHECK_MAX : undefined}
-            step="1"
-            inputmode="numeric"
-            aria-label={boxed === 'newest' ? 'How many emails' : 'How many days'}
-            aria-invalid={problem ? true : undefined}
-            aria-describedby={problem ? 'cleanup-scope-problem' : undefined}
-            class="field h-11 px-2.5 font-mono"
-            disabled={locked}
-            value={cleanup.scope[boxed]}
-            oninput={(e) => setScope({ [boxed]: typed(e) })}
-          />
-        </div>
-      {/if}
-    </div>
-
-    {#if problem}
-      <p id="cleanup-scope-problem" role="alert" class="-mt-2 text-[12.5px] text-trash">{problem}</p>
-    {/if}
+    <ScopePicker id="cleanup" scope={cleanup.scope} folders={cleanup.folders} {busy} {locked} onchange={setScope} />
 
     <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={locked || !cleanup.scope.accountId || !!problem} onclick={check}>
       {checking ? 'Checking…' : 'Check what would move'}

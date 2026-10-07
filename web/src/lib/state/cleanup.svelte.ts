@@ -1,30 +1,14 @@
 import { ApiError } from '../api/client';
 import * as cleanupApi from '../api/cleanup';
 import { subscribe } from '../api/events';
-import { TEST_LIMIT } from '../api/rules';
 import { day } from '../format';
+import { CHECK_MAX, scopeProblem, startScope, toRequest, type Scope } from '../scope';
 import { flash } from './toast.svelte';
 
 // idle → checking (a real check is running) → ready/stale (rows shown) or failed.
 // From ready, Sort moves to sorting → done. Changing the scope goes back to idle unless a check
 // or a sort is running, so what the user sorts always matches the check they are looking at.
 type Phase = 'idle' | 'checking' | 'ready' | 'stale' | 'failed' | 'sorting' | 'done';
-
-/** The most emails one check covers: the daemon's own bound, the same number the rule tester allows. */
-export const CHECK_MAX = TEST_LIMIT.max;
-
-/** What the scope controls hold; toRequest turns it into the contract's CleanupCheckRequest. */
-export interface Scope {
-  accountId: string;
-  /** The server's own folder name. */
-  folder: string;
-  /** The newest N emails, the emails from the last N days, or all mail. Every one is capped at CHECK_MAX. */
-  mode: 'newest' | 'days' | 'all';
-  /** The "Newest emails" box; null is an empty box. */
-  newest: number | null;
-  /** The "From the last days" box; null is an empty box. */
-  days: number | null;
-}
 
 export const cleanup = $state<{
   phase: Phase;
@@ -45,7 +29,7 @@ export const cleanup = $state<{
   error: string;
 }>({
   phase: 'idle',
-  scope: { accountId: '', folder: 'INBOX', mode: 'newest', newest: TEST_LIMIT.default, days: 90 },
+  scope: startScope(),
   folders: [],
   check: null,
   excluded: new Set(),
@@ -89,22 +73,6 @@ export async function more() {
   } catch (e) {
     fail(e);
   }
-}
-
-/** What is wrong with the chosen number, in a sentence; empty when nothing is, and for "All mail", which has no box. */
-export function scopeProblem(s: Scope) {
-  if (s.mode === 'newest') return s.newest !== null && Number.isInteger(s.newest) && s.newest >= 1 && s.newest <= CHECK_MAX ? '' : `The limit must be between 1 and ${CHECK_MAX}.`;
-  if (s.mode === 'days') return s.days !== null && Number.isInteger(s.days) && s.days >= 1 ? '' : 'Give a whole number of days, 1 or more.';
-  return '';
-}
-
-// Every check covers at most the newest CHECK_MAX emails of its range, so the limit is always sent.
-// A start before the epoch is the epoch: a huge number of days means all mail.
-function toRequest(s: Scope): cleanupApi.CleanupCheckRequest {
-  const account_id = Number(s.accountId);
-  if (s.mode === 'newest') return { account_id, folder: s.folder, since: null, limit: Math.min(s.newest!, CHECK_MAX) };
-  if (s.mode === 'days') return { account_id, folder: s.folder, since: Math.max(0, Math.floor(Date.now() / 1000) - s.days! * 86400), limit: CHECK_MAX };
-  return { account_id, folder: s.folder, since: null, limit: CHECK_MAX };
 }
 
 /**

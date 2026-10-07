@@ -322,6 +322,27 @@ func wantsStream(r *http.Request) bool {
 	return false
 }
 
+// eventStream writes server-sent events. Its headers go out with the first event, so a run
+// that fails before it has anything to report is still answered as plain JSON.
+type eventStream struct {
+	w       http.ResponseWriter
+	started bool
+}
+
+// send writes one event and flushes it.
+func (e *eventStream) send(event string, v any) {
+	if !e.started {
+		h := e.w.Header()
+		h.Set("Content-Type", "text/event-stream")
+		h.Set("Cache-Control", "no-cache")
+		h.Set("X-Accel-Buffering", "no")
+		e.started = true
+	}
+	data, _ := json.Marshal(v) // the values sent here always encode
+	_, _ = fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", event, data)
+	_ = http.NewResponseController(e.w).Flush()
+}
+
 // handleRulesTest runs saved or draft rules over an account's recent mail and reports
 // what each email would get. It reads the mailbox and changes nothing. A client that
 // accepts text/event-stream gets progress events, from 0 of N once the mail is listed,
@@ -417,26 +438,13 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 
 	// The headers of a stream go out with the first event, so a run that fails before the
 	// mail is listed (no such folder) is still answered as plain JSON.
-	rc := http.NewResponseController(w)
-	started := false
-	send := func(event string, v any) {
-		if !started {
-			h := w.Header()
-			h.Set("Content-Type", "text/event-stream")
-			h.Set("Cache-Control", "no-cache")
-			h.Set("X-Accel-Buffering", "no")
-			started = true
-		}
-		data, _ := json.Marshal(v) // the values sent here always encode
-		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
-		_ = rc.Flush()
-	}
+	es := &eventStream{w: w}
 	var seen composer.Progress
 	tenth := -1
 	res, err := t.Run(ctx, set, senders, in.Folder, limit, func(p composer.Progress) {
 		seen = p
 		if stream && (p.Done%max(1, p.Total/progressSteps) == 0 || p.Done == p.Total) {
-			send("progress", map[string]int{"done": p.Done, "total": p.Total, "model_calls": p.ModelCalls})
+			es.send("progress", map[string]int{"done": p.Done, "total": p.Total, "model_calls": p.ModelCalls})
 		}
 		if at := p.Done * 10 / max(1, p.Total); at != tenth {
 			tenth = at
@@ -453,7 +461,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		slog.InfoContext(ctx, "rule test finished", "account", acct.ID, "folder", in.Folder, "limit", limit, "rules", len(set),
 			"tested", res.Tested, "matched", res.Matched, "model_calls", res.ModelCalls, "cost_usd", res.CostUSD, "duration_ms", took)
 		if stream {
-			send("done", res)
+			es.send("done", res)
 		} else {
 			writeJSON(w, http.StatusOK, res)
 		}
@@ -461,14 +469,14 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		slog.InfoContext(ctx, fmt.Sprintf("rule test cancelled by the client after %d of %d", seen.Done, seen.Total),
 			"account", acct.ID, "folder", in.Folder, "limit", limit, "done", seen.Done, "total", seen.Total,
 			"model_calls", seen.ModelCalls, "duration_ms", took)
-		if !started {
+		if !es.started {
 			w.WriteHeader(statusClientClosed)
 		}
 	default:
 		slog.WarnContext(ctx, "rule test failed", "account", acct.ID, "folder", in.Folder, "limit", limit, "done", seen.Done,
 			"total", seen.Total, "model_calls", seen.ModelCalls, "duration_ms", took, "error", err.Error())
-		if started {
-			send("error", map[string]apiError{"error": {Code: "test_failed", Message: "The test stopped: the mail server or the AI model failed. Try again."}})
+		if es.started {
+			es.send("error", map[string]apiError{"error": {Code: "test_failed", Message: "The test stopped: the mail server or the AI model failed. Try again."}})
 		} else {
 			s.modelFail(w, r, err)
 		}

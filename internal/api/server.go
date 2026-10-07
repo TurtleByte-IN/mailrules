@@ -97,6 +97,7 @@ func (s *server) routes() []route {
 		on(post, "/api/rules/batch", s.handleRulesBatch),
 		on(post, "/api/rules/reorder", s.handleRulesReorder),
 		on(post, "/api/rules/test", s.handleRulesTest),
+		on(post, "/api/rules/suggest", s.handleRulesSuggest),
 		on(get, "/api/rules/export", s.handleRulesExport),
 		on(post, "/api/rules/import", s.handleRulesImport),
 		on(get, "/api/rules/{id}", s.handleRule),

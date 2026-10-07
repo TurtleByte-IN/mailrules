@@ -257,3 +257,4 @@ func TestTestLimitsAgreeEverywhere(t *testing.T) {
 		t.Errorf("web/src/lib/api/rules.ts TEST_LIMIT is default %s, max %s; the daemon's are %d and %d", m[1], m[2], composer.DefaultLimit, composer.MaxLimit)
 	}
 }
+

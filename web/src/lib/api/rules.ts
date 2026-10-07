@@ -1,4 +1,4 @@
-import { api, ApiError, query, request } from './client';
+import { api, ApiError, query, request, stream } from './client';
 import type { components, operations } from './schema';
 
 type S = components['schemas'];
@@ -45,8 +45,8 @@ export const batch = async (rules: RuleInput[]) =>
 /** Undoes everything the rule did at or after `since` (unix seconds). */
 export const undo = (id: number, since: number) => api<UndoResult>('POST', `/rules/${id}/undo` + query({ since }));
 
-// api() sends and reads JSON only; the YAML file and the tester's event stream need the
-// response itself.
+// api() sends and reads JSON only; the YAML file needs the response itself, and the tester's
+// event stream is read by stream().
 
 /** Every rule as the YAML rules file. */
 export const exportYaml = async () => (await request('GET', '/rules/export', { Accept: 'application/yaml' })).blob();
@@ -62,27 +62,5 @@ export const importYaml = async (file: Blob): Promise<ImportResult> =>
  * model, a refused limit) is answered as plain JSON and throws as any request does; one that fails
  * midway throws the error the stream carried.
  */
-export async function test(req: S['TestRequest'], onProgress?: (p: TestProgress) => void): Promise<TestResult> {
-  const res = await request('POST', '/rules/test', { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, JSON.stringify(req));
-  if (!res.headers.get('Content-Type')?.startsWith('text/event-stream')) return res.json();
-
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) throw new ApiError(502, 'stream_ended', 'The test stopped before it finished.');
-    buffer += decoder.decode(value, { stream: true });
-    for (let end; (end = buffer.indexOf('\n\n')) >= 0; buffer = buffer.slice(end + 2)) {
-      const frame = buffer.slice(0, end);
-      const event = /^event: ?(.*)$/m.exec(frame)?.[1];
-      const data = /^data: ?(.*)$/m.exec(frame)?.[1];
-      if (event === 'done') return JSON.parse(data!);
-      if (event === 'progress') onProgress?.(JSON.parse(data!));
-      if (event === 'error') {
-        const { error }: S['ErrorBody'] = JSON.parse(data!);
-        throw new ApiError(502, error.code, error.message, error.path);
-      }
-    }
-  }
-}
+export const test = (req: S['TestRequest'], onProgress?: (p: TestProgress) => void) =>
+  stream<TestResult, TestProgress>('/rules/test', req, onProgress, 'The test stopped before it finished.');

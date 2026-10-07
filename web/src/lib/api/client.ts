@@ -50,6 +50,38 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
+/**
+ * POSTs `body` as JSON to a route that can report progress. Asking for an event stream makes the
+ * daemon send `progress` events (passed to `onProgress`), then one `done` event with the result or one
+ * `error` event, which throws as ApiError. A request that cannot start is answered as plain JSON: an
+ * error throws as any request does, a result is returned as it is. A stream that closes without
+ * either throws `ended` as its message.
+ */
+export async function stream<T, P>(path: string, body: unknown, onProgress: ((p: P) => void) | undefined, ended: string): Promise<T> {
+  const res = await request('POST', path, { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, JSON.stringify(body));
+  if (!res.headers.get('Content-Type')?.startsWith('text/event-stream')) return res.json();
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) throw new ApiError(502, 'stream_ended', ended);
+    buffer += decoder.decode(value, { stream: true });
+    for (let end; (end = buffer.indexOf('\n\n')) >= 0; buffer = buffer.slice(end + 2)) {
+      const frame = buffer.slice(0, end);
+      const event = /^event: ?(.*)$/m.exec(frame)?.[1];
+      const data = /^data: ?(.*)$/m.exec(frame)?.[1];
+      if (event === 'done') return JSON.parse(data!);
+      if (event === 'progress') onProgress?.(JSON.parse(data!));
+      if (event === 'error') {
+        const { error }: { error: { code: string; message: string; path?: string } } = JSON.parse(data!);
+        throw new ApiError(502, error.code, error.message, error.path);
+      }
+    }
+  }
+}
+
 /** Builds "?a=1&b=2" from the set values; empty string when there are none. */
 export function query(params: Record<string, string | number | boolean | null | undefined>) {
   const q = new URLSearchParams();

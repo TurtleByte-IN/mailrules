@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Batch, CleanupCheck, CleanupCheckRow, UndoResult } from '../api/cleanup';
+import { scopeProblem } from '../scope';
 
 // Fresh modules per test: the state and the poll timers live in module scope.
 let m: typeof import('./cleanup.svelte');
@@ -173,7 +174,7 @@ it.each([
   [{ mode: 'all', newest: 0, days: 0 }, ''],
 ] as const)('the scope %j is refused with "%s"', async (scope, problem) => {
   m.setScope(scope);
-  expect(m.scopeProblem(m.cleanup.scope)).toBe(problem);
+  expect(scopeProblem(m.cleanup.scope)).toBe(problem);
   await m.check();
   expect(sent('/api/cleanup/check')).toHaveLength(problem ? 0 : 1);
   expect(m.cleanup.phase).toBe(problem ? 'idle' : 'checking');

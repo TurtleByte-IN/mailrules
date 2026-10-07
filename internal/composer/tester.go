@@ -161,6 +161,20 @@ func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.Sender
 // time, so work is called concurrently. A message that is gone or cannot be parsed is
 // handed over as nil. The first failure ends the run and is returned.
 func (t Tester) each(ctx context.Context, refs []mail.MsgRef, work func(ctx context.Context, i int, sum *message.Summary) error) error {
+	return t.eachRaw(ctx, refs, 0, func(ctx context.Context, i int, raw *message.Raw) error {
+		sum, err := t.parse(ctx, raw, t.BodyChars)
+		if err != nil {
+			return err
+		}
+		return work(ctx, i, sum)
+	})
+}
+
+// eachRaw fetches every message with BODY.PEEK, at most maxBody bytes of its text (0 = as
+// much as the connector reads), and hands it to work, several messages at a time, so work
+// is called concurrently. A message that is gone is handed over as nil. The first failure
+// ends the run and is returned.
+func (t Tester) eachRaw(ctx context.Context, refs []mail.MsgRef, maxBody int, work func(ctx context.Context, i int, raw *message.Raw) error) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	var reads readStats
@@ -170,9 +184,9 @@ func (t Tester) each(ctx context.Context, refs []mail.MsgRef, work func(ctx cont
 	for range min(workers, len(refs)) {
 		wg.Go(func() {
 			for i := range next {
-				sum, err := t.read(ctx, refs[i], &reads)
+				raw, err := t.fetch(ctx, refs[i], maxBody, &reads)
 				if err == nil {
-					err = work(ctx, i, sum)
+					err = work(ctx, i, raw)
 				}
 				if err != nil {
 					cancel(err)
@@ -193,11 +207,10 @@ feed:
 	return context.Cause(ctx)
 }
 
-// read fetches one message with BODY.PEEK and parses it. nil means it is gone or cannot
-// be read as an email.
-func (t Tester) read(ctx context.Context, ref mail.MsgRef, stats *readStats) (*message.Summary, error) {
+// fetch reads one message with BODY.PEEK. nil means it is gone.
+func (t Tester) fetch(ctx context.Context, ref mail.MsgRef, maxBody int, stats *readStats) (*message.Raw, error) {
 	start := time.Now()
-	raw, err := t.Mailbox.Fetch(ctx, ref, 0)
+	raw, err := t.Mailbox.Fetch(ctx, ref, maxBody)
 	took := time.Since(start)
 	stats.add(took)
 	if took >= slowFetch {
@@ -209,7 +222,17 @@ func (t Tester) read(ctx context.Context, ref mail.MsgRef, stats *readStats) (*m
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
-	sum, err := message.Parse(raw, t.AccountID, t.BodyChars)
+	return raw, nil
+}
+
+// parse reads a fetched message as an email, its text cut to bodyChars characters (0 = all
+// of it), and fills its contact signals. nil means there was no message, or it cannot be
+// read as an email.
+func (t Tester) parse(ctx context.Context, raw *message.Raw, bodyChars int) (*message.Summary, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	sum, err := message.Parse(raw, t.AccountID, bodyChars)
 	if err != nil {
 		return nil, nil
 	}

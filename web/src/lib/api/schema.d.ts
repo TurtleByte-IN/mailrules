@@ -351,6 +351,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rules/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan the mail already in a folder and have the AI suggest rules
+         * @description Nothing is saved and the mailbox is not changed: mail is read with BODY.PEEK, so it
+         *     stays unread and where it is. The scope is the one a cleanup check takes (one
+         *     folder, the mail from `since` on, the newest `limit` of it, at most 2000). The body
+         *     of an email is fetched only when `body` is not `none`.
+         *
+         *     MailRules groups the scanned emails by sender address itself and sends the rule
+         *     composer model (the one Settings names for Describe it) a digest per group: the
+         *     address, its domain and display name, how many emails, how many are read, how many
+         *     carry a List-Unsubscribe header, the folder, whether the owner has written to the
+         *     address (the contacts index), the date range, and up to `samples` samples (date,
+         *     subject and, per `body`, none, the first 500 characters or the whole text). A
+         *     digest too big for one request is split into several, never splitting a sender
+         *     group unless that group alone is too big (then fewer of its samples are sent, and
+         *     `notes` says so). With more than one request, the answers are merged: identical
+         *     suggestions (same actions, conditions and exceptions) first, then one more call
+         *     that sends the candidate suggestions only, no mail, to merge overlapping ones.
+         *     Every call is booked on the usage ledger under the `suggest` purpose. An answer
+         *     that is not the JSON asked for is asked for once more.
+         *
+         *     Each suggestion is a `RuleSuggestion`: a `RuleDraft` (validated like a composed
+         *     one, `account_id` set to the scanned account) plus its `kind`, whether it
+         *     `trashes`, the AI's `reason` and the sender `groups` it covers. Its preview: for an
+         *     `exact` rule, `match_count` and `samples` are its conditions run over the scanned
+         *     emails (no model); for a rule by `meaning`, they are the scanned emails of the
+         *     groups the AI assigned to it, not a test of the rule, so no extra model call is
+         *     made. At most 12 suggestions come back.
+         *
+         *     **Progress.** As `/api/rules/test`: a client that sends `Accept: text/event-stream`
+         *     gets `progress` events carrying `SuggestProgress` (the first once the mail is
+         *     listed, 0 of `total`), then one `done` event carrying `SuggestResult`, or one
+         *     `error` event carrying `ErrorBody` (code `suggest_failed`) if the scan fails
+         *     midway. Any other client gets the `SuggestResult` as one JSON body. A scan that
+         *     cannot start (no model, no such folder, account offline, invalid input) is
+         *     answered as plain JSON with its usual status. A client that drops the request ends
+         *     the scan; the daemon logs that as cancelled, not as an error.
+         */
+        post: operations["suggestRules"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rules/export": {
         parameters: {
             query?: never;
@@ -913,7 +967,7 @@ export interface paths {
         /**
          * Model calls and cost by day, rule and model for the Usage screen
          * @description `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
-         *     every model call under its purpose (decide, escalate, compose, test, cleanup). `by_rule` comes
+         *     every model call under its purpose (decide, escalate, compose, test, cleanup, suggest). `by_rule` comes
          *     from the decisions, which know which rule a call was for, so it leaves out composing
          *     and testing and its costs add up to less than `cost_usd`.
          */
@@ -1398,6 +1452,90 @@ export interface components {
             model_calls: number;
             cost_usd: number;
         };
+        /** @description The scope of a cleanup check (CleanupCheckRequest), plus what of each email is sent to the AI */
+        SuggestRequest: {
+            /** Format: int64 */
+            account_id: number;
+            /** @description One folder of the account; left out = INBOX */
+            folder?: string;
+            /**
+             * Format: int64
+             * @description Only mail received on or after this time's date; null = all of it
+             */
+            since?: number | null;
+            /** @description Only the newest N emails of the range. Left out = 2000, the most a scan covers; `SuggestResult.matched` says how many the range held */
+            limit?: number;
+            /** @description Samples sent per sender group, newest first: a number from 1, or "all". Left out = 5. */
+            samples?: number | "all";
+            /**
+             * @description How much of each sample's body is sent: none (bodies are not even fetched), the first 500 characters of its text, or its whole text (as much as MailRules reads of an email, 64 KB). Left out = none.
+             * @enum {string}
+             */
+            body?: "none" | "first500" | "full";
+        };
+        SuggestProgress: {
+            /**
+             * @description reading the mail, asking the model about the digest, or merging the answers of several requests
+             * @enum {string}
+             */
+            phase: "reading" | "asking" | "merging";
+            /** @description Emails read so far, or passed over because they are gone or cannot be read */
+            read: number;
+            /** @description Emails the scan goes through; known once the mail is listed, so the first event is 0 of `total` */
+            total: number;
+            /** @description Emails the folder holds in the chosen range before `limit` cut it */
+            matched: number;
+            /** @description Model requests answered so far */
+            requests_done: number;
+            /** @description Model requests the scan makes: 0 while reading, then the digest parts plus one merge call when there is more than one part. It grows by one when an answer has to be asked for again */
+            requests_total: number;
+            /** @description Model tokens so far */
+            tokens: number;
+            /** @description Model cost so far */
+            cost_usd: number;
+        };
+        /** @description One sender group of the scan */
+        SuggestionGroup: {
+            /** @description The group's id in the digest, such as "g12" */
+            id: string;
+            /** @description The sender's address */
+            from: string;
+            domain: string;
+            /** @description Scanned emails from this address */
+            count: number;
+        };
+        /** @description A RuleDraft the AI suggested from the scanned mail. Send the fields of RuleInput to /api/rules/batch to create it */
+        RuleSuggestion: components["schemas"]["RuleDraft"] & {
+            /**
+             * @description `exact`: conditions only; it runs with no model, and `match_count` and `samples` are its conditions run over the scanned emails. `meaning`: it has an intent and a model decides each email; `match_count` and `samples` are the scanned emails of the groups the AI assigned to it, not a test of the rule
+             * @enum {string}
+             */
+            kind: "exact" | "meaning";
+            /** @description One of its actions is trash */
+            trashes: boolean;
+            /** @description The AI's one-line reason, for the user */
+            reason: string;
+            /** @description The sender groups the AI says it is for */
+            groups: components["schemas"]["SuggestionGroup"][];
+        };
+        SuggestResult: {
+            suggestions: components["schemas"]["RuleSuggestion"][];
+            /** @description Emails read and grouped */
+            scanned: number;
+            /** @description Emails listed for the scan: the newest `limit` of the range */
+            total: number;
+            /** @description Emails the folder holds in the chosen range before `limit` cut it; more than `total` when the scan covered only the newest of them */
+            matched: number;
+            /** @description Sender groups found */
+            groups: number;
+            /** @description Model requests made */
+            requests: number;
+            /** @description Model tokens */
+            tokens: number;
+            cost_usd: number;
+            /** @description Plain sentences about how the scan went: fewer samples sent for some senders, suggestions left out over the cap, answers that could not be merged */
+            notes: string[];
+        };
         Sender: {
             /** @enum {string} */
             type: "address" | "domain";
@@ -1830,7 +1968,7 @@ export interface components {
             provider: string;
             model: string;
             /** @enum {string} */
-            purpose: "decide" | "escalate" | "compose" | "test" | "cleanup";
+            purpose: "decide" | "escalate" | "compose" | "test" | "cleanup" | "suggest";
             calls: number;
             tokens_in: number;
             tokens_out: number;
@@ -1912,7 +2050,7 @@ export interface components {
                     provider: string;
                     model: string;
                     /** @enum {string} */
-                    purpose: "decide" | "escalate" | "compose" | "test" | "cleanup";
+                    purpose: "decide" | "escalate" | "compose" | "test" | "cleanup" | "suggest";
                     calls: number;
                     cost_usd: number;
                 }[];
@@ -2657,6 +2795,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TestResult"];
+                    "text/event-stream": string;
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    suggestRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuggestRequest"];
+            };
+        };
+        responses: {
+            /** @description The suggestions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestResult"];
                     "text/event-stream": string;
                 };
             };

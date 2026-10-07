@@ -4,6 +4,7 @@
   import { rules } from '../lib/state/rules.svelte';
   import Build from './compose/Build.svelte';
   import Describe from './compose/Describe.svelte';
+  import Suggest from './compose/Suggest.svelte';
   import Templates from './compose/Templates.svelte';
 
   // Rules links here with ?mode=build for a new condition rule and ?edit=<id> to edit one.
@@ -18,6 +19,7 @@
     ['describe', 'Describe it'],
     ['build', 'Build with conditions'],
     ['templates', 'Templates'],
+    ['suggest', 'Suggest from my mail'],
   ] as const;
   let mode = $state<(typeof modes)[number][0]>(/(^|&)(edit=|mode=build)/.test(router.querystring ?? '') ? 'build' : 'describe');
 </script>
@@ -25,7 +27,7 @@
 <div class="flex max-w-[980px] flex-col gap-[18px]">
   <header>
     <h1>Add rules</h1>
-    <p class="mt-1 text-secondary">Describe rules in your own words, or build one from exact conditions.</p>
+    <p class="mt-1 text-secondary">Describe rules in your own words, build one from exact conditions, or let the AI suggest rules from the mail you already have.</p>
   </header>
   <div role="group" aria-label="How to add rules" class="inline-flex gap-1 self-start rounded-md bg-line-divider p-1">
     {#each modes as [id, label] (id)}
@@ -34,6 +36,8 @@
   </div>
   {#if mode === 'templates'}
     <Templates />
+  {:else if mode === 'suggest'}
+    <Suggest />
   {:else if mode === 'describe'}
     <Describe />
   {:else}
