@@ -43,7 +43,9 @@ var wires = []wire{
 	{
 		name: "anthropic",
 		build: func(url string) models.Generator {
-			return models.NewAnthropic(url, "sk-ant-test", "claude-haiku-4-5", wireDeps)
+			d := wireDeps
+			d.AnthropicURL = url
+			return models.NewAnthropic(models.AnthropicAuth{APIKey: "sk-ant-test"}, "claude-haiku-4-5", d)
 		},
 		path: "/v1/messages",
 		reply: func(answer string) string {

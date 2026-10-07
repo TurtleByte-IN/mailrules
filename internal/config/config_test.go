@@ -65,6 +65,8 @@ func TestValidate(t *testing.T) {
 		{"composer on openai", map[string]string{"MAILRULES_COMPOSER_MODEL": "openai:gpt-4o-mini"}, nil},
 		{"composer provider without a model", map[string]string{"MAILRULES_COMPOSER_MODEL": "ollama:"}, []string{`MAILRULES_COMPOSER_MODEL="ollama:"`, "composer ollama needs a model: write it as ollama:<model>"}},
 		{"composer on an unknown provider", map[string]string{"MAILRULES_COMPOSER_MODEL": "gemini:pro"}, []string{`unknown composer provider "gemini"`}},
+		{"a Claude workspace", map[string]string{"ANTHROPIC_WORKSPACE_ID": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ"}, nil},
+		{"not a Claude workspace", map[string]string{"ANTHROPIC_WORKSPACE_ID": "default"}, []string{`ANTHROPIC_WORKSPACE_ID="default" must start with wrkspc_`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -88,6 +90,27 @@ func TestValidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidWorkspaceID(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"", true},
+		{"wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ", true},
+		{"wrkspc_", false},
+		{"default", false},
+		{"WRKSPC_01Jw", false},
+		{" wrkspc_01Jw", false},
+		{"wrkspc_01-Jw", false},
+		{"wrkspc_01Jw\r\nX-Other: 1", false},
+	}
+	for _, tt := range tests {
+		if got := ValidWorkspaceID(tt.id); got != tt.want {
+			t.Errorf("ValidWorkspaceID(%q) = %v, want %v", tt.id, got, tt.want)
+		}
 	}
 }
 

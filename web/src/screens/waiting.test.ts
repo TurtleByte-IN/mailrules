@@ -125,6 +125,14 @@ it('Rules: a refused test (no model) still reads out where the result goes, and 
   expect(screen.getByRole<HTMLInputElement>('spinbutton', { name: 'How many emails to test' }).disabled).toBe(false);
 });
 
+it('Rules: a test Claude refused for want of a workspace says so where the result goes', async () => {
+  const message = 'Your Claude key covers your whole organisation, so MailRules needs to know which workspace to use. Choose it in Settings.';
+  serve({ 'POST /api/rules/test': [409, { error: { code: 'anthropic_workspace_needed', message } }] });
+  render(Rules);
+  await fireEvent.click(screen.getByRole('button', { name: 'Test on last 200 emails' }));
+  expect((await screen.findByRole('alert')).textContent).toBe(message);
+});
+
 it('Build: tests a draft on the number chosen, from the same remembered number', async () => {
   testLimit.value = 50;
   const d = serve({ 'POST /api/rules/test': [200, { ...done, tested: 50 }] });

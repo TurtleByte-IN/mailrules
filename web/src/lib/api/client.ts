@@ -17,6 +17,14 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * An AI feature the daemon cannot run until something is set in Settings: the rule composer
+ * model, or the Claude workspace a key that covers a whole organisation needs. Its message
+ * says what, so it is shown with a way to Settings.
+ */
+export const needsSettings = (e: unknown): e is ApiError =>
+  e instanceof ApiError && (e.code === 'no_composer_model' || e.code === 'anthropic_workspace_needed');
+
 let onUnauthorized = (_code: string) => {};
 
 /** Called once by the auth state; runs on any 401 with the error code so the app can show Setup or Login. */

@@ -138,6 +138,15 @@ it('says a model is needed and links to Settings', async () => {
   expect(typed().value).toBe('also skip anything from my bank');
 });
 
+it('says the Claude workspace is needed and links to Settings', async () => {
+  const message = 'Your Claude key covers your whole organisation, so MailRules needs to know which workspace to use. Choose it in Settings.';
+  await open({ 'POST /api/rules/7/compose': [409, { error: { code: 'anthropic_workspace_needed', message } }] });
+
+  expect((await screen.findByRole('alert')).textContent).toContain(message);
+  expect(screen.getByRole('link', { name: 'Open Settings' }).getAttribute('href')).toBe('#/settings');
+  expect(toast.text).toBe('');
+});
+
 it("shows the daemon's message when the model fails", async () => {
   await open({ 'POST /api/rules/7/compose': [502, { error: { code: 'model_error', message: 'The model could not be reached. Try again.' } }] });
   await vi.waitFor(() => expect(toast.text).toBe('The model could not be reached. Try again.'));

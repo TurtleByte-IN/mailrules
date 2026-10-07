@@ -192,7 +192,13 @@ func generator(cfg *config.Config, provider, model string, deps Deps) Generator 
 	case "ollama":
 		return NewOllama(cfg.OllamaURL, model, deps)
 	}
-	return NewAnthropic("", cfg.AnthropicAPIKey, model, deps)
+	return NewAnthropic(AnthropicAuthOf(cfg), model, deps)
+}
+
+// AnthropicAuthOf is the Anthropic credentials of a configuration: every Claude adapter is
+// built from it, so none runs without the workspace the settings name.
+func AnthropicAuthOf(cfg *config.Config) AnthropicAuth {
+	return AnthropicAuth{APIKey: cfg.AnthropicAPIKey, WorkspaceID: cfg.AnthropicWorkspaceID}
 }
 
 // NewRouter builds the Router for a decider spec. The fallback is Anthropic's
@@ -210,7 +216,7 @@ func NewRouter(cfg *config.Config, spec string, deps Deps, usage UsageStore) (*R
 	}
 	samePrimary := name == "anthropic" && model == cfg.FallbackModel
 	if cfg.FallbackModel != "" && cfg.AnthropicAPIKey != "" && !samePrimary {
-		r.Fallback = NewLLMDecider("anthropic", NewAnthropic("", cfg.AnthropicAPIKey, cfg.FallbackModel, deps))
+		r.Fallback = NewLLMDecider("anthropic", NewAnthropic(AnthropicAuthOf(cfg), cfg.FallbackModel, deps))
 	}
 	return r, nil
 }

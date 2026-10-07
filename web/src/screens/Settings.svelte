@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { TRASH_FOLDER, type Decider, type KeyName, type UrlName } from '../lib/api/settings';
+  import { onMount } from 'svelte';
+  import { anthropicWorkspaces, TRASH_FOLDER, type AnthropicWorkspaces, type Decider, type KeyName, type UrlName } from '../lib/api/settings';
   import { composerProvider, keysInUse } from './settings/keysInUse';
   import { confidence } from '../lib/format';
   import { rules } from '../lib/state/rules.svelte';
-  import { load, patch, setKey, settings, setUrl, toggleDryRun } from '../lib/state/settings.svelte';
+  import { load, patch, setKey, settings, setUrl, setWorkspace, toggleDryRun } from '../lib/state/settings.svelte';
 
   // Digest and Notification channels (P2) are added here with their backend, behind
   // features.digest and features.notifications.
@@ -33,6 +34,8 @@
     openai_api_key: 'https://developers.openai.com/api/docs/quickstart',
   };
   const ollamaGuide = 'https://docs.ollama.com/quickstart';
+  // Where the Claude Console lists a workspace's ID.
+  const workspaceGuide = 'https://platform.claude.com/settings/workspaces';
   const keys: { id: KeyName; label: string; placeholder: string }[] = [
     { id: 'openrouter_api_key', label: 'OpenRouter API key', placeholder: 'sk-or-v1-…' },
     { id: 'cloudflare_account_id', label: 'Cloudflare account ID', placeholder: '' },
@@ -56,6 +59,40 @@
   // Write-only: a draft lives here until it is sent, then it is cleared.
   let drafts = $state<Record<KeyName, string>>({ openrouter_api_key: '', cloudflare_account_id: '', cloudflare_api_token: '', anthropic_api_key: '', openai_api_key: '' });
 
+  // The Claude workspace (MAI-57). Only a Claude key that covers a whole organisation needs
+  // one, so the control shows only once one is set, to pick from, to type, or warned about.
+  let lookup = $state<AnthropicWorkspaces | null>(null);
+  let workspaceDraft = $state('');
+  let workspaceError = $state('');
+  const claudeKey = $derived(s.keys.anthropic_api_key !== 'none');
+  const showWorkspace = $derived(
+    claudeKey && (!!s.anthropic_workspace_id || lookup?.status === 'several' || lookup?.status === 'failed' || !!needed('anthropic_workspace_id')),
+  );
+
+  /** Asks the daemon which workspace the Claude key needs, while one is in force and none is set. */
+  async function findWorkspace() {
+    lookup = null;
+    if (!claudeKey || s.anthropic_workspace_id) return;
+    try {
+      lookup = await anthropicWorkspaces();
+    } catch {
+      // The control stays hidden; the field is still reachable through a warning.
+    }
+  }
+  // The shell loaded the settings once; a warning may have appeared since (a Claude request
+  // refused for want of a workspace), so the screen reads them afresh when it opens. A failed
+  // load is left to its Retry.
+  onMount(async () => {
+    if (!settings.loaded) return;
+    await load();
+    await findWorkspace();
+  });
+
+  async function saveWorkspace(id: string | null) {
+    workspaceError = await setWorkspace(id);
+    if (!workspaceError) workspaceDraft = '';
+  }
+
   // The decider and its model are validated together, so they are sent together. A decider
   // that needs a model waits for one; a refused change snaps back to what is saved.
   async function saveDecider() {
@@ -75,11 +112,13 @@
     if (!(await patch({ trash_to_folder: el.checked }))) el.checked = s.trash_to_folder;
   }
 
-  function saveKey(e: SubmitEvent, id: KeyName, label: string) {
+  async function saveKey(e: SubmitEvent, id: KeyName, label: string) {
     e.preventDefault();
     const secret = drafts[id].trim();
     drafts[id] = '';
-    if (secret) setKey(id, secret, label);
+    if (!secret) return;
+    await setKey(id, secret, label);
+    if (id === 'anthropic_api_key') findWorkspace();
   }
 </script>
 
@@ -226,6 +265,66 @@
       </label>
     </section>
 
+    {#snippet workspaceRow()}
+      <div class="flex flex-col gap-1.5 border-l-2 border-line-divider pl-3.5">
+        <span class="flex items-center gap-2 text-[13px] font-semibold">
+          <label for="set-workspace">Anthropic workspace</label>
+          {#if s.anthropic_workspace_found}
+            <span class="chip">Found automatically</span>
+          {/if}
+          {#if needed('anthropic_workspace_id')}
+            <span class="text-[12.5px] font-normal text-warn">Needed</span>
+          {/if}
+          <a href={workspaceGuide} target="_blank" rel="noopener noreferrer" class="ml-auto text-[12.5px] font-semibold">How to find it</a>
+        </span>
+        <div class="text-[12.5px] text-secondary">Your Claude key covers your whole organisation, so every request to Claude names this workspace.</div>
+        {#if s.anthropic_workspace_id}
+          <div class="text-[13.5px]">
+            {#if s.anthropic_workspace_name}<span class="font-semibold">{s.anthropic_workspace_name}</span>{' · '}{/if}<code class="font-mono text-[13px]">{s.anthropic_workspace_id}</code>
+          </div>
+        {/if}
+        {#if lookup?.status === 'several'}
+          <select
+            aria-label="Choose a workspace"
+            class="field h-11 max-w-[360px] px-2.5"
+            value={s.anthropic_workspace_id}
+            onchange={(e) => saveWorkspace(e.currentTarget.value)}
+          >
+            <option value="" disabled>Choose a workspace</option>
+            {#each lookup.workspaces as w (w.id)}
+              <option value={w.id}>{w.name} ({w.id})</option>
+            {/each}
+          </select>
+        {:else if lookup?.status === 'failed' && !s.anthropic_workspace_id}
+          <div class="text-[12.5px] text-warn">MailRules could not look up your workspaces. Type the workspace ID.</div>
+        {/if}
+        <form
+          class="flex flex-wrap items-center gap-2"
+          onsubmit={(e) => {
+            e.preventDefault();
+            saveWorkspace(workspaceDraft.trim());
+          }}
+        >
+          <input
+            id="set-workspace"
+            class="field flex-[1_1_260px] font-mono text-[13px]"
+            autocomplete="off"
+            placeholder="wrkspc_…"
+            aria-invalid={!!workspaceError}
+            aria-describedby={needed('anthropic_workspace_id')}
+            bind:value={workspaceDraft}
+          />
+          <button class="btn font-semibold" aria-label="Save Anthropic workspace" disabled={!workspaceDraft.trim()}>Save</button>
+          {#if s.anthropic_workspace_id}
+            <button type="button" class="btn text-trash" aria-label="Remove Anthropic workspace" onclick={() => saveWorkspace(null)}>Remove</button>
+          {/if}
+        </form>
+        {#if workspaceError}
+          <div role="alert" class="text-[12.5px] text-trash">{workspaceError}</div>
+        {/if}
+      </div>
+    {/snippet}
+
     {#snippet keyRow(k: (typeof keys)[number])}
       <form class="flex flex-wrap items-end gap-x-3 gap-y-2" onsubmit={(e) => saveKey(e, k.id, k.label)}>
         <label class="flex flex-[1_1_260px] flex-col gap-1.5">
@@ -241,9 +340,20 @@
         </label>
         <button class="btn font-semibold" disabled={!drafts[k.id].trim()}>{s.keys[k.id] === 'stored' ? 'Replace' : 'Save'}</button>
         {#if s.keys[k.id] === 'stored'}
-          <button type="button" class="btn text-trash" aria-label="Remove {k.label}" onclick={() => setKey(k.id, '', k.label)}>Remove</button>
+          <button
+            type="button"
+            class="btn text-trash"
+            aria-label="Remove {k.label}"
+            onclick={async () => {
+              await setKey(k.id, '', k.label);
+              if (k.id === 'anthropic_api_key') findWorkspace();
+            }}>Remove</button
+          >
         {/if}
       </form>
+      {#if k.id === 'anthropic_api_key' && showWorkspace}
+        {@render workspaceRow()}
+      {/if}
     {/snippet}
 
     <section aria-label="Model API keys" class="card flex flex-col gap-3.5 p-5">

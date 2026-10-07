@@ -127,8 +127,9 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	sett := &settings.Settings{Store: st, Master: master, Env: cfg,
-		Deps: models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}}
+	deps := models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}
+	sett := &settings.Settings{Store: st, Master: master, Env: cfg, Deps: deps,
+		Workspaces: models.AnthropicWorkspaces{Deps: deps}} // finds the workspace a Claude key that covers a whole organisation needs
 	sett.Live(ctx) // logs now if the decider is not ready, rather than at the first email
 
 	// One supervisor per account. They stop with ctx and get a few seconds to finish

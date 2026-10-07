@@ -151,7 +151,8 @@ var adapters = []struct {
 	{
 		name: "anthropic",
 		build: func(url string, d Deps) Decider {
-			return NewLLMDecider("anthropic", NewAnthropic(url, secret, DefaultAnthropicModel, d))
+			d.AnthropicURL = url
+			return NewLLMDecider("anthropic", NewAnthropic(AnthropicAuth{APIKey: secret}, DefaultAnthropicModel, d))
 		},
 		path: "/v1/messages", authHeader: "X-Api-Key", authValue: secret,
 		ok:        anthropicReply(`{"rule_id":12,"confidence":0.93,"reason":"Order update from a food delivery service."}`),

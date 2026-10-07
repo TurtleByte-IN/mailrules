@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Settings as Saved } from '../lib/api/settings';
 import { load, settings } from '../lib/state/settings.svelte';
 import Settings from './Settings.svelte';
@@ -8,6 +8,7 @@ import Settings from './Settings.svelte';
 const fresh = (over: Partial<Saved> = {}): Saved => ({
   dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', composer_model: 'claude-haiku-4-5',
   escalate_below: 0.75, min_confidence: 0.75, retention_days: 30, trash_to_folder: true, openai_base_url: '', ollama_url: '',
+  anthropic_workspace_id: '', anthropic_workspace_name: '', anthropic_workspace_found: false,
   keys: { openrouter_api_key: 'environment', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'stored', openai_api_key: 'none' },
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
@@ -32,7 +33,7 @@ async function show(saved: Saved) {
 }
 
 beforeEach(() => {
-  routes = {};
+  routes = { 'GET /api/settings/anthropic-workspaces': [200, { status: 'none_needed', workspaces: [] }] };
   fetchMock.mockClear();
   vi.stubGlobal('fetch', fetchMock);
   Object.assign(settings, { loaded: false, error: '' });
@@ -220,4 +221,106 @@ it('turns trash_to_folder off and on, and snaps the box back when the daemon ref
   await waitFor(() => expect(patches()).toEqual([{ trash_to_folder: false }, { trash_to_folder: true }]));
   await waitFor(() => expect(box.checked).toBe(false));
   expect(settings.value.trash_to_folder).toBe(false);
+});
+
+describe('the Anthropic workspace', () => {
+  const lookups = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/settings/anthropic-workspaces').length;
+  const several = { status: 'several', workspaces: [{ id: 'wrkspc_default', name: 'Default' }, { id: 'wrkspc_mail', name: 'Mail' }] };
+  const needed = { code: 'anthropic_workspace_needed' as const, path: 'anthropic_workspace_id',
+    message: "Your Claude key covers your whole organisation, so Claude refuses MailRules' requests until a workspace is chosen. Choose the Anthropic workspace under the key." };
+
+  it('stays out of the way for a key that needs none, and for no key at all', async () => {
+    await show(fresh());
+    await waitFor(() => expect(lookups()).toBe(1));
+    expect(screen.queryByLabelText('Anthropic workspace')).toBeNull();
+
+    fetchMock.mockClear();
+    cleanup();
+    await show(fresh({ keys: { ...fresh().keys, anthropic_api_key: 'none' } }));
+    expect(screen.queryByLabelText('Anthropic workspace')).toBeNull();
+    expect(lookups()).toBe(0);
+  });
+
+  it('shows the workspace found automatically by name and ID, without asking again', async () => {
+    await show(fresh({ anthropic_workspace_id: 'wrkspc_default', anthropic_workspace_name: 'Default', anthropic_workspace_found: true }));
+    const row = screen.getByLabelText('Anthropic workspace').closest('div.flex-col')!;
+    expect(row.textContent).toContain('Found automatically');
+    expect(row.textContent).toContain('Default · wrkspc_default');
+    const guide = screen.getByText('How to find it');
+    expect([guide.getAttribute('href'), guide.getAttribute('target'), guide.getAttribute('rel')]).toEqual(['https://platform.claude.com/settings/workspaces', '_blank', 'noopener noreferrer']);
+    expect(lookups()).toBe(0);
+  });
+
+  it('lists several to pick from, and stores the one picked', async () => {
+    routes['GET /api/settings/anthropic-workspaces'] = [200, several];
+    await show(fresh());
+    const picker = (await screen.findByLabelText('Choose a workspace')) as HTMLSelectElement;
+    expect([...picker.options].map((o) => o.textContent)).toEqual(['Choose a workspace', 'Default (wrkspc_default)', 'Mail (wrkspc_mail)']);
+    expect(screen.queryByText('Found automatically')).toBeNull();
+
+    routes['PATCH /api/settings'] = [200, fresh({ anthropic_workspace_id: 'wrkspc_mail', anthropic_workspace_name: 'Mail' })];
+    await fireEvent.change(picker, { target: { value: 'wrkspc_mail' } });
+    await waitFor(() => expect(settings.value.anthropic_workspace_id).toBe('wrkspc_mail'));
+    expect(patches()).toEqual([{ anthropic_workspace_id: 'wrkspc_mail' }]);
+    expect(screen.getByLabelText('Anthropic workspace').closest('div.flex-col')!.textContent).toContain('Mail · wrkspc_mail');
+    expect(picker.value).toBe('wrkspc_mail');
+  });
+
+  it('says when the workspaces could not be looked up, takes a typed ID, and shows a refusal beside the field', async () => {
+    routes['GET /api/settings/anthropic-workspaces'] = [200, { status: 'failed', workspaces: [] }];
+    await show(fresh());
+    expect(await screen.findByText('MailRules could not look up your workspaces. Type the workspace ID.')).toBeTruthy();
+    const field = screen.getByLabelText('Anthropic workspace') as HTMLInputElement;
+
+    const refusal = 'A workspace ID starts with wrkspc_ followed by letters and digits. Copy it from the ID column of Settings → Workspaces in the Claude Console.';
+    routes['PATCH /api/settings'] = [400, { error: { code: 'invalid_input', message: refusal, path: 'anthropic_workspace_id' } }];
+    await fireEvent.input(field, { target: { value: 'Default' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save Anthropic workspace' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(refusal);
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+
+    routes['PATCH /api/settings'] = [200, fresh({ anthropic_workspace_id: 'wrkspc_01Jw' })];
+    await fireEvent.input(field, { target: { value: ' wrkspc_01Jw ' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save Anthropic workspace' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(field.value).toBe('');
+    expect(screen.queryByText(/could not look up/)).toBeNull();
+    expect(screen.getByLabelText('Anthropic workspace').closest('div.flex-col')!.textContent).toContain('wrkspc_01Jw');
+
+    routes['PATCH /api/settings'] = [200, fresh()];
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove Anthropic workspace' }));
+    await waitFor(() => expect(settings.value.anthropic_workspace_id).toBe(''));
+    expect(patches()).toEqual([{ anthropic_workspace_id: 'Default' }, { anthropic_workspace_id: 'wrkspc_01Jw' }, { anthropic_workspace_id: null }]);
+  });
+
+  it('points the warning of a refused key at the field', async () => {
+    routes['GET /api/settings/anthropic-workspaces'] = [200, several];
+    await show(fresh({ warnings: [needed] }));
+    const warning = screen.getByRole('status');
+    expect(warning.textContent).toBe(needed.message);
+    const field = await screen.findByLabelText('Anthropic workspace');
+    expect(field.getAttribute('aria-describedby')).toBe(warning.id);
+    expect(field.closest('div.flex-col')!.textContent).toContain('Needed');
+  });
+
+  it('reads the settings afresh on opening, so a refusal since the shell loaded them shows', async () => {
+    routes['GET /api/settings'] = [200, fresh()];
+    await load();
+    routes['GET /api/settings'] = [200, fresh({ warnings: [needed] })];
+    routes['GET /api/settings/anthropic-workspaces'] = [200, { status: 'failed', workspaces: [] }];
+    render(Settings);
+    expect((await screen.findByRole('status')).textContent).toBe(needed.message);
+    expect((await screen.findByLabelText('Anthropic workspace')).getAttribute('aria-describedby')).toBe('warn-anthropic_workspace_id');
+  });
+
+  it('looks the workspace up again when the Claude key is replaced', async () => {
+    await show(fresh());
+    await waitFor(() => expect(lookups()).toBe(1));
+    routes['PATCH /api/settings'] = [200, fresh()];
+    routes['GET /api/settings/anthropic-workspaces'] = [200, several];
+    await fireEvent.input(screen.getByLabelText(/^Anthropic API key/), { target: { value: 'sk-ant-new' } });
+    await fireEvent.submit(screen.getByLabelText(/^Anthropic API key/).closest('form')!);
+    expect(await screen.findByLabelText('Choose a workspace')).toBeTruthy();
+    expect(lookups()).toBe(2);
+  });
 });

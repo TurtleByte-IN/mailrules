@@ -176,6 +176,13 @@ type Deps struct {
 	HTTP   *http.Client // nil = http.DefaultClient
 	Caller *Caller      // the global concurrency cap, timeout and retries
 	Prices Prices
+	// AnthropicURL is where the Claude adapters and the workspace lookup send their
+	// requests; empty = the public API. Only tests point it elsewhere.
+	AnthropicURL string
+	// WorkspaceNeeded is asked when Anthropic refuses a Claude request because its key covers
+	// a whole organisation and no workspace was named. It answers the workspace to retry the
+	// request in, or "" when there is none to use. nil = the refusal stands.
+	WorkspaceNeeded func(ctx context.Context, apiKey string) string
 }
 
 func (d Deps) client() *http.Client {

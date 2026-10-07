@@ -96,6 +96,11 @@ type View struct {
 	OllamaURL     string            // a local Ollama server
 	Keys          map[string]string // KeyStored | KeyEnvironment | KeyNone
 	Warnings      []Warning         // never nil
+	// The Claude workspace every Claude request names; empty = none. Its name is known when
+	// a lookup listed it; Found says MailRules looked it up and stored it itself.
+	AnthropicWorkspaceID    string
+	AnthropicWorkspaceName  string
+	AnthropicWorkspaceFound bool
 }
 
 // Patch is a change: nil fields stay as they are. An empty string is a value like any
@@ -117,7 +122,9 @@ type Patch struct {
 	TrashToFolder *bool
 	OpenAIBaseURL *string // empty = api.openai.com
 	OllamaURL     *string // empty = none
-	Keys          map[string]string
+	// AnthropicWorkspaceID is empty or a wrkspc_ ID (config.ValidWorkspaceID); empty = none.
+	AnthropicWorkspaceID *string
+	Keys                 map[string]string
 }
 
 // Settings reads and changes the stored settings.
@@ -126,6 +133,9 @@ type Settings struct {
 	Master []byte
 	Env    *config.Config // the defaults
 	Deps   models.Deps    // shared by every router built here
+	// Workspaces looks up the workspace a Claude key needs; nil = never looked up, the
+	// user types it.
+	Workspaces WorkspaceFinder
 
 	mu        sync.Mutex
 	print     string // the stored settings the cached routers were built from
@@ -134,6 +144,10 @@ type Settings struct {
 	router    *models.Router
 	overrides map[string]*models.Router // per-rule model overrides, by decider spec; nil = cannot be built
 	minCon    float64
+
+	// lookupMu keeps the workspace lookups, and changes to the key and the workspace,
+	// one at a time, so a lookup for a key that is being replaced stores nothing stale.
+	lookupMu sync.Mutex
 }
 
 // ErrNoComposer means no generative model is configured for the rule composer.
@@ -213,6 +227,7 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 		"fallback_model": &cfg.FallbackModel, "composer_model": &cfg.ComposerModel,
 		"escalate_below": &cfg.EscalateBelow, "min_confidence": &cfg.MinConfidence, "retention_days": &o.retention,
 		store.SettingTrashToFolder: &o.trashToFolder, "openai_base_url": &cfg.OpenAIBaseURL, "ollama_url": &cfg.OllamaURL,
+		settingWorkspace: &cfg.AnthropicWorkspaceID,
 	} {
 		if v, ok := rows[key]; ok {
 			if err := json.Unmarshal([]byte(v), dst); err != nil {
@@ -228,6 +243,11 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 			}
 			*field(&cfg) = plain
 		}
+	}
+	// A workspace MailRules found itself belongs to the key it was found for: with another
+	// key (one set in the environment and changed since) it is not used.
+	if l := readLookup(rows); l.Found != "" && cfg.AnthropicWorkspaceID == l.Found && l.Key != s.fingerprint(cfg.AnthropicAPIKey) {
+		cfg.AnthropicWorkspaceID = s.Env.AnthropicWorkspaceID
 	}
 	return cfg, o, nil
 }
@@ -245,10 +265,17 @@ func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
 }
 
 func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
+	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
 		ComposerModel: cfg.ComposerModel, EscalateBelow: cfg.EscalateBelow, MinConfidence: cfg.MinConfidence,
 		RetentionDays: o.retention, TrashToFolder: o.trashToFolder, OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
-		Keys: map[string]string{}, Warnings: warnings(cfg)}
+		Keys: map[string]string{}, Warnings: append(warnings(cfg), workspaceWarning(cfg, l)...),
+		AnthropicWorkspaceID: cfg.AnthropicWorkspaceID, AnthropicWorkspaceFound: l.Found != "" && l.Found == cfg.AnthropicWorkspaceID}
+	for _, w := range l.Workspaces {
+		if w.ID == cfg.AnthropicWorkspaceID {
+			v.AnthropicWorkspaceName = w.Name
+		}
+	}
 	for name, field := range keyFields {
 		switch _, stored := rows[keyPrefix+name]; {
 		case stored:
@@ -327,27 +354,45 @@ func (s *Settings) View(ctx context.Context) (View, error) {
 
 // resettable are the settings Patch.Reset may name.
 var resettable = []string{"dry_run", "decider", "decider_model", "fallback_model", "composer_model", "escalate_below",
-	"min_confidence", "retention_days", store.SettingTrashToFolder, "openai_base_url", "ollama_url"}
+	"min_confidence", "retention_days", store.SettingTrashToFolder, "openai_base_url", "ollama_url", settingWorkspace}
 
 // Apply validates a change against the settings it would produce and stores it in one
 // transaction. A problem the user can fix comes back as *Invalid. Nothing needs a restart:
 // the executor reads dry-run and trash_to_folder before every action and Live rebuilds the router.
+// A Claude key saved or replaced forgets what was learnt about the old one's workspace,
+// and a workspace MailRules found for it; then, with no workspace set, it is looked up.
 func (s *Settings) Apply(ctx context.Context, p Patch) error {
+	s.lookupMu.Lock()
+	newKey, err := s.apply(ctx, p)
+	s.lookupMu.Unlock()
+	if err == nil && newKey {
+		if _, err := s.LookupWorkspaces(ctx); err != nil && ctx.Err() == nil {
+			slog.WarnContext(ctx, "could not look up the Anthropic workspace", "error", err.Error())
+		}
+	}
+	return err
+}
+
+// apply is Apply under lookupMu. newKey reports that a Claude key was saved while no
+// workspace is set, so its workspace is to be looked up.
+func (s *Settings) apply(ctx context.Context, p Patch) (newKey bool, err error) {
 	rows, err := s.Store.Settings(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
+	before := readLookup(rows)
+	storedWorkspace := rows[settingWorkspace]
 	set := map[string]*string{}
 	for _, name := range p.Reset {
 		if !slices.Contains(resettable, name) {
-			return &Invalid{name, "This setting cannot be reset."}
+			return false, &Invalid{name, "This setting cannot be reset."}
 		}
 		delete(rows, name) // the environment's default shows through
 		set[name] = nil
 	}
 	cfg, o, err := s.effective(rows)
 	if err != nil {
-		return err
+		return false, err
 	}
 	put := func(key string, v any) {
 		b, _ := json.Marshal(v) // strings, numbers and booleans cannot fail
@@ -391,13 +436,13 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		}
 		*f.dst = strings.TrimSpace(*f.in)
 		if u, err := url.Parse(*f.dst); *f.dst != "" && (err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "") {
-			return &Invalid{key, "Enter an http or https URL, such as http://localhost:11434."}
+			return false, &Invalid{key, "Enter an http or https URL, such as http://localhost:11434."}
 		}
 		put(key, *f.dst)
 	}
 	for name, value := range p.Keys {
 		if keyFields[name] == nil {
-			return &Invalid{"keys." + name, "Unknown key. The keys are " + strings.Join(KeyNames(), ", ") + "."}
+			return false, &Invalid{"keys." + name, "Unknown key. The keys are " + strings.Join(KeyNames(), ", ") + "."}
 		}
 		if value = strings.TrimSpace(value); value == "" {
 			set[keyPrefix+name] = nil
@@ -405,38 +450,42 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		}
 		enc, err := s.seal(name, value)
 		if err != nil {
-			return fmt.Errorf("encrypt key %s: %w", name, err)
+			return false, fmt.Errorf("encrypt key %s: %w", name, err)
 		}
 		set[keyPrefix+name] = &enc
 	}
+	if err := s.applyWorkspace(p, &cfg, before, storedWorkspace, set); err != nil {
+		return false, err
+	}
+	newKey = strings.TrimSpace(p.Keys["anthropic_api_key"]) != "" && cfg.AnthropicWorkspaceID == ""
 
 	// The same rules as config.Validate, worded for a form field.
 	switch {
 	case !slices.Contains(Deciders, cfg.Decider):
-		return &Invalid{"decider", "The decision model must be one of " + strings.Join(Deciders, ", ") + "."}
+		return false, &Invalid{"decider", "The decision model must be one of " + strings.Join(Deciders, ", ") + "."}
 	case (cfg.Decider == "openai" || cfg.Decider == "ollama") && cfg.DeciderModel == "":
-		return &Invalid{"decider_model", "The " + cfg.Decider + " decider has no default model. Name one."}
+		return false, &Invalid{"decider_model", "The " + cfg.Decider + " decider has no default model. Name one."}
 	case cfg.ComposerModel == "":
-		return &Invalid{"composer_model", "The rule composer needs a model."}
+		return false, &Invalid{"composer_model", "The rule composer needs a model."}
 	}
 	if provider, _, err := config.SplitComposerModel(cfg.ComposerModel); err != nil {
 		if example, known := composerExamples[provider]; known {
-			return &Invalid{"composer_model", fmt.Sprintf("Name the model after %s:, for example %s.", provider, example)}
+			return false, &Invalid{"composer_model", fmt.Sprintf("Name the model after %s:, for example %s.", provider, example)}
 		}
-		return &Invalid{"composer_model", "The rule composer model must be a Claude model name, such as claude-haiku-4-5, or start with anthropic:, openai: or ollama: and then name the model."}
+		return false, &Invalid{"composer_model", "The rule composer model must be a Claude model name, such as claude-haiku-4-5, or start with anthropic:, openai: or ollama: and then name the model."}
 	}
 	switch {
 	case cfg.EscalateBelow < 0 || cfg.EscalateBelow > 1:
-		return &Invalid{"escalate_below", "The escalation threshold must be between 0 and 1."}
+		return false, &Invalid{"escalate_below", "The escalation threshold must be between 0 and 1."}
 	case cfg.MinConfidence < 0 || cfg.MinConfidence > 1:
-		return &Invalid{"min_confidence", "The confidence threshold must be between 0 and 1."}
+		return false, &Invalid{"min_confidence", "The confidence threshold must be between 0 and 1."}
 	case o.retention < 1 || o.retention > maxRetentionDays:
-		return &Invalid{"retention_days", fmt.Sprintf("Retention must be between 1 and %d days.", maxRetentionDays)}
+		return false, &Invalid{"retention_days", fmt.Sprintf("Retention must be between 1 and %d days.", maxRetentionDays)}
 	}
 	if err := cfg.Validate(); err != nil { // whatever config.Validate learns to check later
-		return &Invalid{"", "These settings cannot be used together: " + err.Error() + "."}
+		return false, &Invalid{"", "These settings cannot be used together: " + err.Error() + "."}
 	}
-	return s.Store.SetSettings(ctx, set)
+	return newKey, s.Store.SetSettings(ctx, set)
 }
 
 // Live returns the decision router and the act threshold for the settings as stored right
@@ -474,7 +523,7 @@ func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfiden
 	s.router, s.overrides, s.cfg = nil, map[string]*models.Router{}, cfg
 	if ready := cfg.DeciderReady(); ready != nil {
 		slog.WarnContext(ctx, "no decision model yet; new mail that needs one waits in Needs review until it is set", "missing", ready.Error())
-	} else if s.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.Deps, s.Store); err != nil {
+	} else if s.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(), s.Store); err != nil {
 		slog.WarnContext(ctx, "could not set up the decision model", "error", err.Error())
 		s.router = nil
 	}
@@ -510,7 +559,7 @@ func (s *Settings) RouterFor(ctx context.Context, spec string) *models.Router {
 	if r, ok := s.overrides[spec]; ok {
 		return r
 	}
-	r, err := models.NewRouter(&s.cfg, spec, s.Deps, s.Store)
+	r, err := models.NewRouter(&s.cfg, spec, s.deps(), s.Store)
 	if err != nil {
 		slog.WarnContext(ctx, "a rule's model cannot be used; the default decides instead", "model", spec, "error", err.Error())
 		r = nil
@@ -534,7 +583,7 @@ func (s *Settings) Composer(ctx context.Context) (models.Generator, error) {
 	if m := composerMissing(cfg); m != nil {
 		return nil, m
 	}
-	gen, err := models.NewGenerator(&cfg, cfg.ComposerModel, s.Deps)
+	gen, err := models.NewGenerator(&cfg, cfg.ComposerModel, s.deps())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoComposer, err)
 	}

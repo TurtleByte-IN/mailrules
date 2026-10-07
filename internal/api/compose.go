@@ -54,6 +54,20 @@ func noModel(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusConflict, "no_composer_model", msg, "")
 }
 
+// workspaceNeeded is what the AI features answer while Claude refuses the key in force for
+// want of a workspace and MailRules could not find which (models.IsWorkspaceNeeded).
+var workspaceNeeded = apiError{Code: "anthropic_workspace_needed",
+	Message: "Your Claude key covers your whole organisation, so MailRules needs to know which workspace to use. Choose it in Settings."}
+
+// streamFailure is the error event of a run that stopped after its stream began: the
+// workspace sentence when that is why, else the run's own code and sentence.
+func streamFailure(err error, code, message string) map[string]apiError {
+	if models.IsWorkspaceNeeded(err) {
+		return map[string]apiError{"error": workspaceNeeded}
+	}
+	return map[string]apiError{"error": {Code: code, Message: message}}
+}
+
 // modelFail answers for an error from the composer or the tester.
 func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
 	if clientGone(w, r) {
@@ -64,6 +78,9 @@ func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
 		noModel(w, err)
 	case errors.Is(err, mail.ErrNoFolder):
 		invalid(w, "folder", "The mail account has no such folder.")
+	case models.IsWorkspaceNeeded(err):
+		slog.WarnContext(r.Context(), "Claude refused the key: no workspace named", "method", r.Method, "path", r.URL.Path, "error", err.Error())
+		writeError(w, http.StatusConflict, workspaceNeeded.Code, workspaceNeeded.Message, "")
 	case errors.Is(err, composer.ErrModel), errors.Is(err, pipeline.ErrModel):
 		slog.WarnContext(r.Context(), "model error", "method", r.Method, "path", r.URL.Path, "error", err.Error())
 		writeError(w, http.StatusBadGateway, "model_error", "The AI model could not be reached or gave an answer that cannot be used. Try again.", "")
@@ -485,7 +502,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		slog.WarnContext(ctx, "rule test failed", "account", acct.ID, "folder", in.Folder, "limit", limit, "done", seen.Done,
 			"total", seen.Total, "model_calls", seen.ModelCalls, "duration_ms", took, "error", err.Error())
 		if es.started {
-			es.send("error", map[string]apiError{"error": {Code: "test_failed", Message: "The test stopped: the mail server or the AI model failed. Try again."}})
+			es.send("error", streamFailure(err, "test_failed", "The test stopped: the mail server or the AI model failed. Try again."))
 		} else {
 			s.modelFail(w, r, err)
 		}

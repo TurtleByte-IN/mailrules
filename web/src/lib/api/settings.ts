@@ -7,6 +7,7 @@ export type SettingsPatch = components['schemas']['SettingsPatch'];
 export type Decider = components['schemas']['Decider'];
 export type KeyName = keyof components['schemas']['ProviderKeys'];
 export type UrlName = 'openai_base_url' | 'ollama_url';
+export type AnthropicWorkspaces = components['schemas']['AnthropicWorkspaces'];
 
 // Mirrors the daemon's actions.TrashFolder (internal/actions/executor.go): where a trash
 // action moves mail while `trash_to_folder` is on.
@@ -14,3 +15,5 @@ export const TRASH_FOLDER = 'MailRules Trash';
 
 export const get = () => api<Settings>('GET', '/settings');
 export const patch = (p: SettingsPatch) => api<Settings>('PATCH', '/settings', p);
+/** Which workspace the Claude key in force needs; the daemon asks Anthropic only while it does not know. */
+export const anthropicWorkspaces = () => api<AnthropicWorkspaces>('GET', '/settings/anthropic-workspaces');

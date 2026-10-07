@@ -9,6 +9,9 @@ const SECRET = 'sk-ant-secret-123';
 const fresh = (): Settings => ({
   openai_base_url: '',
   ollama_url: '',
+  anthropic_workspace_id: '',
+  anthropic_workspace_name: '',
+  anthropic_workspace_found: false,
   dry_run: true,
   decider: 'jev',
   decider_model: '',

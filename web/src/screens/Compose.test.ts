@@ -81,6 +81,16 @@ it('says a model is needed, links to Settings and keeps what was typed', async (
   expect(toast.text).toBe('');
 });
 
+it('says the Claude workspace is needed and links to Settings', async () => {
+  const message = 'Your Claude key covers your whole organisation, so MailRules needs to know which workspace to use. Choose it in Settings.';
+  serve({ 'POST /api/rules/compose': [409, { error: { code: 'anthropic_workspace_needed', message } }] });
+  await describe('Archive LinkedIn');
+
+  expect((await screen.findByRole('alert')).textContent).toBe(message + ' Open Settings');
+  expect(screen.getByRole('link', { name: 'Open Settings' }).getAttribute('href')).toBe('#/settings');
+  expect(toast.text).toBe('');
+});
+
 it('puts a refused builder save on the row its path names, until that row is edited', async () => {
   const message = 'rules[0].conditions.all[1].value: pattern does not compile: error parsing regexp: missing closing ): `(?i)((`';
   const f = serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].conditions.all[1].value' } }] });

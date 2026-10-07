@@ -64,8 +64,12 @@ func TestRefusalReasonReachesTheError(t *testing.T) {
 			name:   "anthropic",
 			reply:  `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215000 tokens > 200000 maximum, at \"` + quotedSubject + `\" from ` + address + `"}}`,
 			header: map[string]string{"request-id": "req_abc"},
-			gen:    func(url string) Generator { return NewAnthropic(url, "sk-test", "claude-haiku-4-5", testDeps()) },
-			want:   []string{"anthropic: HTTP 400 Bad Request", "invalid_request_error", "prompt is too long: 215000 tokens > 200000 maximum", "(request req_abc)"},
+			gen: func(url string) Generator {
+				d := testDeps()
+				d.AnthropicURL = url
+				return NewAnthropic(AnthropicAuth{APIKey: "sk-test"}, "claude-haiku-4-5", d)
+			},
+			want: []string{"anthropic: HTTP 400 Bad Request", "invalid_request_error", "prompt is too long: 215000 tokens > 200000 maximum", "(request req_abc)"},
 		},
 		{
 			name:  "ollama",

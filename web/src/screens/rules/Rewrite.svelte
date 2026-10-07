@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { ApiError } from '../../lib/api/client';
+  import { needsSettings } from '../../lib/api/client';
   import { recompose, type Draft } from '../../lib/api/compose';
   import type { Rule, RulePatch } from '../../lib/api/rules';
   import Waiting from '../../lib/components/Waiting.svelte';
@@ -50,7 +50,7 @@
       draft = await recompose(rule.id, text.trim());
       refused = '';
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'no_composer_model') needsModel = e.message;
+      if (needsSettings(e)) needsModel = e.message;
       else flash((e as Error).message);
     } finally {
       busy = false;

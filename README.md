@@ -37,6 +37,8 @@ To run it as a service on Linux, `deploy/mailrules.service` is a hardened system
 
 1. **Create the admin account.** The first visit asks for an email address and a password of at least 12 characters. This is the only account; it protects the UI and the API.
 2. **Set a model key.** The default decision model is Jev through OpenRouter (`OPENROUTER_API_KEY`), with Claude Haiku as the fallback and rule composer (`ANTHROPIC_API_KEY`). The rule composer, which writes rules from plain English and suggests them from your mail, can run on an OpenAI-compatible endpoint or a local Ollama server instead: set its model to `openai:<model>` or `ollama:<model>` in Settings. Rules made only of conditions work without any model, wherever they sit in the order. Until a key is set, rules that need a model are passed over, and mail that only such a rule could take waits in Needs review.
+
+   A Claude key made for your whole organisation, rather than for one workspace, must name the workspace each request runs in. MailRules looks it up when you save the key: with one workspace it uses it, with several Settings lists them under the key to pick from. If your key may not list workspaces, copy the ID (`wrkspc_…`) from the ID column of [Settings → Workspaces](https://platform.claude.com/settings/workspaces) in the Claude Console into "Anthropic workspace", or set `ANTHROPIC_WORKSPACE_ID`. A key made for one workspace needs nothing.
 3. **Add a mail account.** Pick your provider and enter an app-specific password, not your main password. iCloud and Fastmail both require one.
 4. **Write a rule,** watch the activity feed, and correct what it gets wrong.
 

@@ -284,6 +284,15 @@ it('says a model is needed and links to Settings', async () => {
   expect(screen.getByRole('link', { name: 'Open Settings' }).getAttribute('href')).toBe('#/settings');
 });
 
+it('says the Claude workspace is needed and links to Settings', async () => {
+  const message = 'Your Claude key covers your whole organisation, so MailRules needs to know which workspace to use. Choose it in Settings.';
+  serve({ 'GET /api/accounts/7/folders': FOLDERS, 'POST /api/rules/suggest': [409, { error: { code: 'anthropic_workspace_needed', message } }] });
+  render(Suggest);
+  await fireEvent.click(button());
+  expect((await screen.findByText(message, { exact: false })).textContent).toBe(message + ' Open Settings');
+  expect(screen.getByRole('link', { name: 'Open Settings' }).getAttribute('href')).toBe('#/settings');
+});
+
 it('offers the mailbox a rule applies to when more than one is connected', async () => {
   Object.assign(accounts, { list: [{ id: 7, label: 'me@icloud.com' }, { id: 8, label: 'work@acme.com' }] });
   const f = await scanned(four.slice(0, 1), { 'POST /api/rules/batch': [201, { items: [{ ...suggestion('Acme news'), id: 1 }] }] });

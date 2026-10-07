@@ -1,4 +1,4 @@
-import { ApiError } from '../api/client';
+import { ApiError, needsSettings } from '../api/client';
 import * as composeApi from '../api/compose';
 import type { RuleInput } from '../api/rules';
 import * as templatesApi from '../api/templates';
@@ -34,7 +34,7 @@ export async function optimize() {
     compose.unparsed = result.unparsed;
     if (!compose.drafts.length) flash("Couldn't find a rule in that. Try describing which emails and where they go.");
   } catch (e) {
-    if (e instanceof ApiError && e.code === 'no_composer_model') compose.needsModel = e.message;
+    if (needsSettings(e)) compose.needsModel = e.message;
     else fail(e);
   } finally {
     compose.busy = false;

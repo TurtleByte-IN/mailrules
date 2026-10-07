@@ -49,22 +49,42 @@ func decodeAnswer(provider, raw string, out any) error {
 // Anthropic talks to the Messages API through the official SDK.
 type Anthropic struct {
 	client anthropic.Client
+	auth   AnthropicAuth
 	model  string
 	deps   Deps
 }
 
-// NewAnthropic builds the adapter. An empty baseURL means the public API.
-func NewAnthropic(baseURL, apiKey, model string, deps Deps) *Anthropic {
+// AnthropicAuth is what every request to Anthropic carries: the key and, for a key that
+// covers a whole organisation rather than one workspace, the workspace to run in.
+type AnthropicAuth struct {
+	APIKey      string
+	WorkspaceID string // sent as anthropic-workspace-id; empty = not sent
+}
+
+// workspaceHeader is the request header that names the workspace a request runs in.
+const workspaceHeader = "anthropic-workspace-id"
+
+// anthropicClient is the SDK client every Anthropic request is made with: the key, the
+// workspace when there is one, deps' HTTP client and base URL, and no SDK retries.
+func anthropicClient(auth AnthropicAuth, deps Deps) anthropic.Client {
 	opts := []anthropicopt.RequestOption{
 		anthropicopt.WithoutEnvironmentDefaults(), // config is the only source of credentials
-		anthropicopt.WithAPIKey(apiKey),
+		anthropicopt.WithAPIKey(auth.APIKey),
 		anthropicopt.WithHTTPClient(deps.client()),
 		anthropicopt.WithMaxRetries(0),
 	}
-	if baseURL != "" {
-		opts = append(opts, anthropicopt.WithBaseURL(baseURL))
+	if auth.WorkspaceID != "" {
+		opts = append(opts, anthropicopt.WithHeader(workspaceHeader, auth.WorkspaceID))
 	}
-	return &Anthropic{client: anthropic.NewClient(opts...), model: model, deps: deps}
+	if deps.AnthropicURL != "" {
+		opts = append(opts, anthropicopt.WithBaseURL(deps.AnthropicURL))
+	}
+	return anthropic.NewClient(opts...)
+}
+
+// NewAnthropic builds the adapter. deps.AnthropicURL empty means the public API.
+func NewAnthropic(auth AnthropicAuth, model string, deps Deps) *Anthropic {
+	return &Anthropic{client: anthropicClient(auth, deps), auth: auth, model: model, deps: deps}
 }
 
 // Generate caches the system prompt and forces one call of a tool whose input
@@ -96,18 +116,22 @@ func (a *Anthropic) Generate(ctx context.Context, system, user string, schema js
 
 	var resp *anthropic.Message
 	start := time.Now()
-	err = a.deps.Caller.Do(ctx, Call{"anthropic", a.model}, func(ctx context.Context) error {
-		var err error
-		resp, err = a.client.Messages.New(ctx, params)
-		var apiErr *anthropic.Error
-		if errors.As(err, &apiErr) {
-			return newStatusError("anthropic", apiErr.StatusCode, []byte(apiErr.RawJSON()), apiErr.RequestID)
+	send := func(opts ...anthropicopt.RequestOption) error {
+		return a.deps.Caller.Do(ctx, Call{"anthropic", a.model}, func(ctx context.Context) error {
+			var err error
+			resp, err = a.client.Messages.New(ctx, params, opts...)
+			return anthropicErr(err)
+		})
+	}
+	err = send()
+	// A key that covers a whole organisation is refused until a workspace is named. When none
+	// was, the daemon may find the one to use (models.Deps.WorkspaceNeeded); the request is
+	// then made once more in it, so the user sees it work.
+	if a.auth.WorkspaceID == "" && a.deps.WorkspaceNeeded != nil && IsWorkspaceNeeded(err) {
+		if id := a.deps.WorkspaceNeeded(ctx, a.auth.APIKey); id != "" {
+			err = send(anthropicopt.WithHeader(workspaceHeader, id))
 		}
-		if err != nil {
-			return fmt.Errorf("anthropic: %w", err)
-		}
-		return nil
-	})
+	}
 	u.Latency = time.Since(start)
 	if err != nil {
 		return u, err

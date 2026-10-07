@@ -133,6 +133,7 @@ func (s *server) routes() []route {
 
 		on(get, "/api/settings", s.handleSettings),
 		on(patch, "/api/settings", s.handleSettingsPatch),
+		on(get, "/api/settings/anthropic-workspaces", s.handleAnthropicWorkspaces),
 		on(get, "/api/events", s.handleEvents),
 	}
 }

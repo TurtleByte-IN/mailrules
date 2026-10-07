@@ -1,6 +1,6 @@
 import { folders as listFolders } from '../api/accounts';
 import type { Folder } from '../api/cleanup';
-import { ApiError } from '../api/client';
+import { ApiError, needsSettings } from '../api/client';
 import * as suggestApi from '../api/suggest';
 import { scopeProblem, startScope, toRequest, type Scope } from '../scope';
 import { toInput } from './compose.svelte';
@@ -101,7 +101,7 @@ export async function scan() {
     suggest.phase = 'ready';
   } catch (e) {
     suggest.phase = before;
-    if (e instanceof ApiError && e.code === 'no_composer_model') suggest.needsModel = e.message;
+    if (needsSettings(e)) suggest.needsModel = e.message;
     else if (e instanceof ApiError && e.code === 'invalid_input' && e.path === 'samples') suggest.samplesRefused = e.message;
     else flash((e as Error).message);
   } finally {

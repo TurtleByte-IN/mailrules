@@ -1,4 +1,4 @@
-import { api, ApiError, query, request, stream } from './client';
+import { api, ApiError, needsSettings, query, request, stream } from './client';
 import type { components, operations } from './schema';
 
 type S = components['schemas'];
@@ -18,7 +18,7 @@ export type UndoResult = S['UndoResult'];
 export const leaves = (t: Condition): Condition[] => t.all ?? t.any ?? (t.field ? [t] : []);
 export const isTrash = (actions: Action[]) => actions.some((a) => a.type === 'trash');
 /** A test the daemon will not run as things stand; its message says what to do, so it is shown where the result would be. */
-export const testRefused = (e: unknown): e is ApiError => e instanceof ApiError && (e.code === 'no_composer_model' || e.code === 'account_offline');
+export const testRefused = (e: unknown): e is ApiError => needsSettings(e) || (e instanceof ApiError && e.code === 'account_offline');
 
 /** The daemon refused the number of emails to test, and says why. */
 export const limitRefused = (e: unknown): e is ApiError => e instanceof ApiError && e.code === 'invalid_input' && e.path === 'limit';

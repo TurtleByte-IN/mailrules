@@ -260,7 +260,10 @@ export interface paths {
          *     with purpose `compose`), and each gets `match_count` and up to 5 `samples`. With no
          *     account connected nothing is tested. Needs a generative model: 409
          *     `no_composer_model` until the provider `composer_model` names has its key (Anthropic
-         *     or OpenAI) or URL (Ollama); the message names what to add.
+         *     or OpenAI) or URL (Ollama); the message names what to add. 409
+         *     `anthropic_workspace_needed` when Claude refuses the key because it covers a whole
+         *     organisation and no workspace could be found (see `anthropic_workspace_id` in
+         *     Settings); when exactly one is found the request is made again in it and succeeds.
          */
         post: operations["composeRules"];
         delete?: never;
@@ -339,7 +342,9 @@ export interface paths {
          *     `TestProgress` as soon as the mail is listed (`done` 0 of `total`), then another
          *     every `total / 100` emails (every email up to 199 of them) and at `total` of
          *     `total`, then one `done` event carrying `TestResult`, or, if the run fails midway,
-         *     one `error` event carrying `ErrorBody` (code `test_failed`). Any other client gets
+         *     one `error` event carrying `ErrorBody` (code `test_failed`, or
+         *     `anthropic_workspace_needed` when Claude refused the key for want of a workspace,
+         *     with the same sentence as the 409). Any other client gets
          *     the `TestResult` as one JSON body. A run that fails before the mail is listed (no
          *     such folder, no model, account offline, invalid input) is answered as plain JSON
          *     with its usual status, whatever the client accepts. A client that drops the request
@@ -393,7 +398,8 @@ export interface paths {
          *     **Progress.** As `/api/rules/test`: a client that sends `Accept: text/event-stream`
          *     gets `progress` events carrying `SuggestProgress` (the first once the mail is
          *     listed, 0 of `total`), then one `done` event carrying `SuggestResult`, or one
-         *     `error` event carrying `ErrorBody` (code `suggest_failed`) if the scan fails
+         *     `error` event carrying `ErrorBody` (code `suggest_failed`, or
+         *     `anthropic_workspace_needed` as for `/api/rules/test`) if the scan fails
          *     midway. Any other client gets the `SuggestResult` as one JSON body. A scan that
          *     cannot start (no model, no such folder, account offline, invalid input) is
          *     answered as plain JSON with its usual status. A client that drops the request ends
@@ -1014,6 +1020,13 @@ export interface paths {
          *     provider key, which cannot be "set to nothing": in `keys`, both "" and `null` remove
          *     the stored key.
          *
+         *     **The Claude workspace.** `anthropic_workspace_id` is empty or a `wrkspc_` ID (else
+         *     400 on that path); when set, every Claude request sends it as `anthropic-workspace-id`.
+         *     Only a Claude key that covers a whole organisation needs one. Saving or replacing
+         *     `keys.anthropic_api_key` forgets a workspace MailRules found for the old key (one the
+         *     user chose or typed stays) and, with none set, looks it up as
+         *     `GET /api/settings/anthropic-workspaces` does, before answering.
+         *
          *     **A model that cannot work yet is not refused.** The first-run wizard saves in
          *     steps (the decider first, its key or URL after), so a change that leaves the chosen
          *     decider, or the rule composer model, without its key or URL answers 200, and the
@@ -1023,6 +1036,36 @@ export interface paths {
          *     (`openai:`) or an unknown provider (`gemini:pro`) is refused with 400.
          */
         patch: operations["updateSettings"];
+        trace?: never;
+    };
+    "/api/settings/anthropic-workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which workspace the Claude key in force needs
+         * @description A Claude key made for every workspace of an organisation must name one on each
+         *     request. This asks Anthropic (List Workspaces with the Default Workspace included,
+         *     and, if that is refused, a free token count without a workspace) unless the answer
+         *     is already known for this key: `none_needed`, `one` and `several` are kept per key
+         *     (by a fingerprint, never the key) and given again without asking; `failed` is asked
+         *     again. `one`: the workspace is stored as `anthropic_workspace_id` when none is set.
+         *     `several`: the user picks one (PATCH `anthropic_workspace_id`). `failed`: Anthropic
+         *     could not say (the key may not list workspaces, or it could not be reached); the
+         *     user types the ID, and the reason is in the daemon's log. With no Claude key in
+         *     force it answers `none_needed`. The Settings screen calls it while a Claude key is
+         *     in force and no workspace is set.
+         */
+        get: operations["getAnthropicWorkspaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/events": {
@@ -2099,14 +2142,29 @@ export interface components {
         /** @description Something about the settings in force that will not work as it stands. Shaped like an error, but the settings were saved. */
         SettingsWarning: {
             /**
-             * @description `decider_not_ready`: the chosen decider lacks a key or its URL. `composer_not_ready`: the rule composer model's provider lacks its key or URL (not repeated when the decider's warning already names that setting)
+             * @description `decider_not_ready`: the chosen decider lacks a key or its URL. `composer_not_ready`: the rule composer model's provider lacks its key or URL (not repeated when the decider's warning already names that setting). `anthropic_workspace_needed`: Claude refused a request because the key covers a whole organisation, no workspace is set, and none could be found (path `anthropic_workspace_id`)
              * @enum {string}
              */
-            code: "decider_not_ready" | "composer_not_ready";
+            code: "decider_not_ready" | "composer_not_ready" | "anthropic_workspace_needed";
             /** @description A sentence for a person */
             message: string;
-            /** @description The setting to fill in, as SettingsPatch spells it: `ollama_url`, `keys.openrouter_api_key` */
+            /** @description The setting to fill in, as SettingsPatch spells it: `ollama_url`, `keys.openrouter_api_key`, `anthropic_workspace_id` */
             path: string;
+        };
+        AnthropicWorkspace: {
+            /** @description The `wrkspc_` ID */
+            id: string;
+            /** @description The name shown in the Claude Console */
+            name: string;
+        };
+        AnthropicWorkspaces: {
+            /**
+             * @description `none_needed`: the key was made for one workspace (or there is no Claude key); nothing is sent. `one`: the organisation has one workspace, stored as `anthropic_workspace_id` if none was set. `several`: pick one. `failed`: Anthropic could not say; type the ID
+             * @enum {string}
+             */
+            status: "none_needed" | "one" | "several" | "failed";
+            /** @description For `one` and `several`, the organisation's workspaces, the Default Workspace included; otherwise empty */
+            workspaces: components["schemas"]["AnthropicWorkspace"][];
         };
         Settings: {
             /** @description While true */
@@ -2130,6 +2188,12 @@ export interface components {
             openai_base_url: string;
             /** @description The Ollama server the ollama decider and an `ollama:` composer model talk to, e.g. http://localhost:11434; empty = not set. Not a secret */
             ollama_url: string;
+            /** @description The Claude workspace every Claude request names (`anthropic-workspace-id`); empty = none. Only a Claude key that covers a whole organisation needs one. Not a secret */
+            anthropic_workspace_id: string;
+            /** @description Its name, when a lookup listed it; otherwise empty */
+            anthropic_workspace_name: string;
+            /** @description MailRules looked the workspace up and stored it itself (the organisation has one). False when the user chose or typed it */
+            anthropic_workspace_found: boolean;
             keys: components["schemas"]["ProviderKeys"];
             /** @description What the chosen decider and the rule composer model still lack; empty when both can run. For example decider `ollama` with no `ollama_url` */
             warnings: components["schemas"]["SettingsWarning"][];
@@ -2170,6 +2234,8 @@ export interface components {
             openai_base_url?: string | null;
             /** @description An http or https URL. Empty = no server, so the ollama decider cannot run (a warning says so) */
             ollama_url?: string | null;
+            /** @description Empty, or `wrkspc_` followed by letters and digits; anything else is refused. Empty = none sent */
+            anthropic_workspace_id?: string | null;
             /** @description Provider keys to store. A key cannot be set to nothing: an empty string and `null` both remove the stored key, which puts the environment's back in force */
             keys?: {
                 openrouter_api_key?: string | null;
@@ -3702,6 +3768,27 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+        };
+    };
+    getAnthropicWorkspaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What is known about the key's workspace */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnthropicWorkspaces"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
         };
     };
     streamEvents: {

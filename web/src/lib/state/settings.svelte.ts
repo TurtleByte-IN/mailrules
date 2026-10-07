@@ -17,6 +17,9 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     trash_to_folder: true,
     openai_base_url: '',
     ollama_url: '',
+    anthropic_workspace_id: '',
+    anthropic_workspace_name: '',
+    anthropic_workspace_found: false,
     keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
     warnings: [],
     server: { version: '', data_dir: '', listen: '', mode: 'selfhost' },
@@ -59,6 +62,20 @@ export async function setUrl(name: settingsApi.UrlName, url: string) {
     settings.value = await settingsApi.patch({ [name]: url || null });
   } catch (e) {
     if (e instanceof ApiError && e.path === name) return e.message;
+    flash(message(e));
+  }
+  return '';
+}
+
+/**
+ * Saves the Claude workspace: an ID, or null to forget the stored one. Resolves the daemon's
+ * reason when it refuses the ID, to show beside the field, and '' otherwise.
+ */
+export async function setWorkspace(id: string | null) {
+  try {
+    settings.value = await settingsApi.patch({ anthropic_workspace_id: id });
+  } catch (e) {
+    if (e instanceof ApiError && e.path === 'anthropic_workspace_id') return e.message;
     flash(message(e));
   }
   return '';

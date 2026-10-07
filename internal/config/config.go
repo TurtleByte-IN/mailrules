@@ -33,9 +33,13 @@ type Config struct {
 	CloudflareAccountID string
 	CloudflareAPIToken  string
 	AnthropicAPIKey     string
-	OpenAIBaseURL       string
-	OpenAIAPIKey        string
-	OllamaURL           string
+	// AnthropicWorkspaceID names the workspace every Claude request runs in (the
+	// anthropic-workspace-id header). Only a key that covers a whole organisation needs it;
+	// empty = none sent.
+	AnthropicWorkspaceID string
+	OpenAIBaseURL        string
+	OpenAIAPIKey         string
+	OllamaURL            string
 
 	PricesFile string
 	LogLevel   string
@@ -81,6 +85,7 @@ func Load(args []string, getenv func(string) string) (*Config, error) {
 	str(&c.CloudflareAccountID, "CLOUDFLARE_ACCOUNT_ID", "", "Clef")
 	str(&c.CloudflareAPIToken, "CLOUDFLARE_API_TOKEN", "", "Clef")
 	str(&c.AnthropicAPIKey, "ANTHROPIC_API_KEY", "", "Haiku fallback, and the composer when its model is Claude")
+	str(&c.AnthropicWorkspaceID, "ANTHROPIC_WORKSPACE_ID", "", "the Claude workspace (wrkspc_…) a key that covers a whole organisation runs in")
 	str(&c.OpenAIBaseURL, "OPENAI_BASE_URL", "", "any OpenAI-compatible endpoint")
 	str(&c.OpenAIAPIKey, "OPENAI_API_KEY", "", "any OpenAI-compatible endpoint")
 	str(&c.OllamaURL, "OLLAMA_URL", "", "local models")
@@ -132,6 +137,9 @@ func (c *Config) Validate() error {
 			bad("MAILRULES_COMPOSER_MODEL=%q: %v", c.ComposerModel, err)
 		}
 	}
+	if !ValidWorkspaceID(c.AnthropicWorkspaceID) {
+		bad("ANTHROPIC_WORKSPACE_ID=%q must start with wrkspc_ and hold only letters and digits after it", c.AnthropicWorkspaceID)
+	}
 	if c.EscalateBelow < 0 || c.EscalateBelow > 1 {
 		bad("MAILRULES_ESCALATE_BELOW=%v must be between 0 and 1", c.EscalateBelow)
 	}
@@ -163,6 +171,28 @@ func (c *Config) DeciderSpec() string {
 		return c.Decider
 	}
 	return c.Decider + ":" + c.DeciderModel
+}
+
+// workspacePrefix starts every Anthropic workspace ID.
+const workspacePrefix = "wrkspc_"
+
+// ValidWorkspaceID reports whether id can name an Anthropic workspace: empty (none), or
+// wrkspc_ followed by letters and digits, as the Claude Console shows them. Nothing else
+// may reach the anthropic-workspace-id header.
+func ValidWorkspaceID(id string) bool {
+	if id == "" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(id, workspacePrefix)
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // ComposerProviders are the providers the rule composer can write with.
