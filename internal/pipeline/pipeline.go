@@ -83,7 +83,8 @@ func (p *Pipeline) now() time.Time {
 }
 
 // Process handles one message the watcher reported. It is idempotent: a message seen
-// before is not processed again, unless an earlier run was cut off before it finished.
+// before is not processed again, unless an earlier run was cut off before it finished, and
+// neither is a known email that came back into the folder under a new UID (cameBack).
 // The folder's last processed UID advances only once the message's row is committed; on an
 // error (the daemon is stopping, or the database failed) it does not, so the watcher sends
 // the message again after a restart.
@@ -183,6 +184,9 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		return err
 	}
 	fill(m, sum, raw)
+	if back, err := p.cameBack(ctx, m); err != nil || back {
+		return err
+	}
 	if err := p.Store.SaveMessageSummary(ctx, *m); err != nil {
 		return err
 	}
@@ -226,6 +230,36 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	}
 	p.learnFrom(ctx, dec, res, m)
 	return nil
+}
+
+// cameBack reports whether m, a row MailRules has done nothing with yet, is an email it
+// already has another row for: the same Message-ID, and no longer where that row last saw
+// it. Such an email was moved back into the folder outside MailRules (by the user or
+// another mail client), which gave it a new UID. It is not new mail: the known row now
+// points here, m goes, and the email is not decided again, so it never waits twice in
+// Needs review and mail the user brought back is not sorted away again. A second copy,
+// with the first still in place, is new mail; so is m when it already has a decision.
+func (p *Pipeline) cameBack(ctx context.Context, m *store.Message) (bool, error) {
+	if m.MessageID == "" {
+		return false, nil
+	}
+	known, err := p.Store.MessageByMessageID(ctx, m.AccountID, m.MessageID, m.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := p.Mailbox.Flags(ctx, known.Location()); err == nil {
+		return false, nil // the first copy is still where it was: this is another one
+	} else if !errors.Is(err, mail.ErrNotFound) && !errors.Is(err, mail.ErrNoFolder) {
+		return false, fmt.Errorf("look for the earlier copy: %w", err)
+	}
+	back, err := p.Store.Rebind(ctx, m.ID, known.ID, m.Location())
+	if back {
+		slog.InfoContext(ctx, "a known email came back under a new UID", "account", m.AccountID, "message", known.ID, "uid", m.UID)
+	}
+	return back, err
 }
 
 // decisionFrom shapes the decision row an Outcome implies for a message. It is the one

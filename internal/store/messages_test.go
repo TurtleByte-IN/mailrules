@@ -2,7 +2,10 @@ package store
 
 import (
 	"errors"
+	"io/fs"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
@@ -110,5 +113,140 @@ func TestMessagesAndDecisions(t *testing.T) {
 	var left int
 	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM messages) + (SELECT COUNT(*) FROM decisions) + (SELECT COUNT(*) FROM corrections)`).Scan(&left); err != nil || left != 0 {
 		t.Errorf("%d rows left behind, %v", left, err)
+	}
+}
+
+// An email that came back under a new UID keeps its one row (MAI-77): the row MailRules
+// made for the new UID goes, and the known row records where the email is now. A row with
+// any history is never removed.
+func TestRebind(t *testing.T) {
+	ctx := t.Context()
+	for name, tc := range map[string]struct {
+		history func(s *Store, fresh Message) error
+		rebound bool
+	}{
+		"a row nothing was done with": {rebound: true},
+		"a row that has a decision": {history: func(s *Store, m Message) error {
+			_, err := s.AddDecision(ctx, Decision{MessageID: m.ID, Stage: "none", CreatedAt: 1}, StateDecided)
+			return err
+		}},
+		"a row that has an action": {history: func(s *Store, m Message) error {
+			_, err := s.InsertAction(ctx, Action{MessageID: m.ID, AccountID: m.AccountID, Kind: "keep", Status: ActionDone, CreatedAt: 1})
+			return err
+		}},
+		"a row that has a correction": {history: func(s *Store, m Message) error {
+			_, err := s.AddCorrection(ctx, 1, Correction{MessageID: m.ID, Example: "{}", CreatedAt: 1}, "")
+			return err
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := open(t)
+			a := newAccount(t, s, "me@icloud.com", "pw")
+			ref := func(uid uint32) mail.MsgRef {
+				return mail.MsgRef{AccountID: a.ID, Folder: "INBOX", UIDValidity: 1, UID: uid}
+			}
+			ingest := func(uid uint32) Message {
+				m, _, err := s.IngestMessage(ctx, ref(uid), 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.MessageID = "same@example.test"
+				if err := s.SaveMessageSummary(ctx, m); err != nil {
+					t.Fatal(err)
+				}
+				return m
+			}
+			known, fresh := ingest(10), ingest(18)
+			if got, err := s.MessageByMessageID(ctx, a.ID, "same@example.test", fresh.ID); err != nil || got.ID != known.ID {
+				t.Fatalf("by message-id = %+v, %v", got, err)
+			}
+			if _, err := s.MessageByMessageID(ctx, a.ID, "other@example.test", 0); !errors.Is(err, ErrNotFound) {
+				t.Errorf("unknown message-id: %v", err)
+			}
+			if tc.history != nil {
+				if err := tc.history(s, fresh); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			rebound, err := s.Rebind(ctx, fresh.ID, known.ID, ref(18))
+			if err != nil || rebound != tc.rebound {
+				t.Fatalf("Rebind = %v, %v; want %v", rebound, err, tc.rebound)
+			}
+			_, freshErr := s.Message(ctx, fresh.ID)
+			got, _ := s.Message(ctx, known.ID)
+			again, isNew, _ := s.IngestMessage(ctx, ref(18), 200)
+			if tc.rebound {
+				if !errors.Is(freshErr, ErrNotFound) || got.Location() != ref(18) || again.ID != known.ID || isNew {
+					t.Errorf("after rebind: fresh %v, known at %+v, uid 18 is row %d (new %v)", freshErr, got.Location(), again.ID, isNew)
+				}
+				return
+			}
+			if freshErr != nil || got.Location() != ref(10) || again.ID != fresh.ID {
+				t.Errorf("a row with history was changed: fresh %v, known at %+v, uid 18 is row %d", freshErr, got.Location(), again.ID)
+			}
+		})
+	}
+}
+
+// Migration 0005: an email that waits twice in Needs review (two rows, one Message-ID)
+// waits there once; the older row stays, as skipped, with its decision.
+func TestMigrationOneReviewRowPerEmail(t *testing.T) {
+	ctx := t.Context()
+	db, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 4); err != nil {
+		t.Fatal(err)
+	}
+	s := New(db)
+	a := newAccount(t, s, "me@icloud.com", "pw")
+	rows := []struct {
+		messageID, state, want string
+	}{
+		{"twice@example.test", StateReview, StateSkipped}, // the older of two rows in review
+		{"twice@example.test", StateReview, StateReview},
+		{"sorted@example.test", StateReview, StateReview}, // the newer row is not in review
+		{"sorted@example.test", StateActed, StateActed},
+		{"once@example.test", StateReview, StateReview},
+		{"", StateReview, StateReview}, // no Message-ID: nothing to match on
+		{"", StateReview, StateReview},
+	}
+	ids := make([]int64, len(rows))
+	for i, r := range rows {
+		m, _, err := s.IngestMessage(ctx, mail.MsgRef{AccountID: a.ID, Folder: "INBOX", UIDValidity: 1, UID: uint32(i + 1)}, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.MessageID = r.messageID
+		if err := s.SaveMessageSummary(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AddDecision(ctx, Decision{MessageID: m.ID, Stage: "decider", CreatedAt: 100}, r.state); err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = m.ID
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range rows {
+		m, err := s.Message(ctx, ids[i])
+		if err != nil || m.State != r.want {
+			t.Errorf("row %d (%q, %s) = %s, %v; want %s", i, r.messageID, r.state, m.State, err, r.want)
+		}
+		if ds, _ := s.MessageDecisions(ctx, ids[i]); len(ds) != 1 {
+			t.Errorf("row %d lost its decision", i)
+		}
 	}
 }
