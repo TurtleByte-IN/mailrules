@@ -54,6 +54,8 @@ When the decisions look right, switch it off in Settings, or:
 
 With Docker: `docker compose -f deploy/docker-compose.yml exec mailrules /mailrules dry-run off`. The switch takes effect at the next email, with no restart. Once live, every action is logged and can be undone, one at a time or as a batch.
 
+Mail a rule trashes goes to a folder named `MailRules Trash`, made the first time it is needed, not to your mailbox's Trash: providers empty Trash on their own (iCloud after 30 days), and a wrongly trashed email could be gone before you notice. Empty `MailRules Trash` yourself when you like. To use the real Trash instead, untick "Send trashed mail to MailRules Trash" in Settings. Junk still goes to the real Junk folder.
+
 ## Your data and the master key
 
 Everything lives in the data directory (`./data`, the `mailrules-data` volume, or `/var/lib/mailrules`):

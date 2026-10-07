@@ -17,6 +17,7 @@ const fresh = (): Settings => ({
   escalate_below: 0.75,
   min_confidence: 0.75,
   retention_days: 30,
+  trash_to_folder: true,
   keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
@@ -70,6 +71,7 @@ it.each<[string, SettingsPatch]>([
   ['escalation threshold', { escalate_below: 0.6 }],
   ['act threshold', { min_confidence: 0.9 }],
   ['retention', { retention_days: 3650 }],
+  ['trash to the server Trash', { trash_to_folder: false }],
 ])('patches %s and keeps the rest', async (_name, change) => {
   expect(await patch(change)).toBe(true);
   expect(sent()).toEqual(change);

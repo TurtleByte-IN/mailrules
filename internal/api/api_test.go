@@ -671,7 +671,7 @@ func TestSettings(t *testing.T) {
 	got := e.call(http.MethodGet, "/api/settings", "", http.StatusOK)
 	conform(t, e.doc, "Settings", got)
 	for key, want := range map[string]any{"dry_run": true, "decider": "jev", "decider_model": "", "fallback_model": "claude-haiku-4-5",
-		"composer_model": "claude-haiku-4-5", "escalate_below": 0.75, "min_confidence": 0.75, "retention_days": float64(30)} {
+		"composer_model": "claude-haiku-4-5", "escalate_below": 0.75, "min_confidence": 0.75, "retention_days": float64(30), "trash_to_folder": true} {
 		if got[key] != want {
 			t.Errorf("default %s = %v, want %v", key, got[key], want)
 		}
@@ -701,6 +701,7 @@ func TestSettings(t *testing.T) {
 		`{"min_confidence":-0.1}`:           {"invalid_input", "min_confidence"},
 		`{"retention_days":0}`:              {"invalid_input", "retention_days"},
 		`{"retention_days":"30"}`:           {"invalid_input", "retention_days"},
+		`{"trash_to_folder":"yes"}`:         {"invalid_input", "trash_to_folder"},
 		`{"keys":{"stripe_secret":"sk-1"}}`: {"invalid_input", "keys.stripe_secret"},
 		`{"listen":"0.0.0.0:80"}`:           {"invalid_json", "listen"},
 		`{"server":{"version":"2"}}`:        {"invalid_json", "server"},

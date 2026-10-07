@@ -19,6 +19,8 @@ export interface Builder extends Extras {
   action: 'move' | 'archive' | 'trash' | 'keep' | 'flag';
   folder: string;
   markRead: boolean;
+  /** How sure the decision model must be before it acts; null = the default. Only for a rule with "is about". */
+  min_confidence: number | null;
   editingId: number | null;
 }
 
@@ -31,6 +33,7 @@ export const emptyBuilder = (): Builder => ({
   action: 'move',
   folder: '',
   markRead: false,
+  min_confidence: null,
   editingId: null,
   account_id: null,
   stack: false,
@@ -63,10 +66,10 @@ export function toRow(c: Condition): Row {
 export const filled = (b: Builder) => b.rows.filter((r) => fields[r.field].type === 'bool' || r.value.trim());
 
 /**
- * The rule this form describes, without the fields the builder does not own (wording, model,
- * threshold). It is a patch as it stands; with `said` and `enabled` it is a RuleInput.
+ * The rule this form describes, without the fields the builder does not own (wording, model).
+ * It is a patch as it stands; with `said` and `enabled` it is a RuleInput.
  */
-export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' | 'conditions' | 'exceptions' | 'actions' | 'account_id' | 'stack'>> {
+export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' | 'conditions' | 'exceptions' | 'actions' | 'account_id' | 'stack' | 'min_confidence'>> {
   const rows = filled(b);
   const folder = b.folder.trim();
   const first: Action[] = b.action === 'flag' ? [{ type: 'keep' }, { type: 'flag' }] : b.action === 'move' ? [{ type: 'move', folder }] : [{ type: b.action }];
@@ -78,6 +81,8 @@ export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' |
     actions: b.markRead && b.action !== 'trash' ? [...first, { type: 'read' }] : first,
     account_id: b.account_id,
     stack: b.stack,
+    // Only the decision model reads it, so a rule without "is about" has none.
+    min_confidence: b.intent.trim() ? b.min_confidence : null,
   };
 }
 
@@ -96,8 +101,9 @@ export function refusedPart(b: Builder, path: string): { part: string; leaf?: st
   }
   if (p.startsWith('exceptions')) return { part: 'unless' };
   if (/^actions\[\d+\]\.folder|^new_folders/.test(p)) return { part: 'folder' };
-  // The form has no threshold; the one it can break is the higher one a rule that trashes needs.
-  if (p.startsWith('actions') || p === 'min_confidence') return { part: 'action' };
+  // A rule that trashes on meaning needs a higher threshold than the default; the daemon names min_confidence.
+  if (p === 'min_confidence') return { part: 'min_confidence' };
+  if (p.startsWith('actions')) return { part: 'action' };
   if (['name', 'intent', 'account_id', 'stack'].includes(p)) return { part: p };
 }
 
@@ -115,6 +121,7 @@ export function fromRule(r: Rule): Builder {
     action: has('trash') ? 'trash' : has('move') ? 'move' : has('archive') ? 'archive' : has('flag') ? 'flag' : 'keep',
     folder: r.actions.find((a) => a.type === 'move')?.folder ?? '',
     markRead: has('read'),
+    min_confidence: r.min_confidence,
     editingId: r.id,
     account_id: r.account_id,
     stack: r.stack,

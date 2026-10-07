@@ -14,6 +14,7 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     escalate_below: 0,
     min_confidence: 0,
     retention_days: 0,
+    trash_to_folder: true,
     openai_base_url: '',
     ollama_url: '',
     keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },

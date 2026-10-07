@@ -18,10 +18,16 @@ import (
 
 // NoFolderError means an archive, trash or junk action has nowhere to go: the account has
 // no folder the server marks for that use, and MailRules never guesses one or creates one.
-// Its text is what the action's row records ("no Archive folder").
+// Its text is what the action's row records ("no Archive folder"). Trash only meets it
+// with trash_to_folder off: otherwise it goes to TrashFolder, which MailRules makes.
 type NoFolderError struct{ Role string } // Archive | Trash | Junk
 
 func (e *NoFolderError) Error() string { return "no " + e.Role + " folder" }
+
+// TrashFolder is where a trash action moves mail while the trash_to_folder setting is on:
+// an ordinary folder, made on first use and given no special-use role, so the provider
+// never empties it the way it empties Trash.
+const TrashFolder = "MailRules Trash"
 
 // ErrGone means an action cannot be undone because its message is no longer where
 // MailRules left it. The HTTP layer answers 409 with this text.
@@ -80,10 +86,14 @@ func isMove(kind string) bool { return kind == rules.ActMove || moveRole[kind] !
 // the message's flags once, and for each action writes its row with the before snapshot
 // first, then changes the mailbox, then stores the outcome, so there is no change without
 // a row. A failure stops the remaining actions and is returned; whoever asked decides
-// about a retry.
+// about a retry. With trash_to_folder on, a trash row names TrashFolder as its folder,
+// in dry-run too, so what it says it did (or would do) is where the mail went.
 func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action, batchID int64) ([]ActionRecord, error) {
 	dry, err := x.Store.DryRun(ctx, x.DryRunDefault)
 	if err != nil {
+		return nil, err
+	}
+	if acts, err = x.trashDestination(ctx, acts); err != nil {
 		return nil, err
 	}
 	cur := store.Snapshot{Folder: d.Ref.Folder, UIDValidity: d.Ref.UIDValidity, UID: d.Ref.UID}
@@ -138,6 +148,26 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 	return recs, nil
 }
 
+// trashDestination returns acts with every trash action pointed at TrashFolder while
+// trash_to_folder is on, and acts as they are otherwise. The setting is read only when
+// there is something to trash; one that cannot be read stops the actions, as dry-run does.
+func (x *Exec) trashDestination(ctx context.Context, acts []rules.Action) ([]rules.Action, error) {
+	if !slices.ContainsFunc(acts, func(a rules.Action) bool { return a.Type == rules.ActTrash }) {
+		return acts, nil
+	}
+	on, err := x.Store.TrashToFolder(ctx)
+	if err != nil || !on {
+		return acts, err
+	}
+	out := slices.Clone(acts)
+	for i := range out {
+		if out[i].Type == rules.ActTrash {
+			out[i].Folder = TrashFolder
+		}
+	}
+	return out, nil
+}
+
 // do performs one action on the message at cur and returns its state afterwards.
 func (x *Exec) do(ctx context.Context, mb mail.Mailbox, accountID int64, a rules.Action, cur store.Snapshot) (store.Snapshot, error) {
 	after := cur
@@ -147,14 +177,20 @@ func (x *Exec) do(ctx context.Context, mb mail.Mailbox, accountID int64, a rules
 		return after, nil // no IMAP call; recorded for the activity feed
 	case isMove(a.Type):
 		dest := a.Folder
-		if role := moveRole[a.Type]; role != "" {
-			// Never guess a folder, and never create one: trash, junk and archive only
-			// ever move to the folder the server marks for that use.
-			var err error
-			if dest, err = x.roleFolder(ctx, accountID, role); err != nil {
-				return after, err
-			}
-		} else if err := mb.EnsureFolder(ctx, dest); err != nil {
+		var err error
+		switch role := moveRole[a.Type]; {
+		case a.Type == rules.ActTrash && dest != "":
+			// trash_to_folder: MailRules' own folder, made on first use. When it cannot be
+			// made the action fails: falling back to Trash would defeat the setting.
+			err = x.ensureFolder(ctx, mb, accountID, dest)
+		case role != "":
+			// Never guess a folder, and never create one: junk, archive, and trash with
+			// trash_to_folder off, only ever move to the folder the server marks for that use.
+			dest, err = x.roleFolder(ctx, accountID, role)
+		default:
+			err = mb.EnsureFolder(ctx, dest)
+		}
+		if err != nil {
 			return after, err
 		}
 		if dest == cur.Folder {
@@ -217,14 +253,20 @@ func (x *Exec) EnsureFolders(ctx context.Context, accountID int64, names []strin
 		return err
 	}
 	for _, name := range names {
-		if err := mb.EnsureFolder(ctx, name); err != nil {
-			return fmt.Errorf("create folder %q: %w", name, err)
-		}
-		if err := x.Store.AddFolder(context.WithoutCancel(ctx), accountID, name); err != nil {
+		if err := x.ensureFolder(ctx, mb, accountID, name); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ensureFolder creates a folder on the server if it is missing and puts it on record in
+// the account's folder list, as discovery would, with no special-use role.
+func (x *Exec) ensureFolder(ctx context.Context, mb mail.Mailbox, accountID int64, name string) error {
+	if err := mb.EnsureFolder(ctx, name); err != nil {
+		return fmt.Errorf("create folder %q: %w", name, err)
+	}
+	return x.Store.AddFolder(context.WithoutCancel(ctx), accountID, name)
 }
 
 // Undo reverses one action: a move goes back to the folder it came from, a flag change

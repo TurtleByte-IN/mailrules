@@ -4,6 +4,7 @@ import type { Batch, CleanupCheck, CleanupCheckRow } from '../lib/api/cleanup';
 import { dispatch } from '../lib/api/events';
 import { accounts } from '../lib/state/accounts.svelte';
 import { cleanup } from '../lib/state/cleanup.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Cleanup from './Cleanup.svelte';
 
@@ -171,6 +172,21 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
   // Returning to the page shows the same restored rows.
   render(Cleanup);
   expect((await screen.findAllByRole('checkbox', { name: 'Sort news@substack.com · This week in Go' })).length).toBeGreaterThan(0);
+});
+
+it.each([
+  [true, 'Move to MailRules Trash'],
+  [false, 'Move to Trash'],
+])('with trash_to_folder %s, a row that trashes names where Sort will move it: %s', async (on, text) => {
+  settings.value.trash_to_folder = on;
+  try {
+    routes[CHECK] = [200, { check: check({ rows: [checkRow({ subject: 'Spam', rule_name: 'Block', actions: [{ type: 'trash' }] })] }) }];
+    render(Cleanup);
+    const row = (await screen.findByRole('checkbox', { name: 'Sort news@substack.com · Spam' })).closest('tr') as HTMLElement;
+    expect(within(row).getAllByRole('cell')[4].textContent).toBe(text);
+  } finally {
+    settings.value.trash_to_folder = true;
+  }
 });
 
 const saves = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/cleanup/check/selection').map((c) => JSON.parse((c[1] as RequestInit).body as string));

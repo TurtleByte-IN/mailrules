@@ -36,8 +36,9 @@ func (a *accounts) Lock(int64) func() { a.locks++; return func() {} }
 // is recorded only when the server accepted it.
 type spy struct {
 	*mailtest.Mailbox
-	calls    []string
-	storeErr error // makes SetFlags fail
+	calls     []string
+	storeErr  error // makes SetFlags fail
+	ensureErr error // makes EnsureFolder fail, as a server that refuses CREATE would
 }
 
 func (s *spy) Flags(ctx context.Context, ref mail.MsgRef) ([]string, error) {
@@ -47,6 +48,9 @@ func (s *spy) Flags(ctx context.Context, ref mail.MsgRef) ([]string, error) {
 
 func (s *spy) EnsureFolder(ctx context.Context, name string) error {
 	s.calls = append(s.calls, "ensure "+name)
+	if s.ensureErr != nil {
+		return s.ensureErr
+	}
 	return s.Mailbox.EnsureFolder(ctx, name)
 }
 
@@ -216,9 +220,15 @@ func (e *env) checkInvariants(d DecisionRecord, initialFlags []string) {
 		}
 	}
 	for _, r := range rows {
-		// 3. Trash is always a move, to the folder the server marks as trash.
-		if r.Kind == rules.ActTrash && r.Status == store.ActionDone && (r.After.Folder != "Trash" || !slices.Contains(e.mb.calls, "move Trash")) {
-			e.t.Errorf("trash did not move to Trash: %+v, calls %v", r.After, e.mb.calls)
+		// 3. Trash is always a move: to MailRules Trash when the row names it, otherwise to
+		// the folder the server marks as trash.
+		want := "Trash"
+		if r.Folder != "" {
+			want = TrashFolder
+		}
+		if r.Kind == rules.ActTrash && r.Status == store.ActionDone && (r.Folder != "" && r.Folder != TrashFolder ||
+			r.After.Folder != want || !slices.Contains(e.mb.calls, "move "+want)) {
+			e.t.Errorf("trash did not move to %s: %+v, calls %v", want, r.After, e.mb.calls)
 		}
 	}
 }
@@ -226,27 +236,35 @@ func (e *env) checkInvariants(d DecisionRecord, initialFlags []string) {
 func TestApply(t *testing.T) {
 	tests := []struct {
 		name       string
+		trashOff   bool // trash_to_folder off: trash goes to the server's Trash
 		flags      []string
 		acts       []rules.Action
 		wantCalls  []string
 		wantFolder string
 		wantFlags  []string
 	}{
-		{"move creates the folder and moves", nil, act("move:Food"), []string{"flags", "ensure Food", "move Food"}, "Food", nil},
-		{"trash is a move to the trash folder", nil, act("trash"), []string{"flags", "move Trash"}, "Trash", nil},
-		{"archive", nil, act("archive"), []string{"flags", "move Archive"}, "Archive", nil},
-		{"junk", nil, act("junk"), []string{"flags", "move Junk"}, "Junk", nil},
-		{"flag and read", nil, act("flag", "read"), []string{"flags", `store +\Flagged`, `store +\Seen`}, "INBOX", []string{`\Flagged`, `\Seen`}},
-		{"unflag and unread", []string{`\Flagged`, `\Seen`, `\Answered`}, act("unflag", "unread"), []string{"flags", `store -\Flagged`, `store -\Seen`}, "INBOX", []string{`\Answered`}},
-		{"keep changes nothing", []string{`\Seen`}, act("keep"), []string{"flags"}, "INBOX", []string{`\Seen`}},
-		{"flags after a move land on the moved message", nil, act("move:Food", "read", "flag"),
+		{"move creates the folder and moves", false, nil, act("move:Food"), []string{"flags", "ensure Food", "move Food"}, "Food", nil},
+		{"trash makes MailRules Trash and moves there", false, nil, act("trash"), []string{"flags", "ensure " + TrashFolder, "move " + TrashFolder}, TrashFolder, nil},
+		{"with the setting off, trash is a move to the trash folder", true, nil, act("trash"), []string{"flags", "move Trash"}, "Trash", nil},
+		{"archive", false, nil, act("archive"), []string{"flags", "move Archive"}, "Archive", nil},
+		{"junk goes to Junk with the setting on", false, nil, act("junk"), []string{"flags", "move Junk"}, "Junk", nil},
+		{"junk goes to Junk with the setting off", true, nil, act("junk"), []string{"flags", "move Junk"}, "Junk", nil},
+		{"flag and read", false, nil, act("flag", "read"), []string{"flags", `store +\Flagged`, `store +\Seen`}, "INBOX", []string{`\Flagged`, `\Seen`}},
+		{"unflag and unread", false, []string{`\Flagged`, `\Seen`, `\Answered`}, act("unflag", "unread"), []string{"flags", `store -\Flagged`, `store -\Seen`}, "INBOX", []string{`\Answered`}},
+		{"keep changes nothing", false, []string{`\Seen`}, act("keep"), []string{"flags"}, "INBOX", []string{`\Seen`}},
+		{"flags after a move land on the moved message", false, nil, act("move:Food", "read", "flag"),
 			[]string{"flags", "ensure Food", "move Food", `store +\Seen`, `store +\Flagged`}, "Food", []string{`\Flagged`, `\Seen`}},
-		{"a move to where it already is does nothing", nil, act("move:INBOX", "read"), []string{"flags", "ensure INBOX", `store +\Seen`}, "INBOX", []string{`\Seen`}},
-		{"review adds the keyword", nil, act(KindReview), []string{"flags", "store +" + ReviewKeyword}, "INBOX", []string{ReviewKeyword}},
+		{"a move to where it already is does nothing", false, nil, act("move:INBOX", "read"), []string{"flags", "ensure INBOX", `store +\Seen`}, "INBOX", []string{`\Seen`}},
+		{"review adds the keyword", false, nil, act(KindReview), []string{"flags", "store +" + ReviewKeyword}, "INBOX", []string{ReviewKeyword}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
+			if tt.trashOff {
+				if err := e.st.SetTrashToFolder(t.Context(), false); err != nil {
+					t.Fatal(err)
+				}
+			}
 			d := e.deliver("1", tt.flags...)
 			d.DecisionID = 0
 			recs, err := e.x.Apply(t.Context(), d, tt.acts, 0)
@@ -262,7 +280,12 @@ func TestApply(t *testing.T) {
 			}
 			rows := e.actions(d.MessageID)
 			for i, r := range rows {
-				if r.Status != store.ActionDone || r.Kind != tt.acts[i].Type || r.Folder != tt.acts[i].Folder || r.After == nil || r.Error != "" || r.ID != recs[i].ID {
+				// The row keeps the kind; a trash to MailRules Trash names that folder.
+				wantRowFolder := tt.acts[i].Folder
+				if tt.acts[i].Type == rules.ActTrash && !tt.trashOff {
+					wantRowFolder = TrashFolder
+				}
+				if r.Status != store.ActionDone || r.Kind != tt.acts[i].Type || r.Folder != wantRowFolder || r.After == nil || r.Error != "" || r.ID != recs[i].ID {
 					t.Errorf("row %d = %+v", i, r)
 				}
 			}
@@ -295,11 +318,16 @@ func TestApplyFailures(t *testing.T) {
 	}{
 		{"a failure stops the remaining actions", func(e *env, _ *DecisionRecord) { e.mb.storeErr = mail.ErrConnection },
 			act("move:Food", "read", "flag"), mail.ErrConnection, "connection lost", []string{"done", "failed"}, "Food"},
-		{"no trash folder: fail, never guess or delete", func(e *env, _ *DecisionRecord) {
+		{"no trash folder with the setting off: fail, never guess or delete", func(e *env, _ *DecisionRecord) {
 			if err := e.st.SaveFolders(e.t.Context(), e.acct.ID, roleFolders[:1]); err != nil {
 				e.t.Fatal(err)
 			}
+			if err := e.st.SetTrashToFolder(e.t.Context(), false); err != nil {
+				e.t.Fatal(err)
+			}
 		}, act("trash", "read"), nil, "no Trash folder", []string{"failed"}, "INBOX"},
+		{"MailRules Trash cannot be made: fail, never fall back to Trash", func(e *env, _ *DecisionRecord) { e.mb.ensureErr = mail.ErrUnsupported },
+			act("trash", "read"), mail.ErrUnsupported, `create folder "MailRules Trash"`, []string{"failed"}, "INBOX"},
 		{"a server that cannot move", func(e *env, _ *DecisionRecord) { e.mb.Caps = mail.Caps{} },
 			act("archive"), mail.ErrUnsupported, "unsupported capability", []string{"failed"}, "INBOX"},
 		{"unknown action", nil, act("shred"), nil, `unknown action "shred"`, []string{"failed"}, "INBOX"},
@@ -368,6 +396,14 @@ func TestDryRun(t *testing.T) {
 	}
 	if folders, _ := e.mb.Folders(ctx); len(folders) != 4 {
 		t.Errorf("dry-run created a folder: %+v", folders)
+	}
+	// trash_to_folder is on by default: the dry-run trash row says where it would have gone,
+	// and MailRules Trash is neither made nor put on record.
+	if r := e.actions(d.MessageID)[1]; r.Kind != rules.ActTrash || r.Folder != TrashFolder {
+		t.Errorf("dry-run trash row = %+v, want folder %q", r, TrashFolder)
+	}
+	if stored, _ := e.st.Folders(ctx, e.acct.ID); len(stored) != len(roleFolders) {
+		t.Errorf("dry-run put a folder on record: %+v", stored)
 	}
 	// Undoing a dry-run row has nothing to undo.
 	if err := e.x.Undo(ctx, recs[0].ID); err != nil || e.actions(d.MessageID)[0].Status != store.ActionDryRun || len(e.mb.calls) != 0 {

@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,8 +36,26 @@ type Server struct {
 	TLS  *tls.Config         // client config that trusts the server's certificate
 	User *imapmemserver.User // create folders and inspect state directly
 
-	mu    sync.Mutex
-	conns []net.Conn
+	mu       sync.Mutex
+	conns    []net.Conn
+	noCreate atomic.Bool
+}
+
+// RefuseCreate makes the server answer CREATE with NO, as a server that does not let a
+// client make folders would, until it is called with false.
+func (s *Server) RefuseCreate(refuse bool) { s.noCreate.Store(refuse) }
+
+// session is the in-memory server's session with CREATE behind RefuseCreate.
+type session struct {
+	imapserver.SessionIMAP4rev2
+	s *Server
+}
+
+func (x session) Create(name string, options *imap.CreateOptions) error {
+	if x.s.noCreate.Load() {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "Folders cannot be created here"}
+	}
+	return x.SessionIMAP4rev2.Create(name, options)
 }
 
 // tracking remembers accepted connections so a test can cut them.
@@ -66,9 +85,10 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 		t.Fatal(err)
 	}
 	mem.AddUser(user)
+	var s *Server
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return mem.NewSession(), nil, nil
+			return session{mem.NewSession().(imapserver.SessionIMAP4rev2), s}, nil, nil
 		},
 		Caps:   caps,
 		Logger: log.New(io.Discard, "", 0),
@@ -77,7 +97,7 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{
+	s = &Server{
 		Host: "127.0.0.1",
 		Port: ln.Addr().(*net.TCPAddr).Port,
 		TLS:  &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},

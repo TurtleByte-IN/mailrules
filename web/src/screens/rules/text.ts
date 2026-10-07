@@ -53,9 +53,14 @@ export const treeWords = (t: Condition) => leaves(t).map(condWords).join(t.any ?
 
 const actionWords: Partial<Record<Action['type'], string>> = { archive: 'Archive', trash: 'Move to Trash', keep: 'Keep in Inbox', read: 'mark read' };
 
-/** Move to Food, mark read */
-export const actionsText = (actions: Action[]) =>
-  actions.map((a) => (a.type === 'move' ? 'Move to ' + (a.folder || '[folder]') : (actionWords[a.type] ?? a.type))).join(', ');
+/**
+ * Move to Food, mark read. `trashTo` names the folder a trash goes to when it is not the
+ * server's Trash (`trash_to_folder`), for text about mail that is about to be moved.
+ */
+export const actionsText = (actions: Action[], trashTo?: string) =>
+  actions
+    .map((a) => (a.type === 'move' ? 'Move to ' + (a.folder || '[folder]') : a.type === 'trash' && trashTo ? 'Move to ' + trashTo : (actionWords[a.type] ?? a.type)))
+    .join(', ');
 
 /** The tail after the actions. `only` is the mailbox address when the rule applies to one. */
 export const extrasText = (x: Extras, only?: string) => (x.stack ? ' · stacks' : '') + (only ? ' · only ' + only : '');

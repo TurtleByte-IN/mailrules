@@ -303,11 +303,13 @@ ran:
 		t.Errorf("the sort added %d usage_daily rows", n-usageRowsBefore)
 	}
 
-	// Only the selected rows moved: the 20 unticked Reading emails stayed.
-	if e.folderCount("Food") != food || e.folderCount("Reading") != reading-20 || e.folderCount("Trash") != block ||
+	// Only the selected rows moved: the 20 unticked Reading emails stayed. The blocked
+	// sender's mail went to MailRules Trash (trash_to_folder is on by default), not to Trash.
+	const own = "MailRules Trash"
+	if e.folderCount("Food") != food || e.folderCount("Reading") != reading-20 || e.folderCount(own) != block || e.folderCount("Trash") != 0 ||
 		e.folderCount("INBOX") != total-food-(reading-20)-block {
-		t.Fatalf("after the sort: Food %d, Reading %d, Trash %d, INBOX %d",
-			e.folderCount("Food"), e.folderCount("Reading"), e.folderCount("Trash"), e.folderCount("INBOX"))
+		t.Fatalf("after the sort: Food %d, Reading %d, MailRules Trash %d, Trash %d, INBOX %d",
+			e.folderCount("Food"), e.folderCount("Reading"), e.folderCount(own), e.folderCount("Trash"), e.folderCount("INBOX"))
 	}
 
 	// The check booked its calls once, under "cleanup" — not "decide" — and the Sort added none.
@@ -334,9 +336,9 @@ ran:
 	if undo["undone"] != float64(sorted) || undo["failed"] != float64(0) || undo["batch"].(map[string]any)["status"] != "undone" {
 		t.Fatalf("undo = %v", undo)
 	}
-	if e.folderCount("INBOX") != total || e.folderCount("Food") != 0 || e.folderCount("Reading") != 0 || e.folderCount("Trash") != 0 {
-		t.Fatalf("after the undo: INBOX %d, Food %d, Reading %d, Trash %d",
-			e.folderCount("INBOX"), e.folderCount("Food"), e.folderCount("Reading"), e.folderCount("Trash"))
+	if e.folderCount("INBOX") != total || e.folderCount("Food") != 0 || e.folderCount("Reading") != 0 || e.folderCount(own) != 0 {
+		t.Fatalf("after the undo: INBOX %d, Food %d, Reading %d, MailRules Trash %d",
+			e.folderCount("INBOX"), e.folderCount("Food"), e.folderCount("Reading"), e.folderCount(own))
 	}
 }
 

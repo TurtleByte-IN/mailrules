@@ -8,5 +8,9 @@ export type Decider = components['schemas']['Decider'];
 export type KeyName = keyof components['schemas']['ProviderKeys'];
 export type UrlName = 'openai_base_url' | 'ollama_url';
 
+// Mirrors the daemon's actions.TrashFolder (internal/actions/executor.go): where a trash
+// action moves mail while `trash_to_folder` is on.
+export const TRASH_FOLDER = 'MailRules Trash';
+
 export const get = () => api<Settings>('GET', '/settings');
 export const patch = (p: SettingsPatch) => api<Settings>('PATCH', '/settings', p);

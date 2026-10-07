@@ -286,7 +286,8 @@ func TestFeedRowSaysWhoWhatAndHow(t *testing.T) {
 	e.deliver("friend@example.org", "lunch") // the model is unsure: Needs review
 	named("someone@gmail.com", "hello")
 	one, lunch := e.item("order one", "acted"), e.item("lunch", "review")
-	for subject, want := range map[string]string{"order one": "Moved to Food · read", "win big": "Moved to Trash", "lunch": "In Inbox", "hello": "In Inbox"} {
+	// trash_to_folder is on by default, so the trashed email names MailRules' own folder.
+	for subject, want := range map[string]string{"order one": "Moved to Food · read", "win big": "Moved to MailRules Trash", "lunch": "In Inbox", "hello": "In Inbox"} {
 		state := map[string]string{"lunch": "review", "hello": "review"}[subject]
 		if state == "" {
 			state = "acted"
@@ -343,7 +344,7 @@ func TestFeedRowSaysWhoWhatAndHow(t *testing.T) {
 		t.Errorf("%d address sender rules for the gmail sender, want 1", n)
 	}
 	fixed := e.call(http.MethodPost, fmt.Sprintf("/api/messages/%d/correct", id(one["id"])), `{"rule_id":2,"always_for_sender":true}`, http.StatusOK)["item"].(map[string]any)
-	if c := fixed["correction"].(map[string]any); c["kind"] != "correction" || fixed["outcome"] != "Moved to Trash" ||
+	if c := fixed["correction"].(map[string]any); c["kind"] != "correction" || fixed["outcome"] != "Moved to MailRules Trash" ||
 		e.count(`SELECT COUNT(*) FROM sender_rules WHERE match_type = 'address' AND value = 'noreply@swiggy.in' AND rule_id = 2`) != 1 {
 		t.Errorf("after a correction with always_for_sender: correction %v, outcome %q", c, fixed["outcome"])
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,53 +164,239 @@ func TestUndoAfterUIDValidityChange(t *testing.T) {
 
 // Safety invariant: nothing is expunged except the exact message just moved, even on a
 // server without MOVE, where a move is COPY, \Deleted and UID EXPUNGE of that one UID.
+// It holds for trash to the server's Trash and to MailRules Trash alike.
 func TestNoExpungeBeyondTheMovedMessage(t *testing.T) {
-	e, srv := imapEnv(t, goimap.CapUIDPlus)
-	ctx := t.Context()
-	if err := srv.User.Create("Trash", nil); err != nil {
-		t.Fatal(err)
-	}
-	if e.raw.Capabilities().Move {
-		t.Fatal("the test server offers MOVE; the COPY fallback would not be exercised")
-	}
-	marked := srv.Append(t, "INBOX", eml("marked-by-another-client"), goimap.FlagDeleted)
-	d := e.arrive(srv, "1")
-	bystander := srv.Append(t, "INBOX", eml("bystander"))
+	for _, tc := range []struct {
+		name   string
+		toOwn  bool
+		folder string
+	}{{"to MailRules Trash", true, TrashFolder}, {"to the server's Trash", false, "Trash"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, srv := imapEnv(t, goimap.CapUIDPlus)
+			ctx := t.Context()
+			if err := srv.User.Create("Trash", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.st.SetTrashToFolder(ctx, tc.toOwn); err != nil {
+				t.Fatal(err)
+			}
+			if e.raw.Capabilities().Move {
+				t.Fatal("the test server offers MOVE; the COPY fallback would not be exercised")
+			}
+			marked := srv.Append(t, "INBOX", eml("marked-by-another-client"), goimap.FlagDeleted)
+			d := e.arrive(srv, "1")
+			bystander := srv.Append(t, "INBOX", eml("bystander"))
 
-	recs, err := e.x.Apply(ctx, d, act("trash"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	left, _, err := e.raw.FetchSince(ctx, "INBOX", time.Time{}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var uids []uint32
-	for _, r := range left {
-		uids = append(uids, r.UID)
-	}
-	if !slices.Equal(uids, []uint32{marked, bystander}) || e.count("Trash") != 1 {
-		t.Fatalf("INBOX holds %v (want %v: only uid %d may leave); Trash holds %d", uids, []uint32{marked, bystander}, d.Ref.UID, e.count("Trash"))
-	}
-	// Trash was a move, so it can be undone; the mail marked \Deleted by someone else is still untouched.
-	if err := e.x.Undo(ctx, recs[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	if ref, flags := e.where(d.MessageID); ref.Folder != "INBOX" || len(flags) != 0 || e.count("INBOX") != 3 || e.count("Trash") != 0 {
-		t.Errorf("after undo: in %s with %v; INBOX %d, Trash %d", ref.Folder, flags, e.count("INBOX"), e.count("Trash"))
-	}
-	st, _ := e.raw.Status(ctx, "INBOX")
-	if flags, err := e.raw.Flags(ctx, mail.MsgRef{AccountID: e.acct.ID, Folder: "INBOX", UIDValidity: st.UIDValidity, UID: marked}); err != nil || !slices.Equal(flags, []string{`\Deleted`}) {
-		t.Errorf("the other client's message: %v, %v", flags, err)
+			recs, err := e.x.Apply(ctx, d, act("trash"), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			left, _, err := e.raw.FetchSince(ctx, "INBOX", time.Time{}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var uids []uint32
+			for _, r := range left {
+				uids = append(uids, r.UID)
+			}
+			if !slices.Equal(uids, []uint32{marked, bystander}) || e.count(tc.folder) != 1 {
+				t.Fatalf("INBOX holds %v (want %v: only uid %d may leave); %s holds %d", uids, []uint32{marked, bystander}, d.Ref.UID, tc.folder, e.count(tc.folder))
+			}
+			// Trash was a move, so it can be undone; the mail marked \Deleted by someone else is still untouched.
+			if err := e.x.Undo(ctx, recs[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			if ref, flags := e.where(d.MessageID); ref.Folder != "INBOX" || len(flags) != 0 || e.count("INBOX") != 3 || e.count(tc.folder) != 0 {
+				t.Errorf("after undo: in %s with %v; INBOX %d, %s %d", ref.Folder, flags, e.count("INBOX"), tc.folder, e.count(tc.folder))
+			}
+			st, _ := e.raw.Status(ctx, "INBOX")
+			if flags, err := e.raw.Flags(ctx, mail.MsgRef{AccountID: e.acct.ID, Folder: "INBOX", UIDValidity: st.UIDValidity, UID: marked}); err != nil || !slices.Equal(flags, []string{`\Deleted`}) {
+				t.Errorf("the other client's message: %v, %v", flags, err)
+			}
+		})
 	}
 
 	// Neither MOVE nor UIDPLUS: a move is refused outright rather than done unsafely.
+	ctx := t.Context()
 	bare, srv2 := imapEnv(t)
-	d = bare.arrive(srv2, "1")
+	d := bare.arrive(srv2, "1")
 	if _, err := bare.x.Apply(ctx, d, act("move:Food"), 0); !errors.Is(err, mail.ErrUnsupported) || bare.count("INBOX") != 1 {
 		t.Errorf("move on a bare server = %v, INBOX holds %d", err, bare.count("INBOX"))
 	}
 	if rows := bare.actions(d.MessageID); len(rows) != 1 || rows[0].Status != store.ActionFailed {
 		t.Errorf("rows = %+v", rows)
+	}
+}
+
+// trashEnv is imapEnv with the server's Trash and Junk folders in place (the stored folder
+// list already marks them) and trash_to_folder as given.
+func trashEnv(t *testing.T, toOwn bool) (*env, *imaptest.Server) {
+	t.Helper()
+	e, srv := imapEnv(t, goimap.CapMove, goimap.CapUIDPlus)
+	for _, name := range []string{"Trash", "Junk"} {
+		if err := srv.User.Create(name, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.st.SetTrashToFolder(t.Context(), toOwn); err != nil {
+		t.Fatal(err)
+	}
+	return e, srv
+}
+
+// onServer reports whether the server has a folder by that name.
+func (e *env) onServer(name string) bool {
+	e.t.Helper()
+	folders, err := e.raw.Folders(e.t.Context())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return slices.ContainsFunc(folders, func(f mail.Folder) bool { return f.Name == name })
+}
+
+// stored returns the account's stored folder by that name, and whether there is one.
+func (e *env) stored(name string) (store.Folder, bool) {
+	e.t.Helper()
+	folders, err := e.st.Folders(e.t.Context(), e.acct.ID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	i := slices.IndexFunc(folders, func(f store.Folder) bool { return f.Name == name })
+	if i < 0 {
+		return store.Folder{}, false
+	}
+	return folders[i], true
+}
+
+// What one trash or junk action does under the trash_to_folder setting, dry-run and a
+// server that refuses to make folders.
+func TestTrashToFolder(t *testing.T) {
+	tests := []struct {
+		name        string
+		toOwn       bool
+		dry         bool
+		refuse      bool // the server answers CREATE with NO
+		act         string
+		wantStatus  string
+		wantFolder  string // where the email is afterwards
+		wantRow     string // the row's folder
+		wantErr     string // substring of the row's error
+		wantCreated bool   // MailRules Trash exists on the server and in the stored list
+	}{
+		{"on: trash makes MailRules Trash and moves there", true, false, false, "trash", store.ActionDone, TrashFolder, TrashFolder, "", true},
+		{"off: trash goes to the server's Trash", false, false, false, "trash", store.ActionDone, "Trash", "", "", false},
+		{"on: junk still goes to Junk", true, false, false, "junk", store.ActionDone, "Junk", "", "", false},
+		{"off: junk goes to Junk", false, false, false, "junk", store.ActionDone, "Junk", "", "", false},
+		{"on, dry-run: nothing made or moved, the row says where", true, true, false, "trash", store.ActionDryRun, "INBOX", TrashFolder, "", false},
+		{"on, the server refuses CREATE: fails, no fallback to Trash", true, false, true, "trash", store.ActionFailed, "INBOX", TrashFolder, `create folder "MailRules Trash"`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, srv := trashEnv(t, tt.toOwn)
+			ctx := t.Context()
+			if err := e.st.SetDryRun(ctx, tt.dry); err != nil {
+				t.Fatal(err)
+			}
+			srv.RefuseCreate(tt.refuse)
+			d := e.arrive(srv, "1")
+			recs, err := e.x.Apply(ctx, d, act(tt.act), 0)
+			if (err != nil) != (tt.wantStatus == store.ActionFailed) {
+				t.Fatalf("Apply = %v", err)
+			}
+			rows := e.actions(d.MessageID)
+			if len(rows) != 1 || len(recs) != 1 || rows[0].Kind != tt.act || rows[0].Status != tt.wantStatus ||
+				rows[0].Folder != tt.wantRow || !strings.Contains(rows[0].Error, tt.wantErr) {
+				t.Fatalf("rows = %+v, want one %s %s row naming %q", rows, tt.wantStatus, tt.act, tt.wantRow)
+			}
+			if ref, _ := e.where(d.MessageID); ref.Folder != tt.wantFolder || e.count(tt.wantFolder) != 1 {
+				t.Errorf("the email is in %s (%d there), want %s", ref.Folder, e.count(tt.wantFolder), tt.wantFolder)
+			}
+			if tt.wantFolder != "Trash" && e.count("Trash") != 0 {
+				t.Errorf("the server's Trash holds %d", e.count("Trash"))
+			}
+			f, stored := e.stored(TrashFolder)
+			if e.onServer(TrashFolder) != tt.wantCreated || stored != tt.wantCreated || f.SpecialUse != "" {
+				t.Errorf("MailRules Trash on the server %v, stored %v (%+v); want %v with no role", e.onServer(TrashFolder), stored, f, tt.wantCreated)
+			}
+		})
+	}
+}
+
+// MailRules Trash is made once: a second trash finds it, and the mail already in it stays.
+// Undo puts each email back where it came from.
+func TestTrashToFolderMadeOnceAndUndone(t *testing.T) {
+	e, srv := trashEnv(t, true)
+	ctx := t.Context()
+	first, second := e.arrive(srv, "1"), e.arrive(srv, "2")
+	if _, err := e.x.Apply(ctx, first, act("trash"), 0); err != nil {
+		t.Fatal(err)
+	}
+	made, err := e.raw.Status(ctx, TrashFolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.RefuseCreate(true) // a second CREATE would now fail the action
+	recs, err := e.x.Apply(ctx, second, act("trash"), 0)
+	if err != nil {
+		t.Fatalf("the second trash tried to make the folder again: %v", err)
+	}
+	if st, _ := e.raw.Status(ctx, TrashFolder); st.UIDValidity != made.UIDValidity || e.count(TrashFolder) != 2 {
+		t.Errorf("MailRules Trash was rebuilt or lost mail: uidvalidity %d (was %d), holds %d", st.UIDValidity, made.UIDValidity, e.count(TrashFolder))
+	}
+	if recs[0].Kind != "trash" || recs[0].After.Folder != TrashFolder {
+		t.Errorf("record = %+v", recs[0])
+	}
+	for _, d := range []DecisionRecord{second, first} {
+		if _, undone, _, why, err := e.x.UndoMessage(ctx, d.MessageID); err != nil || why != nil || undone != 1 {
+			t.Fatalf("undo: %d undone, %v, %v", undone, why, err)
+		}
+		if ref, _ := e.where(d.MessageID); ref.Folder != "INBOX" {
+			t.Errorf("after undo the email is in %s, want INBOX", ref.Folder)
+		}
+	}
+	if e.count(TrashFolder) != 0 || e.count("INBOX") != 2 {
+		t.Errorf("after undo: MailRules Trash %d, INBOX %d", e.count(TrashFolder), e.count("INBOX"))
+	}
+}
+
+// An email trashed to the server's Trash before the setting was turned on comes back from
+// there: undo follows the folder the action recorded, not the setting in force.
+func TestUndoOfARealTrashWithTheSettingOn(t *testing.T) {
+	e, srv := trashEnv(t, false)
+	ctx := t.Context()
+	d := e.arrive(srv, "1")
+	recs, err := e.x.Apply(ctx, d, act("trash"), 0)
+	if err != nil || recs[0].After.Folder != "Trash" {
+		t.Fatalf("trash with the setting off: %+v, %v", recs, err)
+	}
+	if err := e.st.SetTrashToFolder(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.x.Undo(ctx, recs[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if ref, _ := e.where(d.MessageID); ref.Folder != "INBOX" || e.count("Trash") != 0 || e.onServer(TrashFolder) {
+		t.Errorf("after undo: in %s, Trash holds %d, MailRules Trash made %v", ref.Folder, e.count("Trash"), e.onServer(TrashFolder))
+	}
+	if a := e.actions(d.MessageID)[0]; a.Status != store.ActionUndone {
+		t.Errorf("action = %+v", a)
+	}
+}
+
+// A trash_to_folder setting that cannot be read stops the actions before anything is
+// recorded or changed, as an unreadable dry-run switch does.
+func TestUnreadableTrashSetting(t *testing.T) {
+	e, srv := trashEnv(t, true)
+	ctx := t.Context()
+	if err := e.st.SetSetting(ctx, store.SettingTrashToFolder, "maybe"); err != nil {
+		t.Fatal(err)
+	}
+	d := e.arrive(srv, "1")
+	if _, err := e.x.Apply(ctx, d, act("trash"), 0); err == nil || len(e.actions(d.MessageID)) != 0 || e.count("INBOX") != 1 {
+		t.Errorf("Apply = %v, rows %+v, INBOX %d", err, e.actions(d.MessageID), e.count("INBOX"))
+	}
+	// Without a trash action the setting is not read at all.
+	if _, err := e.x.Apply(ctx, d, act("read"), 0); err != nil {
+		t.Errorf("a read with an unreadable trash setting: %v", err)
 	}
 }

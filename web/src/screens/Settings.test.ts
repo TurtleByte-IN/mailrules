@@ -7,7 +7,7 @@ import Settings from './Settings.svelte';
 // GET /api/settings from a fresh daemon.
 const fresh = (over: Partial<Saved> = {}): Saved => ({
   dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', composer_model: 'claude-haiku-4-5',
-  escalate_below: 0.75, min_confidence: 0.75, retention_days: 30, openai_base_url: '', ollama_url: '',
+  escalate_below: 0.75, min_confidence: 0.75, retention_days: 30, trash_to_folder: true, openai_base_url: '', ollama_url: '',
   keys: { openrouter_api_key: 'environment', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'stored', openai_api_key: 'none' },
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
@@ -57,7 +57,8 @@ it('renders the settings in force', async () => {
   expect((screen.getByLabelText('Decision model') as HTMLSelectElement).value).toBe('jev');
   expect((screen.getByLabelText('Fallback model') as HTMLInputElement).value).toBe('claude-haiku-4-5');
   expect((screen.getByLabelText('Keep email snippets for') as HTMLInputElement).value).toBe('30');
-  expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole('checkbox', { name: /^Dry-run/ }) as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole('checkbox', { name: /^Send trashed mail to MailRules Trash/ }) as HTMLInputElement).checked).toBe(true);
   // The chip says where each key comes from; only a stored key can be removed here.
   const chip = (label: RegExp) => screen.getByLabelText(label).closest('label')!.querySelector('.chip')!.textContent;
   expect([chip(/^Anthropic API key/), chip(/^OpenRouter API key/), chip(/^OpenAI API key/)]).toEqual(['Set', 'Set by environment', 'Not set']);
@@ -176,4 +177,21 @@ it('keeps the keys nothing uses under a collapsed "Other providers" until it is 
   expect([/^Cloudflare account ID/, /^Cloudflare API token/, /^Anthropic API key/, /^OpenAI API key/].map(inOther)).toEqual([true, true, true, true]);
   await fireEvent.click(screen.getByText('Other providers'));
   expect(other.open).toBe(true);
+});
+
+it('turns trash_to_folder off and on, and snaps the box back when the daemon refuses', async () => {
+  await show(fresh());
+  const box = screen.getByRole('checkbox', { name: /^Send trashed mail to MailRules Trash/ }) as HTMLInputElement;
+  expect(box.closest('label')!.textContent).toContain("providers empty Trash on their own; MailRules' folder is never emptied, so mail trashed by mistake can still be found");
+
+  routes['PATCH /api/settings'] = [200, fresh({ trash_to_folder: false })];
+  await fireEvent.click(box);
+  await waitFor(() => expect(settings.value.trash_to_folder).toBe(false));
+  expect(box.checked).toBe(false);
+
+  routes['PATCH /api/settings'] = [500, { error: { code: 'internal', message: 'Something went wrong.' } }];
+  await fireEvent.click(box);
+  await waitFor(() => expect(patches()).toEqual([{ trash_to_folder: false }, { trash_to_folder: true }]));
+  await waitFor(() => expect(box.checked).toBe(false));
+  expect(settings.value.trash_to_folder).toBe(false);
 });
