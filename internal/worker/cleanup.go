@@ -109,8 +109,9 @@ func (m *Manager) Sort(ctx context.Context, sr SortRun) (store.Batch, error) {
 // model: the decisions were settled by the check. An email that is no longer where the
 // check found it is passed over and counted as skipped.
 func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, rows []composer.CheckRow) {
+	acct := s.account() // the supervisor may change its status fields while this runs
 	p := s.Pipeline
-	p.Mailbox, p.Account, p.Batch = mb, s.Account, batchID
+	p.Mailbox, p.Account, p.Batch = mb, acct, batchID
 	p.Rediscover = func(ctx context.Context) error { return s.discover(ctx, mb) }
 	var handled, skipped int
 	began := time.Now()
@@ -129,12 +130,12 @@ func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, r
 		}
 		b, berr := s.Store.Batch(recCtx, batchID)
 		if err = errors.Join(err, berr); err != nil {
-			slog.ErrorContext(ctx, "could not record cleanup sort progress", "account", s.Account.ID, "batch", batchID, "error", err.Error())
+			slog.ErrorContext(ctx, "could not record cleanup sort progress", "account", acct.ID, "batch", batchID, "error", err.Error())
 			return
 		}
 		s.Hub.Publish(events.BatchProgress, b)
 		if status != "" {
-			slog.InfoContext(ctx, "cleanup sort finished", "account", s.Account.ID, "batch", batchID, "status", status,
+			slog.InfoContext(ctx, "cleanup sort finished", "account", acct.ID, "batch", batchID, "status", status,
 				"handled", total.handled, "of", len(rows), "skipped", total.skipped, "duration_ms", time.Since(began).Milliseconds())
 		}
 	}
@@ -150,7 +151,7 @@ func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, r
 		applied, err := p.SortSaved(ctx, row.Ref, row.Outcome)
 		s.work.Unlock()
 		if err != nil { // the outcome could not be recorded at all, or the daemon is stopping
-			slog.WarnContext(ctx, "cleanup sort stopped", "account", s.Account.ID, "batch", batchID, "error", err.Error())
+			slog.WarnContext(ctx, "cleanup sort stopped", "account", acct.ID, "batch", batchID, "error", err.Error())
 			report(store.BatchFailed)
 			return
 		}

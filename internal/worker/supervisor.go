@@ -65,6 +65,15 @@ func (s *Supervisor) setMailbox(mb mail.Mailbox) {
 	s.mb = mb
 }
 
+// account is a copy of the account as the supervisor last saw it. setStatus changes its
+// status fields on the supervisor's goroutine while a cleanup Sort runs on another, so a
+// read from any other goroutine goes through here (MAI-52).
+func (s *Supervisor) account() store.Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Account
+}
+
 func or(d, def time.Duration) time.Duration {
 	if d > 0 {
 		return d
@@ -111,16 +120,19 @@ func (s *Supervisor) setStatus(ctx context.Context, status string, err error) {
 		return
 	}
 	s.status = status
+	s.mu.Lock()
 	s.Account.Status, s.Account.LastError, s.Account.LastEventAt = status, "", time.Now().Unix()
 	if err != nil {
 		s.Account.LastError = err.Error() // connector errors never contain the password
 	}
-	slog.InfoContext(ctx, "account status", "account", s.Account.ID, "status", status, "error", s.Account.LastError)
+	acct := s.Account
+	s.mu.Unlock()
+	slog.InfoContext(ctx, "account status", "account", acct.ID, "status", status, "error", acct.LastError)
 	// The status must be written even while the daemon stops.
-	if err := s.Store.SetAccountStatus(context.WithoutCancel(ctx), s.Account.ID, status, s.Account.LastError, s.Account.LastEventAt); err != nil {
-		slog.ErrorContext(ctx, "could not store the account status", "account", s.Account.ID, "error", err.Error())
+	if err := s.Store.SetAccountStatus(context.WithoutCancel(ctx), acct.ID, status, acct.LastError, acct.LastEventAt); err != nil {
+		slog.ErrorContext(ctx, "could not store the account status", "account", acct.ID, "error", err.Error())
 	}
-	s.Hub.Publish(events.AccountStatus, s.Account)
+	s.Hub.Publish(events.AccountStatus, acct)
 }
 
 // discover lists the server's folders and stores them with their special-use roles.
