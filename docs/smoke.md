@@ -13,6 +13,7 @@ Record the result at the bottom. Any unticked box blocks the release.
 - [ ] A fresh install starts, `/healthz` and `/readyz` answer 200, and the log has no errors.
 - [ ] The log line `listening` shows `dry_run: true`.
 - [ ] First-run setup creates the admin account and signs in [`POST /api/auth/setup`].
+- [ ] The setup guide follows: Decision model shows what the default decider still lacks beside it; saving its key there clears that warning [`PATCH /api/settings`]. Continue opens First mailbox, the connect wizard; Skip for now there lands on Overview with dry-run still on. Sign out and in again: the guide does not come back.
 
 ## 2. Dry-run
 

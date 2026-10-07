@@ -11,6 +11,7 @@ import Settings from './screens/Settings.svelte';
 import Usage from './screens/Usage.svelte';
 import Overview from './screens/Overview.svelte';
 import Pending from './screens/Pending.svelte';
+import Setup from './screens/Setup.svelte';
 
 export interface Screen {
   path: string;
@@ -41,5 +42,7 @@ export const screens = all.filter((s) => !s.feature || features[s.feature]);
 
 export const routes: Record<string, Component<any>> = {
   ...Object.fromEntries(screens.map((s) => [s.path, s.component])),
+  // The first-run guide: not in the nav, opened once right after the admin account is created.
+  '/setup': Setup,
   '*': Pending,
 };

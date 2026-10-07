@@ -1,5 +1,6 @@
 import * as authApi from '../api/auth';
 import { ApiError, setUnauthorizedHandler } from '../api/client';
+import { forget, offer } from './firstrun.svelte';
 
 type Status = 'loading' | 'setup' | 'login' | 'in';
 
@@ -16,6 +17,7 @@ function signedIn(s: authApi.Session) {
 setUnauthorizedHandler((code) => {
   auth.user = null;
   auth.status = code === 'setup_required' ? 'setup' : 'login';
+  forget();
 });
 
 /** Ask the daemon who is signed in; a 401 routes to Setup or Login through the handler above. */
@@ -27,11 +29,16 @@ export async function start() {
   }
 }
 
-export const setup = async (c: authApi.Credentials) => signedIn(await authApi.setup(c));
+/** Creates the admin account and signs in; the first-run guide is offered to this browser only. */
+export async function setup(c: authApi.Credentials) {
+  signedIn(await authApi.setup(c));
+  offer();
+}
 export const login = async (c: authApi.Credentials) => signedIn(await authApi.login(c));
 
 export async function logout() {
   await authApi.logout();
   auth.user = null;
   auth.status = 'login';
+  forget();
 }

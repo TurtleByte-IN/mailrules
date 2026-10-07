@@ -32,6 +32,24 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
 
 const message = (e: unknown) => (e instanceof Error && e.message) || 'The daemon did not answer.';
 
+/** The id of the warning that names this setting (as SettingsPatch spells it), when there is one. */
+export const warningId = (path: string) => (settings.value.warnings.some((w) => w.path === path) ? 'warn-' + path : undefined);
+
+// The Claude workspace. Only a Claude key that covers a whole organisation needs one; `lookup`
+// is the daemon's answer for the key in force, or null while there is none.
+export const workspaces = $state<{ lookup: settingsApi.AnthropicWorkspaces | null }>({ lookup: null });
+
+/** Asks the daemon which workspace the Claude key needs, while one is in force and none is set. */
+export async function findWorkspace() {
+  workspaces.lookup = null;
+  if (settings.value.keys.anthropic_api_key === 'none' || settings.value.anthropic_workspace_id) return;
+  try {
+    workspaces.lookup = await settingsApi.anthropicWorkspaces();
+  } catch {
+    // The control stays hidden; the field is still reachable through a warning.
+  }
+}
+
 export async function load() {
   try {
     settings.value = await settingsApi.get();

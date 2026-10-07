@@ -1,7 +1,10 @@
 import type { Decider, KeyName, Settings } from '../../lib/api/settings';
 
+/** Every provider key, in the order the key fields list them. */
+export const keyOrder: KeyName[] = ['openrouter_api_key', 'cloudflare_account_id', 'cloudflare_api_token', 'anthropic_api_key', 'openai_api_key'];
+
 /** The credentials each decider name needs (`jev`, `clef`, `anthropic`, `openai`, `ollama`; Ollama needs none). */
-const credentials: Record<Decider, KeyName[]> = {
+export const credentials: Record<Decider, KeyName[]> = {
   jev: ['openrouter_api_key'],
   clef: ['cloudflare_account_id', 'cloudflare_api_token'],
   anthropic: ['anthropic_api_key'],
