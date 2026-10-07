@@ -75,7 +75,7 @@ func TestWarningsAgreeWithDeciderReady(t *testing.T) {
 			t.Errorf("%s with nothing set: %d warnings, DeciderReady misses %d (want the same, and at least one)", decider, len(ws), missing)
 		}
 		full := empty
-		for _, n := range deciderNeeds[decider] {
+		for _, n := range providerNeeds[decider] {
 			if n.path == "" || n.what == "" {
 				t.Errorf("%s: a need without a path or a name", decider)
 			}

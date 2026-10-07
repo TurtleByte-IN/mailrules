@@ -62,6 +62,9 @@ func TestValidate(t *testing.T) {
 		{"openai needs a model", map[string]string{"MAILRULES_DECIDER": "openai"}, []string{"MAILRULES_DECIDER=openai needs MAILRULES_DECIDER_MODEL"}},
 		{"ollama needs a model", map[string]string{"MAILRULES_DECIDER": "ollama"}, []string{"MAILRULES_DECIDER=ollama needs MAILRULES_DECIDER_MODEL"}},
 		{"ollama with a model", map[string]string{"MAILRULES_DECIDER": "ollama", "MAILRULES_DECIDER_MODEL": "llama3.2"}, nil},
+		{"composer on openai", map[string]string{"MAILRULES_COMPOSER_MODEL": "openai:gpt-4o-mini"}, nil},
+		{"composer provider without a model", map[string]string{"MAILRULES_COMPOSER_MODEL": "ollama:"}, []string{`MAILRULES_COMPOSER_MODEL="ollama:"`, "composer ollama needs a model: write it as ollama:<model>"}},
+		{"composer on an unknown provider", map[string]string{"MAILRULES_COMPOSER_MODEL": "gemini:pro"}, []string{`unknown composer provider "gemini"`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -121,6 +124,62 @@ func TestDeciderReady(t *testing.T) {
 				if !strings.Contains(err.Error(), w) {
 					t.Errorf("error %q missing %q", err, w)
 				}
+			}
+		})
+	}
+}
+
+// composer_model is a bare Claude model, as it always was, or provider:model.
+func TestSplitComposerModel(t *testing.T) {
+	tests := []struct {
+		spec, provider, model, err string // err: a substring; "" means it is read
+	}{
+		{"claude-haiku-4-5", "anthropic", "claude-haiku-4-5", ""},
+		{"anthropic:claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5", ""},
+		{"openai:gpt-4o-mini", "openai", "gpt-4o-mini", ""},
+		{"ollama:llama3.2", "ollama", "llama3.2", ""},
+		{"ollama:llama3.2:3b", "ollama", "llama3.2:3b", ""}, // the model keeps its own colon
+		{"openai:", "openai", "", "composer openai needs a model: write it as openai:<model>"},
+		{"anthropic:", "anthropic", "", "composer anthropic needs a model"},
+		{"foo:bar", "foo", "bar", `unknown composer provider "foo": must be anthropic, openai, ollama`},
+		{"", "", "", "the rule composer needs a model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.spec, func(t *testing.T) {
+			provider, model, err := SplitComposerModel(tt.spec)
+			if provider != tt.provider || model != tt.model {
+				t.Errorf("= %q, %q; want %q, %q", provider, model, tt.provider, tt.model)
+			}
+			if tt.err == "" && err != nil || tt.err != "" && (err == nil || !strings.Contains(err.Error(), tt.err)) {
+				t.Errorf("err = %v, want %q", err, tt.err)
+			}
+		})
+	}
+}
+
+func TestComposerReady(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string // a substring of the error; "" means ready
+	}{
+		{"default Claude without a key", nil, "MAILRULES_COMPOSER_MODEL=claude-haiku-4-5 but ANTHROPIC_API_KEY is empty"},
+		{"default Claude with a key", map[string]string{"ANTHROPIC_API_KEY": "k"}, ""},
+		{"openai without a key", map[string]string{"MAILRULES_COMPOSER_MODEL": "openai:gpt-4o-mini", "ANTHROPIC_API_KEY": "k"}, "OPENAI_API_KEY is empty"},
+		{"openai with a key", map[string]string{"MAILRULES_COMPOSER_MODEL": "openai:gpt-4o-mini", "OPENAI_API_KEY": "k"}, ""},
+		{"ollama without a URL", map[string]string{"MAILRULES_COMPOSER_MODEL": "ollama:llama3.2"}, "OLLAMA_URL is empty"},
+		{"ollama with a URL", map[string]string{"MAILRULES_COMPOSER_MODEL": "ollama:llama3.2", "OLLAMA_URL": "http://x"}, ""},
+		{"no model", map[string]string{"MAILRULES_COMPOSER_MODEL": "openai:"}, "needs a model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Load(nil, env(tt.env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = c.ComposerReady()
+			if tt.want == "" && err != nil || tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Errorf("ComposerReady() = %v, want %q", err, tt.want)
 			}
 		})
 	}

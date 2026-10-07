@@ -81,6 +81,8 @@ func TestRefusalMessagesAreSentences(t *testing.T) {
 		{"settings: threshold", "PATCH", "/api/settings", `{"min_confidence":2}`, "invalid_input", "min_confidence", "between 0 and 1"},
 		{"settings: retention", "PATCH", "/api/settings", `{"retention_days":0}`, "invalid_input", "retention_days", "Retention must be between"},
 		{"settings: unknown key", "PATCH", "/api/settings", `{"keys":{"nope":"x"}}`, "invalid_input", "keys.nope", "Unknown key."},
+		{"settings: composer provider without a model", "PATCH", "/api/settings", `{"composer_model":"openai:"}`, "invalid_input", "composer_model", "Name the model after openai:, for example openai:gpt-4o-mini."},
+		{"settings: composer on an unknown provider", "PATCH", "/api/settings", `{"composer_model":"foo:bar"}`, "invalid_input", "composer_model", "The rule composer model must be a Claude model name"},
 		// The tester.
 		{"test: no account", "POST", "/api/rules/test", `{}`, "invalid_input", "account_id", "An account is required"},
 		{"test: limit", "POST", "/api/rules/test", `{"account_id":1,"limit":0}`, "invalid_input", "limit", "The limit must be between"},

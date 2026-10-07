@@ -130,7 +130,7 @@ it('discarding the draft saves nothing and leaves the rule as it was', async () 
 });
 
 it('says a model is needed and links to Settings', async () => {
-  const message = 'This needs an AI model, and none is set up yet. Add a Claude (Anthropic) key in Settings, then try again. Rules built from conditions work without one.';
+  const message = 'This needs an AI model. The rule composer model, claude-haiku-4-5, needs a Claude (Anthropic) API key: add it in Settings, then try again. Rules built from conditions work without one.';
   await open({ 'POST /api/rules/7/compose': [409, { error: { code: 'no_composer_model', message } }] });
 
   expect((await screen.findByRole('alert')).textContent).toContain(message);

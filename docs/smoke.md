@@ -25,6 +25,7 @@ Record the result at the bottom. Any unticked box blocks the release.
 - [ ] **Needs review.** Send a mail no rule clearly covers (or remove the model key and send one that needs a model). It shows up in Needs review with a reason; resolving it there records the choice [`GET /api/review`, `POST /api/review/{message_id}/resolve`].
 - [ ] **Cleanup check.** Check a cleanup of the inbox. "N of M checked" moves, the model calls and real cost grow, and the table then shows one row per email with the rule, action and confidence; nothing in the mailbox changes [`POST /api/cleanup/check`, `GET /api/cleanup/check`]. Reload the page mid-check and after it: the same check and table come back, with the same rows unticked.
 - [ ] **Cleanup Sort in dry-run.** Untick a few rows, then Sort the rest. The batch finishes, and nothing in the mailbox changes [`POST /api/cleanup/run`].
+- [ ] **Composer on another provider.** If you have an OpenAI key or an Ollama server, set Settings, Rule composer model to `openai:<model>` or `ollama:<model>` before adding that key or URL [`PATCH /api/settings {"composer_model": "ollama:llama3.2"}`]. Settings warns that the composer model needs it, and Describe it answers with a sentence naming it. Add the key or URL [`PATCH /api/settings {"ollama_url": "http://localhost:11434"}`]: the warning goes, Describe it returns drafts, and Usage lists that model as "(rule composer)" [`POST /api/rules/compose`, `GET /api/stats/usage`]. Put the composer model back afterwards.
 
 ## 3. Live
 

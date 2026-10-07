@@ -139,6 +139,26 @@ type Settings struct {
 // ErrNoComposer means no generative model is configured for the rule composer.
 var ErrNoComposer = errors.New("no generative model is configured for the rule composer")
 
+// ComposerMissing is ErrNoComposer with what the chosen composer model lacks: the one place
+// that decides what the user is told to add.
+type ComposerMissing struct {
+	Model string // composer_model as set, e.g. openai:gpt-4o-mini
+	Path  string // the setting to fill in, as the API spells it
+	What  string // what to call it, e.g. "an OpenAI API key"
+}
+
+func (e *ComposerMissing) Error() string {
+	return fmt.Sprintf("the rule composer model %s needs %s", e.Model, e.What)
+}
+
+// Is makes errors.Is(err, ErrNoComposer) true.
+func (e *ComposerMissing) Is(target error) bool { return target == ErrNoComposer }
+
+// Message is the sentence for a person: what the chosen model needs and where to add it.
+func (e *ComposerMissing) Message() string {
+	return fmt.Sprintf("This needs an AI model. The rule composer model, %s, needs %s: add it in Settings, then try again. Rules built from conditions work without one.", e.Model, e.What)
+}
+
 // aad binds a key's ciphertext to its name, so rows cannot be swapped.
 func aad(name string) int64 {
 	h := fnv.New64a()
@@ -242,30 +262,54 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	return v
 }
 
-// deciderNeeds is what each decider cannot run without: the settings to fill in (as the
-// API spells them) and what to call each. config.DeciderReady checks the same fields for
-// the startup log; TestWarningsAgreeWithDeciderReady fails if the two lists part ways.
-var deciderNeeds = map[string][]struct {
+// providerNeeds is what each decider, and each provider the composer can use, cannot run
+// without: the settings to fill in (as the API spells them) and what to call each.
+// config.DeciderReady checks the same fields for the startup log;
+// TestWarningsAgreeWithDeciderReady fails if the two lists part ways.
+var providerNeeds = map[string][]struct {
 	path, what string
 	get        func(*config.Config) string
 }{
 	"jev":       {{"keys.openrouter_api_key", "an OpenRouter API key", func(c *config.Config) string { return c.OpenRouterAPIKey }}},
 	"clef":      {{"keys.cloudflare_account_id", "a Cloudflare account ID", func(c *config.Config) string { return c.CloudflareAccountID }}, {"keys.cloudflare_api_token", "a Cloudflare API token", func(c *config.Config) string { return c.CloudflareAPIToken }}},
-	"anthropic": {{"keys.anthropic_api_key", "an Anthropic API key", func(c *config.Config) string { return c.AnthropicAPIKey }}},
+	"anthropic": {{"keys.anthropic_api_key", "a Claude (Anthropic) API key", func(c *config.Config) string { return c.AnthropicAPIKey }}},
 	"openai":    {{"keys.openai_api_key", "an OpenAI API key", func(c *config.Config) string { return c.OpenAIAPIKey }}},
 	"ollama":    {{"ollama_url", "the URL of your Ollama server", func(c *config.Config) string { return c.OllamaURL }}},
 }
 
-// warnings lists what the chosen decider still lacks. It is never nil.
+// composerExamples is a model for each provider the composer can use, to show in a refusal.
+var composerExamples = map[string]string{"anthropic": "anthropic:claude-haiku-4-5", "openai": "openai:gpt-4o-mini", "ollama": "ollama:llama3.2"}
+
+// warnings lists what the chosen decider and the rule composer's model still lack. A
+// setting both lack is named once, by the decider's warning. It is never nil.
 func warnings(cfg config.Config) []Warning {
 	out := []Warning{}
-	for _, n := range deciderNeeds[cfg.Decider] {
+	for _, n := range providerNeeds[cfg.Decider] {
 		if n.get(&cfg) == "" {
 			out = append(out, Warning{Code: "decider_not_ready", Path: n.path,
 				Message: fmt.Sprintf("The %s decision model needs %s. Until it is set, rules that need a model are passed over.", cfg.Decider, n.what)})
 		}
 	}
+	if m := composerMissing(cfg); m != nil && !slices.ContainsFunc(out, func(w Warning) bool { return w.Path == m.Path }) {
+		out = append(out, Warning{Code: "composer_not_ready", Path: m.Path,
+			Message: fmt.Sprintf("The rule composer model, %s, needs %s. Until it is set, Describe it, Rewrite with AI and Suggest from my mail do not work.", m.Model, m.What)})
+	}
 	return out
+}
+
+// composerMissing says what the composer's provider lacks first, or nil when it has
+// everything or composer_model cannot be read (saving refuses such a value).
+func composerMissing(cfg config.Config) *ComposerMissing {
+	provider, _, err := config.SplitComposerModel(cfg.ComposerModel)
+	if err != nil {
+		return nil
+	}
+	for _, n := range providerNeeds[provider] {
+		if n.get(&cfg) == "" {
+			return &ComposerMissing{Model: cfg.ComposerModel, Path: n.path, What: n.what}
+		}
+	}
+	return nil
 }
 
 // View returns the settings in force.
@@ -374,6 +418,14 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 		return &Invalid{"decider_model", "The " + cfg.Decider + " decider has no default model. Name one."}
 	case cfg.ComposerModel == "":
 		return &Invalid{"composer_model", "The rule composer needs a model."}
+	}
+	if provider, _, err := config.SplitComposerModel(cfg.ComposerModel); err != nil {
+		if example, known := composerExamples[provider]; known {
+			return &Invalid{"composer_model", fmt.Sprintf("Name the model after %s:, for example %s.", provider, example)}
+		}
+		return &Invalid{"composer_model", "The rule composer model must be a Claude model name, such as claude-haiku-4-5, or start with anthropic:, openai: or ollama: and then name the model."}
+	}
+	switch {
 	case cfg.EscalateBelow < 0 || cfg.EscalateBelow > 1:
 		return &Invalid{"escalate_below", "The escalation threshold must be between 0 and 1."}
 	case cfg.MinConfidence < 0 || cfg.MinConfidence > 1:
@@ -470,17 +522,23 @@ func (s *Settings) RouterFor(ctx context.Context, spec string) *models.Router {
 	return r
 }
 
-// Composer returns the generative model the rule composer writes rules with:
-// composer_model on Anthropic. It is ErrNoComposer until an Anthropic key is set.
+// Composer returns the generative model the rule composer writes rules with: composer_model
+// as config.SplitComposerModel reads it, on Anthropic, an OpenAI-compatible endpoint or
+// Ollama. Until that provider has its key or URL it is a *ComposerMissing, which is
+// ErrNoComposer.
 func (s *Settings) Composer(ctx context.Context) (models.Generator, error) {
 	cfg, err := s.Effective(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.AnthropicAPIKey == "" || cfg.ComposerModel == "" {
-		return nil, ErrNoComposer
+	if m := composerMissing(cfg); m != nil {
+		return nil, m
 	}
-	return models.NewAnthropic("", cfg.AnthropicAPIKey, cfg.ComposerModel, s.Deps), nil
+	gen, err := models.NewGenerator(&cfg, cfg.ComposerModel, s.Deps)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNoComposer, err)
+	}
+	return gen, nil
 }
 
 // RetentionDays returns the retention_days setting in force: how long message snippets

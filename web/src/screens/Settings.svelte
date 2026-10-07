@@ -1,6 +1,6 @@
 <script lang="ts">
   import { TRASH_FOLDER, type Decider, type KeyName, type UrlName } from '../lib/api/settings';
-  import { keysInUse } from './settings/keysInUse';
+  import { composerProvider, keysInUse } from './settings/keysInUse';
   import { confidence } from '../lib/format';
   import { rules } from '../lib/state/rules.svelte';
   import { load, patch, setKey, settings, setUrl, toggleDryRun } from '../lib/state/settings.svelte';
@@ -16,7 +16,8 @@
     { id: 'openai', name: 'OpenAI-compatible endpoint', note: 'Uses your OpenAI API key. Name the model below.', needsModel: true },
     { id: 'ollama', name: 'Ollama on my server', note: 'Runs on your own server. Free, private, slower on small machines. Name the model below.', needsModel: true },
   ];
-  // Where a decider that runs on the user's own endpoint is reached; shown for that decider only.
+  // Where a decider that runs on the user's own endpoint is reached; shown while the decider or
+  // the rule composer model uses that provider.
   const urls: { id: UrlName; decider: Decider; label: string; placeholder: string }[] = [
     { id: 'openai_base_url', decider: 'openai', label: 'Endpoint URL', placeholder: 'api.openai.com' },
     { id: 'ollama_url', decider: 'ollama', label: 'Ollama server URL', placeholder: 'http://localhost:11434' },
@@ -48,6 +49,7 @@
   let act = $derived(Math.round(s.min_confidence * 100));
   const chosen = $derived(deciders.find((d) => d.id === decider));
   const inUse = $derived(keysInUse({ decider: s.decider, fallback_model: s.fallback_model, composer_model: s.composer_model, keys: s.keys, ruleModels: rules.list.map((r) => r.model) }));
+  const shownUrls = $derived(urls.filter((u) => u.decider === decider || u.decider === composerProvider(s.composer_model)));
   /** The id of the warning that names this setting (as SettingsPatch spells it), when there is one. */
   const needed = (path: string) => (s.warnings.some((w) => w.path === path) ? 'warn-' + path : undefined);
   let urlErrors = $state<Record<UrlName, string>>({ openai_base_url: '', ollama_url: '' });
@@ -138,7 +140,7 @@
           <div class="text-[12.5px] text-secondary">Leave empty to use the provider's default.</div>
         {/if}
       </div>
-      {#each urls.filter((u) => u.decider === decider) as u (u.id)}
+      {#each shownUrls as u (u.id)}
         <div class="flex flex-col gap-1.5">
           <label for="set-{u.id}" class="text-[13px] font-semibold">{u.label}</label>
           <input
@@ -170,8 +172,9 @@
       </div>
       <div class="flex flex-col gap-1.5">
         <label for="set-composer" class="text-[13px] font-semibold">Rule composer model</label>
-        <input id="set-composer" class="field h-11 max-w-[360px] font-mono text-[13px]" autocomplete="off" value={s.composer_model} onchange={(e) => saveField(e, 'composer_model')} />
+        <input id="set-composer" class="field h-11 max-w-[360px] font-mono text-[13px]" autocomplete="off" aria-describedby="set-composer-forms" value={s.composer_model} onchange={(e) => saveField(e, 'composer_model')} />
         <div class="text-[12.5px] text-secondary">Turns what you describe into rules.</div>
+        <div id="set-composer-forms" class="text-[12.5px] text-secondary">A Claude model such as <code class="font-mono">claude-haiku-4-5</code>, or <code class="font-mono">openai:gpt-4o-mini</code> or <code class="font-mono">ollama:llama3.2</code>.</div>
       </div>
       <div class="flex max-w-[420px] flex-col gap-1.5">
         <label for="set-esc" class="text-[13px] font-semibold">Unsure below {confidence(escalate / 100)}</label>

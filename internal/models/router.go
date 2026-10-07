@@ -162,17 +162,37 @@ func NewDecider(cfg *config.Config, spec string, deps Deps) (Decider, error) {
 	case "clef":
 		return NewClef(DefaultClefURL, cfg.CloudflareAccountID, cfg.CloudflareAPIToken, orDefault(DefaultClefModel), deps), nil
 	case "anthropic":
-		return NewLLMDecider(name, NewAnthropic("", cfg.AnthropicAPIKey, orDefault(DefaultAnthropicModel), deps)), nil
+		return NewLLMDecider(name, generator(cfg, name, orDefault(DefaultAnthropicModel), deps)), nil
 	case "openai", "ollama":
 		if model == "" {
-			return nil, fmt.Errorf("decider %s needs a model: write it as %s:<model>", name, name)
+			return nil, config.MissingModel("decider", name)
 		}
-		if name == "ollama" {
-			return NewLLMDecider(name, NewOllama(cfg.OllamaURL, model, deps)), nil
-		}
-		return NewLLMDecider(name, NewOpenAI(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, model, deps)), nil
+		return NewLLMDecider(name, generator(cfg, name, model, deps)), nil
 	}
 	return nil, fmt.Errorf("unknown decider %q: must be jev, clef, anthropic, openai or ollama", name)
+}
+
+// NewGenerator builds the generative model a composer_model spec names (see
+// config.SplitComposerModel): a bare name is a Claude model on Anthropic, otherwise
+// anthropic:, openai: or ollama: and the model. It does not check that the provider's key
+// or URL is set (config.ComposerReady does); a call without them fails at the provider.
+func NewGenerator(cfg *config.Config, spec string, deps Deps) (Generator, error) {
+	provider, model, err := config.SplitComposerModel(spec)
+	if err != nil {
+		return nil, err
+	}
+	return generator(cfg, provider, model, deps), nil
+}
+
+// generator builds the adapter of a generative provider: anthropic, openai or ollama.
+func generator(cfg *config.Config, provider, model string, deps Deps) Generator {
+	switch provider {
+	case "openai":
+		return NewOpenAI(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, model, deps)
+	case "ollama":
+		return NewOllama(cfg.OllamaURL, model, deps)
+	}
+	return NewAnthropic("", cfg.AnthropicAPIKey, model, deps)
 }
 
 // NewRouter builds the Router for a decider spec. The fallback is Anthropic's

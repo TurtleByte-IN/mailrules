@@ -40,6 +40,7 @@ type env struct {
 	noDecider  bool                    // no decision model is set
 	own        map[string]*models.Fake // deciders that rules may name as their own model
 	gen        *models.Fake            // the composer's model; nil = none is set
+	realGen    bool                    // the composer's model is the one the settings build, gen is not used
 	connectErr error                   // makes the next logins fail
 	doc        map[string]any
 }
@@ -60,7 +61,10 @@ func (e *env) RouterFor(_ context.Context, spec string) *models.Router {
 	return nil
 }
 
-func (e *env) Composer(context.Context) (models.Generator, error) {
+func (e *env) Composer(ctx context.Context) (models.Generator, error) {
+	if e.realGen {
+		return e.sett.Composer(ctx)
+	}
 	if e.gen == nil {
 		return nil, settings.ErrNoComposer
 	}

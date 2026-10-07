@@ -71,7 +71,7 @@ it('shows why a draft is wrong and will not save it', async () => {
 });
 
 it('says a model is needed, links to Settings and keeps what was typed', async () => {
-  const message = 'This needs an AI model, and none is set up yet. Add a Claude (Anthropic) key in Settings, then try again. Rules built from conditions work without one.';
+  const message = 'This needs an AI model. The rule composer model, claude-haiku-4-5, needs a Claude (Anthropic) API key: add it in Settings, then try again. Rules built from conditions work without one.';
   serve({ 'POST /api/rules/compose': [409, { error: { code: 'no_composer_model', message } }] });
   await describe('Archive LinkedIn');
 

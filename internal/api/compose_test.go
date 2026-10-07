@@ -405,6 +405,9 @@ func TestRuleTester(t *testing.T) {
 	// Rules with an intent need a decision model; conditions alone do not.
 	e.noDecider = true
 	e.refuse(http.MethodPost, "/api/rules/test", `{"account_id":1}`, http.StatusConflict, "no_composer_model", "")
+	if r := e.do(http.MethodPost, "/api/rules/test", `{"account_id":1}`); !strings.Contains(r.body.Error.Message, "decision model") || strings.Contains(r.body.Error.Message, "Claude") {
+		t.Errorf("the tester's sentence does not name the decision model: %q", r.body.Error.Message)
+	}
 	// MAI-22: a draft with conditions and no intent is tested on its own, so the saved
 	// rule with an intent (Reading) does not make it need a model. A draft with an intent does.
 	alone := e.call(http.MethodPost, "/api/rules/test", `{"account_id":1,"limit":4,"rules":[{"name":"Issues","conditions":{"field":"subject","op":"contains","value":"issue"},"actions":[{"type":"flag"}]}]}`, http.StatusOK)

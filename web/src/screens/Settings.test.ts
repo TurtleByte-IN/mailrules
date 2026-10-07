@@ -83,6 +83,32 @@ it('shows the URL field as soon as its decider is picked', async () => {
   expect(patches()).toEqual([]); // Ollama has no default model, so nothing is saved until one is named
 });
 
+it('says which forms the rule composer model takes', async () => {
+  await show(fresh());
+  const field = screen.getByLabelText('Rule composer model');
+  const hint = document.getElementById(field.getAttribute('aria-describedby')!)!;
+  expect(hint.textContent).toBe('A Claude model such as claude-haiku-4-5, or openai:gpt-4o-mini or ollama:llama3.2.');
+});
+
+it.each<[string, string | undefined, string | undefined]>([
+  ['openai:gpt-4o-mini', 'https://llm.example.test/v1', undefined],
+  ['ollama:llama3.2', undefined, 'http://localhost:11434'],
+  ['claude-haiku-4-5', undefined, undefined],
+])('shows the URL field the composer model %s runs on, whatever the decider', async (composer_model, endpoint, ollama) => {
+  await show(fresh({ composer_model, openai_base_url: 'https://llm.example.test/v1', ollama_url: 'http://localhost:11434' }));
+  const value = (label: string) => (screen.queryByLabelText(label) as HTMLInputElement | null)?.value;
+  expect([value('Endpoint URL'), value('Ollama server URL')]).toEqual([endpoint, ollama]);
+});
+
+it('marks the URL an Ollama composer model lacks', async () => {
+  const noComposerUrl = { code: 'composer_not_ready' as const, path: 'ollama_url',
+    message: 'The rule composer model, ollama:llama3.2, needs the URL of your Ollama server. Until it is set, Describe it, Rewrite with AI and Suggest from my mail do not work.' };
+  await show(fresh({ composer_model: 'ollama:llama3.2', warnings: [noComposerUrl] }));
+  const warning = screen.getByRole('status');
+  expect(warning.textContent).toBe(noComposerUrl.message);
+  expect(screen.getByLabelText('Ollama server URL').getAttribute('aria-describedby')).toBe(warning.id);
+});
+
 // The warnings a daemon with no keys answers (recorded from a real PATCH).
 const noUrl = { code: 'decider_not_ready' as const, message: 'The ollama decision model needs the URL of your Ollama server. Until it is set, rules that need a model are passed over.', path: 'ollama_url' };
 const noKey = { code: 'decider_not_ready' as const, message: 'The jev decision model needs an OpenRouter API key. Until it is set, rules that need a model are passed over.', path: 'keys.openrouter_api_key' };

@@ -39,10 +39,19 @@ func (s *server) modelSource() ModelSource {
 	return s.Settings
 }
 
-// noModel answers for a feature that needs a model nobody has configured yet.
-func noModel(w http.ResponseWriter) {
-	writeError(w, http.StatusConflict, "no_composer_model",
-		"This needs an AI model, and none is set up yet. Add a Claude (Anthropic) key in Settings, then try again. Rules built from conditions work without one.", "")
+// noModel answers for a feature that needs a model nobody has configured yet. When err
+// says what the rule composer's model lacks (*settings.ComposerMissing), the answer names
+// it; a nil err is the tester's case, a decision model that cannot run.
+func noModel(w http.ResponseWriter, err error) {
+	msg := "This needs a decision model, and the one chosen in Settings is not set up yet. Finish it in Settings, then try again. Rules built from conditions work without one."
+	var missing *settings.ComposerMissing
+	switch {
+	case errors.As(err, &missing):
+		msg = missing.Message()
+	case err != nil:
+		msg = "This needs an AI model, and none is set up yet. Choose the rule composer model in Settings, then try again. Rules built from conditions work without one."
+	}
+	writeError(w, http.StatusConflict, "no_composer_model", msg, "")
 }
 
 // modelFail answers for an error from the composer or the tester.
@@ -52,7 +61,7 @@ func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	switch {
 	case errors.Is(err, settings.ErrNoComposer):
-		noModel(w)
+		noModel(w, err)
 	case errors.Is(err, mail.ErrNoFolder):
 		invalid(w, "folder", "The mail account has no such folder.")
 	case errors.Is(err, composer.ErrModel), errors.Is(err, pipeline.ErrModel):
@@ -422,7 +431,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 
 	decider := s.testDecider(r)
 	if decider.Router == nil && slices.ContainsFunc(set, func(x rules.Rule) bool { return x.Enabled && x.Intent != "" }) {
-		noModel(w)
+		noModel(w, nil)
 		return
 	}
 	mb, err := s.reader(acct.ID)

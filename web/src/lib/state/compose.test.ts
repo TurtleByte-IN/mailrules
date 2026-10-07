@@ -118,7 +118,7 @@ it('saves nothing when every draft is skipped', async () => {
   expect(toast.text).toBe('Nothing to save: every draft is skipped');
 });
 
-const noModel = 'This needs an AI model, and none is set up yet. Add a Claude (Anthropic) key in Settings, then try again. Rules built from conditions work without one.';
+const noModel = 'This needs an AI model. The rule composer model, claude-haiku-4-5, needs a Claude (Anthropic) API key: add it in Settings, then try again. Rules built from conditions work without one.';
 
 it('keeps the daemon\'s sentence when there is no model to compose with, and what was typed', async () => {
   serve({ 'POST /api/rules/compose': [409, { error: { code: 'no_composer_model', message: noModel } }] });
