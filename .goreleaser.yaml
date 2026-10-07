@@ -23,6 +23,7 @@ builds:
 archives:
   - formats: [tar.gz]
     files:
+      - LICENSE
       - README.md
       - deploy/mailrules.service
 

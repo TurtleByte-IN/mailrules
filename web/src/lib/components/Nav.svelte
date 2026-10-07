@@ -72,6 +72,9 @@
         <span class="min-w-0 truncate text-xs text-muted">{auth.user?.email}</span>
         <button type="button" class="border-0 bg-transparent p-0 text-xs underline max-md:min-h-11" onclick={logout}>Sign out</button>
       </div>
+      <!-- AGPL-3.0 section 13: everyone using this over a network is offered its source. A
+           modified copy must point this at its own source. -->
+      <a class="inline-flex items-center self-start text-xs text-muted underline max-md:min-h-11" href="https://github.com/TurtleByte-IN/mailrules" target="_blank" rel="noopener noreferrer">Source code (AGPL-3.0)</a>
     </div>
   </div>
 </nav>

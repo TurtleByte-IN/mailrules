@@ -25,6 +25,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION}" -o /o
 #    is written, so the root filesystem can be read-only.
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/mailrules /mailrules
+COPY --from=build /src/LICENSE /LICENSE
 COPY --from=build --chown=65532:65532 --chmod=700 /out/data /data
 # Inside a container the daemon must listen on every interface for the published port to
 # reach it; keep it private by publishing to 127.0.0.1 only (see docker-compose.yml).
