@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { detail, error, inReview, item, serve, stats } from '../lib/state/activity.fixtures';
 import { activity } from '../lib/state/activity.svelte';
 import { review } from '../lib/state/review.svelte';
+import { accounts } from '../lib/state/accounts.svelte';
+import type { Account } from '../lib/api/accounts';
 import Activity from './Activity.svelte';
 
 // The state lives in module scope and a mounted screen cannot be given fresh modules, so each test starts it over.
 beforeEach(() => {
   Object.assign(activity, { list: [], next: null, loaded: false, error: '', filter: { rule: '', account: '', outcome: '' }, detail: null, detailError: '', stats: null, statsError: '' });
   Object.assign(review, { list: [], next: null, total: 0, loaded: false, error: '' });
+  accounts.list = [];
   go('#/activity');
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -70,6 +73,18 @@ it('an empty feed says nothing is sorted yet', async () => {
   render(Activity);
   expect(await screen.findByText('Nothing sorted yet. New mail shows up here as it arrives.')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it.each<[string, Account['status'][], string]>([
+  ['every mailbox live', ['live', 'live'], 'Live on 2 mailboxes'],
+  ['one of two live', ['live', 'paused'], 'Live on 1 of 2 mailboxes'],
+  ['the only mailbox paused', ['paused'], 'No mailbox live'],
+  ['no mailbox at all', [], 'No mailbox live'],
+])('the header counts only live mailboxes: %s', async (_name, statuses, said) => {
+  accounts.list = statuses.map((status, i) => ({ id: i + 1, label: `m${i}@example.com`, status }) as Account);
+  daemon([]);
+  render(Activity);
+  expect(await screen.findByText(said)).toBeTruthy();
 });
 
 it('shows the rows, the tiles and what the model gave each rule', async () => {

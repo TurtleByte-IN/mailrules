@@ -48,7 +48,17 @@
     return day(ts) === day(today) ? clock(ts) : day(ts);
   };
 
-  const mailboxes = $derived(accounts.list.length + (accounts.list.length === 1 ? ' mailbox' : ' mailboxes'));
+  // Only mailboxes being watched right now count as live; paused, failing or reconnecting
+  // ones are not sorting mail.
+  const live = $derived(accounts.list.filter((a) => a.status === 'live').length);
+  const noun = (n: number) => (n === 1 ? 'mailbox' : 'mailboxes');
+  const liveLabel = $derived(
+    live === 0
+      ? 'No mailbox live'
+      : live === accounts.list.length
+        ? `Live on ${live} ${noun(live)}`
+        : `Live on ${live} of ${accounts.list.length} ${noun(accounts.list.length)}`,
+  );
 
   const stage = (r: ActivityItem) => {
     const d = r.decision;
@@ -76,7 +86,7 @@
     <div class="flex flex-wrap items-center gap-2">
       <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={undoLastHour}>Undo the last hour</button>
       <span class="inline-flex h-9 items-center gap-2 rounded bg-selected px-3 text-[13px] font-semibold">
-        <span class="size-2 rounded-sm bg-live"></span>Live on {mailboxes}
+        <span class="size-2 rounded-sm {live ? 'bg-live' : 'bg-idle'}"></span>{liveLabel}
       </span>
     </div>
   </header>
@@ -87,7 +97,7 @@
       <div class="card px-[18px] py-4">
         <div class="text-xs font-medium text-secondary">Sorted today</div>
         <div class="mt-1 text-[28px] font-semibold tracking-[-0.02em]">{stats.counts.sorted}</div>
-        <div class="text-xs text-muted">across {mailboxes}</div>
+        <div class="text-xs text-muted">across {accounts.list.length} {noun(accounts.list.length)}</div>
       </div>
     {/if}
     <a href="/review" use:link class={['block rounded-md border border-warn-line bg-warn-bg px-[18px] py-4 text-warn no-underline', !stats && 'sm:max-w-64']}>
