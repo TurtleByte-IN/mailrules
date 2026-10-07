@@ -120,6 +120,10 @@ const runBody = () => {
   return call ? JSON.parse((call[1] as RequestInit).body as string) : null;
 };
 
+// The emails open under the chart on demand: the toggle is the one button on the screen that says whether it is open.
+const openList = async () => fireEvent.click(await screen.findByRole('button', { expanded: false }));
+const sortButton = () => screen.getByRole<HTMLButtonElement>('button', { name: /^Sort \d/ });
+
 it('a failed load of past runs shows an alert, and Retry fetches again', async () => {
   routes[PAST] = [500, { error: { code: 'internal', message: 'Something went wrong.' } }];
   render(Cleanup);
@@ -146,6 +150,7 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
   ];
   render(Cleanup);
 
+  await openList();
   const first = await screen.findByRole('checkbox', { name: 'Sort news@substack.com · This week in Go' });
   expect((first as HTMLInputElement).checked).toBe(true);
   expect(screen.getByText('Move to Newsletters')).toBeTruthy();
@@ -158,7 +163,7 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
   expect(screen.getByText('Waiting in Needs review')).toBeTruthy();
 
   expect(screen.getByText('2 selected of 4')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Sort 2 selected' })).toBeTruthy();
+  expect(sortButton().textContent).toMatch(/^\s*Sort 2\b/);
 
   // A Needs-review row is named so in the Action cell and shows how sure the model was; a left-alone row shows no confidence at all.
   const cells = (name: string) => within(screen.getByRole('checkbox', { name }).closest('tr') as HTMLElement).getAllByRole('cell');
@@ -171,7 +176,8 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
 
   // Returning to the page shows the same restored rows.
   render(Cleanup);
-  expect((await screen.findAllByRole('checkbox', { name: 'Sort news@substack.com · This week in Go' })).length).toBeGreaterThan(0);
+  await openList();
+  expect(screen.getAllByRole('checkbox', { name: 'Sort news@substack.com · This week in Go' }).length).toBe(2);
 });
 
 it.each([
@@ -182,6 +188,7 @@ it.each([
   try {
     routes[CHECK] = [200, { check: check({ rows: [checkRow({ subject: 'Spam', rule_name: 'Block', actions: [{ type: 'trash' }] })] }) }];
     render(Cleanup);
+    await openList();
     const row = (await screen.findByRole('checkbox', { name: 'Sort news@substack.com · Spam' })).closest('tr') as HTMLElement;
     expect(within(row).getAllByRole('cell')[4].textContent).toBe(text);
   } finally {
@@ -196,21 +203,23 @@ it("restores the user's ticks from the daemon on mount, after a reload or a retu
   routes[CHECK] = [200, { check: check({ rows: three(), exclude: [1] }) }];
   render(Cleanup);
 
+  await openList();
   expect((await screen.findByRole<HTMLInputElement>('checkbox', { name: 'Sort a@x.io · One' })).checked).toBe(true);
   expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Sort b@x.io · Two' }).checked).toBe(false);
   expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Sort c@x.io · Three' }).checked).toBe(true);
   expect(screen.getByText('2 selected of 3')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Sort 2 selected' })).toBeTruthy();
+  expect(sortButton().textContent).toMatch(/^\s*Sort 2\b/);
   expect(saves()).toEqual([]); // restoring is not a change: nothing is sent back
 
   // Sort sends its own list, which is the same as the restored ticks.
-  await fireEvent.click(screen.getByRole('button', { name: 'Sort 2 selected' }));
+  await fireEvent.click(sortButton());
   await vi.waitFor(() => expect(runBody()).toEqual({ account_id: 7, check_id: 'chk1', exclude: [1] }));
 });
 
 it('a burst of tick changes saves once, with the latest list, after a short wait', async () => {
   routes[CHECK] = [200, { check: check({ rows: three() }) }];
   render(Cleanup);
+  await openList();
   await fireEvent.click(await screen.findByRole('checkbox', { name: 'Sort a@x.io · One' }));
   await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort b@x.io · Two' }));
   await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort a@x.io · One' })); // ticked again
@@ -228,6 +237,7 @@ it("a failed save says why, keeps the ticks as they are and is tried again on th
   routes[CHECK] = [200, { check: check({ rows: three() }) }];
   routes['PUT /api/cleanup/check/selection'] = [409, { error: { code: 'preview_stale', message: 'This check is no longer current. Run a new check, then sort.' } }];
   render(Cleanup);
+  await openList();
   await fireEvent.click(await screen.findByRole('checkbox', { name: 'Sort a@x.io · One' }));
   await vi.waitFor(() => expect(toast.text).toBe('This check is no longer current. Run a new check, then sort.'));
   expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Sort a@x.io · One' }).checked).toBe(false);
@@ -244,6 +254,7 @@ it('select all and select none change the count across every page', async () => 
   routes[CHECK] = [200, { check: check({ rows }) }];
   render(Cleanup);
 
+  await openList();
   expect(await screen.findByText('60 selected of 60')).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Select none' }));
   expect(screen.getByText('0 selected of 60')).toBeTruthy();
@@ -268,6 +279,7 @@ it('the rule filter narrows the visible rows without changing the selection coun
   ];
   render(Cleanup);
 
+  await openList();
   expect(await screen.findByText('Weekly Go')).toBeTruthy();
   expect(screen.getByText('Your receipt')).toBeTruthy();
 
@@ -283,6 +295,7 @@ it('pages the rows in fifties', async () => {
   routes[CHECK] = [200, { check: check({ rows }) }];
   render(Cleanup);
 
+  await openList();
   expect(await screen.findByText('Subject 0')).toBeTruthy();
   expect(screen.queryByText('Subject 55')).toBeNull();
   expect(screen.getByText('Page 1 of 2')).toBeTruthy();
@@ -301,11 +314,12 @@ it('Sort reflects the ticked count and sends the unticked selectable indices as 
   routes[CHECK] = [200, { check: check({ rows }) }];
   render(Cleanup);
 
-  expect(await screen.findByRole('button', { name: 'Sort 3 selected' })).toBeTruthy();
+  await openList();
+  expect(sortButton().textContent).toMatch(/^\s*Sort 3\b/);
   await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort b@x.com · Two' }));
-  expect(screen.getByRole('button', { name: 'Sort 2 selected' })).toBeTruthy();
+  expect(sortButton().textContent).toMatch(/^\s*Sort 2\b/);
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Sort 2 selected' }));
+  await fireEvent.click(sortButton());
   await vi.waitFor(() => expect(runBody()).not.toBeNull());
   expect(runBody()).toEqual({ account_id: 7, check_id: 'chk1', exclude: [1] });
 });
@@ -331,13 +345,15 @@ it('resumes a running check: progress follows a check.progress event, then its r
   // Ready arrives without rows; the screen GETs the check to load them.
   routes[CHECK] = [200, { check: check({ rows: [checkRow({ subject: 'Loaded row' })] }) }];
   dispatch('check.progress', check({ status: 'ready', rows: [] }));
-  expect(await screen.findByText('Loaded row')).toBeTruthy();
+  await openList();
+  expect(screen.getByText('Loaded row')).toBeTruthy();
 });
 
 it('discard throws the check away and clears the table', async () => {
   routes[CHECK] = [200, { check: check() }];
   render(Cleanup);
 
+  await openList();
   expect(await screen.findByText('This week in Go')).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Discard check' }));
   await vi.waitFor(() => expect(screen.queryByText('This week in Go')).toBeNull());
@@ -349,7 +365,7 @@ it('reports the skipped count in the toast after a sort finishes', async () => {
   routes['POST /api/cleanup/run'] = [202, { batch: batch({ id: 9, status: 'running', done: 0, total: 2, skipped: 0 }) }];
   render(Cleanup);
 
-  await fireEvent.click(await screen.findByRole('button', { name: 'Sort 2 selected' }));
+  await fireEvent.click(await screen.findByRole('button', { name: /^Sort 2\b/ }));
   await screen.findByRole('progressbar', { name: 'Cleanup progress' });
 
   dispatch('batch.progress', batch({ id: 9, status: 'done', done: 7, total: 7, skipped: 3, actions: { done: 7, dry_run: 0, failed: 0, undone: 0 } }));
@@ -506,6 +522,7 @@ it.each([
 ])('says nothing about a cap when %s', async (_name, own) => {
   routes[CHECK] = [200, { check: check({ status: 'ready', ...own }) }];
   render(Cleanup);
+  await openList();
   await screen.findByRole('checkbox', { name: /^Sort / });
   expect(screen.queryByText(/Run another check for the rest/)).toBeNull();
 });
@@ -517,6 +534,7 @@ it.each([
 ] as const)('restores %s after a reload, and Check is off until the check is discarded', async (_name, own, entry, value, box) => {
   routes[CHECK] = [200, { check: check({ status: 'ready', ...own }) }];
   render(Cleanup);
+  await openList();
   await screen.findByRole('checkbox', { name: /^Sort / });
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Which emails' }).value).toBe(entry);
   if (box) expect((screen.getByRole(`spinbutton`, { name: box }) as HTMLInputElement).value).toBe(value);
@@ -527,4 +545,72 @@ it.each([
 
   await fireEvent.click(screen.getByRole('button', { name: 'Discard check' }));
   await vi.waitFor(() => expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Which emails' }).disabled).toBe(false));
+});
+
+// Each bar of the chart as [name, count].
+const bars = () =>
+  within(screen.getByRole('list', { name: 'What the check would do' }))
+    .getAllByRole('listitem')
+    .map((li) => [li.children[0].textContent, li.children[2].textContent]);
+
+it('a ready check shows its chart, and unticking an email moves it from its rule to what stays, in step with Sort', async () => {
+  routes[CHECK] = [
+    200,
+    {
+      check: check({
+        rows: [
+          checkRow({ index: 0, from: 'a@x.io', subject: 'One', rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
+          checkRow({ index: 1, from: 'b@x.io', subject: 'Two', rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
+          checkRow({ index: 2, from: 'c@x.io', subject: 'Three', rule_name: 'Scams', actions: [{ type: 'trash' }] }),
+          checkRow({ index: 3, from: 'd@x.io', subject: 'Four', selectable: false, review: true, actions: [], reason: 'Waiting in Needs review' }),
+          checkRow({ index: 4, from: 'e@x.io', subject: 'Five', selectable: false, actions: [], rule_name: '', rule_id: null, reason: 'No rule matched' }),
+        ],
+      }),
+    },
+  ];
+  render(Cleanup);
+  await screen.findByRole('list', { name: 'What the check would do' });
+  // trash_to_folder is on here, so a trash names where Sort will move it, as the Action column does.
+  expect(bars()).toEqual([
+    ['Newsletters → Reading', '2'],
+    ['Scams → MailRules Trash', '1'],
+    ['Left in Inbox', '1'],
+    ['Needs review', '1'],
+  ]);
+  expect(sortButton().textContent).toMatch(/^\s*Sort 3\b/);
+
+  await openList();
+  await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort a@x.io · One' }));
+  expect(bars()).toEqual([
+    ['Newsletters → Reading', '1'],
+    ['Scams → MailRules Trash', '1'],
+    ['Left in Inbox', '2'],
+    ['Needs review', '1'],
+  ]);
+  expect(sortButton().textContent).toMatch(/^\s*Sort 2\b/);
+});
+
+it('the chart names the range the check covered', async () => {
+  routes[CHECK] = [200, { check: check({ since: NOW - 90 * DAY, limit: 2000, rows: [checkRow({ index: 0 }), checkRow({ index: 1 })] }) }];
+  render(Cleanup);
+  expect((await screen.findByRole('heading', { level: 2, name: /would be sorted like this/ })).textContent).toContain('the last 90 days');
+});
+
+it('Choose emails opens the list under the chart and closes it again; it starts closed', async () => {
+  routes[CHECK] = [200, { check: check({ rows: three() }) }];
+  render(Cleanup);
+  const toggle = await screen.findByRole('button', { expanded: false });
+  expect(screen.queryByRole('checkbox')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Select all' })).toBeNull();
+
+  await fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+  expect(document.getElementById(toggle.getAttribute('aria-controls')!)?.contains(screen.getByRole('table'))).toBe(true);
+
+  await fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByRole('checkbox')).toBeNull();
+  // Closing the list changes no tick: Sort still counts every ticked row.
+  expect(sortButton().textContent).toMatch(/^\s*Sort 3\b/);
 });

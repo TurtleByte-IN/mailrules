@@ -233,6 +233,75 @@ function selectableIndices(): number[] {
 export const selectableCount = () => selectableIndices().length;
 export const selectedCount = () => selectableIndices().filter((i) => !cleanup.excluded.has(i)).length;
 
+/** One bar of the chart: a rule and where it sends mail, or what stays put. */
+export interface ChartRow {
+  name: string;
+  count: number;
+  kind: 'rule' | 'trash' | 'left' | 'review';
+}
+
+/**
+ * Where a rule's actions send an email, in the words the Action column uses: the folder of a move, the
+ * folder a trash goes to (`trashTo` when it is not the server's Trash), Archive, or `here` for actions
+ * that leave it in its folder (keep, mark read).
+ */
+function destination(actions: cleanupApi.CleanupCheckRow['actions'], trashTo: string | undefined, here: string) {
+  const a = actions.find((x) => x.type === 'move' || x.type === 'trash' || x.type === 'archive');
+  if (!a) return { to: here, trash: false };
+  if (a.type === 'move') return { to: a.folder || '[folder]', trash: false };
+  if (a.type === 'trash') return { to: trashTo ?? 'Trash', trash: true };
+  return { to: 'Archive', trash: false };
+}
+
+/**
+ * What a check would do, one row per rule and destination, then what is left in the folder and what
+ * waits in Needs review. It follows the ticks: an unticked row counts as left in the folder, so the
+ * rule rows add up to what Sort acts on. The order comes from the check alone (rules biggest first,
+ * trash after them), so a rule unticked to nothing keeps its place with 0.
+ */
+export function chartRows(rows: cleanupApi.CleanupCheckRow[], excluded: ReadonlySet<number>, trashTo?: string, here = 'Inbox'): ChartRow[] {
+  const rules = new Map<string, { row: ChartRow; all: number }>();
+  let left = 0;
+  let review = 0;
+  for (const r of rows) {
+    if (r.review) {
+      review++;
+      continue;
+    }
+    if (!r.selectable) {
+      left++;
+      continue;
+    }
+    const { to, trash } = destination(r.actions, trashTo, here);
+    const name = (r.rule_name || 'A rule') + ' → ' + to;
+    const g = rules.get(name) ?? { row: { name, count: 0, kind: trash ? 'trash' : 'rule' }, all: 0 };
+    rules.set(name, g);
+    g.all++;
+    if (!excluded.has(r.index)) g.row.count++;
+    else left++;
+  }
+  const ordered = [...rules.values()].sort((a, b) => Number(a.row.kind === 'trash') - Number(b.row.kind === 'trash') || b.all - a.all || a.row.name.localeCompare(b.row.name));
+  return [...ordered.map((g) => g.row), { name: 'Left in ' + here, count: left, kind: 'left' }, { name: 'Needs review', count: review, kind: 'review' }];
+}
+
+const emails = (n: number) => n.toLocaleString() + (n === 1 ? ' email' : ' emails');
+
+/**
+ * The chart's heading: how many emails, from which range of `here`. A check that covered only the newest
+ * 2,000 of a larger range says so.
+ */
+export function chartTitle(c: cleanupApi.CleanupCheck, here = 'Inbox') {
+  const n = c.rows.length;
+  const choice = choiceOf(c);
+  const range = choice.mode === 'days' ? (choice.days === 1 ? ' from the last day' : ' from the last ' + choice.days!.toLocaleString() + ' days') : '';
+  if (!n) return 'No emails in ' + here + range + ' to sort';
+  if (c.limit >= CHECK_MAX && c.matched > c.total)
+    return 'The newest ' + n.toLocaleString() + ' of ' + emails(c.matched) + ' in ' + here + range + ' would be sorted like this';
+  if (choice.mode === 'newest') return (n === 1 ? 'The newest email' : 'The newest ' + emails(n)) + ' in ' + here + ' would be sorted like this';
+  if (choice.mode === 'all') return (n === 1 ? 'The one email' : 'All ' + emails(n)) + ' in ' + here + ' would be sorted like this';
+  return emails(n) + ' in ' + here + range + ' would be sorted like this';
+}
+
 export function selectAll() {
   cleanup.excluded = new Set();
   ticksChanged();

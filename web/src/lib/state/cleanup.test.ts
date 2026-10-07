@@ -635,3 +635,84 @@ it.each([
   ['dry-run and real actions', batch({ status: 'failed', actions: { done: 0, dry_run: 9, failed: 1, undone: 0 } }), ''],
   ['no actions at all', batch({ status: 'done' }), ''],
 ])('noUndo: %s', (_name, b, why) => expect(m.noUndo(b, NOW * 1000)).toBe(why));
+
+// The chart, from a check's rows and the user's ticks.
+const sorted = (over: Partial<CleanupCheckRow>) => row({ selectable: true, ...over });
+const waiting = (index: number) => row({ index, selectable: false, review: true, actions: [], rule_name: 'Offers', reason: 'Waiting in Needs review' });
+const alone = (index: number) => row({ index, selectable: false, actions: [], rule_name: '', rule_id: null, reason: 'No rule matched' });
+const chartRows = [
+  sorted({ index: 0, rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }, { type: 'read' }] }),
+  sorted({ index: 1, rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
+  sorted({ index: 2, rule_name: 'Orders', actions: [{ type: 'archive' }] }),
+  sorted({ index: 3, rule_name: 'Scams', actions: [{ type: 'trash' }] }),
+  sorted({ index: 4, rule_name: 'Sender rule: keep', actions: [{ type: 'keep' }] }),
+  waiting(5),
+  alone(6),
+];
+const counts = (bars: { name: string; count: number }[]) => bars.map((b) => [b.name, b.count]);
+
+it('the chart has a row per rule and where it sends mail, rules biggest first and trash after them, then what is left and what waits', () => {
+  expect(m.chartRows(chartRows, new Set(), 'MailRules Trash')).toEqual([
+    { name: 'Newsletters → Reading', count: 2, kind: 'rule' },
+    { name: 'Orders → Archive', count: 1, kind: 'rule' },
+    { name: 'Sender rule: keep → Inbox', count: 1, kind: 'rule' },
+    { name: 'Scams → MailRules Trash', count: 1, kind: 'trash' },
+    { name: 'Left in Inbox', count: 1, kind: 'left' },
+    { name: 'Needs review', count: 1, kind: 'review' },
+  ]);
+  // Without the setting a trash goes to the server's Trash; another folder names itself in what stays.
+  expect(counts(m.chartRows(chartRows, new Set(), undefined, 'Archive'))).toContainEqual(['Scams → Trash', 1]);
+  expect(counts(m.chartRows(chartRows, new Set(), undefined, 'Archive'))).toContainEqual(['Left in Archive', 1]);
+});
+
+it('an unticked row counts as left in the folder, keeps its rule row in place, and the rule rows add up to Sort', () => {
+  const bars = m.chartRows(chartRows, new Set([0, 1, 3]));
+  expect(counts(bars)).toEqual([
+    ['Newsletters → Reading', 0],
+    ['Orders → Archive', 1],
+    ['Sender rule: keep → Inbox', 1],
+    ['Scams → Trash', 0],
+    ['Left in Inbox', 4],
+    ['Needs review', 1],
+  ]);
+  const ruleTotal = bars.filter((b) => b.kind === 'rule' || b.kind === 'trash').reduce((a, b) => a + b.count, 0);
+  expect(ruleTotal).toBe(2);
+  // Every row is counted once, ticked or not.
+  expect(bars.reduce((a, b) => a + b.count, 0)).toBe(chartRows.length);
+});
+
+it('ticks never move a Needs-review or left-alone row', () => {
+  expect(counts(m.chartRows([waiting(0), alone(1)], new Set([0, 1])))).toEqual([
+    ['Left in Inbox', 1],
+    ['Needs review', 1],
+  ]);
+});
+
+it('an empty check has nothing but zero rows for what is left and what waits', () => {
+  expect(counts(m.chartRows([], new Set()))).toEqual([
+    ['Left in Inbox', 0],
+    ['Needs review', 0],
+  ]);
+});
+
+it('the chart follows the ticks the store holds', async () => {
+  await toReady();
+  const sortable = () => m.chartRows(m.cleanup.check!.rows, m.cleanup.excluded).filter((b) => b.kind === 'rule').reduce((a, b) => a + b.count, 0);
+  expect(sortable()).toBe(m.selectedCount());
+  m.toggleRow(1);
+  expect(sortable()).toBe(1);
+  expect(sortable()).toBe(m.selectedCount());
+  m.selectNone();
+  expect(sortable()).toBe(0);
+});
+
+it.each<[string, Partial<CleanupCheck>, string]>([
+  ['the newest N', { since: null, limit: 3 }, 'The newest 3 emails in Inbox would be sorted like this'],
+  ['the last days', { since: NOW - 90 * 86400, limit: 2000 }, '3 emails in Inbox from the last 90 days would be sorted like this'],
+  ['all mail', { since: null, limit: 2000 }, 'All 3 emails in Inbox would be sorted like this'],
+  ['the newest 2,000 of a larger range', { since: NOW - 365 * 86400, limit: 2000, total: 3, matched: 4310 }, 'The newest 3 of 4,310 emails in Inbox from the last 365 days would be sorted like this'],
+  ['all mail, capped', { since: null, limit: 2000, total: 3, matched: 4310 }, 'The newest 3 of 4,310 emails in Inbox would be sorted like this'],
+  ['nothing found', { since: NOW - 7 * 86400, limit: 2000, rows: [] }, 'No emails in Inbox from the last 7 days to sort'],
+])('the chart title says what was checked: %s', (_name, own, title) => {
+  expect(m.chartTitle(check({ status: 'ready', total: 3, matched: 3, rows: [row({ index: 0 }), row({ index: 1 }), row({ index: 2 })], ...own }))).toBe(title);
+});

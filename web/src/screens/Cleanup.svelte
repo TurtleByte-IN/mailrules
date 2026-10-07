@@ -8,6 +8,8 @@
   import { accounts } from '../lib/state/accounts.svelte';
   import {
     acted,
+    chartRows,
+    chartTitle,
     check,
     cleanup,
     coverage,
@@ -83,6 +85,21 @@
   const trashTo = $derived(settings.value.trash_to_folder ? TRASH_FOLDER : undefined);
   const actionText = (r: CleanupCheckRow) => (r.review ? 'Needs review' : r.selectable ? actionsText(r.actions, trashTo) : '—');
 
+  // The chart follows the ticks, so its rule rows always add up to the Sort count.
+  const here = $derived(folderName(cleanup.check?.folder ?? 'INBOX'));
+  const bars = $derived(chartRows(rows, cleanup.excluded, trashTo, here));
+  const barMax = $derived(Math.max(1, ...bars.map((b) => b.count)));
+  // Sorted rules take ink shades in turn; a trash, what stays and what waits each have their own colour.
+  const INK = ['bg-ink', 'bg-nav', 'bg-secondary', 'bg-muted'];
+  const FILL = { trash: 'bg-trash', left: 'bg-idle', review: 'bg-review' };
+  // The list of emails opens under the chart on demand; a new check starts with it closed.
+  let choosing = $state(false);
+  const checkId = $derived(cleanup.check?.id);
+  $effect(() => {
+    void checkId;
+    choosing = false;
+  });
+
   const pct = $derived(cleanup.batch?.total ? Math.round((cleanup.batch.done / cleanup.batch.total) * 100) : 0);
 
   // account_id is null once the mailbox is deleted.
@@ -151,92 +168,124 @@
           <p class="text-[13px] text-secondary">{capText('Checked')}</p>
         {/if}
 
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <button type="button" class="btn min-h-9 px-3" onclick={selectAll}>Select all</button>
-          <button type="button" class="btn min-h-9 px-3" onclick={selectNone}>Select none</button>
-          {#if ruleNames.length}
-            <label class="flex items-center gap-1.5 text-[13px] max-md:w-full">
-              <span>Rule</span>
-              <select class="field h-9 px-2 max-md:min-w-0 max-md:flex-1" value={ruleFilter} onchange={(e) => (ruleFilter = e.currentTarget.value)}>
-                <option value="">All rules</option>
-                {#each ruleNames as name (name)}
-                  <option value={name}>{name}</option>
-                {/each}
-              </select>
-            </label>
+        <div class="flex flex-col gap-2.5">
+          <h2 class="text-[17px]">{chartTitle(cleanup.check!, here)}</h2>
+          {#if rows.length}
+            <ul aria-label="What the check would do" class="flex flex-col gap-2.5">
+              {#each bars as b, i (b.name)}
+                <!-- On a phone the name takes its own line over the bar and the count. -->
+                <li class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 md:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_5.5rem]">
+                  <span class="break-words font-medium max-md:col-span-2">{b.name}</span>
+                  <div class="h-2.5 overflow-hidden rounded-[3px] bg-neutral">
+                    <div class="h-2.5 rounded-[3px] {b.kind === 'rule' ? INK[i % INK.length] : FILL[b.kind]}" style:width="{b.count ? Math.max(2, Math.round((b.count / barMax) * 100)) : 0}%"></div>
+                  </div>
+                  <span class="text-right font-mono text-[13px]">{b.count.toLocaleString()}</span>
+                </li>
+              {/each}
+            </ul>
           {/if}
-          <span class="text-[13px] text-secondary">{selectedCount().toLocaleString()} selected of {rows.length.toLocaleString()}</span>
         </div>
 
-        <!-- On a phone each row stacks: from and confidence, the subject, then the rule and the action. -->
-        <table class="w-full table-fixed text-[13px] max-md:block">
-          <colgroup>
-            <col class="w-8" />
-            <col class="w-[20%]" />
-            <col />
-            <col class="w-[16%]" />
-            <col class="w-[16%]" />
-            <col class="w-[88px]" />
-          </colgroup>
-          <thead class="max-md:hidden">
-            <tr class="border-b border-line-divider text-left text-muted">
-              <th class="py-2"><span class="sr-only">Selected</span></th>
-              <th class="py-2 pr-2 font-medium">From</th>
-              <th class="py-2 pr-2 font-medium">Subject</th>
-              <th class="py-2 pr-2 font-medium">Rule</th>
-              <th class="py-2 pr-2 font-medium">Action</th>
-              <th class="py-2 text-right font-medium">Confidence</th>
-            </tr>
-          </thead>
-          <tbody class="max-md:block">
-            {#each visible as r (r.index)}
-              <tr class="border-b border-line-divider align-top max-md:grid max-md:grid-cols-[2rem_minmax(0,1fr)_auto] max-md:gap-x-2 max-md:gap-y-0.5 max-md:py-2">
-                <td class="py-2 max-md:row-span-4 max-md:py-0">
-                  <!-- The label makes the whole cell the tap target on a phone. -->
-                  <label class="max-md:flex max-md:h-full max-md:min-h-11 max-md:items-start max-md:pt-0.5">
-                    <input
-                      type="checkbox"
-                      aria-label="Sort {r.from} · {r.subject}"
-                      checked={ticked(r)}
-                      disabled={!r.selectable}
-                      title={r.selectable ? '' : r.reason}
-                      onchange={() => toggleRow(r.index)}
-                    />
-                  </label>
-                </td>
-                <td class="truncate py-2 pr-2 font-mono max-md:col-start-2 max-md:row-start-1 max-md:py-0" title={r.from}>{r.from}</td>
-                <td class="py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-2 max-md:py-0 max-md:pr-0">
-                  <div class="truncate" title={r.subject}>{r.subject}</div>
-                  {#if !r.selectable && r.reason}
-                    <div class="break-words text-[12px] text-muted">{r.reason}</div>
-                  {/if}
-                </td>
-                <td class="truncate py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 max-md:py-0 max-md:text-secondary" title={r.rule_name}>{r.rule_name || '—'}</td>
-                <td class="truncate py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-4 max-md:py-0 max-md:text-secondary" title={actionText(r)}>{actionText(r)}</td>
-                <td class="py-2 text-right font-mono max-md:col-start-3 max-md:row-start-1 max-md:py-0">{confidencePct(r)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-
-        {#if rows.length > PAGE}
-          <div class="flex items-center gap-3 text-[13px]">
-            <button type="button" class="btn min-h-9 px-3" disabled={pageIndex === 0} onclick={() => (pageIndex -= 1)}>Previous</button>
-            <span class="text-secondary">Page {pageIndex + 1} of {pageCount}</span>
-            <button type="button" class="btn min-h-9 px-3" disabled={pageIndex >= pageCount - 1} onclick={() => (pageIndex += 1)}>Next</button>
-          </div>
-        {/if}
-
+        <p class="text-[13px] text-secondary">
+          Nothing moves until you sort. Sort runs in the background, does what this check found for each ticked email without asking the model again, and can be undone as one batch.
+        </p>
         {#if settings.value.dry_run}
           <p class="text-[13px] text-secondary">Dry-run is on: this run records what it would do and moves nothing.</p>
         {/if}
 
         <div class="flex flex-wrap items-center gap-3">
           <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={cleanup.phase !== 'ready' || selectedCount() === 0} onclick={sort}>
-            Sort {selectedCount().toLocaleString()} selected
+            Sort {selectedCount().toLocaleString()} {selectedCount() === 1 ? 'email' : 'emails'}
+          </button>
+          <button type="button" class="btn min-h-11 px-[18px]" aria-expanded={choosing} aria-controls="cleanup-emails" onclick={() => (choosing = !choosing)}>
+            {choosing ? 'Hide emails' : 'Choose emails'}
           </button>
           <button type="button" class="btn min-h-11 px-[18px]" onclick={discard}>Discard check</button>
         </div>
+
+        {#if choosing}
+          <div id="cleanup-emails" class="flex min-w-0 flex-col gap-3">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <button type="button" class="btn min-h-9 px-3" onclick={selectAll}>Select all</button>
+              <button type="button" class="btn min-h-9 px-3" onclick={selectNone}>Select none</button>
+              {#if ruleNames.length}
+                <label class="flex items-center gap-1.5 text-[13px] max-md:w-full">
+                  <span>Rule</span>
+                  <select class="field h-9 px-2 max-md:min-w-0 max-md:flex-1" value={ruleFilter} onchange={(e) => (ruleFilter = e.currentTarget.value)}>
+                    <option value="">All rules</option>
+                    {#each ruleNames as name (name)}
+                      <option value={name}>{name}</option>
+                    {/each}
+                  </select>
+                </label>
+              {/if}
+              <span class="text-[13px] text-secondary">{selectedCount().toLocaleString()} selected of {rows.length.toLocaleString()}</span>
+            </div>
+
+            <!-- A short box that scrolls inside the card, its header row staying in view. -->
+            <div class="max-h-[420px] overflow-y-auto rounded border border-line-divider px-3 max-md:max-h-[60vh]">
+              <!-- On a phone each row stacks: from and confidence, the subject, then the rule and the action. -->
+              <table class="w-full table-fixed text-[13px] max-md:block">
+                <colgroup>
+                  <col class="w-8" />
+                  <col class="w-[20%]" />
+                  <col />
+                  <col class="w-[16%]" />
+                  <col class="w-[16%]" />
+                  <col class="w-[88px]" />
+                </colgroup>
+                <!-- A collapsed border scrolls away under a sticky head, so the divider is drawn as a shadow. -->
+                <thead class="sticky top-0 z-10 bg-surface shadow-[inset_0_-1px_0_var(--color-line-divider)] max-md:hidden">
+                  <tr class="text-left text-muted">
+                    <th class="py-2"><span class="sr-only">Selected</span></th>
+                    <th class="py-2 pr-2 font-medium">From</th>
+                    <th class="py-2 pr-2 font-medium">Subject</th>
+                    <th class="py-2 pr-2 font-medium">Rule</th>
+                    <th class="py-2 pr-2 font-medium">Action</th>
+                    <th class="py-2 text-right font-medium">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody class="max-md:block">
+                  {#each visible as r (r.index)}
+                    <tr class="border-b border-line-divider align-top last:border-b-0 max-md:grid max-md:grid-cols-[2rem_minmax(0,1fr)_auto] max-md:gap-x-2 max-md:gap-y-0.5 max-md:py-2">
+                      <td class="py-2 max-md:row-span-4 max-md:py-0">
+                        <!-- The label makes the whole cell the tap target on a phone. -->
+                        <label class="max-md:flex max-md:h-full max-md:min-h-11 max-md:items-start max-md:pt-0.5">
+                          <input
+                            type="checkbox"
+                            aria-label="Sort {r.from} · {r.subject}"
+                            checked={ticked(r)}
+                            disabled={!r.selectable}
+                            title={r.selectable ? '' : r.reason}
+                            onchange={() => toggleRow(r.index)}
+                          />
+                        </label>
+                      </td>
+                      <td class="truncate py-2 pr-2 font-mono max-md:col-start-2 max-md:row-start-1 max-md:py-0" title={r.from}>{r.from}</td>
+                      <td class="py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-2 max-md:py-0 max-md:pr-0">
+                        <div class="truncate" title={r.subject}>{r.subject}</div>
+                        {#if !r.selectable && r.reason}
+                          <div class="break-words text-[12px] text-muted">{r.reason}</div>
+                        {/if}
+                      </td>
+                      <td class="truncate py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 max-md:py-0 max-md:text-secondary" title={r.rule_name}>{r.rule_name || '—'}</td>
+                      <td class="truncate py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-4 max-md:py-0 max-md:text-secondary" title={actionText(r)}>{actionText(r)}</td>
+                      <td class="py-2 text-right font-mono max-md:col-start-3 max-md:row-start-1 max-md:py-0">{confidencePct(r)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+
+            {#if rows.length > PAGE}
+              <div class="flex items-center gap-3 text-[13px]">
+                <button type="button" class="btn min-h-9 px-3" disabled={pageIndex === 0} onclick={() => (pageIndex -= 1)}>Previous</button>
+                <span class="text-secondary">Page {pageIndex + 1} of {pageCount}</span>
+                <button type="button" class="btn min-h-9 px-3" disabled={pageIndex >= pageCount - 1} onclick={() => (pageIndex += 1)}>Next</button>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
     {:else if sorting && cleanup.batch}
       {@render progress(cleanup.batch)}
