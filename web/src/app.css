@@ -104,3 +104,13 @@
     @apply text-[13px] font-medium text-secondary;
   }
 }
+
+/* Phone width (below md): primary controls are at least 44px tall to tap, whatever height a
+   screen gives them on desktop. Unlayered so it wins over the h-* and min-h-* utilities. */
+@media (width < 48rem) {
+  .btn,
+  .btn-primary,
+  .field {
+    min-height: 2.75rem;
+  }
+}

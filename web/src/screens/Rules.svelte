@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { router } from 'svelte-spa-router';
   import { ApiError } from '../lib/api/client';
   import * as rulesApi from '../lib/api/rules';
@@ -36,12 +37,16 @@
 
   // The rule whose Rewrite with AI box is open.
   let rewriting = $state(0);
+  let editor = $state<HTMLElement>();
 
-  function select(id: number) {
+  async function select(id: number) {
     selectedId = id;
     rewriting = 0;
     result = null;
     refused = null;
+    // On a phone the editor sits under the list; bring it into view instead of changing off-screen.
+    await tick();
+    if (editor && editor.getBoundingClientRect().top > window.innerHeight) editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   async function toggle(r: rulesApi.Rule, box: HTMLInputElement) {
@@ -210,11 +215,11 @@
             ondragend={() => (dragId = 0)}
             class="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 border-t border-l-[3px] border-line-divider px-4 py-3.5 {r.id === sel.id ? 'border-l-signal bg-selected-row' : 'border-l-transparent'} {r.enabled ? '' : 'opacity-55'}"
           >
-            <div class="flex flex-col gap-0.5">
-              <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary" disabled={i === 0} aria-label="Move {r.name} up" onclick={() => move(r.id, i - 1)}>
+            <div class="flex flex-col gap-0.5 max-md:flex-row max-md:gap-2">
+              <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary max-md:size-11" disabled={i === 0} aria-label="Move {r.name} up" onclick={() => move(r.id, i - 1)}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg>
               </button>
-              <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary" disabled={i === rules.list.length - 1} aria-label="Move {r.name} down" onclick={() => move(r.id, i + 1)}>
+              <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary max-md:size-11" disabled={i === rules.list.length - 1} aria-label="Move {r.name} down" onclick={() => move(r.id, i + 1)}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
               </button>
             </div>
@@ -224,7 +229,7 @@
               <span class="text-[12.5px] text-secondary">{summary(r)}</span>
               <span class="text-[12.5px] text-muted">Then: {actionsText(r.actions)}{extrasText(r, only(r))} · {r.hits_week} this week{r.last_match_at ? ' · last match ' + day(r.last_match_at) : ''}</span>
             </button>
-            <label class="flex items-center gap-2 text-[12.5px] text-secondary">
+            <label class="flex items-center gap-2 text-[12.5px] text-secondary max-md:min-h-11">
               <input type="checkbox" checked={r.enabled} onchange={(e) => toggle(r, e.currentTarget)} />On
             </label>
           </li>
@@ -233,7 +238,7 @@
     </section>
 
     {#if sel}
-      <aside aria-label="Edit rule" class="card flex min-w-0 flex-[2_1_360px] flex-col gap-3.5 p-[18px]">
+      <aside bind:this={editor} aria-label="Edit rule" class="card flex min-w-0 flex-[2_1_360px] flex-col gap-3.5 p-[18px] max-md:scroll-mt-20">
         <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">Edit rule</div>
         <div class="flex flex-col gap-1.5">
           <label for="rule-name" class="text-[13px] font-semibold">Name</label>
@@ -293,7 +298,7 @@
           <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
           <TestRunner run={test} />
           <button type="button" class="btn" disabled={undoing} onclick={undo}>{undoing ? 'Undoing…' : 'Undo what it did today'}</button>
-          <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash" onclick={del}>Delete rule</button>
+          <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash max-md:min-h-11" onclick={del}>Delete rule</button>
         </div>
         {#if undoing}
           <Waiting text="Putting the emails back where they were" />

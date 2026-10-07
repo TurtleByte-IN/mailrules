@@ -17,7 +17,7 @@
   type="range"
   min="50"
   max="99"
-  class="h-10 accent-ink"
+  class="h-10 accent-ink max-md:h-11"
   {disabled}
   {...invalid}
   value={Math.round((value ?? 0.75) * 100)}

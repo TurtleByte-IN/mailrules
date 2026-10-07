@@ -222,7 +222,7 @@
           type="range"
           min="0"
           max="100"
-          class="h-10 accent-ink"
+          class="h-10 accent-ink max-md:h-11"
           value={escalate}
           oninput={(e) => (escalate = Number(e.currentTarget.value))}
           onchange={async () => {
@@ -238,7 +238,7 @@
           type="range"
           min="0"
           max="100"
-          class="h-10 accent-ink"
+          class="h-10 accent-ink max-md:h-11"
           value={act}
           oninput={(e) => (act = Number(e.currentTarget.value))}
           onchange={async () => {
@@ -328,7 +328,7 @@
     {#snippet keyRow(k: (typeof keys)[number])}
       <form class="flex flex-wrap items-end gap-x-3 gap-y-2" onsubmit={(e) => saveKey(e, k.id, k.label)}>
         <label class="flex flex-[1_1_260px] flex-col gap-1.5">
-          <span class="flex items-center gap-2 text-[13px] font-semibold">
+          <span class="flex items-center gap-2 text-[13px] font-semibold max-md:flex-wrap">
             {k.label}
             <span class="chip {s.keys[k.id] === 'none' ? 'chip-neutral' : ''}">{keySource[s.keys[k.id]]}</span>
             {#if needed('keys.' + k.id)}
@@ -364,7 +364,7 @@
       {/each}
       {#if keys.some((k) => !inUse.has(k.id))}
         <details class="border-t border-line-divider pt-3.5">
-          <summary class="min-h-8 cursor-pointer font-semibold">Other providers</summary>
+          <summary class="min-h-8 cursor-pointer font-semibold max-md:min-h-11">Other providers</summary>
           <div class="flex flex-col gap-3.5 pt-3">
             {#each keys.filter((k) => !inUse.has(k.id)) as k (k.id)}
               {@render keyRow(k)}

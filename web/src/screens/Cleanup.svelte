@@ -155,9 +155,9 @@
           <button type="button" class="btn min-h-9 px-3" onclick={selectAll}>Select all</button>
           <button type="button" class="btn min-h-9 px-3" onclick={selectNone}>Select none</button>
           {#if ruleNames.length}
-            <label class="flex items-center gap-1.5 text-[13px]">
+            <label class="flex items-center gap-1.5 text-[13px] max-md:w-full">
               <span>Rule</span>
-              <select class="field h-9 px-2" value={ruleFilter} onchange={(e) => (ruleFilter = e.currentTarget.value)}>
+              <select class="field h-9 px-2 max-md:min-w-0 max-md:flex-1" value={ruleFilter} onchange={(e) => (ruleFilter = e.currentTarget.value)}>
                 <option value="">All rules</option>
                 {#each ruleNames as name (name)}
                   <option value={name}>{name}</option>
@@ -168,7 +168,8 @@
           <span class="text-[13px] text-secondary">{selectedCount().toLocaleString()} selected of {rows.length.toLocaleString()}</span>
         </div>
 
-        <table class="w-full table-fixed text-[13px]">
+        <!-- On a phone each row stacks: from and confidence, the subject, then the rule and the action. -->
+        <table class="w-full table-fixed text-[13px] max-md:block">
           <colgroup>
             <col class="w-8" />
             <col class="w-[20%]" />
@@ -177,7 +178,7 @@
             <col class="w-[16%]" />
             <col class="w-[88px]" />
           </colgroup>
-          <thead>
+          <thead class="max-md:hidden">
             <tr class="border-b border-line-divider text-left text-muted">
               <th class="py-2"><span class="sr-only">Selected</span></th>
               <th class="py-2 pr-2 font-medium">From</th>
@@ -187,29 +188,32 @@
               <th class="py-2 text-right font-medium">Confidence</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody class="max-md:block">
             {#each visible as r (r.index)}
-              <tr class="border-b border-line-divider align-top">
-                <td class="py-2">
-                  <input
-                    type="checkbox"
-                    aria-label="Sort {r.from} · {r.subject}"
-                    checked={ticked(r)}
-                    disabled={!r.selectable}
-                    title={r.selectable ? '' : r.reason}
-                    onchange={() => toggleRow(r.index)}
-                  />
+              <tr class="border-b border-line-divider align-top max-md:grid max-md:grid-cols-[2rem_minmax(0,1fr)_auto] max-md:gap-x-2 max-md:gap-y-0.5 max-md:py-2">
+                <td class="py-2 max-md:row-span-4 max-md:py-0">
+                  <!-- The label makes the whole cell the tap target on a phone. -->
+                  <label class="max-md:flex max-md:h-full max-md:min-h-11 max-md:items-start max-md:pt-0.5">
+                    <input
+                      type="checkbox"
+                      aria-label="Sort {r.from} · {r.subject}"
+                      checked={ticked(r)}
+                      disabled={!r.selectable}
+                      title={r.selectable ? '' : r.reason}
+                      onchange={() => toggleRow(r.index)}
+                    />
+                  </label>
                 </td>
-                <td class="truncate py-2 pr-2 font-mono" title={r.from}>{r.from}</td>
-                <td class="py-2 pr-2">
+                <td class="truncate py-2 pr-2 font-mono max-md:col-start-2 max-md:row-start-1 max-md:py-0" title={r.from}>{r.from}</td>
+                <td class="py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-2 max-md:py-0 max-md:pr-0">
                   <div class="truncate" title={r.subject}>{r.subject}</div>
                   {#if !r.selectable && r.reason}
                     <div class="break-words text-[12px] text-muted">{r.reason}</div>
                   {/if}
                 </td>
-                <td class="truncate py-2 pr-2" title={r.rule_name}>{r.rule_name || '—'}</td>
-                <td class="truncate py-2 pr-2" title={actionText(r)}>{actionText(r)}</td>
-                <td class="py-2 text-right font-mono">{confidencePct(r)}</td>
+                <td class="truncate py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 max-md:py-0 max-md:text-secondary" title={r.rule_name}>{r.rule_name || '—'}</td>
+                <td class="truncate py-2 pr-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-4 max-md:py-0 max-md:text-secondary" title={actionText(r)}>{actionText(r)}</td>
+                <td class="py-2 text-right font-mono max-md:col-start-3 max-md:row-start-1 max-md:py-0">{confidencePct(r)}</td>
               </tr>
             {/each}
           </tbody>
