@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
@@ -22,7 +23,7 @@ import (
 // folderCount is how many emails a folder of the fake mailbox holds; -1 when it does not exist.
 func (e *env) folderCount(name string) int {
 	e.t.Helper()
-	refs, err := e.mb.FetchSince(e.t.Context(), name, time.Time{}, 0)
+	refs, _, err := e.mb.FetchSince(e.t.Context(), name, time.Time{}, 0)
 	if err != nil {
 		return -1
 	}
@@ -150,7 +151,7 @@ func TestCleanupCheckThenSortThenUndo(t *testing.T) {
 	started := e.startCheck(`{"account_id":1}`)
 	conform(t, e.doc, "CleanupCheck", started)
 	if started["status"] != "running" || id(started["account_id"]) != 1 || started["folder"] != "INBOX" ||
-		len(started["rows"].([]any)) != 0 || started["since"] != nil || started["limit"] != nil {
+		len(started["rows"].([]any)) != 0 || started["since"] != nil || started["limit"] != float64(composer.MaxLimit) || started["matched"] != float64(0) {
 		t.Fatalf("started check = %v", started)
 	}
 
@@ -524,6 +525,36 @@ func TestCleanupSelectionIsKeptWithTheCheck(t *testing.T) {
 		t.Error("the check, and its selection, outlived the Sort")
 	}
 	refusePut(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{}}, http.StatusConflict, "preview_stale", "")
+}
+
+// A check says how many emails the range held before its limit, and a request that names no
+// limit still covers at most the daemon's cap.
+func TestCleanupCheckReportsMatchedBeforeTheLimit(t *testing.T) {
+	e := newEnv(t)
+	for i := range 12 {
+		e.deliver("friend@example.org", fmt.Sprintf("lunch %d", i))
+	}
+	e.connect()
+	for _, tc := range []struct {
+		name, body            string
+		limit, total, matched int
+	}{
+		{"no limit named: the cap, the whole small range", `{"account_id":1}`, composer.MaxLimit, 12, 12},
+		{"newest 5 of 12", `{"account_id":1,"limit":5}`, 5, 5, 12},
+		{"a start time of an hour ago with the cap", fmt.Sprintf(`{"account_id":1,"since":%d,"limit":2000}`, time.Now().Add(-time.Hour).Unix()), 2000, 12, 12},
+		{"a start time in the future", fmt.Sprintf(`{"account_id":1,"since":%d,"limit":2000}`, time.Now().Add(48*time.Hour).Unix()), 2000, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chk := e.checkReady(tc.body)
+			conform(t, e.doc, "CleanupCheck", chk)
+			if chk["status"] != "ready" || chk["limit"] != float64(tc.limit) || chk["total"] != float64(tc.total) ||
+				chk["matched"] != float64(tc.matched) || len(chk["rows"].([]any)) != tc.total {
+				t.Errorf("check = status %v, limit %v, total %v, matched %v, %d rows; want limit %d, total %d, matched %d",
+					chk["status"], chk["limit"], chk["total"], chk["matched"], len(chk["rows"].([]any)), tc.limit, tc.total, tc.matched)
+			}
+		})
+	}
+	e.refuse(http.MethodPost, "/api/cleanup/check", `{"account_id":1,"limit":2001}`, http.StatusBadRequest, "invalid_input", "limit")
 }
 
 // A check of an offline account is refused; the scope is validated like the old preview was.

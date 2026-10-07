@@ -351,7 +351,7 @@ func TestRuleTester(t *testing.T) {
 
 	// The tester only read: every email is where it was, unread, and nothing was recorded
 	// about it. The calls it made are on the ledger as tests.
-	refs, err := e.mb.FetchSince(t.Context(), "INBOX", time.Time{}, 0)
+	refs, _, err := e.mb.FetchSince(t.Context(), "INBOX", time.Time{}, 0)
 	if err != nil || len(refs) != 300 {
 		t.Fatalf("INBOX holds %d emails (%v), want 300", len(refs), err)
 	}

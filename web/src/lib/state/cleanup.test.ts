@@ -54,10 +54,11 @@ const check = (over: Partial<CleanupCheck> = {}): CleanupCheck => ({
   account_id: 7,
   folder: 'INBOX',
   since: null,
-  limit: null,
+  limit: 2000,
   status: 'running',
   done: 0,
   total: 412,
+  matched: 412,
   model_calls: 0,
   tokens: 0,
   cost_usd: 0,
@@ -100,7 +101,7 @@ beforeEach(async () => {
   m = await import('./cleanup.svelte');
   events = await import('../api/events');
   toast = (await import('./toast.svelte')).toast;
-  m.setScope({ accountId: '7', range: '30' });
+  m.setScope({ accountId: '7' });
   await vi.advanceTimersByTimeAsync(0);
 });
 afterEach(() => {
@@ -114,7 +115,7 @@ const called = (method: string, path: string) => fetchMock.mock.calls.some((c) =
 // Bring the store to a ready check for the selected mailbox.
 const toReady = async (c = readyCheck) => {
   routes[CHECK] = [200, { check: c }];
-  m.setScope({ range: '30' });
+  m.setScope({ accountId: '7' });
   await flush();
 };
 const finish = async () => {
@@ -137,16 +138,43 @@ it('sort is refused before a check', async () => {
   expect(sent('/api/cleanup/run')).toEqual([]);
 });
 
+it('starts on the newest 200 emails, with 90 days ready in the other box', () => {
+  expect(m.cleanup.scope).toMatchObject({ mode: 'newest', newest: 200, days: 90 });
+});
+
 it.each([
-  [{ range: '30' }, { account_id: 7, folder: 'INBOX', since: NOW - 30 * 86400 }],
-  [{ range: '365', folder: 'Old Mail' }, { account_id: 7, folder: 'Old Mail', since: NOW - 365 * 86400 }],
-  [{ range: 'all' }, { account_id: 7, folder: 'INBOX', since: null }],
-] as const)('check for scope %j asks for %j', async (scope, request) => {
+  ['the newest 200, as it starts', {}, { account_id: 7, folder: 'INBOX', since: null, limit: 200 }],
+  ['the newest 120', { newest: 120 }, { account_id: 7, folder: 'INBOX', since: null, limit: 120 }],
+  ['the newest 2000', { newest: 2000 }, { account_id: 7, folder: 'INBOX', since: null, limit: 2000 }],
+  ['the last 90 days, capped at the most a check covers', { mode: 'days' }, { account_id: 7, folder: 'INBOX', since: NOW - 90 * 86400, limit: 2000 }],
+  ['the last 45 days in another folder', { mode: 'days', days: 45, folder: 'Old Mail' }, { account_id: 7, folder: 'Old Mail', since: NOW - 45 * 86400, limit: 2000 }],
+  ['a huge number of days is all mail: the start is the epoch, not before it', { mode: 'days', days: 999999 }, { account_id: 7, folder: 'INBOX', since: 0, limit: 2000 }],
+  ['all mail, capped', { mode: 'all' }, { account_id: 7, folder: 'INBOX', since: null, limit: 2000 }],
+  ['all mail ignores what the boxes hold', { mode: 'all', newest: 5, days: 3 }, { account_id: 7, folder: 'INBOX', since: null, limit: 2000 }],
+] as const)('check for %s', async (_name, scope, request) => {
   m.setScope(scope);
-  await flush();
   await m.check();
   expect(sent('/api/cleanup/check')).toEqual([request]);
   expect(m.cleanup.phase).toBe('checking');
+});
+
+it.each([
+  [{ newest: 0 }, 'The limit must be between 1 and 2000.'],
+  [{ newest: 2001 }, 'The limit must be between 1 and 2000.'],
+  [{ newest: 1.5 }, 'The limit must be between 1 and 2000.'],
+  [{ newest: null }, 'The limit must be between 1 and 2000.'],
+  [{ newest: 2000 }, ''],
+  [{ mode: 'days', days: 0 }, 'Give a whole number of days, 1 or more.'],
+  [{ mode: 'days', days: 2.5 }, 'Give a whole number of days, 1 or more.'],
+  [{ mode: 'days', days: null }, 'Give a whole number of days, 1 or more.'],
+  [{ mode: 'days', days: 1000000 }, ''],
+  [{ mode: 'all', newest: 0, days: 0 }, ''],
+] as const)('the scope %j is refused with "%s"', async (scope, problem) => {
+  m.setScope(scope);
+  expect(m.scopeProblem(m.cleanup.scope)).toBe(problem);
+  await m.check();
+  expect(sent('/api/cleanup/check')).toHaveLength(problem ? 0 : 1);
+  expect(m.cleanup.phase).toBe(problem ? 'idle' : 'checking');
 });
 
 it('a refused check leaves idle and says why', async () => {
@@ -188,19 +216,46 @@ it('checking → failed shows the error', async () => {
   expect(m.cleanup.check!.error).toBe('The mail server did not answer.');
 });
 
-it('restores the mailbox\'s current check on setScope, folder and range and all', async () => {
-  routes[CHECK] = [200, { check: check({ status: 'ready', folder: 'Old Mail', since: NOW - 90 * 86400, rows: [row()] }) }];
-  m.setScope({ range: '30' });
+it.each([
+  ['a typed 45 days', { since: NOW - 45 * 86400, limit: 2000 }, { mode: 'days', days: 45 }],
+  ['90 days, checked two hours ago', { since: NOW - 90 * 86400 - 7200, limit: 2000 }, { mode: 'days', days: 90 }],
+  ['a typed 120 emails', { since: null, limit: 120 }, { mode: 'newest', newest: 120 }],
+  ['the newest 1999', { since: null, limit: 1999 }, { mode: 'newest', newest: 1999 }],
+  // The newest 2000 and all mail send the same request, so a check cannot tell them apart. They are equal by design.
+  ['the newest 2000, which is all mail', { since: null, limit: 2000 }, { mode: 'all' }],
+  ['all mail', { since: null, limit: 2000 }, { mode: 'all' }],
+] as const)('restores the choice of %s from the check itself, with no snapping to a preset', async (_name, own, choice) => {
+  routes[CHECK] = [200, { check: check({ status: 'ready', folder: 'Old Mail', rows: [row()], ...own }) }];
+  m.setScope({ accountId: '7' });
   await flush();
   expect(m.cleanup.phase).toBe('ready');
   expect(m.cleanup.scope.folder).toBe('Old Mail');
-  expect(m.cleanup.scope.range).toBe('90');
+  expect(m.cleanup.scope).toMatchObject(choice);
   expect(m.cleanup.check!.rows).toHaveLength(1);
+});
+
+it('restoring one entry leaves the number typed in the other as it was', async () => {
+  m.setScope({ days: 33 });
+  routes[CHECK] = [200, { check: check({ status: 'ready', since: null, limit: 120, rows: [row()] }) }];
+  m.setScope({ accountId: '7' });
+  await flush();
+  expect(m.cleanup.scope).toMatchObject({ mode: 'newest', newest: 120, days: 33 });
+});
+
+it('a check on show keeps its own folder and range: they cannot be changed until it is discarded', async () => {
+  await toReady();
+  expect(m.cleanup.scope).toMatchObject({ mode: 'all', folder: 'INBOX' }); // the fixture is a check of all mail
+  m.setScope({ mode: 'days', folder: 'Old Mail' });
+  expect(m.cleanup.scope).toMatchObject({ mode: 'all', folder: 'INBOX' });
+  expect(m.cleanup.phase).toBe('ready');
+  await m.discard();
+  m.setScope({ mode: 'days' });
+  expect(m.cleanup.scope.mode).toBe('days');
 });
 
 it('restores a running check and resumes its poll', async () => {
   routes[CHECK] = [200, { check: check({ status: 'running', done: 12 }) }];
-  m.setScope({ range: '30' });
+  m.setScope({ accountId: '7' });
   await flush();
   expect(m.cleanup.phase).toBe('checking');
   routes[CHECK] = [200, { check: readyCheck }];
@@ -328,8 +383,8 @@ it('Discard, Sort and a new check drop an unsent save', async () => {
 
 it('a check being run refuses a new scope', async () => {
   await m.check();
-  m.setScope({ range: 'all' });
-  expect(m.cleanup.scope.range).toBe('30');
+  m.setScope({ mode: 'all' });
+  expect(m.cleanup.scope.mode).toBe('newest');
   expect(m.cleanup.phase).toBe('checking');
 });
 

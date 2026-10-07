@@ -390,7 +390,7 @@ func TestTesterNeverTouchesTheMailbox(t *testing.T) {
 		t.Errorf("row 1 = %+v", r)
 	}
 
-	refs, err := e.mb.FetchSince(ctx, "INBOX", time.Time{}, 0)
+	refs, _, err := e.mb.FetchSince(ctx, "INBOX", time.Time{}, 0)
 	if err != nil || len(refs) != 60 {
 		t.Fatalf("INBOX holds %d messages (%v), want all 60", len(refs), err)
 	}
@@ -424,7 +424,7 @@ func TestTesterNeverTouchesTheMailbox(t *testing.T) {
 // Reader has no method that could change a mailbox; this keeps it that way.
 var _ Reader = (interface {
 	Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error)
-	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, error)
+	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, int, error)
 })(nil)
 
 // lagging is a Reader whose Fetch takes a while.
@@ -554,15 +554,58 @@ func TestTesterCheckReturnsRowsWithRefs(t *testing.T) {
 		}
 	}
 	// Progress: 0 of 5 first, 5 of 5 last; two model calls, their tokens and cost.
-	if len(steps) != 6 || steps[0] != (CheckProgress{Total: 5}) {
+	if len(steps) != 6 || steps[0] != (CheckProgress{Total: 5, Matched: 5}) {
 		t.Fatalf("progress = %d steps, first %+v", len(steps), steps[0])
 	}
-	if lp := steps[5]; lp.Done != 5 || lp.Total != 5 || lp.ModelCalls != 2 || lp.Tokens != 2*105 || lp.CostUSD < 0.0019 || lp.CostUSD > 0.0021 {
+	if lp := steps[5]; lp.Done != 5 || lp.Total != 5 || lp.Matched != 5 || lp.ModelCalls != 2 || lp.Tokens != 2*105 || lp.CostUSD < 0.0019 || lp.CostUSD > 0.0021 {
 		t.Errorf("last progress = %+v", lp)
 	}
 	for i, p := range steps {
-		if p.Done != i || p.Total != 5 || (i > 0 && (p.ModelCalls < steps[i-1].ModelCalls || p.CostUSD < steps[i-1].CostUSD)) {
+		if p.Done != i || p.Total != 5 || p.Matched != 5 || (i > 0 && (p.ModelCalls < steps[i-1].ModelCalls || p.CostUSD < steps[i-1].CostUSD)) {
 			t.Fatalf("step %d = %+v", i, p)
 		}
+	}
+}
+
+// A check says how many emails the range held before its limit cut it: the number checked
+// when the range fits, the whole range when it does not, the newest N below the cap and a
+// start time alone above it.
+func TestTesterCheckReportsHowManyMatchedBeforeTheLimit(t *testing.T) {
+	e := newEnv(t)
+	const stored = MaxLimit + 100
+	for i := range stored {
+		e.deliver("friend@example.org", fmt.Sprintf("note %d", i))
+	}
+	tester := Tester{Store: e.st, Mailbox: e.mb, AccountID: e.acct.ID, BodyChars: 200,
+		Decider: pipeline.Decider{MinConfidence: 0.75, Now: time.Unix(1_800_000_000, 0)}}
+	hourAgo, future := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		name           string
+		since          time.Time
+		limit          int
+		total, matched int
+	}{
+		{"newest N below the cap", time.Time{}, 7, 7, stored},
+		{"newest N of exactly the range", time.Time{}, stored, stored, stored},
+		{"the cap, range above it", time.Time{}, MaxLimit, MaxLimit, stored},
+		{"a start time and the cap, range above it", hourAgo, MaxLimit, MaxLimit, stored},
+		{"a start time with no limit sees the whole range", hourAgo, 0, stored, stored},
+		{"a start time nothing is after", future, MaxLimit, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var first, last CheckProgress
+			rows, err := tester.Check(t.Context(), nil, nil, "INBOX", tc.since, tc.limit, func(p CheckProgress) {
+				if p.Done == 0 {
+					first = p
+				}
+				last = p
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != tc.total || first.Total != tc.total || first.Matched != tc.matched || last.Done != tc.total || last.Matched != tc.matched {
+				t.Errorf("%d rows, first %+v, last %+v; want %d checked of %d", len(rows), first, last, tc.total, tc.matched)
+			}
+		})
 	}
 }

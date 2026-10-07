@@ -493,9 +493,8 @@ func attachments(bs imap.BodyStructure) (bool, []string) {
 }
 
 // FetchSince searches by internal date, which IMAP compares by day.
-func (m *Mailbox) FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, error) {
-	var refs []mail.MsgRef
-	err := m.do(ctx, fmt.Sprintf("search %q", folder), func(c *imapclient.Client) error {
+func (m *Mailbox) FetchSince(ctx context.Context, folder string, since time.Time, limit int) (refs []mail.MsgRef, matched int, err error) {
+	err = m.do(ctx, fmt.Sprintf("search %q", folder), func(c *imapclient.Client) error {
 		if err := m.selectFolder(c, folder); err != nil {
 			return err
 		}
@@ -505,6 +504,7 @@ func (m *Mailbox) FetchSince(ctx context.Context, folder string, since time.Time
 		}
 		uids := data.AllUIDs()
 		slices.Sort(uids)
+		matched = len(uids)
 		if limit > 0 && len(uids) > limit {
 			uids = uids[len(uids)-limit:]
 		}
@@ -513,7 +513,7 @@ func (m *Mailbox) FetchSince(ctx context.Context, folder string, since time.Time
 		}
 		return nil
 	})
-	return refs, err
+	return refs, matched, err
 }
 
 // Move uses UID MOVE, or UID COPY, UID STORE +FLAGS (\Deleted) and UID EXPUNGE of that one

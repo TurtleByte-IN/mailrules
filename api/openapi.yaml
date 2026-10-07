@@ -1859,7 +1859,7 @@ components:
         account_id: { type: integer, format: int64 }
         folder: { type: string, description: 'One folder of the account; left out = INBOX. There is no "all folders"' }
         since: { type: [integer, 'null'], format: int64, description: Only mail received on or after this time's date; null = all of it }
-        limit: { type: integer, minimum: 1, description: 'Only the newest N emails; capped at 2000' }
+        limit: { type: integer, minimum: 1, maximum: 2000, description: 'Only the newest N emails of the range. Left out = 2000, the most a check covers: when the range holds more, `CleanupCheck.matched` says how many, and a further check covers the rest' }
     CleanupSelectionRequest:
       type: object
       required: [account_id, check_id, exclude]
@@ -1879,16 +1879,17 @@ components:
     CleanupCheck:
       type: object
       description: One real check of a mailbox, held in the daemon's memory until Sort uses it or it is discarded
-      required: [id, account_id, folder, since, limit, status, done, total, model_calls, tokens, cost_usd, error, rows, exclude]
+      required: [id, account_id, folder, since, limit, status, done, total, matched, model_calls, tokens, cost_usd, error, rows, exclude]
       properties:
         id: { type: string, description: Changes with every new check of the account }
         account_id: { type: integer, format: int64 }
         folder: { type: string, description: The folder checked, for restoring the screen's scope }
         since: { type: [integer, 'null'], format: int64, description: 'Only mail from this time on; null = all of it' }
-        limit: { type: [integer, 'null'], description: 'Only the newest N emails; null = no limit' }
+        limit: { type: integer, description: 'The most emails the check covers, the newest of its range (2000 when the request left it out)' }
         status: { type: string, enum: [running, ready, failed, stale], description: '`running`: the check is still going (`done`/`total`). `ready`: through, `rows` present. `failed`: `error` says why. `stale`: the rules changed since; Sort is refused until a new check' }
         done: { type: integer, description: Emails checked so far }
-        total: { type: integer, description: Emails the check will go through, known once the mail is listed }
+        total: { type: integer, description: 'Emails the check will go through, known once the mail is listed: at most `limit`' }
+        matched: { type: integer, description: 'Emails the folder holds in the chosen range before `limit` was applied, known once the mail is listed (0 until then). More than `total` when the range holds more than the check covers: the check took the newest `total` of them' }
         model_calls: { type: integer, description: Model calls made so far }
         tokens: { type: integer, description: Model tokens so far, in and out }
         cost_usd: { type: number, description: Real model cost so far }

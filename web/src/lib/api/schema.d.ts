@@ -1724,7 +1724,7 @@ export interface components {
              * @description Only mail received on or after this time's date; null = all of it
              */
             since?: number | null;
-            /** @description Only the newest N emails; capped at 2000 */
+            /** @description Only the newest N emails of the range. Left out = 2000, the most a check covers: when the range holds more, `CleanupCheck.matched` says how many, and a further check covers the rest */
             limit?: number;
         };
         CleanupSelectionRequest: {
@@ -1756,8 +1756,8 @@ export interface components {
              * @description Only mail from this time on; null = all of it
              */
             since: number | null;
-            /** @description Only the newest N emails; null = no limit */
-            limit: number | null;
+            /** @description The most emails the check covers, the newest of its range (2000 when the request left it out) */
+            limit: number;
             /**
              * @description `running`: the check is still going (`done`/`total`). `ready`: through, `rows` present. `failed`: `error` says why. `stale`: the rules changed since; Sort is refused until a new check
              * @enum {string}
@@ -1765,8 +1765,10 @@ export interface components {
             status: "running" | "ready" | "failed" | "stale";
             /** @description Emails checked so far */
             done: number;
-            /** @description Emails the check will go through */
+            /** @description Emails the check will go through, known once the mail is listed: at most `limit` */
             total: number;
+            /** @description Emails the folder holds in the chosen range before `limit` was applied, known once the mail is listed (0 until then). More than `total` when the range holds more than the check covers: the check took the newest `total` of them */
+            matched: number;
             /** @description Model calls made so far */
             model_calls: number;
             /** @description Model tokens so far */

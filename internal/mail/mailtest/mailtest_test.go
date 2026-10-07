@@ -86,7 +86,7 @@ func TestFakeKeepsTheConnectorsPromises(t *testing.T) {
 	if st, err := m.Status(ctx, "INBOX"); err != nil || st.UIDNext != 3 || st.UIDValidity != second.UIDValidity {
 		t.Errorf("status = %+v, %v", st, err)
 	}
-	if refs, err := m.FetchSince(ctx, "INBOX", time.Now().Add(-time.Hour), 0); err != nil || len(refs) != 1 || refs[0] != second {
+	if refs, _, err := m.FetchSince(ctx, "INBOX", time.Now().Add(-time.Hour), 0); err != nil || len(refs) != 1 || refs[0] != second {
 		t.Errorf("FetchSince = %+v, %v", refs, err)
 	}
 	if err := m.EnsureFolder(ctx, "New"); err != nil {

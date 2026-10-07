@@ -50,7 +50,7 @@ func (e *env) arrive(srv *imaptest.Server, id string, flags ...goimap.Flag) Deci
 
 func (e *env) count(folder string) int {
 	e.t.Helper()
-	refs, err := e.raw.FetchSince(e.t.Context(), folder, time.Time{}, 0)
+	refs, _, err := e.raw.FetchSince(e.t.Context(), folder, time.Time{}, 0)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestNoExpungeBeyondTheMovedMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	left, err := e.raw.FetchSince(ctx, "INBOX", time.Time{}, 0)
+	left, _, err := e.raw.FetchSince(ctx, "INBOX", time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

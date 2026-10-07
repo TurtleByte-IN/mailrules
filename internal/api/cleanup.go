@@ -32,7 +32,9 @@ func (s *server) cleanupScope(w http.ResponseWriter, r *http.Request) (worker.Cl
 	if !readJSON(w, r, &in) {
 		return worker.Cleanup{}, false
 	}
-	c := worker.Cleanup{AccountID: in.AccountID, Folder: in.Folder}
+	// Every check covers at most the newest composer.MaxLimit emails of its range (MAI-48):
+	// a request that names no limit gets the most, so no client can ask for an unbounded run.
+	c := worker.Cleanup{AccountID: in.AccountID, Folder: in.Folder, Limit: composer.MaxLimit}
 	if c.Folder == "" {
 		c.Folder = "INBOX"
 	}
@@ -374,10 +376,11 @@ type cleanupCheckJSON struct {
 	AccountID  int64          `json:"account_id"`
 	Folder     string         `json:"folder"`
 	Since      *int64         `json:"since"`
-	Limit      *int           `json:"limit"`
+	Limit      int            `json:"limit"` // the most emails the check covers: the newest of its range
 	Status     string         `json:"status"`
 	Done       int            `json:"done"`
 	Total      int            `json:"total"`
+	Matched    int            `json:"matched"` // emails in the range before the limit
 	ModelCalls int            `json:"model_calls"`
 	Tokens     int            `json:"tokens"`
 	CostUSD    float64        `json:"cost_usd"`
@@ -391,10 +394,8 @@ type cleanupCheckJSON struct {
 // checkJSON shapes a check for the browser. Rows are present only when it is ready or stale.
 func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 	out := cleanupCheckJSON{ID: st.ID, AccountID: st.AccountID, Folder: st.Folder, Since: ts(st.Since), Status: st.Status,
-		Done: st.Done, Total: st.Total, ModelCalls: st.ModelCalls, Tokens: st.Tokens, CostUSD: st.CostUSD, Error: st.Error, Rows: []checkRowJSON{}, Exclude: append([]int{}, st.Exclude...)}
-	if st.Limit > 0 {
-		out.Limit = &st.Limit
-	}
+		Done: st.Done, Total: st.Total, Matched: st.Matched, ModelCalls: st.ModelCalls, Tokens: st.Tokens, CostUSD: st.CostUSD, Error: st.Error, Rows: []checkRowJSON{}, Exclude: append([]int{}, st.Exclude...)}
+	out.Limit = st.Limit
 	for i, row := range st.Rows {
 		o := row.Outcome
 		j := checkRowJSON{Index: i, From: row.From, Subject: row.Subject, Folder: row.Ref.Folder, UID: row.Ref.UID,

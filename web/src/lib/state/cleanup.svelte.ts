@@ -1,6 +1,7 @@
 import { ApiError } from '../api/client';
 import * as cleanupApi from '../api/cleanup';
 import { subscribe } from '../api/events';
+import { TEST_LIMIT } from '../api/rules';
 import { flash } from './toast.svelte';
 
 // idle → checking (a real check is running) → ready/stale (rows shown) or failed.
@@ -8,13 +9,20 @@ import { flash } from './toast.svelte';
 // or a sort is running, so what the user sorts always matches the check they are looking at.
 type Phase = 'idle' | 'checking' | 'ready' | 'stale' | 'failed' | 'sorting' | 'done';
 
+/** The most emails one check covers: the daemon's own bound, the same number the rule tester allows. */
+export const CHECK_MAX = TEST_LIMIT.max;
+
 /** What the scope controls hold; toRequest turns it into the contract's CleanupCheckRequest. */
 export interface Scope {
   accountId: string;
   /** The server's own folder name. */
   folder: string;
-  /** Days back, or all time. */
-  range: '30' | '90' | '365' | 'all';
+  /** The newest N emails, the emails from the last N days, or all mail. Every one is capped at CHECK_MAX. */
+  mode: 'newest' | 'days' | 'all';
+  /** The "Newest emails" box; null is an empty box. */
+  newest: number | null;
+  /** The "From the last days" box; null is an empty box. */
+  days: number | null;
 }
 
 export const cleanup = $state<{
@@ -36,7 +44,7 @@ export const cleanup = $state<{
   error: string;
 }>({
   phase: 'idle',
-  scope: { accountId: '', folder: 'INBOX', range: '90' },
+  scope: { accountId: '', folder: 'INBOX', mode: 'newest', newest: TEST_LIMIT.default, days: 90 },
   folders: [],
   check: null,
   excluded: new Set(),
@@ -82,18 +90,31 @@ export async function more() {
   }
 }
 
-const toRequest = (s: Scope): cleanupApi.CleanupCheckRequest => ({
-  account_id: Number(s.accountId),
-  folder: s.folder,
-  since: s.range === 'all' ? null : Math.floor(Date.now() / 1000) - Number(s.range) * 86400,
-});
+/** What is wrong with the chosen number, in a sentence; empty when nothing is, and for "All mail", which has no box. */
+export function scopeProblem(s: Scope) {
+  if (s.mode === 'newest') return s.newest !== null && Number.isInteger(s.newest) && s.newest >= 1 && s.newest <= CHECK_MAX ? '' : `The limit must be between 1 and ${CHECK_MAX}.`;
+  if (s.mode === 'days') return s.days !== null && Number.isInteger(s.days) && s.days >= 1 ? '' : 'Give a whole number of days, 1 or more.';
+  return '';
+}
 
-/** The range whose window a check's `since` sits closest to; `all` for no limit. */
-function rangeOf(since: number | null): Scope['range'] {
-  if (since === null) return 'all';
-  const days = (Date.now() / 1000 - since) / 86400;
-  const opts: Scope['range'][] = ['30', '90', '365'];
-  return opts.reduce((best, r) => (Math.abs(Number(r) - days) < Math.abs(Number(best) - days) ? r : best), '30');
+// Every check covers at most the newest CHECK_MAX emails of its range, so the limit is always sent.
+// A start before the epoch is the epoch: a huge number of days means all mail.
+function toRequest(s: Scope): cleanupApi.CleanupCheckRequest {
+  const account_id = Number(s.accountId);
+  if (s.mode === 'newest') return { account_id, folder: s.folder, since: null, limit: Math.min(s.newest!, CHECK_MAX) };
+  if (s.mode === 'days') return { account_id, folder: s.folder, since: Math.max(0, Math.floor(Date.now() / 1000) - s.days! * 86400), limit: CHECK_MAX };
+  return { account_id, folder: s.folder, since: null, limit: CHECK_MAX };
+}
+
+/**
+ * The choice a check was made with, read back from its own `since` and `limit`. A start time is a number
+ * of days (whole days to now, so a 90-day window restores as 90). With none, a limit below the cap is the
+ * newest N. "Newest 2000" and "All mail" send the same request, so a check cannot tell them apart and
+ * they are equal by design: it comes back as "All mail".
+ */
+function choiceOf(c: cleanupApi.CleanupCheck): Pick<Scope, 'mode'> & Partial<Pick<Scope, 'newest' | 'days'>> {
+  if (c.since !== null) return { mode: 'days', days: Math.max(1, Math.round((Date.now() / 1000 - c.since) / 86400)) };
+  return c.limit < CHECK_MAX ? { mode: 'newest', newest: c.limit } : { mode: 'all' };
 }
 
 // Without the list only Inbox is offered, so a failure here costs the Archive choice and nothing else.
@@ -105,8 +126,11 @@ async function loadFolders() {
 }
 
 export function setScope(patch: Partial<Scope>) {
-  // Neither a running check nor a running sort may have its scope changed under it.
+  // Neither a running check nor a running sort may have its scope changed under it, and the
+  // scope of a check on show is that check's own: Discard it to choose another.
   if (cleanup.phase === 'checking' || cleanup.phase === 'sorting') return;
+  const other = patch.accountId !== undefined && patch.accountId !== cleanup.scope.accountId;
+  if (!other && (cleanup.phase === 'ready' || cleanup.phase === 'stale')) return;
   Object.assign(cleanup.scope, patch);
   if (patch.accountId !== undefined) {
     cleanup.scope.folder = 'INBOX';
@@ -116,7 +140,8 @@ export function setScope(patch: Partial<Scope>) {
   dropSelectionSave();
   cleanup.excluded = new Set();
   cleanup.phase = 'idle';
-  loadCheck();
+  // Another mailbox may have a check of its own to come back to; a change of folder or number may not.
+  if (patch.accountId !== undefined) loadCheck();
 }
 
 /** Fetch the account's current check and, if there is one, restore the scope and show its state. */
@@ -144,7 +169,7 @@ async function loadCheck() {
     return;
   }
   cleanup.scope.folder = c.folder;
-  cleanup.scope.range = rangeOf(c.since);
+  Object.assign(cleanup.scope, choiceOf(c));
   if (!cleanup.folders.length) loadFolders();
   // A tick made while the answer was on its way is newer than what the daemon sent back.
   adopt(c, ticks !== tickEdits);
@@ -165,7 +190,7 @@ function adopt(c: cleanupApi.CleanupCheck, keepTicks = false) {
 }
 
 export async function check() {
-  if (cleanup.phase === 'checking' || cleanup.phase === 'sorting') return;
+  if (cleanup.phase === 'checking' || cleanup.phase === 'sorting' || scopeProblem(cleanup.scope)) return;
   const request = toRequest(cleanup.scope);
   cleanup.phase = 'checking';
   dropSelectionSave();

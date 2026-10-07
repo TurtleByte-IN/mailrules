@@ -105,7 +105,7 @@ func expect(t *testing.T, out <-chan mail.NewMail, want ...uint32) []mail.MsgRef
 
 func uids(t *testing.T, m *Mailbox, folder string) []uint32 {
 	t.Helper()
-	refs, err := m.FetchSince(t.Context(), folder, time.Time{}, 0)
+	refs, _, err := m.FetchSince(t.Context(), folder, time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,12 +426,12 @@ func TestSearchAndContactsScan(t *testing.T) {
 	s.Append(t, "Sent", "To: bob@example.test\r\nSubject: again\r\n\r\nx\r\n")
 	m := open(t, config(s))
 
-	refs, err := m.FetchSince(ctx, "INBOX", time.Now().Add(-48*time.Hour), 2)
-	if err != nil || len(refs) != 2 || refs[0].UID != 3 || refs[1].UID != 4 || refs[0].UIDValidity == 0 {
-		t.Errorf("FetchSince newest two = %+v, %v", refs, err)
+	refs, matched, err := m.FetchSince(ctx, "INBOX", time.Now().Add(-48*time.Hour), 2)
+	if err != nil || len(refs) != 2 || matched != 4 || refs[0].UID != 3 || refs[1].UID != 4 || refs[0].UIDValidity == 0 {
+		t.Errorf("FetchSince newest two = %+v, matched %d, %v", refs, matched, err)
 	}
-	if refs, err := m.FetchSince(ctx, "INBOX", time.Now().Add(48*time.Hour), 0); err != nil || len(refs) != 0 {
-		t.Errorf("FetchSince in the future = %+v, %v", refs, err)
+	if refs, matched, err := m.FetchSince(ctx, "INBOX", time.Now().Add(48*time.Hour), 0); err != nil || len(refs) != 0 || matched != 0 {
+		t.Errorf("FetchSince in the future = %+v, matched %d, %v", refs, matched, err)
 	}
 	if ref, err := m.FindByMessageID(ctx, "INBOX", "msg-3@example.test"); err != nil || ref.UID != 3 {
 		t.Errorf("FindByMessageID = %+v, %v", ref, err)
@@ -526,7 +526,7 @@ func TestWorkerReconnects(t *testing.T) {
 	// The first call after a drop may still see the dead connection; the one after redials.
 	var err error
 	for range 50 {
-		if _, err = m.FetchSince(t.Context(), "INBOX", time.Time{}, 0); err == nil {
+		if _, _, err = m.FetchSince(t.Context(), "INBOX", time.Time{}, 0); err == nil {
 			return
 		}
 		if !errors.Is(err, mail.ErrConnection) {

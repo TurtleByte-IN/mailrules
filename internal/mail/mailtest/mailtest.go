@@ -203,12 +203,12 @@ func (m *Mailbox) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*mes
 }
 
 // FetchSince lists messages delivered at or after since, oldest first, newest limit only.
-func (m *Mailbox) FetchSince(ctx context.Context, name string, since time.Time, limit int) ([]mail.MsgRef, error) {
+func (m *Mailbox) FetchSince(ctx context.Context, name string, since time.Time, limit int) ([]mail.MsgRef, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	f, err := m.folder(name)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out []mail.MsgRef
 	for _, x := range f.msgs {
@@ -216,10 +216,11 @@ func (m *Mailbox) FetchSince(ctx context.Context, name string, since time.Time, 
 			out = append(out, mail.MsgRef{AccountID: m.AccountID, Folder: name, UIDValidity: f.validity, UID: x.uid})
 		}
 	}
+	matched := len(out)
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
 	}
-	return out, ctx.Err()
+	return out, matched, ctx.Err()
 }
 
 // Move takes the message out of its folder and gives it a new UID in dest.

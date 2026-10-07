@@ -99,8 +99,10 @@ type Mailbox interface {
 	// Fetch reads headers and at most maxBody bytes of body without marking the message read.
 	Fetch(ctx context.Context, ref MsgRef, maxBody int) (*message.Raw, error)
 	// FetchSince lists messages received on or after since's date, oldest first.
-	// A positive limit keeps only the newest limit messages.
-	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]MsgRef, error)
+	// A positive limit keeps only the newest limit messages. matched is how many messages
+	// the folder holds in that range before the limit was applied, so a caller can say
+	// "the newest 2,000 of 4,310"; the search that finds them already knows it.
+	FetchSince(ctx context.Context, folder string, since time.Time, limit int) (refs []MsgRef, matched int, err error)
 	// Move moves one message and returns where it now lives.
 	Move(ctx context.Context, ref MsgRef, dest string) (MsgRef, error)
 	SetFlags(ctx context.Context, ref MsgRef, add, remove []string) error

@@ -26,7 +26,7 @@ import (
 // message stays unread; there is no method here that could move or flag one.
 type Reader interface {
 	Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error)
-	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, error)
+	FetchSince(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, int, error)
 }
 
 // Limits of one test run.
@@ -86,16 +86,17 @@ type Progress struct {
 }
 
 // list reads the newest limit messages of folder, since a time, newest last, and
-// logs how long the mail server took.
-func (t Tester) list(ctx context.Context, folder string, since time.Time, limit int) ([]mail.MsgRef, error) {
+// logs how long the mail server took. matched is how many the folder holds in that range
+// before the limit; the same search that finds them counts them, so it costs nothing extra.
+func (t Tester) list(ctx context.Context, folder string, since time.Time, limit int) (refs []mail.MsgRef, matched int, err error) {
 	start := time.Now()
-	refs, err := t.Mailbox.FetchSince(ctx, folder, since, limit)
-	slog.DebugContext(ctx, "mail listed", "account", t.AccountID, "folder", folder, "limit", limit, "messages", len(refs),
+	refs, matched, err = t.Mailbox.FetchSince(ctx, folder, since, limit)
+	slog.DebugContext(ctx, "mail listed", "account", t.AccountID, "folder", folder, "limit", limit, "matched", matched, "messages", len(refs),
 		"duration_ms", time.Since(start).Milliseconds(), "ok", err == nil)
 	if err != nil {
-		return nil, fmt.Errorf("list %s: %w", folder, err)
+		return nil, 0, fmt.Errorf("list %s: %w", folder, err)
 	}
-	return refs, nil
+	return refs, matched, nil
 }
 
 // Run evaluates rs (and the sender rules) against the newest limit messages of folder.
@@ -104,7 +105,7 @@ func (t Tester) list(ctx context.Context, folder string, since time.Time, limit 
 // every message, never concurrently.
 // A message that is gone or unreadable by the time it is fetched is left out.
 func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, limit int, progress func(Progress)) (Result, error) {
-	refs, err := t.list(ctx, folder, time.Time{}, limit)
+	refs, _, err := t.list(ctx, folder, time.Time{}, limit)
 	if err != nil {
 		return Result{}, err
 	}
@@ -267,8 +268,11 @@ type CheckRow struct {
 // CheckProgress reports how far a check has got. The daemon turns it into a check.progress
 // event and into the "N of M checked", model-call and cost totals the screen shows.
 type CheckProgress struct {
-	Done       int
-	Total      int
+	Done  int
+	Total int // emails this check goes through: at most the newest limit of the range
+	// Matched is how many emails the folder holds in the chosen range before the limit,
+	// known once the mail is listed. It is more than Total when the limit cut the range.
+	Matched    int
 	ModelCalls int
 	Tokens     int
 	CostUSD    float64
@@ -282,13 +286,13 @@ type CheckProgress struct {
 // mailbox is changed and no activity is written. progress, when set, is called once the
 // mail is listed (0 of N) and after every email, never concurrently.
 func (t Tester) Check(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, folder string, since time.Time, limit int, progress func(CheckProgress)) ([]CheckRow, error) {
-	refs, err := t.list(ctx, folder, since, limit)
+	refs, matched, err := t.list(ctx, folder, since, limit)
 	if err != nil {
 		return nil, err
 	}
 	slices.Reverse(refs) // newest first
 	if progress != nil {
-		progress(CheckProgress{Total: len(refs)})
+		progress(CheckProgress{Total: len(refs), Matched: matched})
 	}
 	var (
 		mu    sync.Mutex
@@ -320,7 +324,7 @@ func (t Tester) Check(ctx context.Context, rs []rules.Rule, senders []rules.Send
 		cost += out.Usage.CostUSD
 		done++
 		if progress != nil {
-			progress(CheckProgress{Done: done, Total: len(refs), ModelCalls: calls, Tokens: toks, CostUSD: cost})
+			progress(CheckProgress{Done: done, Total: len(refs), Matched: matched, ModelCalls: calls, Tokens: toks, CostUSD: cost})
 		}
 		return nil
 	})

@@ -7,6 +7,7 @@
     acted,
     check,
     cleanup,
+    CHECK_MAX,
     discard,
     load,
     more,
@@ -14,6 +15,7 @@
     outcome,
     selectAll,
     selectedCount,
+    scopeProblem,
     selectNone,
     setScope,
     sort,
@@ -32,7 +34,15 @@
     if (!cleanup.scope.accountId && accounts.list.length) setScope({ accountId: String(accounts.list[0].id) });
   });
 
-  const ranges: Record<Scope['range'], string> = { '30': 'Last 30 days', '90': 'Last 90 days', '365': 'Last year', all: 'All time' };
+  const choices: Record<Scope['mode'], string> = { newest: 'Newest emails', days: 'From the last days', all: 'All mail' };
+  const problem = $derived(scopeProblem(cleanup.scope));
+  // The number of the chosen entry, for the box; all mail has none.
+  const boxed = $derived(cleanup.scope.mode === 'all' ? null : cleanup.scope.mode);
+  const typed = (e: Event & { currentTarget: HTMLInputElement }) => (Number.isNaN(e.currentTarget.valueAsNumber) ? null : e.currentTarget.valueAsNumber);
+  // A check covers at most the newest CHECK_MAX emails of its range; say so when the range held more.
+  const capped = $derived(!!cleanup.check && cleanup.check.limit >= CHECK_MAX && cleanup.check.matched > cleanup.check.total);
+  const capText = (verb: string) =>
+    cleanup.check ? `${verb} the newest ${cleanup.check.total.toLocaleString()} of ${cleanup.check.matched.toLocaleString()}. Run another check for the rest.` : '';
 
   // Archive goes by a different name on every server; the mailbox's folder list knows which.
   const archive = $derived(cleanup.folders.find((f) => f.special_use === '\\Archive')?.name);
@@ -41,7 +51,9 @@
   const checking = $derived(cleanup.phase === 'checking');
   const sorting = $derived(cleanup.phase === 'sorting');
   const showTable = $derived(cleanup.phase === 'ready' || cleanup.phase === 'stale');
-  const locked = $derived(checking || sorting);
+  const busy = $derived(checking || sorting);
+  // A check on show has its own folder and range; Discard it to choose another. Another mailbox can still be picked.
+  const locked = $derived(busy || showTable);
 
   // The batch being undone; an undo moves every email of the run back, one by one, on the mail server.
   let undoing = $state<Record<number, boolean>>({});
@@ -107,7 +119,7 @@
     <div class="flex flex-wrap gap-3">
       <label class="flex flex-[1_1_200px] flex-col gap-1.5">
         <span class="text-[13px] font-semibold">Mailbox</span>
-        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
+        <select class="field h-11 px-2.5" disabled={busy} value={cleanup.scope.accountId} onchange={(e) => setScope({ accountId: e.currentTarget.value })}>
           {#each accounts.list as a (a.id)}
             <option value={String(a.id)}>{a.label}</option>
           {/each}
@@ -123,16 +135,39 @@
         </select>
       </label>
       <label class="flex flex-[1_1_160px] flex-col gap-1.5">
-        <span class="text-[13px] font-semibold">Emails from</span>
-        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.range} onchange={(e) => setScope({ range: e.currentTarget.value as Scope['range'] })}>
-          {#each Object.entries(ranges) as [value, name] (value)}
+        <span class="text-[13px] font-semibold">Which emails</span>
+        <select class="field h-11 px-2.5" disabled={locked} value={cleanup.scope.mode} onchange={(e) => setScope({ mode: e.currentTarget.value as Scope['mode'] })}>
+          {#each Object.entries(choices) as [value, name] (value)}
             <option {value}>{name}</option>
           {/each}
         </select>
       </label>
+      {#if boxed}
+        <div class="flex flex-[0_1_140px] flex-col gap-1.5">
+          <span class="text-[13px] font-semibold">{boxed === 'newest' ? 'Emails' : 'Days'}</span>
+          <input
+            type="number"
+            min="1"
+            max={boxed === 'newest' ? CHECK_MAX : undefined}
+            step="1"
+            inputmode="numeric"
+            aria-label={boxed === 'newest' ? 'How many emails' : 'How many days'}
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem ? 'cleanup-scope-problem' : undefined}
+            class="field h-11 px-2.5 font-mono"
+            disabled={locked}
+            value={cleanup.scope[boxed]}
+            oninput={(e) => setScope({ [boxed]: typed(e) })}
+          />
+        </div>
+      {/if}
     </div>
 
-    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={locked || !cleanup.scope.accountId} onclick={check}>
+    {#if problem}
+      <p id="cleanup-scope-problem" role="alert" class="-mt-2 text-[12.5px] text-trash">{problem}</p>
+    {/if}
+
+    <button type="button" class="btn min-h-11 self-start px-[18px] font-semibold" disabled={locked || !cleanup.scope.accountId || !!problem} onclick={check}>
       {checking ? 'Checking…' : 'Check what would move'}
     </button>
 
@@ -141,6 +176,9 @@
         <p class="text-[13px] text-nav">
           {cleanup.check.done.toLocaleString()} of {cleanup.check.total.toLocaleString()} checked · {cleanup.check.model_calls.toLocaleString()} model calls · {money(cleanup.check.cost_usd)}
         </p>
+        {#if capped}
+          <p class="text-[13px] text-secondary">{capText('Checking')}</p>
+        {/if}
         <Waiting text="Reading your mailbox and checking each email against your rules" />
       </div>
     {:else if checking}
@@ -157,6 +195,10 @@
           <p role="alert" class="rounded bg-trash-bg px-3 py-2 text-[13px] text-trash">
             These results are out of date: the rules changed since this check. Check again before sorting.
           </p>
+        {/if}
+
+        {#if capped}
+          <p class="text-[13px] text-secondary">{capText('Checked')}</p>
         {/if}
 
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2">

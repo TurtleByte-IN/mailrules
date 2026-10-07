@@ -53,10 +53,11 @@ const check = (over: Partial<CleanupCheck> = {}): CleanupCheck => ({
   account_id: 7,
   folder: 'INBOX',
   since: SINCE,
-  limit: null,
+  limit: 2000,
   status: 'ready',
   done: 412,
   total: 412,
+  matched: 412,
   model_calls: 80,
   tokens: 1200,
   cost_usd: 0.01,
@@ -80,7 +81,7 @@ beforeEach(() => {
   // The state lives in module scope; each test starts it over.
   Object.assign(cleanup, {
     phase: 'idle',
-    scope: { accountId: '7', folder: 'INBOX', range: '90' },
+    scope: { accountId: '7', folder: 'INBOX', mode: 'newest', newest: 200, days: 90 },
     folders: [],
     check: null,
     excluded: new Set(),
@@ -383,4 +384,116 @@ it('a batch the daemon finds too old says so in a toast and keeps its row', asyn
   await vi.waitFor(() => expect(toast.text).toBe(message));
   expect(screen.getByText('Done')).toBeTruthy();
   expect(screen.getByRole('button', { name: /^Undo batch/ })).toBeTruthy();
+});
+
+const startBody = () => {
+  const call = fetchMock.mock.calls.find((c) => c[0] === '/api/cleanup/check' && (c[1] as RequestInit).method === 'POST');
+  return call ? JSON.parse((call[1] as RequestInit).body as string) : null;
+};
+const choose = (name: string) => fireEvent.change(screen.getByRole('combobox', { name: 'Which emails' }), { target: { value: name } });
+const type = (name: string, value: string) => fireEvent.input(screen.getByRole('spinbutton', { name }), { target: { value } });
+const checkButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Check what would move' });
+
+it('offers three entries; only the chosen one shows its number box, starting at 200 and 90', async () => {
+  render(Cleanup);
+  const select = await screen.findByRole<HTMLSelectElement>('combobox', { name: 'Which emails' });
+  expect([...select.options].map((o) => o.textContent)).toEqual(['Newest emails', 'From the last days', 'All mail']);
+  expect(select.value).toBe('newest');
+  expect((screen.getByRole('spinbutton', { name: 'How many emails' }) as HTMLInputElement).value).toBe('200');
+  expect(screen.queryByRole('spinbutton', { name: 'How many days' })).toBeNull();
+
+  await choose('days');
+  expect(screen.queryByRole('spinbutton', { name: 'How many emails' })).toBeNull();
+  expect((screen.getByRole('spinbutton', { name: 'How many days' }) as HTMLInputElement).value).toBe('90');
+
+  await choose('all');
+  expect(screen.queryByRole('spinbutton')).toBeNull();
+  expect(screen.queryByText('Last 30 days')).toBeNull();
+});
+
+it.each([
+  ['the newest 120 emails', async () => type('How many emails', '120'), { account_id: 7, folder: 'INBOX', since: null, limit: 120 }],
+  ['the newest 5000 is refused before it is sent', async () => type('How many emails', '5000'), null],
+  [
+    '45 days, with the most a check covers as the limit',
+    async () => {
+      await choose('days');
+      await type('How many days', '45');
+    },
+    { account_id: 7, folder: 'INBOX', since: NOW - 45 * DAY, limit: 2000 },
+  ],
+  [
+    'all mail, with the most a check covers as the limit',
+    async () => choose('all'),
+    { account_id: 7, folder: 'INBOX', since: null, limit: 2000 },
+  ],
+] as const)('Check sends %s', async (_name, act, body) => {
+  render(Cleanup);
+  await screen.findByRole('combobox', { name: 'Which emails' });
+  await act();
+  if (body === null) {
+    expect(checkButton().disabled).toBe(true);
+    return;
+  }
+  await fireEvent.click(checkButton());
+  await vi.waitFor(() => expect(startBody()).toEqual(body));
+});
+
+it.each([
+  ['How many emails', ['0', '2001', '1.5', ''], 'The limit must be between 1 and 2000.', undefined],
+  ['How many days', ['0', '2.5', ''], 'Give a whole number of days, 1 or more.', 'days'],
+] as const)('the %s box shows its message inline and disables Check while the number is wrong', async (name, bad, message, entry) => {
+  render(Cleanup);
+  await screen.findByRole('combobox', { name: 'Which emails' });
+  if (entry) await choose(entry);
+  for (const value of bad) {
+    await type(name, value);
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    expect(screen.getByRole('spinbutton', { name }).getAttribute('aria-invalid')).toBe('true');
+    expect(checkButton().disabled).toBe(true);
+  }
+  await type(name, entry ? '1000000' : '2000'); // no upper bound for days; 2000 is the most for emails
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(checkButton().disabled).toBe(false);
+});
+
+it('says when the range held more than the check covers, while it runs and on the table', async () => {
+  const capped = { limit: 2000, total: 2000, matched: 4310 };
+  routes[CHECK] = [200, { check: check({ status: 'running', done: 120, ...capped, rows: [] }) }];
+  render(Cleanup);
+  expect(await screen.findByText('Checking the newest 2,000 of 4,310. Run another check for the rest.')).toBeTruthy();
+
+  routes[CHECK] = [200, { check: check({ status: 'ready', done: 2000, ...capped }) }];
+  dispatch('check.progress', check({ status: 'ready', done: 2000, ...capped, rows: [] }));
+  expect(await screen.findByText('Checked the newest 2,000 of 4,310. Run another check for the rest.')).toBeTruthy();
+  expect(screen.queryByText(/^Checking the newest/)).toBeNull();
+});
+
+it.each([
+  ['the range fits in the cap', { limit: 2000, total: 412, matched: 412 }],
+  ['a newest-N the user typed, below the cap', { limit: 200, total: 200, matched: 4310 }],
+])('says nothing about a cap when %s', async (_name, own) => {
+  routes[CHECK] = [200, { check: check({ status: 'ready', ...own }) }];
+  render(Cleanup);
+  await screen.findByRole('checkbox', { name: /^Sort / });
+  expect(screen.queryByText(/Run another check for the rest/)).toBeNull();
+});
+
+it.each([
+  ['a typed 45 days', { since: NOW - 45 * DAY, limit: 2000 }, 'days', '45', 'How many days'],
+  ['a typed 120 emails', { since: null, limit: 120 }, 'newest', '120', 'How many emails'],
+  ['all mail', { since: null, limit: 2000 }, 'all', null, null],
+] as const)('restores %s after a reload, and Check is off until the check is discarded', async (_name, own, entry, value, box) => {
+  routes[CHECK] = [200, { check: check({ status: 'ready', ...own }) }];
+  render(Cleanup);
+  await screen.findByRole('checkbox', { name: /^Sort / });
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Which emails' }).value).toBe(entry);
+  if (box) expect((screen.getByRole(`spinbutton`, { name: box }) as HTMLInputElement).value).toBe(value);
+  else expect(screen.queryByRole('spinbutton')).toBeNull();
+  // The scope on show is the check's own.
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Which emails' }).disabled).toBe(true);
+  if (box) expect(screen.getByRole<HTMLInputElement>('spinbutton', { name: box }).disabled).toBe(true);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Discard check' }));
+  await vi.waitFor(() => expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Which emails' }).disabled).toBe(false));
 });

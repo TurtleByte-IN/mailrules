@@ -102,6 +102,7 @@ type Check struct {
 	status     string
 	done       int
 	total      int
+	matched    int
 	modelCalls int
 	tokens     int
 	costUSD    float64
@@ -123,6 +124,7 @@ type CheckState struct {
 	Status      string
 	Done        int
 	Total       int
+	Matched     int // emails in the chosen range before the limit; more than Total when it cut the range
 	ModelCalls  int
 	Tokens      int
 	CostUSD     float64
@@ -136,7 +138,7 @@ type CheckState struct {
 func (c *Check) setProgress(p composer.CheckProgress) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.done, c.total, c.modelCalls, c.tokens, c.costUSD = p.Done, p.Total, p.ModelCalls, p.Tokens, p.CostUSD
+	c.done, c.total, c.matched, c.modelCalls, c.tokens, c.costUSD = p.Done, p.Total, p.Matched, p.ModelCalls, p.Tokens, p.CostUSD
 }
 
 // finish records the check's end. It returns the state to publish, or a zero state (empty
@@ -175,7 +177,7 @@ func (c *Check) State() CheckState {
 
 func (c *Check) state(withRows bool) CheckState {
 	st := CheckState{ID: c.ID, AccountID: c.AccountID, Folder: c.Folder, Since: c.Since, Limit: c.Limit,
-		Fingerprint: c.Fingerprint, Status: c.status, Done: c.done, Total: c.total, ModelCalls: c.modelCalls,
+		Fingerprint: c.Fingerprint, Status: c.status, Done: c.done, Total: c.total, Matched: c.matched, ModelCalls: c.modelCalls,
 		Tokens: c.tokens, CostUSD: c.costUSD, Error: c.errMsg}
 	if withRows {
 		st.Rows = c.rows
