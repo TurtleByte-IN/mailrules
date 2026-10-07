@@ -214,11 +214,6 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		return err
 	}
 	res := out.Result
-	if res.SenderRuleID != 0 {
-		if err := p.Store.HitSenderRule(ctx, res.SenderRuleID); err != nil {
-			return err
-		}
-	}
 	if out.Asked {
 		p.Hub.Publish(events.UsageUpdated, nil)
 		u := out.Usage
@@ -231,10 +226,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	if err != nil {
 		return err
 	}
-	if !dry {
-		p.learnFrom(ctx, dec, res, m)
-	}
-	return nil
+	return p.settled(ctx, dec, res, m, dry)
 }
 
 // cameBack reports whether m, a row MailRules has done nothing with yet, is an email it
@@ -323,21 +315,30 @@ func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) 
 			return false, err
 		}
 	}
-	if out.SenderRuleID != 0 {
-		if err := p.Store.HitSenderRule(ctx, out.SenderRuleID); err != nil {
-			return false, err
-		}
-	}
 	dec := decisionFrom(out, m.ID, now)
 	dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = 0, 0, 0, 0 // paid once, on the check's ledger
 	dry, err := p.finish(ctx, &m, dec, out.Result)
 	if err != nil {
 		return false, err
 	}
-	if !dry {
-		p.learnFrom(ctx, dec, out.Result, &m)
+	return true, p.settled(ctx, dec, out.Result, &m, dry)
+}
+
+// settled does what follows an email's decision once its actions ran: the sender rule that
+// settled it counts one more hit, and a model's confident pick teaches the sender index.
+// Neither happens when the actions were only recorded in dry-run: dry-run changes nothing
+// that persists as if the actions had been carried out.
+func (p *Pipeline) settled(ctx context.Context, dec store.Decision, res rules.Result, m *store.Message, dry bool) error {
+	if dry {
+		return nil
 	}
-	return true, nil
+	if res.SenderRuleID != 0 {
+		if err := p.Store.HitSenderRule(ctx, res.SenderRuleID); err != nil {
+			return err
+		}
+	}
+	p.learnFrom(ctx, dec, res, m)
+	return nil
 }
 
 // finish records the decision, acts on it or parks the message in Needs review, sets the

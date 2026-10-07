@@ -1610,7 +1610,7 @@ export interface components {
             rule_id: number | null;
             /** @enum {string|null} */
             source: "user" | "learned" | null;
-            /** @description How often the sender rule has applied */
+            /** @description How many emails the sender rule settled whose actions were carried out; an email whose actions were only recorded in dry-run does not count */
             hits: number;
         };
         SenderPut: {
