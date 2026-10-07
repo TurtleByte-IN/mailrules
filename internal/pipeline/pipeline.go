@@ -29,6 +29,9 @@ const (
 	MaxRetries = 6
 	// ReasonNoModel is the Needs review reason while no decision model is configured.
 	ReasonNoModel = "No decision model is set"
+	// ReasonUnreadable is the decision's reason when the model's answer could not be read
+	// after every try, and the email was kept.
+	ReasonUnreadable = "The AI's answer could not be read after 3 tries, so the email was left where it is."
 
 	snippetChars = 200
 )
