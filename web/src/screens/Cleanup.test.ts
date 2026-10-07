@@ -62,6 +62,7 @@ const check = (over: Partial<CleanupCheck> = {}): CleanupCheck => ({
   cost_usd: 0.01,
   error: '',
   rows: [checkRow()],
+  exclude: [],
   ...over,
 });
 
@@ -96,6 +97,7 @@ beforeEach(() => {
     [CHECK]: [200, { check: null }],
     'POST /api/cleanup/check': [202, { check: check({ status: 'running', done: 0, total: 412, model_calls: 0, cost_usd: 0, rows: [] }) }],
     'DELETE /api/cleanup/check?account_id=7': [204],
+    'PUT /api/cleanup/check/selection': [204],
     'POST /api/cleanup/run': [202, { batch: batch({ status: 'running', done: 0 }) }],
   };
   fetchMock = vi.fn(async (url: string, init: RequestInit) => {
@@ -166,6 +168,56 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
   // Returning to the page shows the same restored rows.
   render(Cleanup);
   expect((await screen.findAllByRole('checkbox', { name: 'Sort news@substack.com · This week in Go' })).length).toBeGreaterThan(0);
+});
+
+const saves = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/cleanup/check/selection').map((c) => JSON.parse((c[1] as RequestInit).body as string));
+const three = () => [checkRow({ index: 0, from: 'a@x.io', subject: 'One' }), checkRow({ index: 1, from: 'b@x.io', subject: 'Two' }), checkRow({ index: 2, from: 'c@x.io', subject: 'Three' })];
+
+it("restores the user's ticks from the daemon on mount, after a reload or a return to the page", async () => {
+  routes[CHECK] = [200, { check: check({ rows: three(), exclude: [1] }) }];
+  render(Cleanup);
+
+  expect((await screen.findByRole<HTMLInputElement>('checkbox', { name: 'Sort a@x.io · One' })).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Sort b@x.io · Two' }).checked).toBe(false);
+  expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Sort c@x.io · Three' }).checked).toBe(true);
+  expect(screen.getByText('2 selected of 3')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Sort 2 selected' })).toBeTruthy();
+  expect(saves()).toEqual([]); // restoring is not a change: nothing is sent back
+
+  // Sort sends its own list, which is the same as the restored ticks.
+  await fireEvent.click(screen.getByRole('button', { name: 'Sort 2 selected' }));
+  await vi.waitFor(() => expect(runBody()).toEqual({ account_id: 7, check_id: 'chk1', exclude: [1] }));
+});
+
+it('a burst of tick changes saves once, with the latest list, after a short wait', async () => {
+  routes[CHECK] = [200, { check: check({ rows: three() }) }];
+  render(Cleanup);
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Sort a@x.io · One' }));
+  await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort b@x.io · Two' }));
+  await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort a@x.io · One' })); // ticked again
+  expect(saves()).toEqual([]); // still waiting for the burst to end
+
+  await vi.waitFor(() => expect(saves()).toEqual([{ account_id: 7, check_id: 'chk1', exclude: [1] }]));
+  await fireEvent.click(screen.getByRole('button', { name: 'Select none' }));
+  await vi.waitFor(() => expect(saves().at(-1)).toEqual({ account_id: 7, check_id: 'chk1', exclude: [0, 1, 2] }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+  await vi.waitFor(() => expect(saves().at(-1)).toEqual({ account_id: 7, check_id: 'chk1', exclude: [] }));
+  expect(saves()).toHaveLength(3);
+});
+
+it("a failed save says why, keeps the ticks as they are and is tried again on the next change", async () => {
+  routes[CHECK] = [200, { check: check({ rows: three() }) }];
+  routes['PUT /api/cleanup/check/selection'] = [409, { error: { code: 'preview_stale', message: 'This check is no longer current. Run a new check, then sort.' } }];
+  render(Cleanup);
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'Sort a@x.io · One' }));
+  await vi.waitFor(() => expect(toast.text).toBe('This check is no longer current. Run a new check, then sort.'));
+  expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Sort a@x.io · One' }).checked).toBe(false);
+  expect(screen.getByText('2 selected of 3')).toBeTruthy();
+
+  routes['PUT /api/cleanup/check/selection'] = [204];
+  await fireEvent.click(screen.getByRole('checkbox', { name: 'Sort b@x.io · Two' }));
+  await vi.waitFor(() => expect(saves()).toHaveLength(2));
+  expect(saves()[1]).toEqual({ account_id: 7, check_id: 'chk1', exclude: [0, 1] }); // the whole current list, not only the change
 });
 
 it('select all and select none change the count across every page', async () => {

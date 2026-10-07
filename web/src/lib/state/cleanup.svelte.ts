@@ -113,6 +113,7 @@ export function setScope(patch: Partial<Scope>) {
     loadFolders();
   }
   cleanup.check = null;
+  dropSelectionSave();
   cleanup.excluded = new Set();
   cleanup.phase = 'idle';
   loadCheck();
@@ -125,6 +126,9 @@ async function loadCheck() {
     cleanup.check = null;
     return;
   }
+  // Ticks the user changed a moment ago must reach the daemon before it is asked for them.
+  await pushSelection();
+  const ticks = tickEdits;
   let c: cleanupApi.CleanupCheck | null;
   try {
     c = await cleanupApi.getCheck(Number(id));
@@ -134,6 +138,7 @@ async function loadCheck() {
   if (id !== cleanup.scope.accountId || cleanup.phase === 'sorting') return;
   if (!c) {
     cleanup.check = null;
+    dropSelectionSave();
     cleanup.excluded = new Set();
     if (cleanup.phase !== 'done') cleanup.phase = 'idle';
     return;
@@ -141,13 +146,15 @@ async function loadCheck() {
   cleanup.scope.folder = c.folder;
   cleanup.scope.range = rangeOf(c.since);
   if (!cleanup.folders.length) loadFolders();
-  adopt(c);
+  // A tick made while the answer was on its way is newer than what the daemon sent back.
+  adopt(c, ticks !== tickEdits);
 }
 
 /** Take a check (from a GET, so its rows are present when ready or stale) and show it. */
-function adopt(c: cleanupApi.CleanupCheck) {
+function adopt(c: cleanupApi.CleanupCheck, keepTicks = false) {
   cleanup.check = c;
-  cleanup.excluded = new Set();
+  // The daemon keeps the unticked rows with the check, so a reload or a return shows the same ticks.
+  if (!keepTicks) cleanup.excluded = new Set(c.exclude);
   if (c.status === 'running') {
     cleanup.phase = 'checking';
     startCheckPoll();
@@ -161,6 +168,7 @@ export async function check() {
   if (cleanup.phase === 'checking' || cleanup.phase === 'sorting') return;
   const request = toRequest(cleanup.scope);
   cleanup.phase = 'checking';
+  dropSelectionSave();
   cleanup.excluded = new Set();
   try {
     const c = await cleanupApi.startCheck(request);
@@ -226,10 +234,12 @@ export const selectedCount = () => selectableIndices().filter((i) => !cleanup.ex
 
 export function selectAll() {
   cleanup.excluded = new Set();
+  ticksChanged();
 }
 
 export function selectNone() {
   cleanup.excluded = new Set(selectableIndices());
+  ticksChanged();
 }
 
 export function toggleRow(index: number) {
@@ -239,17 +249,78 @@ export function toggleRow(index: number) {
   if (next.has(index)) next.delete(index);
   else next.add(index);
   cleanup.excluded = next;
+  ticksChanged();
+}
+
+const SAVE_MS = 300;
+
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let saving = false;
+let dirty = false;
+let flight: Promise<void> = Promise.resolve();
+// Counts tick changes, so an answer that was asked for before one is known to be older.
+let tickEdits = 0;
+
+/** A tick changed: save the latest list shortly, one request for a burst. */
+function ticksChanged() {
+  tickEdits++;
+  if (cleanup.phase !== 'ready') return;
+  dirty = true;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(pushSelection, SAVE_MS);
+}
+
+/** Forget a save that has not gone out: the check it belonged to is gone or replaced. */
+function dropSelectionSave() {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  dirty = false;
+}
+
+/**
+ * Send the unticked rows to the daemon, one request at a time and always the latest list, so a
+ * slow earlier save can never land after a newer one. A failed save keeps the local ticks, says
+ * why, and is tried again with the next change. Resolves once nothing is left to send.
+ */
+async function pushSelection() {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  if (saving) return flight;
+  if (!dirty) return;
+  saving = true;
+  flight = (async () => {
+    try {
+      while (dirty) {
+        dirty = false;
+        const c = cleanup.check;
+        if (!c || cleanup.phase !== 'ready') return;
+        const exclude = selectableIndices().filter((i) => cleanup.excluded.has(i));
+        try {
+          await cleanupApi.saveSelection({ account_id: c.account_id, check_id: c.id, exclude });
+        } catch (e) {
+          // Not worth a word once the check it was for is gone (Sort, Discard, a new check).
+          if (cleanup.check?.id === c.id) fail(e);
+        }
+      }
+    } finally {
+      saving = false;
+    }
+  })();
+  return flight;
 }
 
 /** Refused unless the user is looking at a ready check with at least one row ticked. */
 export async function sort() {
   if (cleanup.phase !== 'ready' || !cleanup.check || selectedCount() === 0) return false;
+  // Sort sends its own list; a save of the same ticks must not chase the check Sort is about to use up.
+  dropSelectionSave();
   const exclude = selectableIndices().filter((i) => cleanup.excluded.has(i));
   const request: cleanupApi.CleanupRunRequest = { account_id: cleanup.check.account_id, check_id: cleanup.check.id, exclude };
   let b: cleanupApi.Batch;
   try {
     b = await cleanupApi.runSort(request);
   } catch (e) {
+    ticksChanged(); // the check lives on, so its saved ticks still have to be up to date
     if (e instanceof ApiError && e.code === 'preview_stale') {
       cleanup.phase = 'stale';
       flash('The rules changed since this check. Run a new check, then sort.');
@@ -260,6 +331,7 @@ export async function sort() {
   }
   cleanup.batches.unshift(b);
   cleanup.check = null;
+  dropSelectionSave();
   cleanup.excluded = new Set();
   follow(b);
   progress(b);
@@ -276,6 +348,7 @@ export async function discard() {
   }
   stopCheckPoll();
   cleanup.check = null;
+  dropSelectionSave();
   cleanup.excluded = new Set();
   cleanup.phase = 'idle';
 }

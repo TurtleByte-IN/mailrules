@@ -397,6 +397,135 @@ func TestCleanupRunRefusals(t *testing.T) {
 	}
 }
 
+// The user's ticks are kept with the check, in the daemon's memory, so a reload shows the
+// same table: saved, returned by GET, validated, and gone when the check is replaced,
+// discarded or used by Sort. Sort takes its own explicit list, never the saved one.
+func TestCleanupSelectionIsKeptWithTheCheck(t *testing.T) {
+	e := newEnv(t)
+	for i := range 5 {
+		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
+	}
+	for i := range 3 {
+		e.deliver("hello@news.example", fmt.Sprintf("reading digest %d", i))
+	}
+	for i := range 2 {
+		e.deliver("friend@example.org", fmt.Sprintf("lunch %d", i)) // no rule: not selectable
+	}
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated)
+	e.decider.DecideFunc = cleanupDeciderFunc
+
+	put := func(body map[string]any, status int) {
+		e.t.Helper()
+		b, _ := json.Marshal(body)
+		e.call(http.MethodPut, "/api/cleanup/check/selection", string(b), status)
+	}
+	refusePut := func(body map[string]any, status int, code, path string) {
+		e.t.Helper()
+		b, _ := json.Marshal(body)
+		e.refuse(http.MethodPut, "/api/cleanup/check/selection", string(b), status, code, path)
+	}
+	excludeOf := func(chk map[string]any) []int {
+		e.t.Helper()
+		got := []int{}
+		for _, v := range chk["exclude"].([]any) {
+			got = append(got, int(id(v)))
+		}
+		return got
+	}
+	indices := func(chk map[string]any) (selectable []int, unselectable int) {
+		unselectable = -1
+		for _, r := range rowsOf(chk) {
+			if r["selectable"].(bool) {
+				selectable = append(selectable, int(id(r["index"])))
+			} else {
+				unselectable = int(id(r["index"]))
+			}
+		}
+		return selectable, unselectable
+	}
+
+	// A fresh check has nothing unticked.
+	chk := e.checkReady(`{"account_id":1}`)
+	conform(t, e.doc, "CleanupCheck", chk)
+	selectable, unselectable := indices(chk)
+	if len(selectable) != 8 || unselectable < 0 || len(excludeOf(chk)) != 0 {
+		t.Fatalf("fresh check: %d selectable, exclude %v", len(selectable), chk["exclude"])
+	}
+	a, b := selectable[1], selectable[5]
+
+	// Saved in any order, returned ascending, the same on every GET (a reload).
+	put(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{b, a, b}}, http.StatusNoContent)
+	for range 2 {
+		got := e.getCheck(1)
+		conform(t, e.doc, "CleanupCheck", got)
+		if ex := excludeOf(got); !slices.Equal(ex, []int{a, b}) || got["id"] != chk["id"] {
+			t.Fatalf("GET after saving: exclude %v, want %v", ex, []int{a, b})
+		}
+	}
+	// Saving again replaces the list; an empty list ticks everything.
+	put(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{a}}, http.StatusNoContent)
+	if ex := excludeOf(e.getCheck(1)); !slices.Equal(ex, []int{a}) {
+		t.Fatalf("replaced selection = %v", ex)
+	}
+
+	// Refusals: a body that names no check, an unknown account, a foreign check, a row that
+	// cannot be ticked or does not exist.
+	refusePut(map[string]any{"account_id": 9, "check_id": chk["id"], "exclude": []int{}}, http.StatusBadRequest, "invalid_input", "account_id")
+	refusePut(map[string]any{"account_id": 1, "exclude": []int{}}, http.StatusBadRequest, "invalid_input", "check_id")
+	refusePut(map[string]any{"account_id": 1, "check_id": "nope", "exclude": []int{}}, http.StatusConflict, "preview_stale", "")
+	for _, bad := range []int{unselectable, -1, 1000} {
+		refusePut(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{a, bad}}, http.StatusBadRequest, "invalid_input", "exclude")
+	}
+	if ex := excludeOf(e.getCheck(1)); !slices.Equal(ex, []int{a}) {
+		t.Errorf("a refused save changed the selection to %v", ex)
+	}
+
+	// A new check replaces the old one and starts with everything ticked; the old id is refused.
+	newer := e.checkReady(`{"account_id":1}`)
+	if len(excludeOf(newer)) != 0 || newer["id"] == chk["id"] {
+		t.Fatalf("new check kept the selection: %v", newer["exclude"])
+	}
+	refusePut(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{a}}, http.StatusConflict, "preview_stale", "")
+
+	// Discard clears it: the id is gone, and the next check starts clean.
+	put(map[string]any{"account_id": 1, "check_id": newer["id"], "exclude": []int{a}}, http.StatusNoContent)
+	e.call(http.MethodDelete, "/api/cleanup/check?account_id=1", "", http.StatusNoContent)
+	refusePut(map[string]any{"account_id": 1, "check_id": newer["id"], "exclude": []int{a}}, http.StatusConflict, "preview_stale", "")
+	chk = e.checkReady(`{"account_id":1}`)
+	if len(excludeOf(chk)) != 0 {
+		t.Fatalf("a check after Discard has selection %v", chk["exclude"])
+	}
+
+	// A rule edit makes the check stale, and a stale check takes no selection.
+	put(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{a}}, http.StatusNoContent)
+	e.call(http.MethodPatch, "/api/rules/1", `{"actions":[{"type":"archive"}]}`, http.StatusOK)
+	refusePut(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{a}}, http.StatusConflict, "preview_stale", "")
+
+	// A check that failed is not ready either.
+	e.decider.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
+		return models.Decision{}, models.Usage{}, fmt.Errorf("the model is down")
+	}
+	failed := e.checkReady(`{"account_id":1}`)
+	refusePut(map[string]any{"account_id": 1, "check_id": failed["id"], "exclude": []int{}}, http.StatusConflict, "check_not_ready", "")
+	e.decider.DecideFunc = cleanupDeciderFunc
+
+	// Sort uses its own explicit list, not the saved one, and deletes the check with its selection.
+	chk = e.checkReady(`{"account_id":1}`)
+	selectable, _ = indices(chk)
+	put(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": selectable[:3]}, http.StatusNoContent)
+	run, _ := json.Marshal(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{}})
+	batch := e.call(http.MethodPost, "/api/cleanup/run", string(run), http.StatusAccepted)["batch"].(map[string]any)
+	e.batchDone(id(batch["id"]))
+	if got := e.folderCount("INBOX"); got != 2 { // all 8 selectable rows were sorted; only the two unmatched stay
+		t.Errorf("INBOX holds %d after Sort, want 2: the saved selection must not decide what Sort does", got)
+	}
+	if e.getCheck(1) != nil {
+		t.Error("the check, and its selection, outlived the Sort")
+	}
+	refusePut(map[string]any{"account_id": 1, "check_id": chk["id"], "exclude": []int{}}, http.StatusConflict, "preview_stale", "")
+}
+
 // A check of an offline account is refused; the scope is validated like the old preview was.
 func TestCleanupCheckScope(t *testing.T) {
 	e := newEnv(t)

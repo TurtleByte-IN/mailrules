@@ -7,6 +7,7 @@ export type CleanupCheck = components['schemas']['CleanupCheck'];
 export type CleanupCheckRow = components['schemas']['CleanupCheckRow'];
 export type CleanupCheckRequest = components['schemas']['CleanupCheckRequest'];
 export type CleanupRunRequest = components['schemas']['CleanupRunRequest'];
+export type CleanupSelectionRequest = components['schemas']['CleanupSelectionRequest'];
 export type Folder = components['schemas']['Folder'];
 type Page = operations['listBatches']['responses'][200]['content']['application/json'];
 
@@ -17,6 +18,8 @@ export const getCheck = (accountId: number) =>
   api<{ check: CleanupCheck | null }>('GET', '/cleanup/check' + query({ account_id: accountId })).then((x) => x.check);
 /** Throw the account's check away. */
 export const discardCheck = (accountId: number) => api<void>('DELETE', '/cleanup/check' + query({ account_id: accountId }));
+/** Keep the user's unticked rows with the check, so a reload shows the same ticks; Sort takes its own list. */
+export const saveSelection = (r: CleanupSelectionRequest) => api<void>('PUT', '/cleanup/check/selection', r);
 /** Sort the kept rows of a check; replays its saved decisions, no model calls. */
 export const runSort = (r: CleanupRunRequest) => api<{ batch: Batch }>('POST', '/cleanup/run', r).then((x) => x.batch);
 /** Past cleanup runs, newest first. */

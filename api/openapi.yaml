@@ -978,6 +978,29 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id)
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+  /api/cleanup/check/selection:
+    put:
+      tags: [Cleanup]
+      operationId: saveCleanupSelection
+      summary: Save which rows of the current check are unticked
+      description: |
+        Keeps the user's ticks with the check, in the daemon's memory, so a page reload or a
+        return to the screen shows the same table: `exclude` lists the `index` of every
+        selectable row that is not ticked, and replaces any earlier list. The default, and the
+        state of a new check, is an empty list: every selectable row is ticked. The selection
+        is deleted with the check: when Sort uses it, when it is discarded, and when a new check
+        of the mailbox replaces it. It only restores the screen: Sort takes its own `exclude`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CleanupSelectionRequest' }
+      responses:
+        '204': { description: Saved }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | check_id | exclude: a row that cannot be ticked or does not exist), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # preview_stale (the check is gone, replaced, or the rules changed), check_not_ready
   /api/cleanup/run:
     post:
       tags: [Cleanup]
@@ -1837,6 +1860,14 @@ components:
         folder: { type: string, description: 'One folder of the account; left out = INBOX. There is no "all folders"' }
         since: { type: [integer, 'null'], format: int64, description: Only mail received on or after this time's date; null = all of it }
         limit: { type: integer, minimum: 1, description: 'Only the newest N emails; capped at 2000' }
+    CleanupSelectionRequest:
+      type: object
+      required: [account_id, check_id, exclude]
+      additionalProperties: false
+      properties:
+        account_id: { type: integer, format: int64 }
+        check_id: { type: string, description: The check the ticks belong to; it must still be the account's current one }
+        exclude: { type: array, items: { type: integer }, description: 'Row indices (CleanupCheckRow.index) of selectable rows that are not ticked; empty = all ticked' }
     CleanupRunRequest:
       type: object
       required: [account_id, check_id]
@@ -1848,7 +1879,7 @@ components:
     CleanupCheck:
       type: object
       description: One real check of a mailbox, held in the daemon's memory until Sort uses it or it is discarded
-      required: [id, account_id, folder, since, limit, status, done, total, model_calls, tokens, cost_usd, error, rows]
+      required: [id, account_id, folder, since, limit, status, done, total, model_calls, tokens, cost_usd, error, rows, exclude]
       properties:
         id: { type: string, description: Changes with every new check of the account }
         account_id: { type: integer, format: int64 }
@@ -1863,6 +1894,7 @@ components:
         cost_usd: { type: number, description: Real model cost so far }
         error: { type: string, description: Why the check failed; empty otherwise }
         rows: { type: array, items: { $ref: '#/components/schemas/CleanupCheckRow' }, description: 'One per checked email, newest first; present when ready or stale, empty otherwise' }
+        exclude: { type: array, items: { type: integer }, description: 'The saved selection (PUT /api/cleanup/check/selection): indices of selectable rows that are not ticked, ascending; empty = all ticked. Present with the rows, empty otherwise' }
     CleanupCheckRow:
       type: object
       description: One checked email and how the real flow settled it

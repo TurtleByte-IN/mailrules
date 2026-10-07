@@ -124,6 +124,7 @@ func (s *server) routes() []route {
 		on(post, "/api/cleanup/check", s.handleCleanupCheckStart),
 		on(get, "/api/cleanup/check", s.handleCleanupCheckGet),
 		on(del, "/api/cleanup/check", s.handleCleanupCheckDelete),
+		on(put, "/api/cleanup/check/selection", s.handleCleanupSelection),
 		on(post, "/api/cleanup/run", s.handleCleanupRun),
 		on(get, "/api/templates", s.handleTemplates),
 		on(get, "/api/stats/summary", s.handleStatsSummary),

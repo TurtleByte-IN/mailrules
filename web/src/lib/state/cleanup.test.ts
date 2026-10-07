@@ -63,6 +63,7 @@ const check = (over: Partial<CleanupCheck> = {}): CleanupCheck => ({
   cost_usd: 0,
   error: '',
   rows: [],
+  exclude: [],
   ...over,
 });
 // Two selectable rows and one that must wait in Needs review.
@@ -85,6 +86,7 @@ beforeEach(async () => {
     [CHECK]: [200, { check: null }],
     'POST /api/cleanup/check': [202, { check: check() }],
     'DELETE /api/cleanup/check?account_id=7': [204],
+    'PUT /api/cleanup/check/selection': [204],
     'POST /api/cleanup/run': [202, { batch: batch() }],
     'GET /api/batches/3': [200, { batch: batch({ done: 29 }) }],
     'POST /api/batches/3/undo': [200, { batch: { ...finished, status: 'undone' }, undone: 310, failed: 0 } satisfies UndoResult],
@@ -218,6 +220,110 @@ it('select all, none and toggle count only the selectable rows, across the whole
   expect(m.selectedCount()).toBe(1);
   m.toggleRow(2); // not selectable: ignored
   expect(m.selectedCount()).toBe(1);
+});
+
+const SAVE = '/api/cleanup/check/selection';
+const SAVE_WAIT = 300;
+
+it("the daemon's saved ticks come back with the check and are what the table shows", async () => {
+  await toReady({ ...readyCheck, exclude: [1] });
+  expect([...m.cleanup.excluded]).toEqual([1]);
+  expect(m.selectedCount()).toBe(1);
+  expect(sent(SAVE)).toEqual([]);
+});
+
+it('tick changes are saved once after a short wait, latest list only', async () => {
+  await toReady();
+  m.toggleRow(0);
+  m.toggleRow(1);
+  m.toggleRow(0);
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT - 1);
+  expect(sent(SAVE)).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(sent(SAVE)).toEqual([{ account_id: 7, check_id: 'chk1', exclude: [1] }]);
+  m.selectNone();
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  m.selectAll();
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  expect(sent(SAVE).map((b) => b.exclude)).toEqual([[1], [0, 1], []]);
+});
+
+it('a failed save toasts the daemon\'s message, keeps the ticks and retries on the next change', async () => {
+  await toReady();
+  routes['PUT ' + SAVE] = [409, { error: { code: 'preview_stale', message: 'The rules changed since this check. Run a new check, then sort.' } }];
+  m.toggleRow(0);
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  expect(toast.text).toBe('The rules changed since this check. Run a new check, then sort.');
+  expect([...m.cleanup.excluded]).toEqual([0]);
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(sent(SAVE)).toHaveLength(1); // no retry loop of its own
+
+  routes['PUT ' + SAVE] = [204];
+  m.toggleRow(1);
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  expect(sent(SAVE).at(-1)).toEqual({ account_id: 7, check_id: 'chk1', exclude: [0, 1] });
+});
+
+it('saves go one at a time, so a slow earlier save cannot land after a newer one', async () => {
+  await toReady();
+  let release!: () => void;
+  fetchMock.mockImplementationOnce(async () => {
+    await new Promise<void>((r) => (release = r));
+    return new Response(null, { status: 204 });
+  });
+  m.toggleRow(0);
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  expect(sent(SAVE)).toHaveLength(1); // the first is still on its way
+  m.toggleRow(1);
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  expect(sent(SAVE)).toHaveLength(1); // the second waits for it
+  release();
+  await flush();
+  expect(sent(SAVE).map((b) => b.exclude)).toEqual([[0], [0, 1]]);
+  expect([...m.cleanup.excluded].sort()).toEqual([0, 1]);
+});
+
+it('an answer asked for before a tick does not overwrite it, and pending ticks reach the daemon before it is asked', async () => {
+  await toReady();
+  // A GET of the check that is slow to answer, with the ticks as the daemon had them.
+  let release!: () => void;
+  const orig = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
+    if (init.method === 'GET' && url === '/api/cleanup/check?account_id=7') await new Promise<void>((r) => (release = r));
+    return orig(url, init);
+  });
+  const loading = m.load();
+  await flush();
+  m.toggleRow(1); // ticked off while the answer is on its way
+  release();
+  await loading;
+  expect([...m.cleanup.excluded]).toEqual([1]);
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT);
+  expect(sent(SAVE)).toEqual([{ account_id: 7, check_id: 'chk1', exclude: [1] }]);
+
+  // Returning to the page with a change that has not been sent yet sends it first.
+  fetchMock.mockClear();
+  fetchMock.mockImplementation(orig);
+  m.toggleRow(0);
+  await m.load();
+  const order = fetchMock.mock.calls.map((c) => (c[1] as RequestInit).method + ' ' + c[0]);
+  expect(order.indexOf('PUT ' + SAVE)).toBeGreaterThanOrEqual(0);
+  expect(order.indexOf('PUT ' + SAVE)).toBeLessThan(order.indexOf('GET /api/cleanup/check?account_id=7'));
+});
+
+it('Discard, Sort and a new check drop an unsent save', async () => {
+  await toReady();
+  m.toggleRow(0);
+  await m.discard();
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT * 2);
+  expect(sent(SAVE)).toEqual([]);
+
+  await toReady();
+  m.toggleRow(0);
+  await m.sort();
+  await vi.advanceTimersByTimeAsync(SAVE_WAIT * 2);
+  expect(sent(SAVE)).toEqual([]);
+  expect(sent('/api/cleanup/run').at(-1)).toEqual({ account_id: 7, check_id: 'chk1', exclude: [0] });
 });
 
 it('a check being run refuses a new scope', async () => {

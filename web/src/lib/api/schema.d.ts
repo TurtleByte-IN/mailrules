@@ -807,6 +807,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cleanup/check/selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Save which rows of the current check are unticked
+         * @description Keeps the user's ticks with the check, in the daemon's memory, so a page reload or a
+         *     return to the screen shows the same table: `exclude` lists the `index` of every
+         *     selectable row that is not ticked, and replaces any earlier list. The default, and the
+         *     state of a new check, is an empty list: every selectable row is ticked. The selection
+         *     is deleted with the check: when Sort uses it, when it is discarded, and when a new check
+         *     of the mailbox replaces it. It only restores the screen: Sort takes its own `exclude`.
+         */
+        put: operations["saveCleanupSelection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cleanup/run": {
         parameters: {
             query?: never;
@@ -1702,6 +1727,14 @@ export interface components {
             /** @description Only the newest N emails; capped at 2000 */
             limit?: number;
         };
+        CleanupSelectionRequest: {
+            /** Format: int64 */
+            account_id: number;
+            /** @description The check the ticks belong to; it must still be the account's current one */
+            check_id: string;
+            /** @description Row indices (CleanupCheckRow.index) of selectable rows that are not ticked; empty = all ticked */
+            exclude: number[];
+        };
         CleanupRunRequest: {
             /** Format: int64 */
             account_id: number;
@@ -1744,6 +1777,8 @@ export interface components {
             error: string;
             /** @description One per checked email, newest first; present when ready or stale, empty otherwise */
             rows: components["schemas"]["CleanupCheckRow"][];
+            /** @description The saved selection (PUT /api/cleanup/check/selection): indices of selectable rows that are not ticked, ascending; empty = all ticked. Present with the rows, empty otherwise */
+            exclude: number[];
         };
         /** @description One checked email and how the real flow settled it */
         CleanupCheckRow: {
@@ -3309,6 +3344,32 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+        };
+    };
+    saveCleanupSelection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CleanupSelectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Saved */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
         };
     };
     runCleanup: {

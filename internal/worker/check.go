@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -106,6 +107,7 @@ type Check struct {
 	costUSD    float64
 	errMsg     string
 	rows       []composer.CheckRow
+	exclude    []int // the user's unticked selectable row indices, ascending; nil = every selectable row ticked
 	cancel     context.CancelFunc
 }
 
@@ -126,6 +128,9 @@ type CheckState struct {
 	CostUSD     float64
 	Error       string
 	Rows        []composer.CheckRow
+	// Exclude is the saved selection: the unticked selectable row indices, ascending. It
+	// lives only as long as the check (MAI-44) and is never written anywhere else.
+	Exclude []int
 }
 
 func (c *Check) setProgress(p composer.CheckProgress) {
@@ -174,8 +179,23 @@ func (c *Check) state(withRows bool) CheckState {
 		Tokens: c.tokens, CostUSD: c.costUSD, Error: c.errMsg}
 	if withRows {
 		st.Rows = c.rows
+		st.Exclude = slices.Clone(c.exclude)
 	}
 	return st
+}
+
+// SetExclude saves the user's selection: the unticked row indices, stored sorted and
+// without repeats. It reports false when the check is not ready, since a running, failed or
+// stale check has no table to tick. Whether the indices name selectable rows is the
+// caller's to check.
+func (c *Check) SetExclude(ids []int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.status != CheckReady {
+		return false
+	}
+	c.exclude = slices.Compact(slices.Sorted(slices.Values(ids)))
+	return true
 }
 
 // CheckFunc runs the read-only check and returns its rows. The daemon calls it on the

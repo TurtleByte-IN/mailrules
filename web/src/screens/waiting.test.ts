@@ -162,7 +162,7 @@ it('Rules: undoing what a rule did today is busy until the daemon is through', a
 
 it('Cleanup: a running check shows a waiting state until it is ready', async () => {
   Object.assign(cleanupState, { phase: 'idle', check: null, excluded: new Set(), batch: null, batches: [], next: null, status: 'ready', scope: { accountId: '3', folder: 'INBOX', range: '90' }, folders: [] });
-  const base = { id: 'c1', account_id: 3, folder: 'INBOX', since: null, limit: null, done: 0, total: 0, model_calls: 0, tokens: 0, cost_usd: 0, error: '', rows: [] };
+  const base = { id: 'c1', account_id: 3, folder: 'INBOX', since: null, limit: null, done: 0, total: 0, model_calls: 0, tokens: 0, cost_usd: 0, error: '', rows: [], exclude: [] };
   let current: unknown = null;
   let releaseCheck: (() => void) | null = null;
   vi.stubGlobal(

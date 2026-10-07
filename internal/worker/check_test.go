@@ -179,3 +179,29 @@ func TestStartCheckReplacesRunning(t *testing.T) {
 	cancel()
 	m.Wait()
 }
+
+// The saved selection is stored sorted and without repeats, only for a ready check, and
+// is handed out as a copy, so nobody can change it behind the check's back.
+func TestCheckSetExclude(t *testing.T) {
+	for _, status := range []string{CheckRunning, CheckFailed, CheckStale} {
+		if c := (&Check{status: status}); c.SetExclude([]int{1}) || len(c.State().Exclude) != 0 {
+			t.Errorf("a %s check took a selection", status)
+		}
+	}
+	c := &Check{status: CheckReady}
+	if !c.SetExclude([]int{5, 2, 5, 9}) {
+		t.Fatal("a ready check refused a selection")
+	}
+	got := c.State().Exclude
+	if want := []int{2, 5, 9}; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("selection = %v, want %v", got, want)
+	}
+	got[0] = 99
+	if c.State().Exclude[0] != 2 {
+		t.Error("State handed out the check's own slice")
+	}
+	c.SetExclude(nil)
+	if len(c.State().Exclude) != 0 {
+		t.Error("an empty list did not clear the selection")
+	}
+}

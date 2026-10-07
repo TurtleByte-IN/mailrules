@@ -22,7 +22,7 @@ Record the result at the bottom. Any unticked box blocks the release.
 - [ ] **A condition rule would move mail.** Create a rule from conditions only (for example: sender is the second address, move to a folder named `Smoke`). Send another mail. The feed shows the rule and the move it would make, marked as dry-run.
 - [ ] **Nothing changed.** In webmail the message is still in the inbox, unread, and the folder `Smoke` has no new mail.
 - [ ] **Needs review.** Send a mail no rule clearly covers (or remove the model key and send one that needs a model). It shows up in Needs review with a reason; resolving it there records the choice [`GET /api/review`, `POST /api/review/{message_id}/resolve`].
-- [ ] **Cleanup check.** Check a cleanup of the inbox. "N of M checked" moves, the model calls and real cost grow, and the table then shows one row per email with the rule, action and confidence; nothing in the mailbox changes [`POST /api/cleanup/check`, `GET /api/cleanup/check`]. Reload the page mid-check and after it: the same check and table come back.
+- [ ] **Cleanup check.** Check a cleanup of the inbox. "N of M checked" moves, the model calls and real cost grow, and the table then shows one row per email with the rule, action and confidence; nothing in the mailbox changes [`POST /api/cleanup/check`, `GET /api/cleanup/check`]. Reload the page mid-check and after it: the same check and table come back, with the same rows unticked.
 - [ ] **Cleanup Sort in dry-run.** Untick a few rows, then Sort the rest. The batch finishes, and nothing in the mailbox changes [`POST /api/cleanup/run`].
 
 ## 3. Live

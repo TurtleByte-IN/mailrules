@@ -216,6 +216,77 @@ func (s *server) checkAccount(w http.ResponseWriter, r *http.Request) (int64, bo
 	return id, true
 }
 
+// readyCheck returns the account's current check when it is the one named, ready and still
+// in step with the rules, or answers why not (409 preview_stale for a replaced, gone or
+// stale check, 409 check_not_ready while it runs or after it failed) and returns false.
+func (s *server) readyCheck(w http.ResponseWriter, r *http.Request, accountID int64, checkID string) (*worker.Check, worker.CheckState, bool) {
+	chk := s.Checks.Get(accountID)
+	if chk == nil || chk.State().ID != checkID {
+		writeError(w, http.StatusConflict, "preview_stale", "This check is no longer current. Run a new check, then sort.", "")
+		return nil, worker.CheckState{}, false
+	}
+	st := chk.State()
+	// A ready check may have gone stale: the rules changed since it ran.
+	if st.Status == worker.CheckReady {
+		fp, err := s.currentFingerprint(r.Context(), user(r).ID)
+		if err != nil {
+			internalError(w, r, err)
+			return nil, worker.CheckState{}, false
+		}
+		if fp != st.Fingerprint {
+			chk.MarkStale()
+			st = chk.State()
+		}
+	}
+	switch st.Status {
+	case worker.CheckReady:
+		return chk, st, true
+	case worker.CheckStale:
+		writeError(w, http.StatusConflict, "preview_stale", "The rules changed since this check. Run a new check, then sort.", "")
+	default: // running or failed
+		writeError(w, http.StatusConflict, "check_not_ready", "This check is not ready to sort yet.", "")
+	}
+	return nil, worker.CheckState{}, false
+}
+
+// handleCleanupSelection saves which rows of the current check the user has unticked, so a
+// page reload or a return to the screen shows the same ticks. It lives only as long as the
+// check, in the daemon's memory (MAI-44): Sort, Discard and a new check all drop it. Sort
+// still takes its own explicit exclude list; this one only restores the screen.
+func (s *server) handleCleanupSelection(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AccountID int64  `json:"account_id"`
+		CheckID   string `json:"check_id"`
+		Exclude   []int  `json:"exclude"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if _, err := s.store.Account(r.Context(), in.AccountID); err != nil {
+		invalid(w, "account_id", "No such account.")
+		return
+	}
+	if in.CheckID == "" {
+		invalid(w, "check_id", "Say which check this selection is for.")
+		return
+	}
+	chk, st, ok := s.readyCheck(w, r, in.AccountID, in.CheckID)
+	if !ok {
+		return
+	}
+	for _, i := range in.Exclude {
+		if i < 0 || i >= len(st.Rows) || !selectableRow(st.Rows[i]) {
+			invalid(w, "exclude", "Only rows that can be ticked can be left out.")
+			return
+		}
+	}
+	if !chk.SetExclude(in.Exclude) { // a Sort or a new check got in between
+		writeError(w, http.StatusConflict, "check_not_ready", "This check is not ready to sort yet.", "")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleCleanupRun applies a finished check's kept rows, as one undoable cleanup batch,
 // making no model calls. The body names the check and, as an exclude list of row indices,
 // the selectable rows the user unticked. The run is refused when the check is not this
@@ -239,31 +310,8 @@ func (s *server) handleCleanupRun(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "check_id", "Say which check to sort: run a check first.")
 		return
 	}
-	chk := s.Checks.Get(in.AccountID)
-	if chk == nil || chk.State().ID != in.CheckID {
-		writeError(w, http.StatusConflict, "preview_stale", "This check is no longer current. Run a new check, then sort.", "")
-		return
-	}
-	st := chk.State()
-	// A ready check may have gone stale: the rules changed since it ran.
-	if st.Status == worker.CheckReady {
-		fp, err := s.currentFingerprint(ctx, user(r).ID)
-		if err != nil {
-			internalError(w, r, err)
-			return
-		}
-		if fp != st.Fingerprint {
-			chk.MarkStale()
-			st = chk.State()
-		}
-	}
-	switch st.Status {
-	case worker.CheckReady:
-	case worker.CheckStale:
-		writeError(w, http.StatusConflict, "preview_stale", "The rules changed since this check. Run a new check, then sort.", "")
-		return
-	default: // running or failed
-		writeError(w, http.StatusConflict, "check_not_ready", "This check is not ready to sort yet.", "")
+	_, st, ok := s.readyCheck(w, r, in.AccountID, in.CheckID)
+	if !ok {
 		return
 	}
 
@@ -335,12 +383,15 @@ type cleanupCheckJSON struct {
 	CostUSD    float64        `json:"cost_usd"`
 	Error      string         `json:"error"`
 	Rows       []checkRowJSON `json:"rows"`
+	// Exclude is the saved selection: the unticked selectable rows' indices, ascending.
+	// Empty means every selectable row is ticked.
+	Exclude []int `json:"exclude"`
 }
 
 // checkJSON shapes a check for the browser. Rows are present only when it is ready or stale.
 func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 	out := cleanupCheckJSON{ID: st.ID, AccountID: st.AccountID, Folder: st.Folder, Since: ts(st.Since), Status: st.Status,
-		Done: st.Done, Total: st.Total, ModelCalls: st.ModelCalls, Tokens: st.Tokens, CostUSD: st.CostUSD, Error: st.Error, Rows: []checkRowJSON{}}
+		Done: st.Done, Total: st.Total, ModelCalls: st.ModelCalls, Tokens: st.Tokens, CostUSD: st.CostUSD, Error: st.Error, Rows: []checkRowJSON{}, Exclude: append([]int{}, st.Exclude...)}
 	if st.Limit > 0 {
 		out.Limit = &st.Limit
 	}
