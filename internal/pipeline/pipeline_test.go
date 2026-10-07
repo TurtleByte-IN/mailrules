@@ -119,14 +119,24 @@ func newEnv(t *testing.T) *env {
 }
 
 func (e *env) deliver(from, subject string) mail.MsgRef {
+	return e.deliverWith(from, subject, "")
+}
+
+// deliverWith delivers an email carrying extra header lines, each ending in CRLF.
+func (e *env) deliverWith(from, subject, headers string) mail.MsgRef {
 	return e.mb.Deliver("INBOX", "From: "+from+"\r\nTo: me@example.test\r\nSubject: "+subject+
-		"\r\nMessage-ID: <"+strings.ReplaceAll(subject, " ", "-")+"@example.test>\r\n\r\nThe body of "+subject+".\r\n")
+		"\r\nMessage-ID: <"+strings.ReplaceAll(subject, " ", "-")+"@example.test>\r\n"+headers+"\r\nThe body of "+subject+".\r\n")
 }
 
 // process delivers one email, runs it through the pipeline and returns its activity row.
 func (e *env) process(from, subject string) store.ActivityRow {
 	e.t.Helper()
-	ref := e.deliver(from, subject)
+	return e.processWith(from, subject, "")
+}
+
+func (e *env) processWith(from, subject, headers string) store.ActivityRow {
+	e.t.Helper()
+	ref := e.deliverWith(from, subject, headers)
 	if err := e.p.Process(e.t.Context(), ref); err != nil {
 		e.t.Fatal(err)
 	}
@@ -563,6 +573,53 @@ func TestLearnedSenderRule(t *testing.T) {
 	}
 	if row := e.process(sender, "order 9"); row.Decision.Stage != "sender" || row.Decision.RuleID != e.receipts.ID {
 		t.Errorf("user sender rule not used: %+v", row.Decision)
+	}
+}
+
+// A newsletter-type sender (bulk mail that passed DMARC) is learned from one confident
+// decision, so its next email skips the model (PRD R15). Anything less keeps the rule of three.
+func TestBulkSenderLearnedAfterOne(t *testing.T) {
+	const (
+		sender = "news@weekly.example"
+		unsub  = "List-Unsubscribe: <mailto:unsubscribe@weekly.example>\r\n"
+		pass   = "Authentication-Results: mx.example.test; dmarc=pass header.from=weekly.example\r\n"
+		none   = "Authentication-Results: mx.example.test; dmarc=none header.from=weekly.example\r\n"
+	)
+	for name, tc := range map[string]struct {
+		earlier    bool // the sender's previous email went to another rule
+		headers    string
+		confidence float64
+		learned    bool
+	}{
+		"bulk that passed DMARC":         {headers: unsub + pass, confidence: 0.95, learned: true},
+		"Precedence list counts as bulk": {headers: "Precedence: list\r\n" + pass, confidence: 0.95, learned: true},
+		"bulk without a DMARC pass":      {headers: unsub + none, confidence: 0.95},
+		"DMARC pass but not bulk":        {headers: pass, confidence: 0.95},
+		"not confident enough to learn":  {headers: unsub + pass, confidence: 0.8},
+		"an earlier decision disagrees":  {earlier: true, headers: unsub + pass, confidence: 0.95},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			if tc.earlier {
+				e.primary.DecideFunc = answer(e.receipts.ID, 0.95)
+				e.process(sender, "issue 1")
+			}
+			e.primary.DecideFunc = answer(e.food.ID, tc.confidence)
+			e.processWith(sender, "issue 2", tc.headers)
+
+			srs, err := e.st.SenderRules(t.Context(), e.user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(srs) == 1 && srs[0].Value == sender && srs[0].RuleID == e.food.ID && srs[0].Source == "learned"; got != tc.learned {
+				t.Fatalf("learned = %v, want %v: %+v", got, tc.learned, srs)
+			}
+			calls := len(e.primary.Requests())
+			row := e.processWith(sender, "issue 3", tc.headers)
+			if skipped := len(e.primary.Requests()) == calls && row.Decision.Stage == "sender"; skipped != tc.learned {
+				t.Errorf("next email skipped the model = %v, want %v (stage %s)", skipped, tc.learned, row.Decision.Stage)
+			}
+		})
 	}
 }
 

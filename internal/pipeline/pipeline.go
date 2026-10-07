@@ -215,7 +215,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	if err := p.finish(ctx, m, dec, res); err != nil {
 		return err
 	}
-	p.learnFrom(ctx, dec, res, sum.From)
+	p.learnFrom(ctx, dec, res, m)
 	return nil
 }
 
@@ -234,11 +234,12 @@ func decisionFrom(out Outcome, messageID int64, now time.Time) store.Decision {
 }
 
 // learnFrom teaches the sender index from a model's own confident pick, as the only thing
-// that tells us anything new about a sender. A failure is logged and costs the lesson, not
-// the decision.
-func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.Result, from string) {
-	if (dec.Stage == string(rules.StageDecider) || dec.Stage == "fallback") && !res.Review && from != "" {
-		if _, err := learn.Observe(ctx, p.Store, p.Account.UserID, from, p.now().Unix()); err != nil {
+// that tells us anything new about a sender. Bulk mail that passed DMARC is learned from
+// sooner (learn.AfterBulk). A failure is logged and costs the lesson, not the decision.
+func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.Result, m *store.Message) {
+	if (dec.Stage == string(rules.StageDecider) || dec.Stage == "fallback") && !res.Review && m.FromAddr != "" {
+		bulk := m.Signals.Bulk && m.Signals.DMARC == "pass"
+		if _, err := learn.Observe(ctx, p.Store, p.Account.UserID, m.FromAddr, bulk, p.now().Unix()); err != nil {
 			slog.WarnContext(ctx, "could not update learned sender rules", "account", p.Account.ID, "error", err.Error())
 		}
 	}
@@ -282,7 +283,7 @@ func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) 
 	if err := p.finish(ctx, &m, dec, out.Result); err != nil {
 		return false, err
 	}
-	p.learnFrom(ctx, dec, out.Result, m.FromAddr)
+	p.learnFrom(ctx, dec, out.Result, &m)
 	return true, nil
 }
 
