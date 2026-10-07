@@ -230,9 +230,9 @@ func mismatches(doc map[string]any, where string, s map[string]any, got any) []s
 }
 
 // The number of emails a test reads has one source, composer.DefaultLimit and MaxLimit; the
-// contract states it and the web UI mirrors it (the generated types carry no numeric bounds
-// to read it from). A change to one without the others fails here.
-func TestTestLimitsAgreeEverywhere(t *testing.T) {
+// contract states it. The web UI reads it from GET /api/settings `limits` (MAI-41), so it
+// repeats nothing. A change to the constants without the contract fails here.
+func TestTestLimitsAgreeWithTheContract(t *testing.T) {
 	schemas := spec(t)["components"].(map[string]any)["schemas"].(map[string]any)
 	limit := schemas["TestRequest"].(map[string]any)["properties"].(map[string]any)["limit"].(map[string]any)
 	if limit["minimum"] != 1 || limit["maximum"] != composer.MaxLimit {
@@ -240,21 +240,6 @@ func TestTestLimitsAgreeEverywhere(t *testing.T) {
 	}
 	if want := fmt.Sprintf("Left out = %d.", composer.DefaultLimit); !strings.Contains(limit["description"].(string), want) {
 		t.Errorf("api/openapi.yaml TestRequest.limit says %q; the daemon's default is %d", limit["description"], composer.DefaultLimit)
-	}
-
-	web, err := os.ReadFile("../../web/src/lib/api/rules.ts")
-	if os.IsNotExist(err) {
-		t.Skip("web/ is not in this checkout")
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := regexp.MustCompile(`TEST_LIMIT = \{ default: (\d+), max: (\d+) \}`).FindSubmatch(web)
-	if m == nil {
-		t.Fatal("web/src/lib/api/rules.ts has no TEST_LIMIT = { default: N, max: N }")
-	}
-	if string(m[1]) != fmt.Sprint(composer.DefaultLimit) || string(m[2]) != fmt.Sprint(composer.MaxLimit) {
-		t.Errorf("web/src/lib/api/rules.ts TEST_LIMIT is default %s, max %s; the daemon's are %d and %d", m[1], m[2], composer.DefaultLimit, composer.MaxLimit)
 	}
 }
 

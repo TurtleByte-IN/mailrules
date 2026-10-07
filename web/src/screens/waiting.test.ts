@@ -205,7 +205,7 @@ it('Compose: turning text into rules says the AI model is being asked', async ()
 
   expect(screen.getByText('Asking the AI model to draft your rules…')).toBeTruthy();
   expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Tidying up your rules…' }).disabled).toBe(true);
-  const draft = { name: 'Food', said: 'Swiggy to Food', intent: null, conditions: food.conditions, exceptions: {}, actions: food.actions, account_id: null, stack: false, model: '', min_confidence: null, new_folders: [], question: null, conflicts: [], errors: [], match_count: 1, samples: [] } satisfies Draft;
+  const draft = { name: 'Food', said: 'Swiggy to Food', intent: null, conditions: food.conditions, exceptions: {}, actions: food.actions, account_id: null, stack: false, model: '', min_confidence: null, new_folders: [], question: null, conflicts: [], errors: [], match_count: 1, tested: 200, samples: [] } satisfies Draft;
   d.release('POST /api/rules/compose', [200, { rules: [draft], unparsed: [] }]);
   expect(await screen.findByText('1 rule found. Check them before saving.')).toBeTruthy();
   expect(screen.queryByText('Asking the AI model to draft your rules…')).toBeNull();

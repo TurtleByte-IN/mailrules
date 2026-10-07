@@ -58,9 +58,9 @@
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap items-center gap-2"><!-- Editable: a name the daemon refuses (taken, or twice in one save) can only be fixed here. -->
               <input class="field h-9 w-[220px] max-w-full text-base font-semibold" aria-label="Rule name" aria-invalid={d.refusedName || undefined} value={d.name} oninput={(e) => change(d, { name: e.currentTarget.value })} /><span class={k.chip}>{k.label}</span></div>
-            <!-- The count is 0 when nothing was tested: a draft in error, or no mailbox to test on. -->
-            {#if !d.errors.length && accounts.list.length}
-              <span class="text-[12.5px] text-secondary">Matches {d.match_count} of your last 200 emails{d.intent ? '' : ' · no model needed'}</span>
+            <!-- `tested` is 0 when nothing was tested: a draft in error, one by meaning with no decision model, or no mailbox to test on. -->
+            {#if !d.errors.length && d.tested}
+              <span class="text-[12.5px] text-secondary">Matches {d.match_count} of your last {d.tested === 1 ? 'email' : `${d.tested.toLocaleString()} emails`}{d.intent ? '' : ' · no model needed'}</span>
             {/if}
           </div>
           <div class="flex flex-wrap gap-3.5">

@@ -4,6 +4,7 @@ import type { Draft } from '../../lib/api/compose';
 import type { Rule } from '../../lib/api/rules';
 import { accounts } from '../../lib/state/accounts.svelte';
 import { rules } from '../../lib/state/rules.svelte';
+import { settings } from '../../lib/state/settings.svelte';
 import { toast } from '../../lib/state/toast.svelte';
 import Rules from '../Rules.svelte';
 
@@ -47,6 +48,7 @@ const draft: Draft = {
   conflicts: [],
   errors: [],
   match_count: 2,
+  tested: 200,
   samples: [],
 };
 
@@ -79,6 +81,8 @@ async function open(routes: Parameters<typeof serve>[0]) {
 }
 
 beforeEach(() => {
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
   Object.assign(rules, { list: [food, other], loaded: true, error: '' });
   Object.assign(accounts, { list: [], loaded: true });
   toast.text = '';

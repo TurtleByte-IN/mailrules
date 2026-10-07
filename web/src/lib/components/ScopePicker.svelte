@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Folder } from '../api/cleanup';
   import { accounts } from '../state/accounts.svelte';
-  import { archiveFolder, CHECK_MAX, scopeProblem, type Scope } from '../scope';
+  import { settings } from '../state/settings.svelte';
+  import { archiveFolder, scopeProblem, type Scope } from '../scope';
 
   /**
    * Mailbox, Folder and Which emails, with the number box and what is wrong with it. The screen owns
@@ -57,7 +58,7 @@
       <input
         type="number"
         min="1"
-        max={boxed === 'newest' ? CHECK_MAX : undefined}
+        max={boxed === 'newest' ? settings.value.limits.check_max || undefined : undefined}
         step="1"
         inputmode="numeric"
         aria-label={boxed === 'newest' ? 'How many emails' : 'How many days'}

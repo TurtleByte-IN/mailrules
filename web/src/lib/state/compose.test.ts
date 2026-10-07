@@ -23,6 +23,7 @@ const draft = (name: string, over: Partial<ApiDraft> = {}): ApiDraft => ({
   conflicts: [],
   errors: [],
   match_count: 6,
+  tested: 200,
   samples: [],
   ...over,
 });

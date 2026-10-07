@@ -257,7 +257,8 @@ export interface paths {
          *     `errors`, and the request still answers 200. The drafts without errors are then
          *     tested together, in the order given, on the last 200 messages of the account's
          *     watched folder (model calls recorded with purpose `test`; the composer's own call
-         *     with purpose `compose`), and each gets `match_count` and up to 5 `samples`. With no
+         *     with purpose `compose`), and each gets `match_count`, `tested` (how many emails it was
+         *     tested on: fewer than 200 when the folder holds fewer) and up to 5 `samples`. With no
          *     account connected nothing is tested. Needs a generative model: 409
          *     `no_composer_model` until the provider `composer_model` names has its key (Anthropic
          *     or OpenAI) or URL (Ollama); the message names what to add. 409
@@ -1440,8 +1441,10 @@ export interface components {
                 path: string;
                 message: string;
             }[];
-            /** @description How many of the account's last 200 emails it would take, the drafts being tested together in order. 0 for a draft with errors, for a draft with an intent while no decision model is set, and when no account is connected */
+            /** @description How many of the `tested` emails it would take, the drafts being tested together in order. 0 for a draft with errors, for a draft with an intent while no decision model is set, and when no account is connected */
             match_count: number;
+            /** @description How many emails `match_count` is out of: the newest of the account's watched folder that the draft was tested on, at most 200 and fewer when the folder holds fewer; for a RuleSuggestion, the emails scanned. 0 when it was not tested, as for `match_count` */
+            tested: number;
             samples: components["schemas"]["TestRow"][];
         };
         ComposeResult: {
@@ -2207,6 +2210,15 @@ export interface components {
                 listen: string;
                 /** @enum {string} */
                 mode: "selfhost" | "cloud";
+            };
+            /** @description How many emails one run reads, as this daemon enforces it. A larger `limit` is refused with `invalid_input` at `limit` */
+            readonly limits: {
+                /** @description A rule test (TestRequest) with no `limit` reads this many; composer drafts are tested on as many */
+                test_default: number;
+                /** @description The largest `limit` a rule test takes */
+                test_max: number;
+                /** @description The largest `limit` a cleanup check or a rule suggestion scan takes, and what one with no `limit` covers */
+                check_max: number;
             };
             /** @description Later-phase features the UI draws; each stays hidden until its flag is true */
             readonly features: {

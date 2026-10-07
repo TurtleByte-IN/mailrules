@@ -2,12 +2,17 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import type { TestProgress } from '../api/rules';
+import { settings } from '../state/settings.svelte';
 import { testLimit } from '../state/testlimit.svelte';
 import TestRunner from './TestRunner.svelte';
 
 type Run = (limit: number, onProgress: (p: TestProgress) => void) => Promise<void>;
 
-beforeEach(() => (testLimit.value = 200));
+beforeEach(() => {
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
+  testLimit.value = 200;
+});
 afterEach(cleanup);
 
 const box = () => screen.getByRole<HTMLInputElement>('spinbutton', { name: 'How many emails to test' });
@@ -39,6 +44,17 @@ it('takes 1 up to what the daemon allows', () => {
   render(TestRunner, { run: vi.fn() });
   expect(box().min).toBe('1');
   expect(box().max).toBe('2000');
+});
+
+it('follows the limits the daemon reports, not numbers of its own (MAI-41)', async () => {
+  Object.assign(settings.value, { limits: { test_default: 300, test_max: 5000, check_max: 5000 } });
+  render(TestRunner, { run: vi.fn() });
+  expect(box().max).toBe('5000');
+  await enter('4000');
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Test on last 4000 emails' })).toBeTruthy();
+  await enter('5001');
+  expect(screen.getByRole('alert').textContent).toBe('The limit must be between 1 and 5000.');
 });
 
 it('tests the number chosen, and the button says so', async () => {

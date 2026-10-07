@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError } from './client';
-import { exportYaml, importYaml, limitRefused, test, testRefused, undo, TEST_LIMIT, type TestResult } from './rules';
+import { exportYaml, importYaml, limitRefused, test, testRefused, undo, type TestResult } from './rules';
 
 function respond(status: number, body: BodyInit | null, type = 'application/json') {
   const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(body, { status, headers: { 'Content-Type': type } }));
@@ -69,7 +69,7 @@ it('follows a streamed test: progress events, then the result', async () => {
 });
 
 it('throws a refused number as the daemon says it, whatever the client accepts', async () => {
-  const message = `The limit must be between 1 and ${TEST_LIMIT.max}.`;
+  const message = 'The limit must be between 1 and 2000.';
   respond(400, JSON.stringify({ error: { code: 'invalid_input', message, path: 'limit' } }));
   const thrown = await test({ account_id: 1, limit: 9999 }).catch((e) => e);
   expect(thrown).toMatchObject({ status: 400, message });

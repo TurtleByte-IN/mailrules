@@ -4,6 +4,7 @@ import type { Draft } from '../lib/api/compose';
 import { accounts } from '../lib/state/accounts.svelte';
 import { compose } from '../lib/state/compose.svelte';
 import { rules } from '../lib/state/rules.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Compose from './Compose.svelte';
 
@@ -26,6 +27,8 @@ async function describe(text: string) {
 }
 
 beforeEach(() => {
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
   Object.assign(compose, { text: '', drafts: [], unparsed: [], busy: false, templates: [], needsModel: '' });
   Object.assign(rules, { list: [], loaded: true, error: '' });
   Object.assign(accounts, { list: [], loaded: true });
@@ -54,6 +57,7 @@ it('shows why a draft is wrong and will not save it', async () => {
     conflicts: [],
     errors: [{ path: 'min_confidence', message: 'min_confidence: a rule that trashes on intent needs min_confidence of at least 0.85' }],
     match_count: 0,
+    tested: 0,
     samples: [],
   };
   const f = serve({ 'POST /api/rules/compose': [200, { rules: [draft], unparsed: [] }] });
@@ -63,7 +67,7 @@ it('shows why a draft is wrong and will not save it', async () => {
   expect(screen.getByText('Cannot be saved as it is')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull();
   // The count would read as "matches nothing" when it was never tested.
-  expect(screen.queryByText(/of your last 200 emails/)).toBeNull();
+  expect(screen.queryByText(/of your last/)).toBeNull();
 
   await fireEvent.click(screen.getByRole('button', { name: 'Save 0 rules' }));
   expect(f).toHaveBeenCalledOnce();
@@ -95,7 +99,7 @@ it('puts a refused builder save on the row its path names, until that row is edi
   const message = 'rules[0].conditions.all[1].value: pattern does not compile: error parsing regexp: missing closing ): `(?i)((`';
   const f = serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].conditions.all[1].value' } }] });
   render(Compose);
-  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
   // Three rows; the empty middle one is not sent, so the daemon's second condition is the third row.
   await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
@@ -124,7 +128,7 @@ it('flashes a refused builder save the form has no control for', async () => {
   const message = 'The model must be empty, or one of jev, clef, anthropic, openai, ollama, optionally followed by :model.';
   serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].model' } }] });
   render(Compose);
-  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Add condition' }));
   await fireEvent.input(screen.getByLabelText('Value'), { target: { value: 'acme.com' } });
   await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
@@ -137,7 +141,7 @@ it('flashes a refused builder save the form has no control for', async () => {
 it('starts with no condition and brings the row, sentence and picker in with the first one', async () => {
   serve({});
   render(Compose);
-  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
   expect(screen.getByRole('heading', { name: 'Conditions (optional)' })).toBeTruthy();
   expect(screen.queryByLabelText('Value')).toBeNull();
   expect(screen.queryByLabelText('All or any')).toBeNull();
@@ -159,7 +163,7 @@ it('saves an AI-only rule with no conditions in the payload', async () => {
   const saved = { ...drafted('Invoices'), id: 3 };
   const f = serve({ 'POST /api/rules/batch': [200, { rules: [saved] }] });
   render(Compose);
-  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
   await fireEvent.input(screen.getByLabelText('Rule name'), { target: { value: 'Invoices' } });
   await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'an invoice' } });
   await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
@@ -175,7 +179,7 @@ it('offers the threshold only once the email is about something, and saves it', 
   const saved = { ...drafted('Invoices'), id: 3 };
   const f = serve({ 'POST /api/rules/batch': [200, { rules: [saved] }] });
   render(Compose);
-  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
   // A conditions-only rule asks no model, so there is nothing for a threshold to do.
   expect(screen.queryByLabelText(/Act when sure above/)).toBeNull();
   expect(screen.getByText('More options: mailbox, stacking')).toBeTruthy();
@@ -198,7 +202,7 @@ it('opens More options and marks the threshold when the daemon refuses it', asyn
   const message = 'A rule that trashes on meaning needs to act only when sure above 0.85.';
   serve({ 'POST /api/rules/batch': [400, { error: { code: 'rule_invalid', message, path: 'rules[0].min_confidence' } }] });
   render(Compose);
-  await fireEvent.click(screen.getByRole('button', { name: 'Build with conditions' }));
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
   await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'cold sales' } });
   await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'trash' } });
   const slider = screen.getByLabelText(/Act when sure above/);
@@ -227,6 +231,7 @@ const drafted = (name: string): Draft => ({
   conflicts: [],
   errors: [],
   match_count: 0,
+  tested: 0,
   samples: [],
 });
 const mailboxes = [{ id: 7, label: 'me@icloud.com' }, { id: 8, label: 'work@acme.com' }];
@@ -273,4 +278,58 @@ it('offers no mailbox choice on a draft card with one mailbox connected', async 
   await describe('One rule');
   expect(await screen.findByText('Will be saved')).toBeTruthy();
   expect(screen.queryByLabelText('Applies to')).toBeNull();
+});
+
+it('a draft card says how many emails the draft was tested on, and nothing when it was not tested', async () => {
+  Object.assign(accounts, { list: mailboxes.slice(0, 1) });
+  const meaning = { ...drafted('Pitches'), intent: 'cold sales pitches', conditions: {} };
+  serve({
+    'POST /api/rules/compose': [
+      200,
+      { rules: [{ ...drafted('Acme'), match_count: 3, tested: 42 }, { ...drafted('Lone'), match_count: 1, tested: 1 }, meaning], unparsed: [] },
+    ],
+  });
+  await describe('Three rules');
+  await screen.findByText('3 rules found. Check them before saving.');
+  const cards = screen.getAllByRole('article');
+  expect(cards[0].textContent).toContain('Matches 3 of your last 42 emails · no model needed');
+  expect(cards[1].textContent).toContain('Matches 1 of your last email · no model needed');
+  // Not tested (a rule by meaning with no decision model): no count rather than "matches 0".
+  expect(cards[2].textContent).not.toContain('Matches');
+});
+
+it('the ways to add rules are tabs: one selected, its panel labelled by it, the arrow keys move between them', async () => {
+  serve({});
+  render(Compose);
+  const list = screen.getByRole('tablist', { name: 'How to add rules' });
+  const tabs = screen.getAllByRole('tab');
+  expect(tabs.map((t) => t.textContent)).toEqual(['Describe it', 'Build with conditions', 'Templates', 'Suggest from my mail']);
+  const selected = () => tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent);
+  const panel = () => screen.getByRole('tabpanel');
+  expect(list.contains(tabs[0])).toBe(true);
+  expect(selected()).toEqual(['Describe it']);
+  expect(tabs.map((t) => t.tabIndex)).toEqual([0, -1, -1, -1]);
+  expect(tabs[0].getAttribute('aria-controls')).toBe(panel().id);
+  expect(panel().getAttribute('aria-labelledby')).toBe(tabs[0].id);
+  expect(screen.getByRole('tabpanel', { name: 'Describe it' }).contains(typed())).toBe(true);
+
+  await fireEvent.keyDown(tabs[0], { key: 'ArrowRight' });
+  expect(selected()).toEqual(['Build with conditions']);
+  expect(document.activeElement).toBe(tabs[1]);
+  expect(screen.getByRole('tabpanel', { name: 'Build with conditions' })).toBeTruthy();
+  expect(tabs.map((t) => t.tabIndex)).toEqual([-1, 0, -1, -1]);
+
+  await fireEvent.keyDown(tabs[1], { key: 'End' });
+  expect(selected()).toEqual(['Suggest from my mail']);
+  await fireEvent.keyDown(tabs[3], { key: 'ArrowRight' });
+  expect(selected()).toEqual(['Describe it']);
+  await fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' });
+  expect(selected()).toEqual(['Suggest from my mail']);
+  expect(document.activeElement).toBe(tabs[3]);
+  await fireEvent.keyDown(tabs[3], { key: 'Home' });
+  expect(selected()).toEqual(['Describe it']);
+
+  await fireEvent.click(tabs[2]);
+  expect(selected()).toEqual(['Templates']);
+  expect(panel().getAttribute('aria-labelledby')).toBe(tabs[2].id);
 });

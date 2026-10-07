@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Batch, CleanupCheck, CleanupCheckRow, UndoResult } from '../api/cleanup';
 import { scopeProblem } from '../scope';
+import { settings } from './settings.svelte';
+
+// The limits GET /api/settings reports, for this module and for the fresh copy each test imports.
+const limits = { test_default: 200, test_max: 2000, check_max: 2000 };
 
 // Fresh modules per test: the state and the poll timers live in module scope.
 let m: typeof import('./cleanup.svelte');
@@ -102,6 +106,9 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', fetchMock);
   vi.resetModules();
   m = await import('./cleanup.svelte');
+  Object.assign(settings.value, { limits });
+  // The fresh copy cleanup.svelte now reads, imported like the others after resetModules.
+  Object.assign((await import('./settings.svelte')).settings.value, { limits });
   events = await import('../api/events');
   toast = (await import('./toast.svelte')).toast;
   m.setScope({ accountId: '7' });
@@ -149,11 +156,12 @@ it.each([
   ['the newest 200, as it starts', {}, { account_id: 7, folder: 'INBOX', since: null, limit: 200 }],
   ['the newest 120', { newest: 120 }, { account_id: 7, folder: 'INBOX', since: null, limit: 120 }],
   ['the newest 2000', { newest: 2000 }, { account_id: 7, folder: 'INBOX', since: null, limit: 2000 }],
-  ['the last 90 days, capped at the most a check covers', { mode: 'days' }, { account_id: 7, folder: 'INBOX', since: NOW - 90 * 86400, limit: 2000 }],
-  ['the last 45 days in another folder', { mode: 'days', days: 45, folder: 'Old Mail' }, { account_id: 7, folder: 'Old Mail', since: NOW - 45 * 86400, limit: 2000 }],
-  ['a huge number of days is all mail: the start is the epoch, not before it', { mode: 'days', days: 999999 }, { account_id: 7, folder: 'INBOX', since: 0, limit: 2000 }],
-  ['all mail, capped', { mode: 'all' }, { account_id: 7, folder: 'INBOX', since: null, limit: 2000 }],
-  ['all mail ignores what the boxes hold', { mode: 'all', newest: 5, days: 3 }, { account_id: 7, folder: 'INBOX', since: null, limit: 2000 }],
+  // With no limit sent, the daemon covers the most a check takes (its `limits.check_max`).
+  ['the last 90 days, with no limit', { mode: 'days' }, { account_id: 7, folder: 'INBOX', since: NOW - 90 * 86400 }],
+  ['the last 45 days in another folder', { mode: 'days', days: 45, folder: 'Old Mail' }, { account_id: 7, folder: 'Old Mail', since: NOW - 45 * 86400 }],
+  ['a huge number of days is all mail: the start is the epoch, not before it', { mode: 'days', days: 999999 }, { account_id: 7, folder: 'INBOX', since: 0 }],
+  ['all mail, with no limit', { mode: 'all' }, { account_id: 7, folder: 'INBOX', since: null }],
+  ['all mail ignores what the boxes hold', { mode: 'all', newest: 5, days: 3 }, { account_id: 7, folder: 'INBOX', since: null }],
 ] as const)('check for %s', async (_name, scope, request) => {
   m.setScope(scope);
   await m.check();
@@ -178,6 +186,16 @@ it.each([
   await m.check();
   expect(sent('/api/cleanup/check')).toHaveLength(problem ? 0 : 1);
   expect(m.cleanup.phase).toBe(problem ? 'idle' : 'checking');
+});
+
+it('bounds the newest N by the limit the daemon reports, and asks only for a whole number before it is known (MAI-41)', () => {
+  const s = { accountId: '7', folder: 'INBOX', mode: 'newest', newest: 4000, days: 90 } as const;
+  Object.assign(settings.value, { limits: { ...limits, check_max: 5000 } });
+  expect(scopeProblem(s)).toBe('');
+  expect(scopeProblem({ ...s, newest: 5001 })).toBe('The limit must be between 1 and 5000.');
+  Object.assign(settings.value, { limits: { test_default: 0, test_max: 0, check_max: 0 } });
+  expect(scopeProblem({ ...s, newest: 9000 })).toBe('');
+  expect(scopeProblem({ ...s, newest: 0 })).toBe('Give a whole number of emails, 1 or more.');
 });
 
 it('a refused check leaves idle and says why', async () => {

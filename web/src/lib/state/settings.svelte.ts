@@ -3,7 +3,8 @@ import * as settingsApi from '../api/settings';
 import { flash } from './toast.svelte';
 
 // `value` is a placeholder until `loaded`: dry-run on, so the shell never says "live"
-// before the daemon has. Screens that show the other fields wait for `loaded`.
+// before the daemon has. Screens that show the other fields wait for `loaded`. Its
+// `limits` are 0, unknown: the number boxes then ask only for a whole number from 1.
 export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; error: string }>({
   value: {
     dry_run: true,
@@ -24,6 +25,7 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
     warnings: [],
     server: { version: '', data_dir: '', listen: '', mode: 'selfhost' },
+    limits: { test_default: 0, test_max: 0, check_max: 0 },
     features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },
   },
   loaded: false,

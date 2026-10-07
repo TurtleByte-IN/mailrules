@@ -34,7 +34,11 @@ function respond(status: number, body: unknown) {
   return fetchMock;
 }
 
-beforeEach(() => Object.assign(rules, { list: [], loaded: false, error: '' }));
+beforeEach(() => {
+  Object.assign(rules, { list: [], loaded: false, error: '' });
+  // The limits GET /api/settings reports.
+  Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

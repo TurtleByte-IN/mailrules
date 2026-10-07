@@ -4,7 +4,7 @@
   import ScopePicker from '../lib/components/ScopePicker.svelte';
   import Waiting from '../lib/components/Waiting.svelte';
   import { clock, day, money } from '../lib/format';
-  import { archiveFolder, CHECK_MAX, scopeProblem } from '../lib/scope';
+  import { archiveFolder, scopeProblem } from '../lib/scope';
   import { accounts } from '../lib/state/accounts.svelte';
   import {
     acted,
@@ -38,8 +38,8 @@
   });
 
   const problem = $derived(scopeProblem(cleanup.scope));
-  // A check covers at most the newest CHECK_MAX emails of its range; say so when the range held more.
-  const capped = $derived(!!cleanup.check && cleanup.check.limit >= CHECK_MAX && cleanup.check.matched > cleanup.check.total);
+  // A check covers at most the daemon's newest `limits.check_max` emails of its range; say so when the range held more.
+  const capped = $derived(!!cleanup.check && cleanup.check.limit >= settings.value.limits.check_max && cleanup.check.matched > cleanup.check.total);
   const capText = (verb: string) =>
     cleanup.check ? `${verb} the newest ${cleanup.check.total.toLocaleString()} of ${cleanup.check.matched.toLocaleString()}. Run another check for the rest.` : '';
 

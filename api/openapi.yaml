@@ -327,7 +327,8 @@ paths:
         `errors`, and the request still answers 200. The drafts without errors are then
         tested together, in the order given, on the last 200 messages of the account's
         watched folder (model calls recorded with purpose `test`; the composer's own call
-        with purpose `compose`), and each gets `match_count` and up to 5 `samples`. With no
+        with purpose `compose`), and each gets `match_count`, `tested` (how many emails it was
+        tested on: fewer than 200 when the folder holds fewer) and up to 5 `samples`. With no
         account connected nothing is tested. Needs a generative model: 409
         `no_composer_model` until the provider `composer_model` names has its key (Anthropic
         or OpenAI) or URL (Ollama); the message names what to add. 409
@@ -1636,7 +1637,7 @@ components:
         account_id: { type: [integer, 'null'], format: int64, description: The account whose folders and recent mail the drafts are checked against }
     RuleDraft:
       type: object
-      required: [name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders, question, conflicts, errors, match_count, samples]
+      required: [name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders, question, conflicts, errors, match_count, tested, samples]
       description: 'A draft carries every field of RuleInput, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything'
       properties:
         name: { type: string }
@@ -1669,7 +1670,8 @@ components:
             properties:
               path: { type: string }
               message: { type: string }
-        match_count: { type: integer, description: 'How many of the account''s last 200 emails it would take, the drafts being tested together in order. 0 for a draft with errors, for a draft with an intent while no decision model is set, and when no account is connected' }
+        match_count: { type: integer, description: 'How many of the `tested` emails it would take, the drafts being tested together in order. 0 for a draft with errors, for a draft with an intent while no decision model is set, and when no account is connected' }
+        tested: { type: integer, description: 'How many emails `match_count` is out of: the newest of the account''s watched folder that the draft was tested on, at most 200 and fewer when the folder holds fewer; for a RuleSuggestion, the emails scanned. 0 when it was not tested, as for `match_count`' }
         samples: { type: array, maxItems: 5, items: { $ref: '#/components/schemas/TestRow' } }
     ComposeResult:
       type: object
@@ -2237,7 +2239,7 @@ components:
         workspaces: { type: array, items: { $ref: '#/components/schemas/AnthropicWorkspace' }, description: 'For `one` and `several`, the organisation''s workspaces, the Default Workspace included; otherwise empty' }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, server, features]
+      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, server, limits, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged, no mailbox is changed and no sender rule is learned from them }
         decider: { $ref: '#/components/schemas/Decider' }
@@ -2265,6 +2267,15 @@ components:
             data_dir: { type: string }
             listen: { type: string }
             mode: { type: string, enum: [selfhost, cloud] }
+        limits:
+          type: object
+          readOnly: true
+          description: 'How many emails one run reads, as this daemon enforces it. A larger `limit` is refused with `invalid_input` at `limit`'
+          required: [test_default, test_max, check_max]
+          properties:
+            test_default: { type: integer, description: 'A rule test (TestRequest) with no `limit` reads this many; composer drafts are tested on as many' }
+            test_max: { type: integer, description: The largest `limit` a rule test takes }
+            check_max: { type: integer, description: 'The largest `limit` a cleanup check or a rule suggestion scan takes, and what one with no `limit` covers' }
         features:
           type: object
           readOnly: true
