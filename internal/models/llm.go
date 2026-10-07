@@ -101,7 +101,7 @@ func (a *Anthropic) Generate(ctx context.Context, system, user string, schema js
 		resp, err = a.client.Messages.New(ctx, params)
 		var apiErr *anthropic.Error
 		if errors.As(err, &apiErr) {
-			return &StatusError{Provider: "anthropic", Code: apiErr.StatusCode}
+			return newStatusError("anthropic", apiErr.StatusCode, []byte(apiErr.RawJSON()), apiErr.RequestID)
 		}
 		if err != nil {
 			return fmt.Errorf("anthropic: %w", err)
@@ -176,7 +176,7 @@ func (o *OpenAI) Generate(ctx context.Context, system, user string, schema json.
 		resp, err = o.client.Chat.Completions.New(ctx, params)
 		var apiErr *openai.Error
 		if errors.As(err, &apiErr) {
-			return &StatusError{Provider: "openai", Code: apiErr.StatusCode}
+			return newStatusError("openai", apiErr.StatusCode, []byte(apiErr.RawJSON()), "")
 		}
 		if err != nil {
 			return fmt.Errorf("openai: %w", err)

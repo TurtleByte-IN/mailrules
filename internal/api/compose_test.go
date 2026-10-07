@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 )
 
 // count is how many rows a query counts.
@@ -268,11 +269,13 @@ func (l *logs) find(t *testing.T, msg string) map[string]any {
 	return nil
 }
 
-// captureLogs makes the daemon log at level into the returned buffer until the test ends.
+// captureLogs makes the daemon log at level into the returned buffer until the test ends,
+// through the daemon's own logger, so a test sees what production writes after its
+// redaction (a field named "body" or "token" is dropped there).
 func captureLogs(t *testing.T, level slog.Level) *logs {
 	t.Helper()
 	l, old := &logs{}, slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: level})))
+	slog.SetDefault(telemetry.NewLogger(l, level.String()))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	return l
 }

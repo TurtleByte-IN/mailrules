@@ -150,7 +150,7 @@ func postJSON(ctx context.Context, hc *http.Client, provider, url string, header
 		return fmt.Errorf("%s: read response: %w", provider, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &StatusError{Provider: provider, Code: resp.StatusCode}
+		return newStatusError(provider, resp.StatusCode, data, "")
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("%s: %w: response is not the expected JSON", provider, ErrBadOutput)
