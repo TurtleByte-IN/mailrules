@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -18,7 +19,8 @@ type UsageStore interface {
 
 // Router is the Decider the pipeline uses. It asks the primary decider and,
 // when that answer's confidence is below EscalateBelow, asks the fallback with
-// the few-shot examples and uses the fallback's answer.
+// the few-shot examples and uses the fallback's answer. A model whose answer cannot
+// be read (ErrBadOutput) is asked again, up to ReadTries calls in all.
 type Router struct {
 	Primary       Decider
 	Fallback      Decider // nil = never escalate
@@ -40,13 +42,18 @@ func (r *Router) For(purpose string) *Router {
 	return &c
 }
 
+// ReadTries is how many times one model is asked about one email while its answer cannot
+// be read: the first call and two retries (PRD R5).
+const ReadTries = 3
+
 // Result is a routed decision with what each model call cost.
 type Result struct {
 	Decision
 	Escalated   bool   // the fallback was asked
-	Primary     Usage  // always set
-	Fallback    *Usage // set when the fallback answered
+	Primary     Usage  // always set; summed over the primary's calls
+	Fallback    *Usage // set when the fallback answered; summed over its calls
 	FallbackErr error  // set when the fallback was asked and failed; Decision is then the primary's
+	Calls       int    // model calls made, counting each retry of an unreadable answer
 	// Probabilities is what the primary gave each candidate, by rule id (0 = none of
 	// them), when it is a Spreader; nil otherwise. It stays the primary's when the
 	// fallback answers: it is why the fallback was asked.
@@ -71,34 +78,27 @@ func (r *Router) Decide(ctx context.Context, req DecideRequest) (Decision, Usage
 	return res.Decision, u, err
 }
 
-// Route is Decide with the escalation detail kept apart.
+// Route is Decide with the escalation detail kept apart. When the primary's answer still
+// cannot be read after ReadTries calls, the error wraps ErrBadOutput and the Result carries
+// what those calls cost.
 func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 	if len(req.Candidates) == 0 {
 		return Result{Decision: Decision{Confidence: 1, Reason: "No candidate rules"}}, nil
 	}
 	primaryReq := req
 	primaryReq.Examples = nil // few-shot examples are for the fallback only
-	pctx := WithPurpose(ctx, r.purpose("decide"))
-	var d Decision
-	var u Usage
-	var spread map[int64]float64
-	var err error
-	if sp, ok := r.Primary.(Spreader); ok {
-		d, spread, u, err = sp.DecideSpread(pctx, primaryReq)
-	} else {
-		d, u, err = r.Primary.Decide(pctx, primaryReq)
-	}
+	d, spread, u, calls, err := r.ask(ctx, r.Primary, primaryReq, "decide")
 	if err != nil {
-		return Result{Primary: u}, fmt.Errorf("primary decider %s: %w", r.Primary.Name(), err)
+		return Result{Primary: u, Calls: calls}, fmt.Errorf("primary decider %s: %w", r.Primary.Name(), err)
 	}
-	r.record(ctx, "decide", u)
-	res := Result{Decision: allow(req.Candidates, d), Primary: u, Probabilities: spread}
+	res := Result{Decision: allow(req.Candidates, d), Primary: u, Calls: calls, Probabilities: spread}
 	if r.Fallback == nil || res.Confidence >= r.EscalateBelow {
 		return res, nil
 	}
 
 	res.Escalated = true
-	fd, fu, err := r.Fallback.Decide(WithPurpose(ctx, r.purpose("escalate")), req)
+	fd, _, fu, calls, err := r.ask(ctx, r.Fallback, req, "escalate")
+	res.Calls += calls
 	if err != nil {
 		// Keep the primary's answer; its confidence is already below the
 		// escalation threshold, and the reason says nobody double-checked it.
@@ -107,9 +107,46 @@ func (r *Router) Route(ctx context.Context, req DecideRequest) (Result, error) {
 		res.Reason = strings.TrimSuffix(res.Reason, ".") + " (low confidence; fallback failed)"
 		return res, nil
 	}
-	r.record(ctx, "escalate", fu)
 	res.Decision, res.Fallback = allow(req.Candidates, fd), &fu
 	return res, nil
+}
+
+// ask puts one question to one model, asking again while its answer cannot be read, at
+// most ReadTries calls in all. Every answered call goes on the ledger under purpose; the
+// usage returned is summed over them. Any other error ends it at once: the Caller has
+// already retried what retrying can help.
+func (r *Router) ask(ctx context.Context, dec Decider, req DecideRequest, purpose string) (Decision, map[int64]float64, Usage, int, error) {
+	pctx := WithPurpose(ctx, r.purpose(purpose))
+	var total Usage
+	for call := 1; ; call++ {
+		var d Decision
+		var u Usage
+		var spread map[int64]float64
+		var err error
+		if sp, ok := dec.(Spreader); ok {
+			d, spread, u, err = sp.DecideSpread(pctx, req)
+		} else {
+			d, u, err = dec.Decide(pctx, req)
+		}
+		total = addUsage(total, u)
+		bad := errors.Is(err, ErrBadOutput)
+		if err == nil || bad {
+			r.record(ctx, purpose, u)
+		}
+		if !bad || call >= ReadTries {
+			return d, spread, total, call, err
+		}
+		slog.WarnContext(ctx, "model answer could not be read; asking again", "model", dec.Name(), "call", call, "error", err.Error())
+	}
+}
+
+// addUsage adds b's tokens, cost and latency to a, naming b's provider and model.
+func addUsage(a, b Usage) Usage {
+	b.TokensIn += a.TokensIn
+	b.TokensOut += a.TokensOut
+	b.CostUSD += a.CostUSD
+	b.Latency += a.Latency
+	return b
 }
 
 // purpose is the ledger purpose of a call that would be recorded as def.

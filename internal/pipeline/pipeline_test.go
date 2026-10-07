@@ -395,7 +395,7 @@ func TestProcessIsIdempotent(t *testing.T) {
 func TestRetryJob(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
-	boom := errors.New("HTTP 503")
+	boom := &models.StatusError{Provider: "fake", Code: 503}
 	e.primary.DecideFunc = func(models.DecideRequest) (models.Decision, models.Usage, error) {
 		return models.Decision{}, models.Usage{}, boom
 	}
@@ -421,7 +421,7 @@ func TestRetryJob(t *testing.T) {
 		}
 	}
 	final := e.row(row.Message.Location())
-	if d := final.Decision; d.Stage != "none" || !strings.Contains(d.Reason, "Gave up after 6 retries") || !strings.Contains(d.Reason, "HTTP 503") {
+	if d := final.Decision; d.Stage != "none" || !strings.Contains(d.Reason, "Gave up after 6 retries") || !strings.Contains(d.Reason, "503") {
 		t.Errorf("give-up decision = %+v", d)
 	}
 	if got := len(e.primary.Requests()); got != 1+MaxRetries {
@@ -441,6 +441,50 @@ func TestRetryJob(t *testing.T) {
 	}
 	if m := e.row(row.Message.Location()).Message; m.State != store.StateActed || m.Attempts != 1 || m.NextAttemptAt != 0 || !slices.Equal(e.exec.applied(), []string{"move:Food"}) {
 		t.Errorf("after recovery: %+v, applied %v", m, e.exec.applied())
+	}
+}
+
+func TestUnreadableAnswers(t *testing.T) {
+	bad := fmt.Errorf("fake: %w: answer is not the expected JSON", models.ErrBadOutput)
+	tests := []struct {
+		name        string
+		badAnswers  int // unreadable answers before a good one
+		wantState   string
+		wantApplied []string
+		wantReason  string
+	}{
+		{"two unreadable answers, then a good one: sorted by it", 2, store.StateActed, []string{"move:Food"}, ""},
+		{"three unreadable answers: kept", 3, store.StateSkipped, nil, ReasonUnreadable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			n := 0
+			e.primary.DecideFunc = func(req models.DecideRequest) (models.Decision, models.Usage, error) {
+				n++
+				if n <= tt.badAnswers {
+					return models.Decision{}, models.Usage{Provider: "fake", Model: "primary-1", TokensIn: 100}, bad
+				}
+				return answer(e.food.ID, 0.9)(req)
+			}
+			row := e.process("orders@swiggy.example", "order 1")
+			m, d := row.Message, row.Decision
+			if m.State != tt.wantState || m.NextAttemptAt != 0 || !slices.Equal(e.exec.applied(), tt.wantApplied) {
+				t.Errorf("state %s, next attempt %d, applied %v; want %s, none, %v", m.State, m.NextAttemptAt, e.exec.applied(), tt.wantState, tt.wantApplied)
+			}
+			if tt.wantApplied == nil && len(e.exec.calls) != 0 {
+				t.Errorf("executor called %d times, want never", len(e.exec.calls))
+			}
+			if got := len(e.primary.Requests()); got != models.ReadTries {
+				t.Errorf("%d model calls, want %d", got, models.ReadTries)
+			}
+			if d.ID == 0 || d.Model != "primary-1" || d.TokensIn != 300 || (tt.wantReason != "" && d.Reason != tt.wantReason) {
+				t.Errorf("decision = %+v; want one recorded, costing all %d calls", d, models.ReadTries)
+			}
+			if n, _ := e.p.RetryDue(t.Context()); n != 0 {
+				t.Errorf("the retry job ran %d messages, want none", n)
+			}
+		})
 	}
 }
 

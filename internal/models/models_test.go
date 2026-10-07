@@ -257,12 +257,13 @@ func TestAdapterBadAnswers(t *testing.T) {
 		for i, body := range a.malformed {
 			t.Run(fmt.Sprintf("%s/malformed %d", a.name, i), func(t *testing.T) {
 				url, got := fakeProvider(t, reply{200, body})
-				_, _, err := a.build(url, testDeps()).Decide(t.Context(), testRequest)
+				r := &Router{Primary: a.build(url, testDeps())}
+				_, err := r.Route(t.Context(), testRequest)
 				if !errors.Is(err, ErrBadOutput) {
 					t.Fatalf("err = %v, want ErrBadOutput", err)
 				}
-				if got.hits != 1 {
-					t.Errorf("hits = %d; a bad answer must not be retried", got.hits)
+				if got.hits != ReadTries {
+					t.Errorf("hits = %d; an unreadable answer is asked again, %d calls in all", got.hits, ReadTries)
 				}
 			})
 		}
@@ -609,6 +610,71 @@ func TestRouterEscalation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRouterRetriesUnreadableAnswers(t *testing.T) {
+	bad := fmt.Errorf("p: %w: answer is not the expected JSON", ErrBadOutput)
+	boom := &StatusError{Provider: "p", Code: 503}
+	u := Usage{Provider: "p", Model: "pm", TokensIn: 100, CostUSD: 0.001, Latency: time.Millisecond}
+	row := "2026-10-06 p pm decide 1 100 0 0.0010"
+	// script answers call i with errs[i] (the last one repeating), a good pick when nil.
+	script := func(errs ...error) func(DecideRequest) (Decision, Usage, error) {
+		n := 0
+		return func(DecideRequest) (Decision, Usage, error) {
+			err := errs[min(n, len(errs)-1)]
+			n++
+			if err != nil {
+				return Decision{}, u, err
+			}
+			return Decision{12, 0.9, "p"}, u, nil
+		}
+	}
+	tests := []struct {
+		name       string
+		primary    []error
+		want       Decision
+		wantErr    error
+		wantCalls  int
+		wantLedger int // rows, one per answered call
+	}{
+		{"two unreadable answers, then a good one", []error{bad, bad, nil}, Decision{12, 0.9, "p"}, nil, 3, 3},
+		{"unreadable every time", []error{bad}, Decision{}, ErrBadOutput, 3, 3},
+		{"unreadable, then the provider fails: no more tries", []error{bad, boom}, Decision{}, boom, 2, 1},
+		{"a provider failure is not asked again here", []error{boom}, Decision{}, boom, 1, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			primary := &Fake{NameValue: "primary", DecideFunc: script(tt.primary...)}
+			led := &ledger{}
+			r := &Router{Primary: primary, EscalateBelow: 0.75, Usage: led,
+				Now: func() time.Time { return time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC) }}
+			res, err := r.Route(t.Context(), testRequest)
+			if (tt.wantErr == nil) != (err == nil) || (tt.wantErr != nil && !errors.Is(err, tt.wantErr)) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if res.Decision != tt.want || res.Calls != tt.wantCalls || len(primary.Requests()) != tt.wantCalls {
+				t.Errorf("result = %+v after %d calls (%d asked), want %+v after %d", res.Decision, res.Calls, len(primary.Requests()), tt.want, tt.wantCalls)
+			}
+			if len(led.rows) != tt.wantLedger || (len(led.rows) > 0 && led.rows[0] != row) {
+				t.Errorf("ledger = %q, want %d rows of %q", led.rows, tt.wantLedger, row)
+			}
+			if res.Primary.TokensIn != 100*tt.wantCalls {
+				t.Errorf("tokens in = %d, want every call's", res.Primary.TokensIn)
+			}
+		})
+	}
+
+	t.Run("fallback unreadable every time: the primary's answer stands", func(t *testing.T) {
+		primary := &Fake{NameValue: "primary", DecideFunc: func(DecideRequest) (Decision, Usage, error) { return Decision{12, 0.5, "Probably food."}, u, nil }}
+		fallback := &Fake{NameValue: "fallback", DecideFunc: script(bad)}
+		res, err := (&Router{Primary: primary, Fallback: fallback, EscalateBelow: 0.75}).Route(t.Context(), testRequest)
+		if err != nil || res.RuleID != 12 || !errors.Is(res.FallbackErr, ErrBadOutput) {
+			t.Fatalf("result = %+v, fallback err %v, err %v; want the primary's pick", res.Decision, res.FallbackErr, err)
+		}
+		if res.Calls != 1+ReadTries || len(fallback.Requests()) != ReadTries {
+			t.Errorf("calls = %d, fallback asked %d times; want 1+%d", res.Calls, len(fallback.Requests()), ReadTries)
+		}
+	})
 }
 
 func TestRouterNoCandidates(t *testing.T) {

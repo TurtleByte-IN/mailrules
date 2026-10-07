@@ -52,8 +52,8 @@ type Outcome struct {
 	// NoModel: rules with an intent were in play and no model could be asked, so they were
 	// passed over. With a model set, this is an email the model would have decided.
 	NoModel bool
-	Calls   int          // how many model calls that took: 2 when the fallback answered too
-	Usage   models.Usage // what asking cost, over both models when the fallback answered
+	Calls   int          // how many model calls that took, counting retries and the fallback
+	Usage   models.Usage // what asking cost, over every call made
 	// Probabilities is what the decision model gave each candidate, by rule id (0 = none
 	// of them); nil when it gives none.
 	Probabilities map[int64]float64
@@ -98,16 +98,23 @@ func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rul
 		req.Examples = d.Examples(ctx, sum, ids)
 	}
 	routed, err := router.Route(ctx, req)
+	if errors.Is(err, models.ErrBadOutput) {
+		// The model answered, ReadTries times, with nothing that could be read: the email
+		// is left where it is (PRD R5), not retried later nor parked in Needs review.
+		slog.WarnContext(ctx, "model answers could not be read; keeping the email", "error", err.Error())
+		return Outcome{Result: rules.Result{Stage: rules.StageNone}, Reason: ReasonUnreadable, Asked: true,
+			Calls: routed.Calls, Usage: routed.Primary}, nil
+	}
 	if err != nil {
 		return Outcome{}, fmt.Errorf("decide: %w: %w", ErrModel, err)
 	}
-	out := Outcome{Result: ev.Resolve(routed.RuleID, routed.Confidence), Reason: routed.Reason, Asked: true, Calls: 1, Usage: routed.Primary,
+	out := Outcome{Result: ev.Resolve(routed.RuleID, routed.Confidence), Reason: routed.Reason, Asked: true, Calls: routed.Calls, Usage: routed.Primary,
 		Probabilities: routed.Probabilities}
 	if out.Stage == rules.StageCondition {
 		out.Reason += fmt.Sprintf("; the default rule %q applied", names[out.RuleID])
 	}
 	if routed.Fallback != nil {
-		out.Calls, out.Usage = 2, *routed.Fallback
+		out.Usage = *routed.Fallback
 		out.Usage.TokensIn += routed.Primary.TokensIn
 		out.Usage.TokensOut += routed.Primary.TokensOut
 		out.Usage.CostUSD += routed.Primary.CostUSD
