@@ -1799,7 +1799,7 @@ components:
         verdict: { type: [string, 'null'], enum: [route, keep, block, null], description: null = no sender rule; the rules decide }
         rule_id: { type: [integer, 'null'], format: int64, description: 'For route: the rule whose actions apply' }
         source: { type: [string, 'null'], enum: [user, learned, null] }
-        hits: { type: integer, description: How often the sender rule has applied }
+        hits: { type: integer, description: 'How many emails the sender rule settled whose actions were carried out; an email whose actions were only recorded in dry-run does not count' }
     SenderPut:
       type: object
       required: [verdict]

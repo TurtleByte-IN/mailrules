@@ -911,6 +911,55 @@ func TestLiveProcessingWithTheExecutor(t *testing.T) {
 	}
 }
 
+// A sender rule counts a hit only for an email whose actions were carried out: in dry-run
+// they are only recorded, and the hit is not counted, live or replayed from a cleanup
+// check. A keep verdict is recorded as a keep action, so it follows the same rule.
+func TestDryRunCountsNoSenderRuleHits(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		dry      bool
+		verdict  string
+		replay   bool
+		wantHits int
+	}{
+		{"live, routed", false, rules.VerdictRoute, false, 1},
+		{"dry-run, routed", true, rules.VerdictRoute, false, 0},
+		{"dry-run, routed, from a cleanup check", true, rules.VerdictRoute, true, 0},
+		{"live, routed, from a cleanup check", false, rules.VerdictRoute, true, 1},
+		{"dry-run, kept in the inbox", true, rules.VerdictKeep, false, 0},
+		{"live, kept in the inbox", false, rules.VerdictKeep, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := t.Context()
+			e.withExecutor(tc.dry)
+			sr := rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: "swiggy.example", Verdict: tc.verdict, Source: "user"}
+			if tc.verdict == rules.VerdictRoute {
+				sr.RuleID = e.food.ID
+			}
+			if _, err := e.st.PutSenderRule(ctx, sr, 1); err != nil {
+				t.Fatal(err)
+			}
+			var row store.ActivityRow
+			if tc.replay {
+				ref := e.deliver("orders@swiggy.example", "order 1")
+				if applied, err := e.p.SortSaved(ctx, ref, e.settle(ref)); err != nil || !applied {
+					t.Fatalf("SortSaved = %v, %v", applied, err)
+				}
+				row = e.row(ref)
+			} else {
+				row = e.process("orders@swiggy.example", "order 1")
+			}
+			if row.Decision.Stage != "sender" || row.Message.State != store.StateActed && tc.verdict == rules.VerdictRoute {
+				t.Fatalf("decision %+v, state %s", row.Decision, row.Message.State)
+			}
+			if srs, _ := e.st.SenderRules(ctx, e.user.ID); len(srs) != 1 || srs[0].Hits != tc.wantHits {
+				t.Errorf("sender rules = %+v, want %d hits", srs, tc.wantHits)
+			}
+		})
+	}
+}
+
 func TestReviewAndRetryWithTheExecutor(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
