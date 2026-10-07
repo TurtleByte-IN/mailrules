@@ -347,8 +347,8 @@ func TestTrashToFolderMadeOnceAndUndone(t *testing.T) {
 		t.Errorf("record = %+v", recs[0])
 	}
 	for _, d := range []DecisionRecord{second, first} {
-		if _, undone, _, why, err := e.x.UndoMessage(ctx, d.MessageID); err != nil || why != nil || undone != 1 {
-			t.Fatalf("undo: %d undone, %v, %v", undone, why, err)
+		if _, u, why, err := e.x.UndoMessage(ctx, d.MessageID); err != nil || why != nil || u.Actions != 1 {
+			t.Fatalf("undo: %+v, %v, %v", u, why, err)
 		}
 		if ref, _ := e.where(d.MessageID); ref.Folder != "INBOX" {
 			t.Errorf("after undo the email is in %s, want INBOX", ref.Folder)

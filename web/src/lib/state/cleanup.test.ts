@@ -93,7 +93,7 @@ beforeEach(async () => {
     'PUT /api/cleanup/check/selection': [204],
     'POST /api/cleanup/run': [202, { batch: batch() }],
     'GET /api/batches/3': [200, { batch: batch({ done: 29 }) }],
-    'POST /api/batches/3/undo': [200, { batch: { ...finished, status: 'undone' }, undone: 310, failed: 0 } satisfies UndoResult],
+    'POST /api/batches/3/undo': [200, { batch: { ...finished, status: 'undone' }, undone: 310, emails: 300, failed: 0 } satisfies UndoResult],
   };
   fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     const [status, body] = routes[init.method + ' ' + url] ?? [404, { error: { code: 'not_found', message: 'no route ' + url } }];
@@ -552,14 +552,23 @@ it('done → idle when the batch is undone', async () => {
   await m.undo(m.cleanup.batch!);
   expect(fetchMock.mock.calls.at(-1)![0]).toBe('/api/batches/3/undo');
   expect(m.cleanup).toMatchObject({ phase: 'idle', batch: { id: 3, status: 'undone' } });
-  expect(toast.text).toBe('412 emails moved back where they were');
+  expect(toast.text).toBe('300 emails moved back where they were');
 });
+
+// MAI-46: the count is the emails the undo put back, from the daemon, never the run's ticked rows (batch.total),
+// which include rows passed over or only recorded in dry-run.
+it.each([
+  ['several emails', { undone: 420, emails: 210, failed: 0 }, '210 emails moved back where they were'],
+  ['one email', { undone: 2, emails: 1, failed: 0 }, '1 email moved back where it was'],
+  ['nothing had been moved', { undone: 0, emails: 0, failed: 0 }, 'Nothing to undo'],
+  ['some could not be undone', { undone: 300, emails: 150, failed: 10 }, '300 actions undone; 10 could not be'],
+])('undo toast: %s', (_name, counts, text) => expect(m.undoneText({ batch: { ...finished, total: 220 }, ...counts })).toBe(text));
 
 it('an undo that could not put everything back keeps the batch on offer', async () => {
   await toReady();
   await m.sort();
   await finish();
-  routes['POST /api/batches/3/undo'] = [200, { batch: finished, undone: 300, failed: 10 } satisfies UndoResult];
+  routes['POST /api/batches/3/undo'] = [200, { batch: finished, undone: 300, emails: 150, failed: 10 } satisfies UndoResult];
   await m.undo(m.cleanup.batch!);
   expect(m.cleanup).toMatchObject({ phase: 'done', batch: { status: 'done' } });
   expect(toast.text).toBe('300 actions undone; 10 could not be');
@@ -603,7 +612,7 @@ it('a sort started here joins the list, and undoing an older run leaves this one
   expect(m.cleanup.batches.map((b) => b.id)).toEqual([3, 2]);
   await finish();
 
-  routes['POST /api/batches/2/undo'] = [200, { batch: { ...older, status: 'undone' }, undone: 60, failed: 0 } satisfies UndoResult];
+  routes['POST /api/batches/2/undo'] = [200, { batch: { ...older, status: 'undone' }, undone: 60, emails: 60, failed: 0 } satisfies UndoResult];
   await m.undo(older);
   expect(m.cleanup).toMatchObject({ phase: 'done', batch: finished, batches: [finished, { id: 2, status: 'undone' }] });
 });

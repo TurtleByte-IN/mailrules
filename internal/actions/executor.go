@@ -355,20 +355,31 @@ func locate(ctx context.Context, mb mail.Mailbox, a store.Action, msg store.Mess
 	return mail.MsgRef{}, ErrGone
 }
 
-// UndoBatch undoes a batch's actions, newest first, and returns how many it undid. An
-// action that cannot be undone does not stop the rest: its error is joined into the one
-// returned, and the batch is marked undone only when every action was. A batch that never
-// changed a mailbox (all its actions were recorded in dry-run, or failed) has nothing to
-// undo: that is a no-op, and the batch stays as it is.
-func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (int, error) {
+// Undid counts what one undo run did.
+type Undid struct {
+	Actions int // actions undone
+	// Emails is how many emails at least one action was undone on: put back as they were.
+	// An email a cleanup only recorded in dry-run, passed over, or whose actions all
+	// failed was never changed, so it is not counted.
+	Emails int
+	Failed int // actions that could not be undone and are still in effect
+}
+
+// UndoBatch undoes a batch's actions, newest first, and says what it undid. An action
+// that cannot be undone does not stop the rest: its error is joined into the one returned,
+// and the batch is marked undone only when every action was. A batch that never changed a
+// mailbox (all its actions were recorded in dry-run, or failed) has nothing to undo: that
+// is a no-op, and the batch stays as it is.
+func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (Undid, error) {
 	if _, err := x.Store.Batch(ctx, batchID); err != nil {
-		return 0, err
+		return Undid{}, err
 	}
 	acts, err := x.Store.BatchActions(ctx, batchID)
 	if err != nil {
-		return 0, err
+		return Undid{}, err
 	}
-	undone := 0
+	var u Undid
+	emails := map[int64]bool{}
 	changed := false // the batch changed a mailbox at some point
 	var errs []error
 	for _, a := range slices.Backward(acts) {
@@ -377,18 +388,21 @@ func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (int, error) {
 			continue
 		}
 		if err := x.Undo(ctx, a.ID); err != nil {
+			u.Failed++
 			errs = append(errs, fmt.Errorf("action %d: %w", a.ID, err))
 			continue
 		}
-		undone++
+		u.Actions++
+		emails[a.MessageID] = true
 	}
+	u.Emails = len(emails)
 	if len(errs) > 0 {
-		return undone, errors.Join(errs...)
+		return u, errors.Join(errs...)
 	}
-	if !changed {
-		return 0, nil
+	if changed {
+		err = x.Store.SetBatchStatus(ctx, batchID, store.BatchUndone)
 	}
-	return undone, x.Store.SetBatchStatus(ctx, batchID, store.BatchUndone)
+	return u, err
 }
 
 // Correction is the user saying a message belongs to another rule.
@@ -480,27 +494,27 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 
 // UndoSince reverses every action made at or after since that is still in effect, newest
 // first: "undo the last hour". With ruleID it only takes the actions that rule led to. The
-// run is recorded as one batch of kind undo, whose id is returned with how many actions
-// were undone and how many could not be (their message is gone, or its account is not
-// connected). One that cannot be undone does not stop the rest.
-func (x *Exec) UndoSince(ctx context.Context, ruleID, since int64) (batchID int64, undone, failed int, err error) {
+// run is recorded as one batch of kind undo, whose id is returned with what was undone and
+// how many actions could not be (their message is gone, or its account is not connected).
+// One that cannot be undone does not stop the rest.
+func (x *Exec) UndoSince(ctx context.Context, ruleID, since int64) (batchID int64, u Undid, err error) {
 	// What is older than the undo window is not looked at: it could only fail as too old.
 	acts, err := x.Store.DoneActionsSince(ctx, ruleID, max(since, x.now()-store.UndoDays*24*3600))
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, Undid{}, err
 	}
-	batchID, undone, failed, _, err = x.undoAll(ctx, acts)
-	return batchID, undone, failed, err
+	batchID, u, _, err = x.undoAll(ctx, acts)
+	return batchID, u, err
 }
 
 // UndoMessage reverses everything still in effect on one message, newest first, as one
 // batch of kind undo: "undo this email" in one step. An action that cannot be undone does
 // not stop the others; why is the first such failure (ErrGone when the message is gone),
 // nil when there was none.
-func (x *Exec) UndoMessage(ctx context.Context, messageID int64) (batchID int64, undone, failed int, why, err error) {
+func (x *Exec) UndoMessage(ctx context.Context, messageID int64) (batchID int64, u Undid, why, err error) {
 	all, err := x.Store.MessageActions(ctx, messageID)
 	if err != nil {
-		return 0, 0, 0, nil, err
+		return 0, Undid{}, nil, err
 	}
 	var acts []store.Action
 	for _, a := range slices.Backward(all) {
@@ -512,25 +526,28 @@ func (x *Exec) UndoMessage(ctx context.Context, messageID int64) (batchID int64,
 }
 
 // undoAll undoes acts in the order given and records the run as one undo batch.
-func (x *Exec) undoAll(ctx context.Context, acts []store.Action) (batchID int64, undone, failed int, why, err error) {
+func (x *Exec) undoAll(ctx context.Context, acts []store.Action) (batchID int64, u Undid, why, err error) {
 	if batchID, err = x.Store.CreateBatch(ctx, store.BatchUndo, store.BatchRunning, x.now()); err != nil {
-		return 0, 0, 0, nil, err
+		return 0, Undid{}, nil, err
 	}
+	emails := map[int64]bool{}
 	for _, a := range acts {
 		if err := x.Undo(ctx, a.ID); err != nil {
-			failed++
+			u.Failed++
 			if why == nil {
 				why = err
 			}
 			continue
 		}
-		undone++
+		u.Actions++
+		emails[a.MessageID] = true
 	}
+	u.Emails = len(emails)
 	status := store.BatchDone
-	if failed > 0 {
+	if u.Failed > 0 {
 		status = store.BatchFailed
 	}
 	recCtx := context.WithoutCancel(ctx)
-	return batchID, undone, failed, why, errors.Join(
-		x.Store.SetBatchProgress(recCtx, batchID, len(acts), undone), x.Store.SetBatchStatus(recCtx, batchID, status))
+	return batchID, u, why, errors.Join(
+		x.Store.SetBatchProgress(recCtx, batchID, len(acts), u.Actions), x.Store.SetBatchStatus(recCtx, batchID, status))
 }

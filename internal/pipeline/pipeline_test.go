@@ -797,8 +797,8 @@ func TestLiveProcessingWithTheExecutor(t *testing.T) {
 
 	// "Undo today": the mail comes back to the inbox under a new UID, and the watcher
 	// reports that UID. It is the same message, not new mail, and must not be sorted again.
-	if n, err := x.UndoBatch(ctx, day1); n != 2 || err != nil {
-		t.Fatalf("UndoBatch = %d, %v", n, err)
+	if u, err := x.UndoBatch(ctx, day1); u.Actions != 2 || err != nil {
+		t.Fatalf("UndoBatch = %+v, %v", u, err)
 	}
 	back, _ := e.st.Message(ctx, row.Message.ID)
 	if back.Location().Folder != "INBOX" || back.Location().UID == row.Message.UID {

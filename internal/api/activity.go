@@ -507,12 +507,12 @@ func (s *server) handleMessageUndo(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err, "message")
 		return
 	}
-	batchID, undone, failed, why, err := s.Exec.UndoMessage(r.Context(), id)
+	batchID, u, why, err := s.Exec.UndoMessage(r.Context(), id)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	if undone == 0 && failed > 0 {
+	if u.Actions == 0 && u.Failed > 0 {
 		fail(w, r, why, "message")
 		return
 	}
@@ -521,7 +521,7 @@ func (s *server) handleMessageUndo(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err, "message")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"batch_id": batchID, "item": s.activityJSON(r.Context(), row), "undone": undone, "failed": failed})
+	writeJSON(w, http.StatusOK, map[string]any{"batch_id": batchID, "item": s.activityJSON(r.Context(), row), "undone": u.Actions, "failed": u.Failed})
 }
 
 func (s *server) handleCorrect(w http.ResponseWriter, r *http.Request) {
@@ -638,7 +638,7 @@ func (s *server) handleBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBatchUndo undoes a batch's actions, newest first. One that cannot be undone (its
-// message is gone) does not stop the rest: the answer counts both.
+// message is gone) does not stop the rest: the answer counts both, and the emails put back.
 func (s *server) handleBatchUndo(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "id", "batch")
 	if !ok {
@@ -653,34 +653,28 @@ func (s *server) handleBatchUndo(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, actions.ErrTooOld, "batch")
 		return
 	}
-	undone, undoErr := s.Exec.UndoBatch(r.Context(), id)
-	acts, err := s.store.BatchActions(r.Context(), id)
-	if err != nil {
+	u, err := s.Exec.UndoBatch(r.Context(), id)
+	if err != nil && u.Failed == 0 { // not an action that would not undo: the database, say
 		internalError(w, r, err)
 		return
 	}
-	failed := 0
-	for _, a := range acts {
-		if a.Status == store.ActionDone {
-			failed++
-		}
-	}
-	if undoErr != nil && failed == 0 { // not an action that would not undo: the database, say
-		internalError(w, r, undoErr)
-		return
-	}
-	s.writeBatch(w, r, id, map[string]any{"undone": undone, "failed": failed})
+	s.writeBatch(w, r, id, undid(u))
+}
+
+// undid is the counts of an UndoResult.
+func undid(u actions.Undid) map[string]any {
+	return map[string]any{"undone": u.Actions, "emails": u.Emails, "failed": u.Failed}
 }
 
 // undoSince undoes everything done since a time, by one rule or (ruleID 0) by all of
 // them, and answers with the undo batch it was recorded as.
 func (s *server) undoSince(w http.ResponseWriter, r *http.Request, ruleID, from int64) {
-	batchID, undone, failed, err := s.Exec.UndoSince(r.Context(), ruleID, from)
+	batchID, u, err := s.Exec.UndoSince(r.Context(), ruleID, from)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	s.writeBatch(w, r, batchID, map[string]any{"undone": undone, "failed": failed})
+	s.writeBatch(w, r, batchID, undid(u))
 }
 
 // handleUndoSince is "undo the last hour": everything done since ?since=.

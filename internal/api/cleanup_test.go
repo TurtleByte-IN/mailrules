@@ -333,7 +333,7 @@ ran:
 	// The batch is a cleanup batch and undoes as one: everything goes back.
 	undo := e.call(http.MethodPost, fmt.Sprintf("/api/batches/%d/undo", batchID), "", http.StatusOK)
 	conform(t, e.doc, "UndoResult", undo)
-	if undo["undone"] != float64(sorted) || undo["failed"] != float64(0) || undo["batch"].(map[string]any)["status"] != "undone" {
+	if undo["undone"] != float64(sorted) || undo["emails"] != float64(sorted) || undo["failed"] != float64(0) || undo["batch"].(map[string]any)["status"] != "undone" {
 		t.Fatalf("undo = %v", undo)
 	}
 	if e.folderCount("INBOX") != total || e.folderCount("Food") != 0 || e.folderCount("Reading") != 0 || e.folderCount(own) != 0 {
@@ -610,14 +610,16 @@ func TestCleanupCheckScope(t *testing.T) {
 }
 
 // An email that moved after the check is passed over by the Sort, counted as skipped, and
-// not acted on.
+// not acted on. Undoing the run puts back only the emails it changed (MAI-46): not the
+// skipped one, and each email once however many actions it had.
 func TestCleanupSortSkipsMovedMail(t *testing.T) {
 	e := newEnv(t)
 	for i := range 4 {
 		e.deliver("noreply@swiggy.in", fmt.Sprintf("order %d", i))
 	}
 	e.connect()
-	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated)
+	e.call(http.MethodPost, "/api/rules/batch", `{"rules":[{"name":"Food","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},
+		"actions":[{"type":"move","folder":"Food"},{"type":"read"}]}]}`, http.StatusCreated)
 	e.decider.DecideFunc = cleanupDeciderFunc
 
 	_, live, cancel := e.hub.Subscribe(0)
@@ -669,6 +671,16 @@ done:
 	b := e.call(http.MethodGet, fmt.Sprintf("/api/batches/%d", batchID), "", http.StatusOK)["batch"].(map[string]any)
 	if id(b["skipped"]) != 1 {
 		t.Errorf("batch json skipped = %v, want 1", b["skipped"])
+	}
+
+	undo := e.call(http.MethodPost, fmt.Sprintf("/api/batches/%d/undo", batchID), "", http.StatusOK)
+	conform(t, e.doc, "UndoResult", undo)
+	if ub := undo["batch"].(map[string]any); undo["emails"] != float64(3) || undo["undone"] != float64(6) || undo["failed"] != float64(0) ||
+		ub["total"] != float64(4) || ub["status"] != "undone" {
+		t.Fatalf("undo = %v, want 3 emails put back (6 actions) of the 4 rows, the skipped one not among them", undo)
+	}
+	if e.folderCount("INBOX") != 3 || e.folderCount("Food") != 0 || e.folderOf(gone["subject"].(string)) != "Archive" {
+		t.Errorf("after the undo: INBOX %d, Food %d", e.folderCount("INBOX"), e.folderCount("Food"))
 	}
 }
 

@@ -468,9 +468,9 @@ func TestUndoBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := e.x.UndoBatch(ctx, batch)
-	if n != 8 || err != nil {
-		t.Fatalf("UndoBatch = %d, %v", n, err)
+	u, err := e.x.UndoBatch(ctx, batch)
+	if u != (Undid{Actions: 8, Emails: 2}) || err != nil {
+		t.Fatalf("UndoBatch = %+v, %v", u, err)
 	}
 	for d, want := range map[DecisionRecord][]string{a: nil, b: {`\Seen`}} {
 		ref, flags := e.where(d.MessageID)
@@ -498,8 +498,8 @@ func TestUndoBatch(t *testing.T) {
 	if got := e.mb.changes(); got[len(got)-1] != `store -\Flagged` || got[len(got)-2] != "move INBOX" {
 		t.Errorf("undo order = %v", got[len(got)-4:])
 	}
-	if n, err := e.x.UndoBatch(ctx, batch); n != 0 || err != nil {
-		t.Errorf("undoing a batch twice = %d, %v", n, err)
+	if u, err := e.x.UndoBatch(ctx, batch); u != (Undid{}) || err != nil {
+		t.Errorf("undoing a batch twice = %+v, %v", u, err)
 	}
 	if _, err := e.x.UndoBatch(ctx, 999); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("unknown batch: %v", err)
@@ -521,9 +521,9 @@ func TestUndoBatch(t *testing.T) {
 	if _, err := e.mb.Mailbox.Move(ctx, ref, "Trash"); err != nil { // not through the executor: "outside MailRules"
 		t.Fatal(err)
 	}
-	n, err = e.x.UndoBatch(ctx, batch2)
-	if n != 1 || !errors.Is(err, ErrGone) {
-		t.Fatalf("UndoBatch with a missing message = %d, %v", n, err)
+	u, err = e.x.UndoBatch(ctx, batch2)
+	if u != (Undid{Actions: 1, Emails: 1, Failed: 1}) || !errors.Is(err, ErrGone) {
+		t.Fatalf("UndoBatch with a missing message = %+v, %v", u, err)
 	}
 	if ref, _ := e.where(kept.MessageID); ref.Folder != "INBOX" {
 		t.Errorf("the other message was not restored: %+v", ref)
@@ -619,8 +619,8 @@ func TestCorrect(t *testing.T) {
 	}
 
 	// The correction is itself one batch: undoing it puts the mail back in the inbox, unread.
-	if n, err := e.x.UndoBatch(ctx, batch); n != 2 || err != nil {
-		t.Fatalf("undo of the correction batch = %d, %v", n, err)
+	if u, err := e.x.UndoBatch(ctx, batch); u != (Undid{Actions: 2, Emails: 1}) || err != nil {
+		t.Fatalf("undo of the correction batch = %+v, %v", u, err)
 	}
 	if ref, flags := e.where(d.MessageID); ref.Folder != "INBOX" || len(flags) != 0 {
 		t.Errorf("after undoing the correction: in %s with %v", ref.Folder, flags)
@@ -681,9 +681,9 @@ func TestUndoSince(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	batch, undone, failed, err := e.x.UndoSince(ctx, 0, 4000)
-	if err != nil || undone != 2 || failed != 2 {
-		t.Fatalf("UndoSince = %d undone, %d failed, %v", undone, failed, err)
+	batch, u, err := e.x.UndoSince(ctx, 0, 4000)
+	if err != nil || u != (Undid{Actions: 2, Emails: 1, Failed: 2}) {
+		t.Fatalf("UndoSince = %+v, %v", u, err)
 	}
 	if b, _ := e.st.Batch(ctx, batch); b.Kind != store.BatchUndo || b.Status != store.BatchFailed || b.Total != 4 || b.Done != 2 {
 		t.Errorf("undo batch = %+v", b)
@@ -694,7 +694,7 @@ func TestUndoSince(t *testing.T) {
 	if ref, _ := e.where(old.MessageID); ref.Folder != "Food" {
 		t.Errorf("an action from before the time was undone: the message is in %s", ref.Folder)
 	}
-	if batch, undone, failed, err := e.x.UndoSince(ctx, 77, 0); err != nil || undone != 0 || failed != 0 || batch == 0 {
-		t.Errorf("UndoSince for a rule with no actions = batch %d, %d, %d, %v", batch, undone, failed, err)
+	if batch, u, err := e.x.UndoSince(ctx, 77, 0); err != nil || u != (Undid{}) || batch == 0 {
+		t.Errorf("UndoSince for a rule with no actions = batch %d, %+v, %v", batch, u, err)
 	}
 }

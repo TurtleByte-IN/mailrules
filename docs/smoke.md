@@ -45,7 +45,7 @@ Switch dry-run off in Settings [`PATCH /api/settings {"dry_run": false}`, or `ma
   - [ ] Entering a new app password and reconnecting brings it back to Live [`PATCH /api/accounts/{id} {"password": "..."}`, then `POST /api/accounts/{id}/reconnect`], and mail that arrived meanwhile is processed once.
 - [ ] **Rule test.** In Rules, test a rule on 20 emails, then on 200. "N of M emails tested" moves from the first second, the mail stays unread and where it was, and with `LOG_LEVEL=debug` the log has `rule test started` and `rule test finished` (tested, matched, model calls, duration), one `model call` line per attempt and the mail server's list and fetch times. Reload the page in the middle of a test: the log says `rule test cancelled by the client after N of M` at INFO, and there is no ERROR line.
 - [ ] **Cleanup Sort, live.** Check a folder with a known number of messages, then Sort the selected rows. Progress moves, the batch finishes, and the messages are where the table said they would go. If you move one checked email by hand before sorting, it is reported skipped and left alone. Edit a rule after a check and the table shows an out-of-date notice and refuses Sort until you check again.
-- [ ] **Cleanup undo.** Undo the whole batch [`POST /api/batches/{id}/undo`]. Every message is back in its original folder with its original flags.
+- [ ] **Cleanup undo.** Undo the whole batch [`POST /api/batches/{id}/undo`]. Every message is back in its original folder with its original flags, and the message counts only the emails the Sort really moved: the one you moved by hand (skipped) is not among them [`"emails"` in the answer].
 
 ## 4. Afterwards
 
