@@ -25,11 +25,22 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 To run a published image with Compose instead, put `MAILRULES_IMAGE=ghcr.io/turtlebyte-in/mailrules:latest` in `deploy/.env` and run the same command without `--build`.
 
-Open <http://127.0.0.1:8080> on the same machine. The image is distroless, runs as a non-root user with a read-only root filesystem, and keeps everything it writes in the `mailrules-data` volume.
+Open <http://127.0.0.1:8080> on the same machine. If another program already uses port 8080, put `MAILRULES_PORT=8090` (or any free port) in `deploy/.env`; Compose then publishes that port instead. The image is distroless, runs as a non-root user with a read-only root filesystem, and keeps everything it writes in the `mailrules-data` volume.
 
 Settings are environment variables. Put the ones you need in `deploy/.env` (never in the compose file), for example a model key; or leave them out and enter the keys in the browser. With `docker run`, pass them with `-e`.
 
 Inside the container the daemon listens on every interface, and the port is published to `127.0.0.1` only, over plain HTTP. That is why both commands set `MAILRULES_COOKIE_SECURE=false`, so you can stay signed in at `http://127.0.0.1:8080`. On a server (a VPS such as Hetzner), put a TLS reverse proxy in front and set `MAILRULES_COOKIE_SECURE=true`, so the login cookie only ever travels over HTTPS.
+
+## Quickstart with Homebrew
+
+On macOS, and on Linux with Homebrew, from the first release on:
+
+```bash
+brew install turtlebyte-in/tap/mailrules
+mailrules serve
+```
+
+This installs the released binary from the tap [`TurtleByte-IN/homebrew-tap`](https://github.com/TurtleByte-IN/homebrew-tap); `brew upgrade` picks up later releases. The data directory is `./data` in the directory you start it from, unless you set `MAILRULES_DATA_DIR`.
 
 ## Quickstart with a single binary
 
@@ -128,7 +139,7 @@ Every setting is an environment variable that also works as a `--flag` (the vari
 
 ## Releases
 
-Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yml`: it runs `make check`, then GoReleaser (`.goreleaser.yaml`) builds the web app and the binaries and publishes the GitHub Release with the archives and `checksums.txt`, and finally the multi-arch image is built from `deploy/Dockerfile` and pushed to `ghcr.io/turtlebyte-in/mailrules`. GitHub creates that package as private the first time; make it public once in its package settings. A Homebrew cask is configured for the tap `TurtleByte-IN/homebrew-tap`, which does not exist yet; until it does and the repository has a `HOMEBREW_TAP_TOKEN` secret that can push to it, releases skip the cask. To try the release build without publishing anything: `goreleaser release --snapshot --clean --skip=publish`.
+Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yml`: it runs `make check`, then GoReleaser (`.goreleaser.yaml`) builds the web app and the binaries and publishes the GitHub Release with the archives and `checksums.txt`, and finally the multi-arch image is built from `deploy/Dockerfile` and pushed to `ghcr.io/turtlebyte-in/mailrules`. GitHub creates that package as private the first time; make it public once in its package settings. GoReleaser also writes a Homebrew cask to the tap `TurtleByte-IN/homebrew-tap` when the repository has a `HOMEBREW_TAP_TOKEN` secret that can push to it; without the secret, releases skip the cask. To try the release build without publishing anything: `goreleaser release --snapshot --clean --skip=publish`.
 
 ## Developing
 

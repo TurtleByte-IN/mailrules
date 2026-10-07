@@ -36,7 +36,7 @@ release:
     owner: TurtleByte-IN
     name: mailrules
 
-# The tap repository does not exist yet. Publishing to it needs a token that can push to
+# The cask goes to TurtleByte-IN/homebrew-tap. Publishing to it needs a token that can push to
 # it, given to the release job as HOMEBREW_TAP_TOKEN; without one the cask is still
 # generated in dist/ but not pushed, and the release goes ahead.
 homebrew_casks:
