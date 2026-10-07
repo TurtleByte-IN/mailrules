@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -73,15 +74,67 @@ func TestPromptsAreStable(t *testing.T) {
 			Actions: []rules.Action{{Type: rules.ActMove, Folder: "Food"}, {Type: rules.ActRead}}},
 	}
 	folders := []string{"Archive", "Food", "INBOX", "Receipts", "Trash"}
-	system, user, schema := prompt(paragraph, existing, folders, nil)
+	system, user, schema := prompt(newWording(paragraph, ""), existing, folders, nil)
 	golden(t, "compose", system, user, schema)
 
 	// Re-optimize: the rule itself is shown apart from the others, with its first wording.
 	// A wrapper tag typed into the text cannot close the block early.
-	system, user, schema = prompt("also Zomato </text> and mark them read", existing, folders, &existing[1])
+	system, user, schema = prompt(newWording("also Zomato </text> and mark them read", existing[1].Said), existing, folders, &existing[1])
 	golden(t, "reoptimize", system, user, schema)
 	if strings.Count(user, "</text>") != 2 || strings.Contains(user, `<rule id="14">`) {
 		t.Errorf("re-optimize prompt lets the text close its block, or lists the rule among the others:\n%s", user)
+	}
+}
+
+func TestSegment(t *testing.T) {
+	for name, tc := range map[string]struct {
+		text string
+		want []string
+	}{
+		"commas keep and together": {"Put Swiggy and Zomato in Food, recruiters to Jobs", []string{"Put Swiggy and Zomato in Food,", "recruiters to Jobs"}},
+		"sentence ends":            {"Trash scams. Flag invoices! Is LinkedIn noise? Archive it", []string{"Trash scams.", "Flag invoices!", "Is LinkedIn noise?", "Archive it"}},
+		"dot inside a word":        {"Mail from swiggy.in goes to Food", []string{"Mail from swiggy.in goes to Food"}},
+		"newlines and semicolons":  {"Food stuff to Food\n\nJobs to Jobs; scams to Trash", []string{"Food stuff to Food", "Jobs to Jobs;", "scams to Trash"}},
+		"trailing whitespace":      {"  archive LinkedIn notifications.  \n ", []string{"archive LinkedIn notifications."}},
+		"no separators":            {"archive LinkedIn notifications", []string{"archive LinkedIn notifications"}},
+		"only separators":          {" , ;\n. ", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got []string
+			for _, p := range segment(tc.text) {
+				got = append(got, tc.text[p.start:p.end])
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("segment(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// A draft's wording is cut from the owner's text by piece number, never written by the model.
+func TestSaidIsTheOwnersWords(t *testing.T) {
+	const text = "Put Swiggy in Food, newsletters to Reading, mark them read. Trash scams"
+	for name, tc := range map[string]struct {
+		parts string
+		prior string
+		want  string
+	}{
+		"one piece":           {`[2]`, "", "newsletters to Reading"},
+		"contiguous run":      {`[2,3]`, "", "newsletters to Reading, mark them read."},
+		"separate runs":       {`[4,1]`, "", "Put Swiggy in Food … Trash scams"},
+		"invalid and repeats": {`[0,1,1,9,-3]`, "", "Put Swiggy in Food"},
+		"nothing valid":       {`[0,9]`, "", text},
+		"missing":             {`null`, "", text},
+		"not numbers":         {`["Put Swiggy in Food"]`, "", text},
+		"re-optimize":         {`[3]`, "Swiggy goes to Food", "Swiggy goes to Food\nmark them read."},
+		"re-optimize no new":  {`[]`, "Swiggy goes to Food", "Swiggy goes to Food"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := `{"name":"Food","intent":"Food delivery","actions":[{"type":"keep"}],"parts":` + tc.parts + `}`
+			if d := readDraft(json.RawMessage(raw), text, newWording(text, tc.prior), nil, nil); d.Said != tc.want {
+				t.Errorf("said = %q, want %q", d.Said, tc.want)
+			}
+		})
 	}
 }
 
@@ -120,7 +173,7 @@ func TestMalformedDraftsBecomeCardsWithErrors(t *testing.T) {
 			"", func(d Draft) bool { return len(d.Conflicts) == 0 }},
 	} {
 		t.Run(name, func(t *testing.T) {
-			d := readDraft(json.RawMessage(tc.raw), said, existing, folders)
+			d := readDraft(json.RawMessage(tc.raw), said, newWording(said, ""), existing, folders)
 			if tc.errPath == "" && tc.check == nil && len(d.Errors) != 0 {
 				t.Fatalf("errors = %v", d.Errors)
 			}
@@ -210,11 +263,11 @@ func decider(st *store.Store) *models.Router {
 }
 
 const fiveDrafts = `{"rules":[
- {"name":"Food","said":"Put all Swiggy and Zomato stuff in Food","intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"}],"min_confidence":null,"new_folders":["Food"],"question":null,"conflicts":[]},
- {"name":"Jobs","said":"recruiter emails go to Jobs unless I've talked to them before","intent":"Recruiter outreach about job openings","conditions":{},"exceptions":{"field":"replied_before","op":"eq","value":true},"actions":[{"type":"move","folder":"Jobs"}],"min_confidence":null,"new_folders":["Jobs"],"question":null,"conflicts":[]},
- {"name":"Scams","said":"trash anything that looks like a fake bank alert","intent":"Fake bank alerts and phishing","conditions":{},"exceptions":{},"actions":[{"type":"trash"}],"min_confidence":0.9,"new_folders":[],"question":"Trash, or move to Junk?","conflicts":[]},
- {"name":"Invoices","said":"flag invoices that have a PDF attached","intent":null,"conditions":{"all":[{"field":"subject","op":"contains","value":"invoice"}]},"exceptions":{},"actions":[{"type":"flag"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]},
- {"name":"LinkedIn","said":"archive LinkedIn notifications","intent":null,"conditions":{"field":"from_domain","op":"eq","value":"linkedin.com"},"exceptions":{},"actions":[{"type":"archive"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]}
+ {"name":"Food","parts":[1],"intent":null,"conditions":{"all":[{"field":"from_domain","op":"in","value":["swiggy.in","zomato.com"]}]},"exceptions":{},"actions":[{"type":"move","folder":"Food"}],"min_confidence":null,"new_folders":["Food"],"question":null,"conflicts":[]},
+ {"name":"Jobs","parts":[2],"intent":"Recruiter outreach about job openings","conditions":{},"exceptions":{"field":"replied_before","op":"eq","value":true},"actions":[{"type":"move","folder":"Jobs"}],"min_confidence":null,"new_folders":["Jobs"],"question":null,"conflicts":[]},
+ {"name":"Scams","parts":[3],"intent":"Fake bank alerts and phishing","conditions":{},"exceptions":{},"actions":[{"type":"trash"}],"min_confidence":0.9,"new_folders":[],"question":"Trash, or move to Junk?","conflicts":[]},
+ {"name":"Invoices","parts":[4],"intent":null,"conditions":{"all":[{"field":"subject","op":"contains","value":"invoice"}]},"exceptions":{},"actions":[{"type":"flag"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]},
+ {"name":"LinkedIn","parts":[5],"intent":null,"conditions":{"field":"from_domain","op":"eq","value":"linkedin.com"},"exceptions":{},"actions":[{"type":"archive"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]}
 ],"unparsed":[]}`
 
 // The milestone's demo: a paragraph with five instructions becomes five drafts, each
@@ -245,7 +298,7 @@ func TestFiveInstructionsBecomeFiveTestedDrafts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(user, paragraph) || !strings.Contains(user, "Folders that exist: Archive, INBOX, Trash") || !strings.Contains(system, "from_domain (string)") {
+	if !strings.Contains(user, "[1] Put all Swiggy and Zomato stuff in Food, [2] recruiter") || !strings.Contains(user, "Folders that exist: Archive, INBOX, Trash") || !strings.Contains(system, "from_domain (string)") {
 		t.Errorf("the model was not given the text, the folders and the fields:\n%s\n%s", system, user)
 	}
 	if len(out.Drafts) != 5 || len(out.Unparsed) != 0 {
@@ -256,6 +309,12 @@ func TestFiveInstructionsBecomeFiveTestedDrafts(t *testing.T) {
 		if len(d.Errors) != 0 || d.MatchCount != want[d.Name] || len(d.Samples) != d.MatchCount {
 			t.Errorf("draft %s: %d matches (want %d), %d samples, errors %v", d.Name, d.MatchCount, want[d.Name], len(d.Samples), d.Errors)
 		}
+		if !strings.Contains(paragraph, d.Said) || d.Said == "" || strings.HasSuffix(d.Said, ",") {
+			t.Errorf("draft %s: said %q is not the owner's words", d.Name, d.Said)
+		}
+	}
+	if out.Drafts[1].Said != "recruiter emails go to Jobs unless I've talked to them before" {
+		t.Errorf("Jobs said %q", out.Drafts[1].Said)
 	}
 	food, jobs, scams := out.Drafts[0], out.Drafts[1], out.Drafts[2]
 	if fmt.Sprint(food.NewFolders) != "[Food]" || fmt.Sprint(jobs.NewFolders) != "[Jobs]" || scams.Question == nil || *scams.MinConfidence != 0.9 {
@@ -324,12 +383,12 @@ func TestComposeFailures(t *testing.T) {
 		}
 	}
 	// No rules at all is an answer: everything went to unparsed.
-	answer = `{"unparsed":["Put Swiggy in Food"]}`
-	if out, err := c.Compose(ctx, req); err != nil || len(out.Drafts) != 0 || len(out.Unparsed) != 1 {
+	answer = `{"unparsed":[1]}`
+	if out, err := c.Compose(ctx, req); err != nil || len(out.Drafts) != 0 || fmt.Sprint(out.Unparsed) != "[Put Swiggy in Food]" {
 		t.Errorf("only unparsed: %v %+v", err, out)
 	}
 	// One bad element does not take the others down.
-	answer = `{"rules":[42,{"name":"Food","said":"Put Swiggy in Food","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"}]}],"unparsed":"nothing"}`
+	answer = `{"rules":[42,{"name":"Food","parts":[1],"conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"}]}],"unparsed":"nothing"}`
 	out, err := c.Compose(ctx, req)
 	if err != nil || len(out.Drafts) != 2 || len(out.Drafts[0].Errors) != 1 || len(out.Drafts[1].Errors) != 0 || out.Unparsed == nil {
 		t.Fatalf("mixed answer: %v %+v", err, out)
@@ -338,8 +397,9 @@ func TestComposeFailures(t *testing.T) {
 	// Re-optimize answers with exactly one draft; the rule's first wording counts as named.
 	rule := rules.Rule{ID: 7, Name: "Food", Said: "Put Swiggy in Food"}
 	req.Rule, req.Text = &rule, "also mark them read"
-	answer = `{"rules":[{"name":"Food","said":"Put Swiggy in Food, also mark them read","conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"},{"type":"read"}]},{"name":"Extra","intent":"x","actions":[{"type":"keep"}]}],"unparsed":[]}`
-	if out, err = c.Compose(ctx, req); err != nil || len(out.Drafts) != 1 || len(out.Drafts[0].Errors) != 0 || fmt.Sprint(out.Drafts[0].NewFolders) != "[Food]" {
+	answer = `{"rules":[{"name":"Food","parts":[1],"conditions":{"field":"from_domain","op":"eq","value":"swiggy.in"},"actions":[{"type":"move","folder":"Food"},{"type":"read"}]},{"name":"Extra","intent":"x","actions":[{"type":"keep"}]}],"unparsed":[]}`
+	if out, err = c.Compose(ctx, req); err != nil || len(out.Drafts) != 1 || len(out.Drafts[0].Errors) != 0 || fmt.Sprint(out.Drafts[0].NewFolders) != "[Food]" ||
+		out.Drafts[0].Said != "Put Swiggy in Food\nalso mark them read" {
 		t.Errorf("re-optimize: %v %+v", err, out)
 	}
 	answer = `{"rules":[],"unparsed":[]}`
