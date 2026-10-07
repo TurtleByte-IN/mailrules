@@ -5,3 +5,4 @@ docs
 web/node_modules
 web/dist
 internal/web/dist/app
+dist

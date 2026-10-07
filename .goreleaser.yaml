@@ -1,6 +1,7 @@
 # Release builds: linux and macOS on amd64 and arm64, checksums, and a Homebrew cask.
-# Nothing has been released with this file yet. Check it with `goreleaser check`, and try
-# it without publishing with `goreleaser release --snapshot --clean`.
+# .github/workflows/release.yml runs this on every tag v*. Check it with `goreleaser check`,
+# and try it without publishing with `goreleaser release --snapshot --clean --skip=publish`.
+# The Docker image is built from deploy/Dockerfile by that workflow, not here.
 version: 2
 project_name: mailrules
 
@@ -36,16 +37,18 @@ release:
     name: mailrules
 
 # The tap repository does not exist yet. Publishing to it needs a token that can push to
-# it, given to the release job as HOMEBREW_TAP_TOKEN.
+# it, given to the release job as HOMEBREW_TAP_TOKEN; without one the cask is still
+# generated in dist/ but not pushed, and the release goes ahead.
 homebrew_casks:
   - name: mailrules
     binaries: [mailrules]
     homepage: https://github.com/TurtleByte-IN/mailrules
     description: Sorts incoming email over IMAP with rules written in plain English
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_TOKEN" "") "" }}true{{ end }}'
     repository:
       owner: TurtleByte-IN
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
     hooks:
       post:
         # The binaries are not signed or notarized, so macOS would quarantine them.

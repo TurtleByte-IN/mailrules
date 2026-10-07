@@ -3,22 +3,27 @@
 # No secret is baked in: the master key is generated into the /data volume on first run,
 # and provider keys come from the environment or are set in the browser.
 
+# The first two stages run on the build machine's own platform, so a multi-platform build
+# (docker buildx build --platform linux/amd64,linux/arm64) cross-compiles the binary
+# instead of emulating the other architecture.
+
 # 1. The web app. The glob matches nothing when web/ is not in the checkout, and then
 #    the binary serves its placeholder page.
-FROM node:24-alpine AS web
+FROM --platform=$BUILDPLATFORM node:24-alpine AS web
 WORKDIR /src/web
 COPY we[b]/ ./
 RUN if [ -f package.json ]; then npm ci && npm run build; else mkdir dist; fi
 
 # 2. The binary: static, no CGO (the SQLite driver is pure Go).
-FROM golang:1.27 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist/ internal/web/dist/app/
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${VERSION}" -o /out/mailrules ./cmd/mailrules \
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-X main.version=${VERSION}" -o /out/mailrules ./cmd/mailrules \
  && mkdir /out/data
 
 # 3. The image: distroless static, running as its non-root user (uid 65532). Only /data

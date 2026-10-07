@@ -1,6 +1,8 @@
-# From the repository root:
+# From the repository root, building the image from this checkout:
 #   docker compose -f deploy/docker-compose.yml up -d --build
-# then open http://127.0.0.1:8080 on the same machine.
+# or running a published image instead: set MAILRULES_IMAGE (for example to
+# ghcr.io/turtlebyte-in/mailrules:latest) in .env and leave out --build.
+# Then open http://127.0.0.1:8080 on the same machine.
 #
 # Settings are read from the shell or from a file named .env next to this file. Leave a
 # variable unset to keep the daemon's default. Never write a key into this file. Provider
@@ -10,7 +12,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: mailrules:local
+    # Without --build, Compose pulls this image when it is not present, and builds it
+    # only if the pull fails.
+    image: ${MAILRULES_IMAGE:-mailrules:local}
     restart: unless-stopped
     ports:
       # Reachable from this machine only. To expose it, put a reverse proxy with TLS in
