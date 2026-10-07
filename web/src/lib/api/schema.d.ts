@@ -2003,7 +2003,7 @@ export interface components {
             /** @description One sentence saying how it was settled */
             reason: string;
         };
-        /** @description The gallery holds eight: newsletters, receipts, login codes, cold sales, travel, social notifications, bank statements, calendar invites */
+        /** @description The gallery holds nine: newsletters, receipts, login codes, cold sales, recruiters, travel, social notifications, bank statements, calendar invites */
         Template: {
             id: string;
             name: string;

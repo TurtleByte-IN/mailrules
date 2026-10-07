@@ -2081,7 +2081,7 @@ components:
     Template:
       type: object
       required: [id, name, description, rule]
-      description: 'The gallery holds eight: newsletters, receipts, login codes, cold sales, travel, social notifications, bank statements, calendar invites'
+      description: 'The gallery holds nine: newsletters, receipts, login codes, cold sales, recruiters, travel, social notifications, bank statements, calendar invites'
       properties:
         id: { type: string }
         name: { type: string }
