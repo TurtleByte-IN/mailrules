@@ -4,6 +4,7 @@
   import { clock, confidence, money, weekday } from '../../lib/format';
   import { accounts } from '../../lib/state/accounts.svelte';
   import { correct } from '../../lib/state/activity.svelte';
+  import { settings } from '../../lib/state/settings.svelte';
   import { rules } from '../../lib/state/rules.svelte';
   import Always from './Always.svelte';
 
@@ -13,6 +14,8 @@
   let correctTo = $state('keep');
   // Not there while the message waits in Needs review.
   let always = $state<Always>();
+  // 0 until the settings have loaded; then the label says it without a number rather than a wrong one.
+  const kept = $derived(settings.value.retention_days > 0 ? `${settings.value.retention_days} ${settings.value.retention_days === 1 ? 'day' : 'days'}` : 'the retention period set in Settings');
   const account = $derived(accounts.list.find((a) => String(a.id) === String(message.account_id))?.label);
 
   // What a decision step picked and what it cost: "Recruiters 0.91 · 412 tokens · $0.0001 · 380 ms".
@@ -63,7 +66,7 @@
   {/each}
 </ol>
 <div class="rounded border border-line-divider bg-selected-row p-3">
-  <div class="mb-1.5 text-xs text-muted">Preview (snippet kept for 30 days)</div>
+  <div class="mb-1.5 text-xs text-muted">Preview (snippet kept for {kept})</div>
   <p class="text-[13px] break-words text-nav">{message.snippet}</p>
 </div>
 {#if message.state === 'review'}

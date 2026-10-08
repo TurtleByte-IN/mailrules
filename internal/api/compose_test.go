@@ -150,6 +150,17 @@ func TestTemplateRules(t *testing.T) {
 		}
 	}
 
+	// MAI-106: Cold sales says "never emailed", so a sender you have replied to is excepted, as for Recruiters.
+	for _, s := range saved {
+		r := s.(map[string]any)
+		if r["name"] != "Cold sales" {
+			continue
+		}
+		if ex, _ := r["exceptions"].(map[string]any); ex["field"] != "replied_before" || ex["value"] != true {
+			t.Errorf("Cold sales exceptions = %v, want replied_before", r["exceptions"])
+		}
+	}
+
 	receipts := saved[1].(map[string]any)
 	path := fmt.Sprintf("/api/rules/%d", id(receipts["id"]))
 	patched := e.call(http.MethodPatch, path, `{"said":"also the ones from Amazon","enabled":false}`, http.StatusOK)["rule"].(map[string]any)

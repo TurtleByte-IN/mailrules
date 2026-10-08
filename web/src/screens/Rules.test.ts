@@ -109,3 +109,13 @@ it('a rule added from a template says so instead of quoting words the user never
   expect(editor.textContent).toContain('You said');
   expect(editor.textContent).not.toContain('template');
 });
+
+it('states how rules are checked, and links the guide', async () => {
+  respond(200, { items: [] });
+  await load();
+  render(Rules);
+  expect(screen.getByText(/A rule with only conditions ends the check when it matches/)).toBeTruthy();
+  expect(screen.queryByText(/first confident match wins/)).toBeNull();
+  const link = screen.getByRole('link', { name: 'How rules are checked' });
+  expect(link.getAttribute('href')).toBe('https://github.com/TurtleByte-IN/mailrules/blob/main/docs/guide/rules.md#how-an-email-is-decided');
+});

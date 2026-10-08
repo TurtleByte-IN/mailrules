@@ -19,7 +19,7 @@ Filter the list by **Rule**, **Mailbox** and **Outcome** (Sorted, Left in Inbox,
 
 The outcome reads, for example, **Moved to Receipts**, **Kept in Inbox**, or, in dry-run, **Would move to Receipts**. A failed action shows its reason, such as **Failed: no Archive folder**.
 
-Click a row to open **Why this happened**: each step of the decision, the model and its confidence for every candidate rule, the tokens and cost of each model call, and a short preview of the email. The preview is kept for 30 days by default (**Keep email snippets for** in Settings, from 1 to 3650 days). Full email bodies are never stored.
+Click a row to open **Why this happened**: each step of the decision, the model and its confidence for every candidate rule, the tokens and cost of each model call, and a short preview of the email. The preview is kept for 30 days by default; the label above it shows the number of days set under **Keep email snippets for** in Settings (from 1 to 3650). Full email bodies are never stored.
 
 ## Correcting a decision
 

@@ -41,7 +41,7 @@ docker exec mailrules /mailrules dry-run off
 docker compose -f deploy/docker-compose.yml exec mailrules /mailrules dry-run off
 ```
 
-The switch takes effect from the next email, with no restart. **Go live** at the end of the add-mailbox wizard is something else: it saves the mailbox and starts watching it, and does not change dry-run.
+The switch takes effect from the next email, with no restart. The **Connect** button at the end of the add-mailbox wizard is something else: it saves the mailbox and starts watching it, and does not change dry-run.
 
 To check that MailRules is live, look for the missing banner, or run `mailrules dry-run`, which prints `dry-run is off: rules change mailboxes`. The daemon also logs `dry_run` in its `listening` line at startup.
 
