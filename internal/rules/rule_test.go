@@ -57,6 +57,7 @@ func TestValidate(t *testing.T) {
 		{"string where bool is needed", Rule{Name: "x", Conditions: leaf("is_bulk", OpEq, "yes"), Actions: move}, "conditions.value"},
 		{"string where number is needed", Rule{Name: "x", Conditions: leaf("size_kb", OpGt, "big"), Actions: move}, "conditions.value"},
 		{"scalar where id list is needed", Rule{Name: "x", Conditions: leaf("account", OpIn, 3.0), Actions: move}, "conditions.value"},
+		{"an address where an id is needed (only a rules file names mailboxes by address)", Rule{Name: "x", Conditions: leaf("account", OpEq, "me@icloud.com"), Actions: move}, "conditions.value"},
 		{"empty string value", Rule{Name: "x", Conditions: leaf("subject", OpContains, ""), Actions: move}, "conditions.value"},
 		{"empty list value", Rule{Name: "x", Conditions: leaf("subject", OpContainsAny, []any{}), Actions: move}, "conditions.value"},
 		{"bad dmarc value", Rule{Name: "x", Conditions: leaf("dmarc", OpEq, "maybe"), Actions: move}, "conditions.value"},

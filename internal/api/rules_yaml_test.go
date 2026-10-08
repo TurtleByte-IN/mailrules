@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -36,6 +38,38 @@ func (e *env) accountOf() map[string]string {
 	return out
 }
 
+// accountConds says what the account conditions of the rule "Everywhere" (in scopedRules)
+// name, as addresses: the one in match, then those in unless.
+func (e *env) accountConds() (match string, unless []string) {
+	e.t.Helper()
+	addr := map[float64]string{}
+	for _, a := range e.call(http.MethodGet, "/api/accounts", "", http.StatusOK)["items"].([]any) {
+		m := a.(map[string]any)
+		addr[m["id"].(float64)] = m["username"].(string)
+	}
+	for _, r := range e.call(http.MethodGet, "/api/rules", "", http.StatusOK)["items"].([]any) {
+		m := r.(map[string]any)
+		if m["name"] != "Everywhere" {
+			continue
+		}
+		leaf := func(c any, path ...string) any {
+			for _, p := range path {
+				if i, err := strconv.Atoi(p); err == nil {
+					c = c.([]any)[i]
+				} else {
+					c = c.(map[string]any)[p]
+				}
+			}
+			return c.(map[string]any)["value"]
+		}
+		match = addr[leaf(m["conditions"], "any", "0").(float64)]
+		for _, id := range leaf(m["exceptions"], "all", "1", "any", "0").([]any) {
+			unless = append(unless, addr[id.(float64)])
+		}
+	}
+	return match, unless
+}
+
 const scopedRules = `defaults:
   decision_model: jev
   fallback_model: claude-haiku-4-5
@@ -47,6 +81,15 @@ rules:
     applies_to: work@acme.example
   - id: Everywhere
     when: Newsletters
+    match:
+      any:
+        - {field: account, op: eq, value: me@icloud.com}
+        - {field: subject, op: contains, value: news}
+    unless:
+      all:
+        - {field: is_bulk, op: eq, value: false}
+        - any:
+            - {field: account, op: in, value: [Work@Acme.example, me@icloud.com]}
     actions: ["move:Reading"]
   - id: Home bills
     match: {subject: bill}
@@ -56,8 +99,8 @@ rules:
 `
 
 // Exporting from one install and importing into another gives the same rules, including the
-// mailbox each applies to, even where the mailboxes have other ids; and the models in the
-// defaults are the install's.
+// mailbox each applies to and the mailboxes its account conditions name, even where the
+// mailboxes have other ids; and the models in the defaults are the install's.
 func TestRulesYAMLRoundTrip(t *testing.T) {
 	a := newEnv(t)
 	a.signIn()
@@ -67,13 +110,18 @@ func TestRulesYAMLRoundTrip(t *testing.T) {
 	if got := a.accountOf(); !mapsEqual(got, want) {
 		t.Fatalf("after import, rules apply to %v, want %v", got, want)
 	}
+	wantMatch, wantUnless := "me@icloud.com", []string{"work@acme.example", "me@icloud.com"}
+	if m, u := a.accountConds(); m != wantMatch || !slices.Equal(u, wantUnless) {
+		t.Fatalf("after import, the account conditions name %q and %q, want %q and %q", m, u, wantMatch, wantUnless)
+	}
 
 	r := a.do(http.MethodGet, "/api/rules/export", "")
 	if r.status != http.StatusOK {
 		t.Fatalf("export = %d %s", r.status, r.raw)
 	}
 	exported := string(r.raw)
-	for _, line := range []string{"defaults:", "decision_model: jev", "fallback_model: claude-haiku-4-5", "applies_to: work@acme.example", "applies_to: me@icloud.com"} {
+	for _, line := range []string{"defaults:", "decision_model: jev", "fallback_model: claude-haiku-4-5", "applies_to: work@acme.example", "applies_to: me@icloud.com",
+		"value: me@icloud.com", "- work@acme.example"} {
 		if !strings.Contains(exported, line) {
 			t.Errorf("export lacks %q:\n%s", line, exported)
 		}
@@ -92,6 +140,9 @@ func TestRulesYAMLRoundTrip(t *testing.T) {
 	}
 	if got := b.accountOf(); !mapsEqual(got, want) {
 		t.Errorf("after the round trip rules apply to %v, want %v", got, want)
+	}
+	if m, u := b.accountConds(); m != wantMatch || !slices.Equal(u, wantUnless) {
+		t.Errorf("after the round trip the account conditions name %q and %q, want %q and %q", m, u, wantMatch, wantUnless)
 	}
 	if again := b.do(http.MethodGet, "/api/rules/export", ""); string(again.raw) != exported {
 		t.Errorf("export of the import differs:\n%s\nwas\n%s", again.raw, exported)
@@ -120,6 +171,10 @@ func TestRulesYAMLImportRefusals(t *testing.T) {
 			"defaults.decision_model", `written for the decision model "clef", but this install uses "jev"`},
 		{"a fallback model this install does not use", strings.Replace(scopedRules, "claude-haiku-4-5", "claude-sonnet-4-5", 1),
 			"defaults.fallback_model", `written for the fallback model "claude-sonnet-4-5", but this install uses "claude-haiku-4-5"`},
+		{"an account condition on a mailbox that is not connected", strings.Replace(scopedRules, "value: me@icloud.com}", "value: ghost@nowhere.example}", 1),
+			"rules[1].match", `Rule 2 ("Everywhere"): no mailbox for ghost@nowhere.example is connected here, so its account condition cannot name it`},
+		{"a mailbox number in an account condition", strings.Replace(scopedRules, "[Work@Acme.example, me@icloud.com]", "[1, me@icloud.com]", 1),
+			"exceptions.all[1].any[0].value", `Rule 2 ("Everywhere"): In a rules file, an account condition names a mailbox by its email address`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -139,7 +194,7 @@ func TestRulesYAMLImportRefusals(t *testing.T) {
 	t.Run("an older file keeps the mailbox a rule has", func(t *testing.T) {
 		e := newEnv(t)
 		e.signIn()
-		e.addMailboxes("work@acme.example")
+		e.addMailboxes("work@acme.example", "me@icloud.com")
 		e.call(http.MethodPost, "/api/rules/import", scopedRules[strings.Index(scopedRules, "rules:"):strings.Index(scopedRules, "  - id: Home")], http.StatusOK)
 		old := "rules:\n  - {id: Work invoices, match: {from_domain: acme.example}, actions: [\"move:Archive\"]}\n"
 		e.call(http.MethodPost, "/api/rules/import", old, http.StatusOK)

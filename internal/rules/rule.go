@@ -81,7 +81,11 @@ func (e *ValidationError) Error() string { return e.Path + ": " + e.Message }
 
 // Validate checks a rule before it is saved or imported and returns the first
 // problem as a *ValidationError.
-func (r Rule) Validate() error {
+func (r Rule) Validate() error { return r.validate(false) }
+
+// validate is Validate for a rule in the app (file unset) or as a rules file has it, where
+// an account condition names mailboxes by address.
+func (r Rule) validate(file bool) error {
 	hasIntent := strings.TrimSpace(r.Intent) != ""
 	if strings.TrimSpace(r.Name) == "" {
 		return &ValidationError{"name", "A rule needs a name."}
@@ -89,10 +93,10 @@ func (r Rule) Validate() error {
 	if r.Conditions.IsEmpty() && !hasIntent {
 		return &ValidationError{"conditions", "A rule needs conditions, an intent, or both."}
 	}
-	if err := r.Conditions.validate("conditions"); err != nil {
+	if err := r.Conditions.validate("conditions", file); err != nil {
 		return err
 	}
-	if err := r.Exceptions.validate("exceptions"); err != nil {
+	if err := r.Exceptions.validate("exceptions", file); err != nil {
 		return err
 	}
 	if len(r.Actions) == 0 {

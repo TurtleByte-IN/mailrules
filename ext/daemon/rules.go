@@ -64,11 +64,14 @@ func rulesCmd(ctx context.Context, args []string, getenv func(string) string, ou
 
 // testRules prints, per email, what the conditions alone decide. It never
 // calls a model: where one would be asked, it lists the rules it would be
-// asked to choose between.
+// asked to choose between. An .eml file is in no mailbox, so an account condition
+// never names the email's mailbox: eq and in never match, ne always does.
 func testRules(rs []rules.Rule, files []string, out io.Writer) error {
+	noMailbox := func(any) any { return float64(-1) } // no account has this id
 	names := map[int64]string{}
 	for i := range rs {
 		rs[i].ID = int64(i + 1) // a file has no database ids
+		rs[i].Conditions, rs[i].Exceptions = rs[i].Conditions.MapAccounts(noMailbox), rs[i].Exceptions.MapAccounts(noMailbox)
 		names[rs[i].ID] = rs[i].Name
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)

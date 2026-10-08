@@ -94,7 +94,7 @@ How they match:
 
 YAML and the HTTP API can do more than the builder:
 
-- More fields: `cc`, `delivered_to`, `is_noreply` (the sender's address is a no-reply one), `age_days` (days since the email arrived), `account` (a mailbox's number), and `header:<Name>` for any header, such as `header:X-Mailer`.
+- More fields: `cc`, `delivered_to`, `is_noreply` (the sender's address is a no-reply one), `age_days` (days since the email arrived), `account` (the mailbox the email is in: in YAML its address, such as `account: work@acme.example`; in the HTTP API its number), and `header:<Name>` for any header, such as `header:X-Mailer`.
 - More operators. Text fields take `eq`, `ne`, `in`, `contains`, `contains_any`, `not_contains`, `matches` and `exists`. Yes/no fields take `eq` and `ne`. Numbers take `eq`, `ne`, `gt` and `lt`. `dmarc` and `account` take `eq`, `ne` and `in`.
 - Nested `all` and `any` groups. There is no `not`; use `ne`, `not_contains`, `exists: false`, or the rule's `unless`.
 
@@ -227,7 +227,9 @@ The `defaults` block holds three optional keys:
 - `min_confidence` applies to every rule in the file that sets none. An export does not write it: it writes each rule's own threshold, and leaves a rule without one to follow Settings.
 - `decision_model` and `fallback_model` say which models the rules were written for. An import never changes them, because the models are settings of the install, and a file passed around must not change which paid model someone uses. An export writes the models in force. An import accepts a file whose models are the ones in force here (`decision_model: jev` also matches `jev` with any model of its own), and refuses one that names other models, saying which, so nothing is saved until you change the model in Settings or delete that line from the file.
 
-`applies_to` names a mailbox by its address, not its number, so a file works on another install. The address is the account's username, matched ignoring case. An import refuses a file when a rule's mailbox is not connected here, so a rule never quietly starts acting on every mailbox: add the mailbox first. A file that says nothing leaves a rule's mailbox as it is, so files from before this key existed are still importable. To widen a rule from a file, write `applies_to: all`.
+`applies_to` names a mailbox by its address, not its number, so a file works on another install. The address is the account's username, matched ignoring case. An import refuses a file when a rule's mailbox is not connected here, or when two connected mailboxes have that address, so a rule never quietly starts acting on every mailbox: add the mailbox first. A file that says nothing leaves a rule's mailbox as it is, so files from before this key existed are still importable. To widen a rule from a file, write `applies_to: all`.
+
+An `account` condition, in `match` or `unless` and at any depth, names mailboxes the same way: `account: work@acme.example`, or a list such as `account: [work@acme.example, me@icloud.com]` for any of them. An import refuses an address that no connected mailbox has, or that two have, and refuses a number (`account: 3`), which would mean a different mailbox, or none, on another install.
 
 How an import works:
 
@@ -237,7 +239,7 @@ How an import works:
 - Rules that are not in the file are left alone. An import never deletes a rule.
 - A file can be at most 1 MB.
 
-An export writes `applies_to` for every rule that is limited to a mailbox, and the models in force under `defaults`.
+An export writes `applies_to` for every rule that is limited to a mailbox, the addresses of the mailboxes in `account` conditions, and the models in force under `defaults`. A rule whose `account` condition names a mailbox that has since been removed stops the export, with the rule's name; change that rule first.
 
 ### From the command line
 
@@ -249,7 +251,7 @@ mailrules rules test rules.yaml --eml ./samples
 ```
 
 - `export` and `import` work on the database in the data directory (`MAILRULES_DATA_DIR`), and need the admin account to exist. A running daemon uses imported rules from the next email on.
-- `validate` checks a file without touching the database: it prints `rules.yaml: 5 rules ok`, or each problem with the rule's number and name.
-- `test` runs the rules in a file over every `.eml` file directly inside a directory, with conditions only. It never asks a model and uses no database, so it prints which rule each email would go to, `needs a model` with the rules the model would choose between, or `no rule matches`. Attachments are not known from a `.eml` file, so `has_attachment` and `attachment_ext` never match, and `is_contact` and `replied_before` are always false.
+- `validate` checks a file without touching the database: it prints `rules.yaml: 5 rules ok`, or each problem with the rule's number and name. It checks that `account` conditions name mailboxes by address, but not that those mailboxes are connected; `import` does that.
+- `test` runs the rules in a file over every `.eml` file directly inside a directory, with conditions only. It never asks a model and uses no database, so it prints which rule each email would go to, `needs a model` with the rules the model would choose between, or `no rule matches`. Attachments are not known from a `.eml` file, so `has_attachment` and `attachment_ext` never match, and `is_contact` and `replied_before` are always false. A `.eml` file is in no mailbox, so an `account` condition with `eq` or `in` never matches and one with `ne` always does.
 
 With Docker, run these inside the container, for example `docker exec mailrules /mailrules rules export`; see [Install](./install.md) for the other setups.

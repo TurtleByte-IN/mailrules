@@ -15,7 +15,9 @@ import (
 // source of truth; this is import/export only.
 type File struct {
 	Defaults Defaults
-	Rules    []Rule
+	// Rules are as the file has them: an account condition names each mailbox by its
+	// address (a string), not by its id, for the same reason as Mailboxes.
+	Rules []Rule
 	// Mailboxes says which mailbox each rule applies to, by the rule's name: the mailbox's
 	// address (its login), or AllMailboxes. A rule with no entry says nothing about it. A
 	// file cannot hold numeric account ids, which differ from one install to the next, so
@@ -76,9 +78,9 @@ func (e *RuleError) Sentence() string {
 
 func (e *RuleError) Unwrap() error { return e.Err }
 
-// ParseYAML reads a rules file and validates every rule. Priority follows
-// the order in the file. All problems are returned together (errors.Join), each a
-// *RuleError.
+// ParseYAML reads a rules file and validates every rule, with account conditions naming
+// mailboxes by address. Priority follows the order in the file. All problems are returned
+// together (errors.Join), each a *RuleError.
 func ParseYAML(data []byte) (File, error) {
 	var yf yamlFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -96,8 +98,8 @@ func ParseYAML(data []byte) (File, error) {
 			if r.MinConfidence == nil {
 				r.MinConfidence = yf.Defaults.MinConfidence
 			}
-			if err := r.Validate(); err != nil {
-				ve = err.(*ValidationError) //nolint:errorlint // Validate returns nothing else
+			if err := r.validate(true); err != nil {
+				ve = err.(*ValidationError) //nolint:errorlint // validate returns nothing else
 			}
 		}
 		if ve == nil && seen[r.Name] {
@@ -227,7 +229,8 @@ func condToYAML(c Cond) (any, error) {
 }
 
 // MarshalYAML writes a rules file in priority order, using the shorthands. A rule limited to
-// a mailbox (AccountID set) needs its address in f.Mailboxes, or the file would not say so.
+// a mailbox (AccountID set) needs its address in f.Mailboxes, and an account condition its
+// mailboxes' addresses in place of their ids, or the file would not say which they are.
 func MarshalYAML(f File) ([]byte, error) {
 	rs := slices.Clone(f.Rules)
 	slices.SortStableFunc(rs, func(a, b Rule) int { return a.Priority - b.Priority })
@@ -243,6 +246,17 @@ func MarshalYAML(f File) ([]byte, error) {
 			yr.Enabled = new(bool)
 		}
 		var err error
+		for _, c := range []Cond{r.Conditions, r.Exceptions} {
+			c.MapAccounts(func(v any) any {
+				if _, ok := v.(string); !ok && err == nil {
+					err = fmt.Errorf("rule %q has a condition on mailbox %v, which the file has no address for", r.Name, v)
+				}
+				return v
+			})
+		}
+		if err != nil {
+			return nil, err
+		}
 		if yr.Match, err = condToYAML(r.Conditions); err != nil {
 			return nil, err
 		}

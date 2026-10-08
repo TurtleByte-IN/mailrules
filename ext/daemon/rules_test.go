@@ -13,10 +13,18 @@ import (
 const fixtures = "../../testdata/rules"
 
 func TestRulesCmd(t *testing.T) {
-	bad := filepath.Join(t.TempDir(), "bad.yaml")
-	if err := os.WriteFile(bad, []byte("rules:\n  - {id: a, match: {sender: x}, actions: [keep]}\n"), 0o600); err != nil {
-		t.Fatal(err)
+	write := func(name, body string) string {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
+	bad := write("bad.yaml", "rules:\n  - {id: a, match: {sender: x}, actions: [keep]}\n")
+	// An .eml file is in no mailbox: an account condition never names its mailbox.
+	byMailbox := write("mailbox.yaml", "rules:\n  - {id: work only, match: {account: work@acme.example}, actions: [flag]}\n"+
+		"  - {id: not work, match: {field: account, op: ne, value: work@acme.example}, actions: [keep]}\n")
+	byNumber := write("number.yaml", "rules:\n  - {id: a, match: {account: 3}, actions: [keep]}\n")
 	rulesFile := filepath.Join(fixtures, "rules.yaml")
 	tests := []struct {
 		name    string
@@ -32,6 +40,11 @@ func TestRulesCmd(t *testing.T) {
 			"recruiter.eml", "needs a model", "choose from: recruiters; otherwise: nothing",
 		}, ""},
 		{"test without --eml", []string{"test", rulesFile}, nil, "no .eml files"},
+		{"validate takes mailbox addresses", []string{"validate", byMailbox}, []string{"2 rules ok"}, ""},
+		{"validate refuses a mailbox number", []string{"validate", byNumber}, nil, `rule 1 ("a"): conditions.all[0].value: In a rules file, an account condition names a mailbox by its email address`},
+		{"test with account conditions", []string{"test", byMailbox, "--eml", fixtures}, []string{
+			"newsletter.eml", "not work", "keep", "receipt.eml", "not work", "keep", "recruiter.eml", "not work", "keep",
+		}, ""},
 		{"test with an empty directory", []string{"test", rulesFile, "--eml", t.TempDir()}, nil, "no .eml files"},
 		{"missing file", []string{"validate", filepath.Join(fixtures, "nope.yaml")}, nil, "read rules"},
 		{"no file", []string{"validate"}, nil, "expected import, export, validate or test"},
@@ -168,22 +181,25 @@ func TestRulesImportExportKeepsMailboxes(t *testing.T) {
 		return p
 	}
 	const rule = "  - {id: Work, match: {from_domain: acme.example}, actions: [keep], applies_to: %s}\n"
+	const notWork = "  - {id: Not work, match: {field: account, op: ne, value: %s}, actions: [keep]}\n"
 	var out bytes.Buffer
-	if err := rulesCmd(ctx, []string{"import", write("defaults: {decision_model: jev}\nrules:\n" + strings.Replace(rule, "%s", "work@acme.example", 1))}, getenv, &out); err != nil {
+	if err := rulesCmd(ctx, []string{"import", write("defaults: {decision_model: jev}\nrules:\n" + strings.Replace(rule, "%s", "work@acme.example", 1) + strings.Replace(notWork, "%s", "WORK@acme.example", 1))}, getenv, &out); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
 	if err := rulesCmd(ctx, []string{"export"}, getenv, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"decision_model: jev", "fallback_model: claude-haiku-4-5", "applies_to: work@acme.example"} {
+	for _, want := range []string{"decision_model: jev", "fallback_model: claude-haiku-4-5", "applies_to: work@acme.example", "value: work@acme.example"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("export lacks %q:\n%s", want, out.String())
 		}
 	}
 	for name, body := range map[string]string{
-		"a mailbox that is not connected": "rules:\n" + strings.Replace(rule, "%s", "ghost@nowhere.example", 1),
-		"another decision model":          "defaults: {decision_model: clef}\nrules:\n" + strings.Replace(rule, "%s", "work@acme.example", 1),
+		"a mailbox that is not connected":                "rules:\n" + strings.Replace(rule, "%s", "ghost@nowhere.example", 1),
+		"another decision model":                         "defaults: {decision_model: clef}\nrules:\n" + strings.Replace(rule, "%s", "work@acme.example", 1),
+		"a condition on a mailbox that is not connected": "rules:\n" + strings.Replace(notWork, "%s", "ghost@nowhere.example", 1),
+		"a mailbox number in a condition":                "rules:\n" + strings.Replace(notWork, "%s", "1", 1),
 	} {
 		err := rulesCmd(ctx, []string{"import", write(body)}, getenv, &out)
 		if err == nil || !strings.Contains(err.Error(), "r.yaml:") {

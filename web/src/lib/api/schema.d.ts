@@ -446,7 +446,7 @@ export interface paths {
         };
         /**
          * Download every rule as a YAML file
-         * @description The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox's address (its username); a rule for every mailbox has none. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.
+         * @description The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox's address (its username); a rule for every mailbox has none. An `account` condition names its mailboxes by address too (`account: work@example.com`, or a list for `in`), never by id; a rule with a condition on a mailbox that no longer exists stops the export. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.
          */
         get: operations["exportRules"];
         put?: never;
@@ -476,9 +476,13 @@ export interface paths {
          *     A rule's mailbox is its `applies_to`, the address (username, matched ignoring case) of
          *     a connected account. A rule with no `applies_to` keeps the mailbox it has (a new one
          *     applies to every mailbox); `applies_to: all` widens it to every mailbox. An address no
-         *     account has is refused. `defaults.decision_model` and `defaults.fallback_model` are
-         *     never applied: a file that names other models than the ones in force is refused,
-         *     since the models are settings of this install.
+         *     account has, or that more than one account has, is refused. An `account` condition in
+         *     `match` or `unless`, at any depth, names mailboxes the same way (`account:
+         *     work@example.com`, a list for `in`), and is stored with their ids; an address no
+         *     account has or more than one has is refused, and so is a number, which would mean
+         *     another mailbox on another install. `defaults.decision_model` and
+         *     `defaults.fallback_model` are never applied: a file that names other models than the
+         *     ones in force is refused, since the models are settings of this install.
          */
         post: operations["importRules"];
         delete?: never;
@@ -1443,7 +1447,7 @@ export interface components {
          *     from, to, cc, delivered_to, from_domain, subject, body, list_id, attachment_ext,
          *     `header:<Name>` (strings); has_attachment, is_contact, replied_before, is_bulk,
          *     is_noreply (booleans); size_kb, age_days (numbers); dmarc (pass | fail | none);
-         *     account (an account id).
+         *     account (an account id here; a rules YAML file names the mailbox by its address instead).
          */
         Condition: {
             all?: components["schemas"]["Condition"][];
