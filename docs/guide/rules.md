@@ -143,7 +143,7 @@ Under a rule, or in the builder, **Test on last 200 emails** runs the rule over 
 
 A test changes nothing: it reads mail without marking it read, and dry-run does not matter. Rules with a description do call the decision model for each email that passes their conditions, and those calls are counted in **Usage**. A test needs a connected mailbox, and for rules with a description, a decision model.
 
-To see what all your rules would do to mail that is already in a folder, and then do it, use **Cleanup** (see [Undo and activity](./undo-and-activity.md#cleanup-sorting-mail-you-already-have)).
+To see what your rules (all of them, or only some) would do to mail that is already in a folder, on one mailbox or several, and then do it, use **Cleanup** (see [Undo and activity](./undo-and-activity.md#cleanup-sorting-mail-you-already-have)).
 
 ## Sender rules
 

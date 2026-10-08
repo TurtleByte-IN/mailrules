@@ -219,3 +219,41 @@ func TestAddUsage(t *testing.T) {
 		t.Fatalf("rows = %d, want %d (%v)", i, len(want), err)
 	}
 }
+
+// A manual run over several mailboxes is one cleanup batch per mailbox, created together and
+// joined by a RunID (the id of the first); a run of one mailbox is a plain cleanup batch.
+func TestCreateCleanupRun(t *testing.T) {
+	st, _ := open(t)
+	ctx := t.Context()
+	a1, a2 := newAccount(t, st, "one.com", "abcd-efgh-ijkl-mnop"), newAccount(t, st, "two.com", "qrst-uvwx-yzab-cdef")
+	one := CleanupBatch{AccountID: a1.ID, Folder: "INBOX", ScanLimit: 2000, ScanMatched: 5, Total: 5}
+	two := CleanupBatch{AccountID: a2.ID, Folder: "INBOX", Since: 99, Total: 0}
+
+	got, err := st.CreateCleanupRun(ctx, []CleanupBatch{one, two}, 1000)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("CreateCleanupRun = %+v, %v", got, err)
+	}
+	if got[0].RunID != got[0].ID || got[1].RunID != got[0].ID || got[1].ID == got[0].ID {
+		t.Errorf("run ids = %d, %d for batches %d, %d; want both %d", got[0].RunID, got[1].RunID, got[0].ID, got[1].ID, got[0].ID)
+	}
+	for i, want := range []CleanupBatch{one, two} {
+		b := got[i]
+		if b.Kind != BatchCleanup || b.Status != BatchRunning || b.AccountID != want.AccountID || b.Folder != want.Folder ||
+			b.Since != want.Since || b.Total != want.Total || b.ScanLimit != want.ScanLimit || b.ScanMatched != want.ScanMatched || b.CreatedAt != 1000 {
+			t.Errorf("batch %d = %+v, want %+v", i, b, want)
+		}
+	}
+	// Read back through the listing, as the screen does, the run id is there.
+	list, err := st.Batches(ctx, BatchCleanup, 0, 10)
+	if err != nil || len(list) != 2 || list[0].RunID != got[0].ID || list[1].RunID != got[0].ID {
+		t.Errorf("Batches = %+v, %v", list, err)
+	}
+
+	solo, err := st.CreateCleanupRun(ctx, []CleanupBatch{one}, 1001)
+	if err != nil || len(solo) != 1 || solo[0].RunID != 0 {
+		t.Errorf("a run of one mailbox = %+v, %v; want a batch with no run id", solo, err)
+	}
+	if b, err := st.CreateCleanupBatch(ctx, a1.ID, "INBOX", 0, 0, 0, 3, 1002); err != nil || b.RunID != 0 {
+		t.Errorf("CreateCleanupBatch = %+v, %v; want no run id", b, err)
+	}
+}

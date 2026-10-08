@@ -46,10 +46,11 @@ type Options struct {
 
 	// StartCheck starts a cleanup check of an account in the background and returns it,
 	// running (worker.Manager.StartCheck). Checks holds the account checks in memory, and
-	// Sort applies a finished check's kept rows as one undoable batch (worker.Manager.Sort).
+	// SortAll applies finished checks' kept rows, one undoable batch per mailbox, all started
+	// or none (worker.Manager.SortAll).
 	StartCheck func(c worker.Cleanup, fingerprint string, run worker.CheckFunc) (*worker.Check, error)
 	Checks     *worker.CheckStore
-	Sort       func(ctx context.Context, sr worker.SortRun) (store.Batch, error)
+	SortAll    func(ctx context.Context, runs []worker.SortRun) ([]store.Batch, error)
 	// Connect logs in to a mail server with credentials that are not stored yet, trying
 	// the usernames the preset allows, and returns the connection with the username that worked.
 	Connect func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error)
@@ -141,6 +142,7 @@ func (s *server) routes() []route {
 
 		on(post, "/api/cleanup/check", s.handleCleanupCheckStart),
 		on(get, "/api/cleanup/check", s.handleCleanupCheckGet),
+		on(get, "/api/cleanup/checks", s.handleCleanupChecks),
 		on(del, "/api/cleanup/check", s.handleCleanupCheckDelete),
 		on(put, "/api/cleanup/check/selection", s.handleCleanupSelection),
 		on(post, "/api/cleanup/run", s.handleCleanupRun),

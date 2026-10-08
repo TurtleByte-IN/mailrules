@@ -15,7 +15,7 @@ Leave dry-run on for a day or two and look at what MailRules would have done:
 - **Activity** lists every decision as it happens. Rows read **Would move to …** instead of **Moved to …**. Click a row to see why it was decided that way. See [Undo and activity](./undo-and-activity.md).
 - **Needs review** holds the emails the model was unsure about. Answering them teaches MailRules, and in dry-run your answer is recorded without changing the mailbox.
 - **Overview** shows where today's mail would have gone.
-- To try your rules on mail you already have, use **Test on last 200 emails** on a rule (see [Rules](./rules.md#testing-a-rule-on-recent-mail)), or **Cleanup**, which with dry-run on records what it would do and moves nothing.
+- To try your rules on mail you already have, use **Test on last 200 emails** on a rule (see [Rules](./rules.md#testing-a-rule-on-recent-mail)), or **Cleanup**, which with dry-run on records what it would do, on any mailboxes and rules you pick, and moves nothing.
 
 When a decision is wrong, fix the rule, or use **Wrong?** in Activity to say where the email belongs.
 

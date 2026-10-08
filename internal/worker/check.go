@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"sync"
@@ -60,6 +61,17 @@ func (s *CheckStore) Get(accountID int64) *Check {
 	return s.byAccount[accountID]
 }
 
+// All returns every account's current check, by account id.
+func (s *CheckStore) All() []*Check {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Check, 0, len(s.byAccount))
+	for _, id := range slices.Sorted(maps.Keys(s.byAccount)) {
+		out = append(out, s.byAccount[id])
+	}
+	return out
+}
+
 // Discard removes and cancels the account's current check and returns it, or nil.
 func (s *CheckStore) Discard(accountID int64) *Check {
 	s.mu.Lock()
@@ -93,8 +105,9 @@ type Check struct {
 	ID          string
 	AccountID   int64
 	Folder      string
-	Since       int64 // 0 = all mail
-	Limit       int   // 0 = no limit
+	Since       int64   // 0 = all mail
+	Limit       int     // 0 = no limit
+	RuleIDs     []int64 // the rules the check was limited to; nil = every enabled rule (MAI-43)
 	Fingerprint string
 	StartedAt   int64
 
@@ -120,6 +133,7 @@ type CheckState struct {
 	Folder      string
 	Since       int64
 	Limit       int
+	RuleIDs     []int64 // nil = every enabled rule
 	Fingerprint string
 	Status      string
 	Done        int
@@ -176,7 +190,7 @@ func (c *Check) State() CheckState {
 }
 
 func (c *Check) state(withRows bool) CheckState {
-	st := CheckState{ID: c.ID, AccountID: c.AccountID, Folder: c.Folder, Since: c.Since, Limit: c.Limit,
+	st := CheckState{ID: c.ID, AccountID: c.AccountID, Folder: c.Folder, Since: c.Since, Limit: c.Limit, RuleIDs: slices.Clone(c.RuleIDs),
 		Fingerprint: c.Fingerprint, Status: c.status, Done: c.done, Total: c.total, Matched: c.matched, ModelCalls: c.modelCalls,
 		Tokens: c.tokens, CostUSD: c.costUSD, Error: c.errMsg}
 	if withRows {
@@ -222,7 +236,7 @@ func (m *Manager) StartCheck(c Cleanup, fingerprint string, run CheckFunc) (*Che
 		now = r.sup.Pipeline.Now
 	}
 	checks := m.Checks()
-	chk := &Check{ID: checks.newID(), AccountID: c.AccountID, Folder: c.Folder, Limit: c.Limit,
+	chk := &Check{ID: checks.newID(), AccountID: c.AccountID, Folder: c.Folder, Limit: c.Limit, RuleIDs: slices.Clone(c.RuleIDs),
 		Fingerprint: fingerprint, StartedAt: now().Unix(), status: CheckRunning, cancel: cancel}
 	if !c.Since.IsZero() {
 		chk.Since = c.Since.Unix()

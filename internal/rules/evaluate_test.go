@@ -27,6 +27,7 @@ func TestEvaluate(t *testing.T) {
 		rules      []Rule
 		senders    []SenderRule
 		candidates []int64 // rule ids offered to the decider; nil = settled without a model
+		routeOnly  []Rule  // rules only a sender rule may route to
 		cutOff     int64   // 0 = none
 		pick       pick
 		want       Result
@@ -57,6 +58,16 @@ func TestEvaluate(t *testing.T) {
 		{name: "route to a missing rule falls through to the walk", rules: []Rule{food},
 			senders: []SenderRule{{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictRoute, RuleID: 99}},
 			want:    Result{Stage: StageCondition, RuleID: 3, RuleVersion: 2, Confidence: 1, Actions: moveTo("Food")}},
+		// A run of only some rules leaves the others out of the walk, but a sender rule still routes to one (MAI-43).
+		{name: "sender route to a rule only it can reach still applies", rules: []Rule{food}, routeOnly: []Rule{promos},
+			senders: []SenderRule{{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictRoute, RuleID: 2}},
+			want:    Result{Stage: StageSender, RuleID: 2, Confidence: 1, Actions: moveTo("Promos")}},
+		{name: "a rule only a sender rule can reach is not walked", rules: []Rule{food}, routeOnly: []Rule{receipts},
+			want: Result{Stage: StageCondition, RuleID: 3, RuleVersion: 2, Confidence: 1, Actions: moveTo("Food")}},
+		{name: "route to a rule that is switched off falls through even if only it can reach it", rules: []Rule{food},
+			routeOnly: []Rule{{ID: 2, Name: "promos", Priority: 20, Intent: "Promotions", Actions: moveTo("Promos")}},
+			senders:   []SenderRule{{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictRoute, RuleID: 2}},
+			want:      Result{Stage: StageCondition, RuleID: 3, RuleVersion: 2, Confidence: 1, Actions: moveTo("Food")}},
 
 		// Step 2: the walk skips rules that are off, fail, or are excepted.
 		{name: "disabled rule is skipped", rules: []Rule{{ID: 9, Priority: 1, Conditions: zomato, Actions: moveTo("Off")}, food},
@@ -128,7 +139,7 @@ func TestEvaluate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ev := Evaluate(testEmail(), tt.rules, tt.senders, Options{MinConfidence: 0.75, Now: testNow})
+			ev := Evaluate(testEmail(), tt.rules, tt.senders, Options{MinConfidence: 0.75, Now: testNow, RouteOnly: tt.routeOnly})
 
 			var candidates []int64
 			for _, c := range ev.Candidates {

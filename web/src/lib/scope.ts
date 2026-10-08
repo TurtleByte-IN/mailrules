@@ -3,6 +3,9 @@
 import type { CleanupCheckRequest, Folder } from './api/cleanup';
 import { settings } from './state/settings.svelte';
 
+/** The fields of a scan request a scope fills in: the mailbox, folder and range. */
+export type ScopeRequest = { account_id: number } & Pick<CleanupCheckRequest, 'folder' | 'since' | 'limit'>;
+
 /** What the scope controls hold; toRequest turns it into the contract's request fields. */
 export interface Scope {
   accountId: string;
@@ -32,7 +35,7 @@ export function scopeProblem(s: Scope) {
 // Every scan covers at most the newest `limits.check_max` emails of its range; a request with no limit
 // gets that many, so only "Newest emails" sends one. A start before the epoch is the epoch: a huge
 // number of days means all mail.
-export function toRequest(s: Scope): CleanupCheckRequest {
+export function toRequest(s: Scope): ScopeRequest {
   const account_id = Number(s.accountId);
   if (s.mode === 'newest') return { account_id, folder: s.folder, since: null, limit: s.newest! };
   if (s.mode === 'days') return { account_id, folder: s.folder, since: Math.max(0, Math.floor(Date.now() / 1000) - s.days! * 86400) };

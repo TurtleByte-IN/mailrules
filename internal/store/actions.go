@@ -236,16 +236,48 @@ type Batch struct {
 	// recorded (a batch made before this), and then ScanMatched means nothing.
 	ScanLimit   int
 	ScanMatched int
+	// RunID joins the batches of one manual run over several mailboxes, one per mailbox
+	// (MAI-43): it is the id of the run's first batch, the same on every one. 0 = not part of
+	// such a run, which is every other batch and a cleanup of one mailbox.
+	RunID int64
 }
 
 const batchCols = `id, kind, status, COALESCE(total, 0), done, created_at,
 	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd, skipped,
-	COALESCE(scan_limit, 0), COALESCE(scan_matched, 0)`
+	COALESCE(scan_limit, 0), COALESCE(scan_matched, 0), COALESCE(run_id, 0)`
 
 func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
 	var b Batch
-	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped, &b.ScanLimit, &b.ScanMatched)
+	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped, &b.ScanLimit, &b.ScanMatched, &b.RunID)
 	return b, err
+}
+
+// CleanupBatch is what a cleanup batch is opened with.
+type CleanupBatch struct {
+	AccountID int64
+	Folder    string
+	Since     int64 // only mail received from this time on; 0 = all of it
+	// ScanLimit and ScanMatched say how much mail the check behind the batch covered: the
+	// most emails it was allowed and how many the range held before that cut. ScanLimit 0
+	// records nothing.
+	ScanLimit, ScanMatched int
+	Total                  int // emails the batch sorts
+}
+
+func insertCleanupBatch(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, c CleanupBatch, runID any, now int64) (int64, error) {
+	var matched any // an empty range (0) is a fact when a limit was recorded
+	if c.ScanLimit > 0 {
+		matched = c.ScanMatched
+	}
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO batches (kind, status, total, account_id, folder, since, scan_limit, scan_matched, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		BatchCleanup, BatchRunning, c.Total, c.AccountID, c.Folder, null(c.Since), null(c.ScanLimit), matched, runID, now)
+	if err != nil {
+		return 0, fmt.Errorf("create cleanup batch: %w", err)
+	}
+	return res.LastInsertId()
 }
 
 // CreateCleanupBatch opens the batch of one cleanup run over total emails, running.
@@ -253,18 +285,49 @@ func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
 // scanLimit and scanMatched say how much mail the check behind it covered: the most emails it
 // was allowed and how many the range held before that cut. scanLimit 0 records nothing.
 func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder string, since int64, scanLimit, scanMatched, total int, now int64) (Batch, error) {
-	var matched any // an empty range (0) is a fact when a limit was recorded
-	if scanLimit > 0 {
-		matched = scanMatched
-	}
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO batches (kind, status, total, account_id, folder, since, scan_limit, scan_matched, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		BatchCleanup, BatchRunning, total, accountID, folder, null(since), null(scanLimit), matched, now)
+	id, err := insertCleanupBatch(ctx, s.db, CleanupBatch{AccountID: accountID, Folder: folder, Since: since, ScanLimit: scanLimit, ScanMatched: scanMatched, Total: total}, nil, now)
 	if err != nil {
-		return Batch{}, fmt.Errorf("create cleanup batch: %w", err)
+		return Batch{}, err
 	}
-	id, _ := res.LastInsertId()
 	return s.Batch(ctx, id)
+}
+
+// CreateCleanupRun opens one running cleanup batch per mailbox for a manual run over several
+// mailboxes, all or none: they share a RunID, the id of the first, so they read back as one
+// run. A run of one mailbox is a plain cleanup batch with no RunID.
+func (s *Store) CreateCleanupRun(ctx context.Context, cs []CleanupBatch, now int64) ([]Batch, error) {
+	if len(cs) == 1 {
+		b, err := s.CreateCleanupBatch(ctx, cs[0].AccountID, cs[0].Folder, cs[0].Since, cs[0].ScanLimit, cs[0].ScanMatched, cs[0].Total, now)
+		return []Batch{b}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create cleanup run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ids := make([]int64, len(cs))
+	var runID any
+	for i, c := range cs {
+		if ids[i], err = insertCleanupBatch(ctx, tx, c, runID, now); err != nil {
+			return nil, err
+		}
+		if i == 0 {
+			runID = ids[0]
+			if _, err = tx.ExecContext(ctx, `UPDATE batches SET run_id = id WHERE id = ?`, ids[0]); err != nil {
+				return nil, fmt.Errorf("create cleanup run: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("create cleanup run: %w", err)
+	}
+	out := make([]Batch, len(ids))
+	for i, id := range ids {
+		if out[i], err = s.Batch(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // AddBatchProgress records that a cleanup batch handled more emails, passed over some that

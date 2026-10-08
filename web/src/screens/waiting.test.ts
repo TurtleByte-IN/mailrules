@@ -174,16 +174,16 @@ it('Rules: undoing what a rule did today is busy until the daemon is through', a
 });
 
 it('Cleanup: a running check shows a waiting state until it is ready', async () => {
-  Object.assign(cleanupState, { phase: 'idle', check: null, excluded: new Set(), batch: null, batches: [], next: null, status: 'ready', scope: { accountId: '3', folder: 'INBOX', mode: 'newest', newest: 200, days: 90 }, folders: [] });
-  const base = { id: 'c1', account_id: 3, folder: 'INBOX', since: null, limit: 2000, done: 0, total: 0, matched: 0, model_calls: 0, tokens: 0, cost_usd: 0, error: '', rows: [], exclude: [] };
+  Object.assign(cleanupState, { phase: 'idle', mailboxes: ['3'], ruleIds: null, lanes: [], batches: [], next: null, status: 'ready', scope: { accountId: '3', folder: 'INBOX', mode: 'newest', newest: 200, days: 90 }, folders: [] });
+  const base = { id: 'c1', account_id: 3, folder: 'INBOX', since: null, limit: 2000, done: 0, total: 0, matched: 0, model_calls: 0, tokens: 0, cost_usd: 0, error: '', rows: [], exclude: [], rule_ids: null };
   let current: unknown = null;
   let releaseCheck: (() => void) | null = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit) => {
       const key = `${init.method} ${url}`;
-      if (key === 'GET /api/cleanup/check?account_id=3') return new Response(JSON.stringify({ check: current }), { status: 200 });
-      if (key === 'POST /api/cleanup/check') return new Promise<Response>((resolve) => (releaseCheck = () => resolve(new Response(JSON.stringify({ check: { ...base, status: 'running' } }), { status: 202 }))));
+      if (key === 'GET /api/cleanup/checks') return new Response(JSON.stringify({ checks: current ? [current] : [] }), { status: 200 });
+      if (key === 'POST /api/cleanup/check') return new Promise<Response>((resolve) => (releaseCheck = () => resolve(new Response(JSON.stringify({ checks: [{ ...base, status: 'running' }] }), { status: 202 }))));
       const body = key === 'GET /api/batches?kind=cleanup' ? { items: [], next_cursor: null } : key === 'GET /api/accounts/3/folders' ? { items: [] } : { error: { code: 'not_found', message: 'no route' } };
       return new Response(JSON.stringify(body), { status: key.startsWith('GET') ? 200 : 404 });
     }),

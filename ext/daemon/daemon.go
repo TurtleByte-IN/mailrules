@@ -213,7 +213,7 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 			return mb, username, nil
 		},
 		StartAccount: watcher.Start, StopAccount: supervisors.Stop, Summary: sum,
-		StartCheck: supervisors.StartCheck, Checks: supervisors.Checks(), Sort: supervisors.Sort,
+		StartCheck: supervisors.StartCheck, Checks: supervisors.Checks(), SortAll: supervisors.SortAll,
 		Modules: modules,
 	})
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}

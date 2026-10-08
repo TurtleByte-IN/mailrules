@@ -4,6 +4,7 @@ import type { Batch, CleanupCheck, CleanupCheckRow } from '../lib/api/cleanup';
 import { dispatch } from '../lib/api/events';
 import { accounts } from '../lib/state/accounts.svelte';
 import { cleanup } from '../lib/state/cleanup.svelte';
+import { rules } from '../lib/state/rules.svelte';
 import { settings } from '../lib/state/settings.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Cleanup from './Cleanup.svelte';
@@ -29,6 +30,7 @@ const batch = (over: Partial<Batch> = {}): Batch => ({
   skipped: 0,
   limit: 2000,
   matched: 412,
+  run_id: null,
   ...over,
 });
 
@@ -67,11 +69,12 @@ const check = (over: Partial<CleanupCheck> = {}): CleanupCheck => ({
   error: '',
   rows: [checkRow()],
   exclude: [],
+  rule_ids: null,
   ...over,
 });
 
 const PAST = 'GET /api/batches?kind=cleanup';
-const CHECK = 'GET /api/cleanup/check?account_id=7';
+const CHECK = 'GET /api/cleanup/checks';
 // The day after the batches above were made.
 const NOW = 1790086400;
 const DAY = 86400;
@@ -88,9 +91,9 @@ beforeEach(() => {
     phase: 'idle',
     scope: { accountId: '7', folder: 'INBOX', mode: 'newest', newest: 200, days: 90 },
     folders: [],
-    check: null,
-    excluded: new Set(),
-    batch: null,
+    mailboxes: ['7'],
+    ruleIds: null,
+    lanes: [],
     batches: [],
     next: null,
     status: 'loading',
@@ -100,11 +103,11 @@ beforeEach(() => {
   routes = {
     [PAST]: page([]),
     'GET /api/accounts/7/folders': [200, { items: [{ name: 'INBOX', delimiter: '/', special_use: '' }] }],
-    [CHECK]: [200, { check: null }],
-    'POST /api/cleanup/check': [202, { check: check({ status: 'running', done: 0, total: 412, model_calls: 0, cost_usd: 0, rows: [] }) }],
+    [CHECK]: [200, { checks: [] }],
+    'POST /api/cleanup/check': [202, { checks: [check({ status: 'running', done: 0, total: 412, model_calls: 0, cost_usd: 0, rows: [] })] }],
     'DELETE /api/cleanup/check?account_id=7': [204],
     'PUT /api/cleanup/check/selection': [204],
-    'POST /api/cleanup/run': [202, { batch: batch({ status: 'running', done: 0 }) }],
+    'POST /api/cleanup/run': [202, { batches: [batch({ status: 'running', done: 0 })] }],
   };
   fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     const [status, body] = routes[init.method + ' ' + url] ?? [404, { error: { code: 'not_found', message: 'no route ' + url } }];
@@ -140,14 +143,16 @@ it('restores a ready check on mount: rows show, selectable rows are ticked, Need
   routes[CHECK] = [
     200,
     {
-      check: check({
-        rows: [
-          checkRow({ index: 0, from: 'news@substack.com', subject: 'This week in Go', rule_name: 'Newsletters', confidence: 1 }),
-          checkRow({ index: 1, from: 'ping@acme.io', subject: 'Nudge', rule_name: 'Cold sales', actions: [{ type: 'archive' }], confidence: 0.82, stage: 'decider', rule_id: null }),
-          checkRow({ index: 2, from: 'hr@firm.com', subject: 'Offer', selectable: false, review: true, stage: 'decider', actions: [], rule_name: 'Offers', rule_id: 9, confidence: 0.5, reason: 'Waiting in Needs review' }),
-          checkRow({ index: 3, from: 'pal@home.org', subject: 'Lunch?', selectable: false, stage: 'none', actions: [], rule_name: '', rule_id: null, confidence: 0, reason: 'No rule matched' }),
-        ],
-      }),
+      checks: [
+        check({
+          rows: [
+            checkRow({ index: 0, from: 'news@substack.com', subject: 'This week in Go', rule_name: 'Newsletters', confidence: 1 }),
+            checkRow({ index: 1, from: 'ping@acme.io', subject: 'Nudge', rule_name: 'Cold sales', actions: [{ type: 'archive' }], confidence: 0.82, stage: 'decider', rule_id: null }),
+            checkRow({ index: 2, from: 'hr@firm.com', subject: 'Offer', selectable: false, review: true, stage: 'decider', actions: [], rule_name: 'Offers', rule_id: 9, confidence: 0.5, reason: 'Waiting in Needs review' }),
+            checkRow({ index: 3, from: 'pal@home.org', subject: 'Lunch?', selectable: false, stage: 'none', actions: [], rule_name: '', rule_id: null, confidence: 0, reason: 'No rule matched' }),
+          ],
+        }),
+      ],
     },
   ];
   render(Cleanup);
@@ -188,7 +193,7 @@ it.each([
 ])('with trash_to_folder %s, a row that trashes names where Sort will move it: %s', async (on, text) => {
   settings.value.trash_to_folder = on;
   try {
-    routes[CHECK] = [200, { check: check({ rows: [checkRow({ subject: 'Spam', rule_name: 'Block', actions: [{ type: 'trash' }] })] }) }];
+    routes[CHECK] = [200, { checks: [check({ rows: [checkRow({ subject: 'Spam', rule_name: 'Block', actions: [{ type: 'trash' }] })] })] }];
     render(Cleanup);
     await openList();
     const row = (await screen.findByRole('checkbox', { name: 'Sort news@substack.com · Spam' })).closest('tr') as HTMLElement;
@@ -202,7 +207,7 @@ const saves = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/cleanup/ch
 const three = () => [checkRow({ index: 0, from: 'a@x.io', subject: 'One' }), checkRow({ index: 1, from: 'b@x.io', subject: 'Two' }), checkRow({ index: 2, from: 'c@x.io', subject: 'Three' })];
 
 it("restores the user's ticks from the daemon on mount, after a reload or a return to the page", async () => {
-  routes[CHECK] = [200, { check: check({ rows: three(), exclude: [1] }) }];
+  routes[CHECK] = [200, { checks: [check({ rows: three(), exclude: [1] })] }];
   render(Cleanup);
 
   await openList();
@@ -215,11 +220,11 @@ it("restores the user's ticks from the daemon on mount, after a reload or a retu
 
   // Sort sends its own list, which is the same as the restored ticks.
   await fireEvent.click(sortButton());
-  await vi.waitFor(() => expect(runBody()).toEqual({ account_id: 7, check_id: 'chk1', exclude: [1] }));
+  await vi.waitFor(() => expect(runBody()).toEqual({ runs: [{ account_id: 7, check_id: 'chk1', exclude: [1] }] }));
 });
 
 it('a burst of tick changes saves once, with the latest list, after a short wait', async () => {
-  routes[CHECK] = [200, { check: check({ rows: three() }) }];
+  routes[CHECK] = [200, { checks: [check({ rows: three() })] }];
   render(Cleanup);
   await openList();
   await fireEvent.click(await screen.findByRole('checkbox', { name: 'Sort a@x.io · One' }));
@@ -236,7 +241,7 @@ it('a burst of tick changes saves once, with the latest list, after a short wait
 });
 
 it("a failed save says why, keeps the ticks as they are and is tried again on the next change", async () => {
-  routes[CHECK] = [200, { check: check({ rows: three() }) }];
+  routes[CHECK] = [200, { checks: [check({ rows: three() })] }];
   routes['PUT /api/cleanup/check/selection'] = [409, { error: { code: 'preview_stale', message: 'This check is no longer current. Run a new check, then sort.' } }];
   render(Cleanup);
   await openList();
@@ -253,7 +258,7 @@ it("a failed save says why, keeps the ticks as they are and is tried again on th
 
 it('select all and select none change the count across every page', async () => {
   const rows = Array.from({ length: 60 }, (_, i) => checkRow({ index: i, from: `a${i}@x.com`, subject: 'Subject ' + i, uid: 100 + i }));
-  routes[CHECK] = [200, { check: check({ rows }) }];
+  routes[CHECK] = [200, { checks: [check({ rows })] }];
   render(Cleanup);
 
   await openList();
@@ -271,12 +276,14 @@ it('the rule filter narrows the visible rows without changing the selection coun
   routes[CHECK] = [
     200,
     {
-      check: check({
-        rows: [
-          checkRow({ index: 0, from: 'news@substack.com', subject: 'Weekly Go', rule_name: 'Newsletters' }),
-          checkRow({ index: 1, from: 'billing@shop.com', subject: 'Your receipt', rule_name: 'Receipts', uid: 101 }),
-        ],
-      }),
+      checks: [
+        check({
+          rows: [
+            checkRow({ index: 0, from: 'news@substack.com', subject: 'Weekly Go', rule_name: 'Newsletters' }),
+            checkRow({ index: 1, from: 'billing@shop.com', subject: 'Your receipt', rule_name: 'Receipts', uid: 101 }),
+          ],
+        }),
+      ],
     },
   ];
   render(Cleanup);
@@ -296,13 +303,15 @@ it('Select none and Select all act on the rows the rule filter shows, and leave 
   routes[CHECK] = [
     200,
     {
-      check: check({
-        rows: [
-          checkRow({ index: 0, from: 'news@substack.com', subject: 'Weekly Go', rule_name: 'Newsletters' }),
-          checkRow({ index: 1, from: 'billing@shop.com', subject: 'Your receipt', rule_name: 'Receipts', uid: 101 }),
-          checkRow({ index: 2, from: 'news@go.dev', subject: 'Go news', rule_name: 'Newsletters', uid: 102 }),
-        ],
-      }),
+      checks: [
+        check({
+          rows: [
+            checkRow({ index: 0, from: 'news@substack.com', subject: 'Weekly Go', rule_name: 'Newsletters' }),
+            checkRow({ index: 1, from: 'billing@shop.com', subject: 'Your receipt', rule_name: 'Receipts', uid: 101 }),
+            checkRow({ index: 2, from: 'news@go.dev', subject: 'Go news', rule_name: 'Newsletters', uid: 102 }),
+          ],
+        }),
+      ],
     },
   ];
   render(Cleanup);
@@ -326,7 +335,7 @@ it('Select none and Select all act on the rows the rule filter shows, and leave 
 
 it('pages the rows in fifties', async () => {
   const rows = Array.from({ length: 60 }, (_, i) => checkRow({ index: i, from: `a${i}@x.com`, subject: 'Subject ' + i, uid: 100 + i }));
-  routes[CHECK] = [200, { check: check({ rows }) }];
+  routes[CHECK] = [200, { checks: [check({ rows })] }];
   render(Cleanup);
 
   await openList();
@@ -345,7 +354,7 @@ it('Sort reflects the ticked count and sends the unticked selectable indices as 
     checkRow({ index: 1, from: 'b@x.com', subject: 'Two', uid: 101 }),
     checkRow({ index: 2, from: 'c@x.com', subject: 'Three', uid: 102 }),
   ];
-  routes[CHECK] = [200, { check: check({ rows }) }];
+  routes[CHECK] = [200, { checks: [check({ rows })] }];
   render(Cleanup);
 
   await openList();
@@ -355,11 +364,11 @@ it('Sort reflects the ticked count and sends the unticked selectable indices as 
 
   await fireEvent.click(sortButton());
   await vi.waitFor(() => expect(runBody()).not.toBeNull());
-  expect(runBody()).toEqual({ account_id: 7, check_id: 'chk1', exclude: [1] });
+  expect(runBody()).toEqual({ runs: [{ account_id: 7, check_id: 'chk1', exclude: [1] }] });
 });
 
 it('a stale check shows a notice and refuses Sort', async () => {
-  routes[CHECK] = [200, { check: check({ status: 'stale' }) }];
+  routes[CHECK] = [200, { checks: [check({ status: 'stale' })] }];
   render(Cleanup);
 
   expect(await screen.findByText('These results are out of date: the rules changed since this check. Check again before sorting.')).toBeTruthy();
@@ -368,7 +377,7 @@ it('a stale check shows a notice and refuses Sort', async () => {
 });
 
 it('resumes a running check: progress follows a check.progress event, then its rows load when ready', async () => {
-  routes[CHECK] = [200, { check: check({ status: 'running', done: 0, model_calls: 0, cost_usd: 0, rows: [] }) }];
+  routes[CHECK] = [200, { checks: [check({ status: 'running', done: 0, model_calls: 0, cost_usd: 0, rows: [] })] }];
   render(Cleanup);
 
   expect(await screen.findByText('0 of 412 checked · 0 model calls · $0.00')).toBeTruthy();
@@ -377,14 +386,14 @@ it('resumes a running check: progress follows a check.progress event, then its r
   expect(await screen.findByText('50 of 412 checked · 10 model calls · $0.0050')).toBeTruthy();
 
   // Ready arrives without rows; the screen GETs the check to load them.
-  routes[CHECK] = [200, { check: check({ rows: [checkRow({ subject: 'Loaded row' })] }) }];
+  routes[CHECK] = [200, { checks: [check({ rows: [checkRow({ subject: 'Loaded row' })] })] }];
   dispatch('check.progress', check({ status: 'ready', rows: [] }));
   await openList();
   expect(screen.getByText('Loaded row')).toBeTruthy();
 });
 
 it('discard throws the check away and clears the table', async () => {
-  routes[CHECK] = [200, { check: check() }];
+  routes[CHECK] = [200, { checks: [check()] }];
   render(Cleanup);
 
   await openList();
@@ -395,8 +404,8 @@ it('discard throws the check away and clears the table', async () => {
 });
 
 it('reports the skipped count in the toast after a sort finishes', async () => {
-  routes[CHECK] = [200, { check: check({ rows: [checkRow({ index: 0 }), checkRow({ index: 1, uid: 101, subject: 'Two' })] }) }];
-  routes['POST /api/cleanup/run'] = [202, { batch: batch({ id: 9, status: 'running', done: 0, total: 2, skipped: 0 }) }];
+  routes[CHECK] = [200, { checks: [check({ rows: [checkRow({ index: 0 }), checkRow({ index: 1, uid: 101, subject: 'Two' })] })] }];
+  routes['POST /api/cleanup/run'] = [202, { batches: [batch({ id: 9, status: 'running', done: 0, total: 2, skipped: 0 })] }];
   render(Cleanup);
 
   await fireEvent.click(await screen.findByRole('button', { name: /^Sort 2\b/ }));
@@ -577,11 +586,11 @@ it.each([
 
 it('says when the range held more than the check covers, while it runs and on the table', async () => {
   const capped = { limit: 2000, total: 2000, matched: 4310 };
-  routes[CHECK] = [200, { check: check({ status: 'running', done: 120, ...capped, rows: [] }) }];
+  routes[CHECK] = [200, { checks: [check({ status: 'running', done: 120, ...capped, rows: [] })] }];
   render(Cleanup);
   expect(await screen.findByText('Checking the newest 2,000 of 4,310. Run another check for the rest.')).toBeTruthy();
 
-  routes[CHECK] = [200, { check: check({ status: 'ready', done: 2000, ...capped }) }];
+  routes[CHECK] = [200, { checks: [check({ status: 'ready', done: 2000, ...capped })] }];
   dispatch('check.progress', check({ status: 'ready', done: 2000, ...capped, rows: [] }));
   expect(await screen.findByText('Checked the newest 2,000 of 4,310. Run another check for the rest.')).toBeTruthy();
   expect(screen.queryByText(/^Checking the newest/)).toBeNull();
@@ -591,7 +600,7 @@ it.each([
   ['the range fits in the cap', { limit: 2000, total: 412, matched: 412 }],
   ['a newest-N the user typed, below the cap', { limit: 200, total: 200, matched: 4310 }],
 ])('says nothing about a cap when %s', async (_name, own) => {
-  routes[CHECK] = [200, { check: check({ status: 'ready', ...own }) }];
+  routes[CHECK] = [200, { checks: [check({ status: 'ready', ...own })] }];
   render(Cleanup);
   await openList();
   await screen.findByRole('checkbox', { name: /^Sort / });
@@ -603,7 +612,7 @@ it.each([
   ['a typed 120 emails', { since: null, limit: 120 }, 'newest', '120', 'How many emails'],
   ['all mail', { since: null, limit: 2000 }, 'all', null, null],
 ] as const)('restores %s after a reload, and Check is off until the check is discarded', async (_name, own, entry, value, box) => {
-  routes[CHECK] = [200, { check: check({ status: 'ready', ...own }) }];
+  routes[CHECK] = [200, { checks: [check({ status: 'ready', ...own })] }];
   render(Cleanup);
   await openList();
   await screen.findByRole('checkbox', { name: /^Sort / });
@@ -628,15 +637,17 @@ it('a ready check shows its chart, and unticking an email moves it from its rule
   routes[CHECK] = [
     200,
     {
-      check: check({
-        rows: [
-          checkRow({ index: 0, from: 'a@x.io', subject: 'One', rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
-          checkRow({ index: 1, from: 'b@x.io', subject: 'Two', rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
-          checkRow({ index: 2, from: 'c@x.io', subject: 'Three', rule_name: 'Scams', actions: [{ type: 'trash' }] }),
-          checkRow({ index: 3, from: 'd@x.io', subject: 'Four', selectable: false, review: true, actions: [], reason: 'Waiting in Needs review' }),
-          checkRow({ index: 4, from: 'e@x.io', subject: 'Five', selectable: false, actions: [], rule_name: '', rule_id: null, reason: 'No rule matched' }),
-        ],
-      }),
+      checks: [
+        check({
+          rows: [
+            checkRow({ index: 0, from: 'a@x.io', subject: 'One', rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
+            checkRow({ index: 1, from: 'b@x.io', subject: 'Two', rule_name: 'Newsletters', actions: [{ type: 'move', folder: 'Reading' }] }),
+            checkRow({ index: 2, from: 'c@x.io', subject: 'Three', rule_name: 'Scams', actions: [{ type: 'trash' }] }),
+            checkRow({ index: 3, from: 'd@x.io', subject: 'Four', selectable: false, review: true, actions: [], reason: 'Waiting in Needs review' }),
+            checkRow({ index: 4, from: 'e@x.io', subject: 'Five', selectable: false, actions: [], rule_name: '', rule_id: null, reason: 'No rule matched' }),
+          ],
+        }),
+      ],
     },
   ];
   render(Cleanup);
@@ -662,13 +673,13 @@ it('a ready check shows its chart, and unticking an email moves it from its rule
 });
 
 it('the chart names the range the check covered', async () => {
-  routes[CHECK] = [200, { check: check({ since: NOW - 90 * DAY, limit: 2000, rows: [checkRow({ index: 0 }), checkRow({ index: 1 })] }) }];
+  routes[CHECK] = [200, { checks: [check({ since: NOW - 90 * DAY, limit: 2000, rows: [checkRow({ index: 0 }), checkRow({ index: 1 })] })] }];
   render(Cleanup);
   expect((await screen.findByRole('heading', { level: 2, name: /would be sorted like this/ })).textContent).toContain('the last 90 days');
 });
 
 it('Choose emails opens the list under the chart and closes it again; it starts closed', async () => {
-  routes[CHECK] = [200, { check: check({ rows: three() }) }];
+  routes[CHECK] = [200, { checks: [check({ rows: three() })] }];
   render(Cleanup);
   const toggle = await screen.findByRole('button', { expanded: false });
   expect(screen.queryByRole('checkbox')).toBeNull();
@@ -685,3 +696,192 @@ it('Choose emails opens the list under the chart and closes it again; it starts 
   // Closing the list changes no tick: Sort still counts every ticked row.
   expect(sortButton().textContent).toMatch(/^\s*Sort 3\b/);
 });
+
+// MAI-43: the mailbox and rule pickers of a manual run.
+const MAILBOXES = [
+  { id: 7, label: 'me@icloud.com', status: 'live' },
+  { id: 8, label: 'work@fastmail.com', status: 'live' },
+  { id: 9, label: 'old@example.org', status: 'auth_failed' },
+] as never[];
+const RULES = [
+  { id: 5, name: 'Newsletters', enabled: true },
+  { id: 6, name: 'Retired', enabled: false },
+  { id: 11, name: 'Receipts', enabled: true },
+] as never[];
+const startBodies = () => fetchMock.mock.calls.filter((c) => c[0] === '/api/cleanup/check' && (c[1] as RequestInit).method === 'POST').map((c) => JSON.parse((c[1] as RequestInit).body as string));
+const box = (name: string) => screen.getByRole<HTMLInputElement>('checkbox', { name });
+const twoChecks = (over: Partial<CleanupCheck> = {}) => [
+  check({ account_id: 7, id: 'c7', rows: [checkRow({ index: 0 }), checkRow({ index: 1, uid: 101, subject: 'Second' })], ...over }),
+  check({ account_id: 8, id: 'c8', rows: [checkRow({ index: 0, from: 'boss@work.io', subject: 'From work', rule_name: 'Receipts', uid: 7 })], ...over }),
+];
+
+it('with one mailbox and one rule there is nothing to pick: neither picker is shown', async () => {
+  render(Cleanup);
+  expect(await screen.findByRole('button', { name: 'Check what would move' })).toBeTruthy();
+  expect(screen.queryByRole('group', { name: 'Mailboxes' })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Rules' })).toBeNull();
+});
+
+it('offers the mailboxes, starts on the first, and cannot tick one that is not connected', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  routes['GET /api/accounts/8/folders'] = [200, { items: [] }];
+  render(Cleanup);
+  const group = await screen.findByRole('group', { name: 'Mailboxes' });
+  expect(within(group).getAllByRole('checkbox').map((c) => [(c.closest('label') as HTMLElement).textContent!.trim().replace(/\s+/g, ' '), (c as HTMLInputElement).checked, (c as HTMLInputElement).disabled])).toEqual([
+    ['All mailboxes', false, false],
+    ['me@icloud.com', true, false],
+    ['work@fastmail.com', false, false],
+    ['old@example.org · Sign-in failed', false, true],
+  ]);
+});
+
+it('checks the picked mailboxes together in one request, and every rule when none are picked', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  routes['GET /api/accounts/8/folders'] = [200, { items: [] }];
+  routes['POST /api/cleanup/check'] = [202, { checks: twoChecks({ status: 'running', done: 0, total: 3, rows: [] }) }];
+  render(Cleanup);
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'work@fastmail.com' }));
+  expect(box('me@icloud.com').checked && box('work@fastmail.com').checked).toBe(true);
+  expect(screen.getByText('With several mailboxes, mail is taken from each Inbox.')).toBeTruthy();
+
+  await fireEvent.click(checkButton());
+  await vi.waitFor(() => expect(startBodies()).toEqual([{ account_ids: [7, 8], folder: 'INBOX', since: null, limit: 200 }]));
+  // A line per mailbox while they are checked, and the pickers locked.
+  const lines = await screen.findByRole('list', { name: 'Checking each mailbox' });
+  expect(within(lines).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+    expect.stringContaining('me@icloud.com'),
+    expect.stringContaining('work@fastmail.com'),
+  ]);
+  expect(box('me@icloud.com').closest('fieldset')!.disabled).toBe(true);
+});
+
+it('"All mailboxes" ticks every connected mailbox and unticks them again', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  routes['GET /api/accounts/8/folders'] = [200, { items: [] }];
+  render(Cleanup);
+  await fireEvent.click(await screen.findByRole('checkbox', { name: 'All mailboxes' }));
+  expect([box('me@icloud.com').checked, box('work@fastmail.com').checked, box('old@example.org · Sign-in failed').checked]).toEqual([true, true, false]);
+  expect(box('All mailboxes').checked).toBe(true);
+  await fireEvent.click(box('All mailboxes'));
+  expect(box('me@icloud.com').checked || box('work@fastmail.com').checked).toBe(false);
+  expect(checkButton().disabled).toBe(true); // no mailbox, nothing to check
+});
+
+it('picks only some rules: they are sent in their usual order, and none picked refuses the check with the reason', async () => {
+  Object.assign(rules, { list: RULES, loaded: true });
+  render(Cleanup);
+  const group = await screen.findByRole('group', { name: 'Rules' });
+  // Only the rules that are switched on are offered.
+  expect(within(group).queryByRole('checkbox')).toBeNull();
+  await fireEvent.click(within(group).getByRole('radio', { name: 'Only some rules' }));
+  const picks = within(within(group).getByRole('list', { name: 'Rules to check' })).getAllByRole('checkbox') as HTMLInputElement[];
+  expect(picks.map((c) => [c.closest('label')!.textContent!.trim(), c.checked])).toEqual([['Newsletters', true], ['Receipts', true]]);
+  expect(group.textContent).toContain('Sender rules, your own');
+
+  await fireEvent.click(picks[0]);
+  await fireEvent.click(checkButton());
+  await vi.waitFor(() => expect(startBodies()).toEqual([{ account_id: 7, folder: 'INBOX', since: null, limit: 200, rule_ids: [11] }]));
+});
+
+it('no rule picked is refused with a sentence and the Check button waits', async () => {
+  Object.assign(rules, { list: RULES, loaded: true });
+  render(Cleanup);
+  const group = await screen.findByRole('group', { name: 'Rules' });
+  await fireEvent.click(within(group).getByRole('radio', { name: 'Only some rules' }));
+  for (const c of within(group).getAllByRole('checkbox') as HTMLInputElement[]) if (c.checked) await fireEvent.click(c);
+  expect((await screen.findByText('Pick at least one rule.')).getAttribute('role')).toBe('alert');
+  expect(checkButton().disabled).toBe(true);
+
+  await fireEvent.click(within(group).getByRole('radio', { name: 'Every rule' }));
+  expect(screen.queryByText('Pick at least one rule.')).toBeNull();
+  expect(checkButton().disabled).toBe(false);
+});
+
+it('restores a run over two mailboxes: a line each, the chart of the one shown, Show switches it, Sort takes both', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  routes[CHECK] = [200, { checks: twoChecks() }];
+  routes['POST /api/cleanup/run'] = [202, { batches: [batch({ id: 21, run_id: 21, total: 2, status: 'running', done: 0 }), batch({ id: 22, run_id: 21, account_id: 8, total: 1, status: 'running', done: 0 })] }];
+  render(Cleanup);
+
+  const lines = await screen.findByRole('list', { name: 'Mailboxes in this run' });
+  expect(within(lines).getAllByRole('listitem').map((li) => li.textContent!.replace(/\s+/g, ' ').trim())).toEqual([
+    expect.stringContaining('me@icloud.com · 2 emails would be sorted'),
+    expect.stringContaining('work@fastmail.com · 1 email would be sorted'),
+  ]);
+  expect(screen.getByRole('heading', { level: 2, name: /would be sorted like this/ }).textContent).toContain('me@icloud.com: ');
+  expect(screen.getByRole('button', { name: 'Shown below' })).toBeTruthy();
+  // The pickers are locked while checks are on show.
+  expect(box('me@icloud.com').closest('fieldset')!.disabled).toBe(true);
+  expect(sortButton().textContent).toMatch(/^\s*Sort 3 emails/);
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Show' }));
+  expect(screen.getByRole('heading', { level: 2, name: /would be sorted like this/ }).textContent).toContain('work@fastmail.com: ');
+  await openList();
+  expect(await screen.findByText('From work')).toBeTruthy();
+  expect(screen.queryByText('Second')).toBeNull();
+
+  await fireEvent.click(sortButton());
+  await vi.waitFor(() => expect(runBody()).toEqual({ runs: [{ account_id: 7, check_id: 'c7', exclude: [] }, { account_id: 8, check_id: 'c8', exclude: [] }] }));
+  // One bar for each mailbox while it sorts.
+  const bars = await screen.findAllByRole('progressbar', { name: 'Cleanup progress' });
+  expect(bars).toHaveLength(2);
+
+  dispatch('batch.progress', batch({ id: 21, run_id: 21, total: 2, status: 'done', done: 2, actions: { done: 2, dry_run: 0, failed: 0, undone: 0 } }));
+  dispatch('batch.progress', batch({ id: 22, run_id: 21, account_id: 8, total: 1, status: 'done', done: 1, actions: { done: 1, dry_run: 0, failed: 0, undone: 0 } }));
+  await vi.waitFor(() => expect(toast.text).toBe('Cleanup done: 3 emails sorted in 2 mailboxes. Undo it per mailbox, or the whole run, below.'));
+});
+
+it('a failed mailbox shows its reason on its own line and cannot be shown, the other can still be sorted', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  routes[CHECK] = [
+    200,
+    { checks: [check({ account_id: 7, id: 'c7', status: 'failed', error: 'The mail server did not answer.', rows: [] }), twoChecks()[1]] },
+  ];
+  render(Cleanup);
+  const lines = await screen.findByRole('list', { name: 'Mailboxes in this run' });
+  expect(within(lines).getByText(/The check failed. The mail server did not answer./)).toBeTruthy();
+  expect(within(lines).getAllByRole('button').map((b) => (b as HTMLButtonElement).disabled)).toEqual([true, false]);
+  expect(sortButton().textContent).toMatch(/^\s*Sort 1 email\b/);
+});
+
+it('a run over several mailboxes is one card in the history, with a line and an Undo for each, and one for the whole run', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  const done = { status: 'done', done: 2, total: 2, run_id: 30, actions: { done: 2, dry_run: 0, failed: 0, undone: 0 } } as const;
+  const a = batch({ id: 30, account_id: 7, ...done });
+  const b = batch({ id: 31, account_id: 8, ...done });
+  routes[PAST] = page([b, a, batch({ id: 20, run_id: null })]);
+  routes['POST /api/batches/30/undo'] = [200, { batch: { ...a, status: 'undone' }, undone: 2, emails: 2, failed: 0 }];
+  routes['POST /api/batches/31/undo'] = [200, { batch: { ...b, status: 'undone' }, undone: 2, emails: 2, failed: 0 }];
+  render(Cleanup);
+
+  const run = await screen.findByRole('group', { name: /^Run over 2 mailboxes/ });
+  expect(within(run).getByText('me@icloud.com')).toBeTruthy();
+  expect(within(run).getByText('work@fastmail.com')).toBeTruthy();
+  expect(within(run).getAllByRole('button', { name: /^Undo batch/ })).toHaveLength(2);
+  // The batch of one mailbox is a card of its own.
+  expect(screen.getAllByRole('button', { name: /^Undo batch/ })).toHaveLength(3);
+
+  await fireEvent.click(within(run).getByRole('button', { name: 'Undo the whole run' }));
+  expect(screen.getByRole('alertdialog').textContent).toContain('Move 4 emails back to where they were, in 2 mailboxes?');
+  await fireEvent.click(screen.getByRole('button', { name: 'Yes, undo this run' }));
+  await vi.waitFor(() => expect(toast.text).toBe('4 emails moved back where they were'));
+  expect(within(run).queryByRole('button', { name: 'Undo the whole run' })).toBeNull();
+  expect(within(run).getAllByText('Undone')).toHaveLength(2);
+});
+
+it('one mailbox of a run can be undone on its own', async () => {
+  Object.assign(accounts, { list: MAILBOXES, loaded: true });
+  const done = { status: 'done', done: 2, total: 2, run_id: 30, actions: { done: 2, dry_run: 0, failed: 0, undone: 0 } } as const;
+  const a = batch({ id: 30, account_id: 7, ...done });
+  const b = batch({ id: 31, account_id: 8, ...done });
+  routes[PAST] = page([b, a]);
+  routes['POST /api/batches/31/undo'] = [200, { batch: { ...b, status: 'undone' }, undone: 2, emails: 2, failed: 0 }];
+  render(Cleanup);
+  const run = await screen.findByRole('group', { name: /^Run over 2 mailboxes/ });
+  await fireEvent.click(within(run).getByRole('button', { name: /^Undo batch work@fastmail.com/ }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Yes, undo this batch' }));
+  await vi.waitFor(() => expect(toast.text).toBe('2 emails moved back where they were'));
+  expect(calledUndo('/api/batches/30/undo')).toBe(false);
+  expect(within(run).getByRole('button', { name: 'Undo the whole run' })).toBeTruthy(); // the other mailbox can still go back
+});
+const calledUndo = (path: string) => fetchMock.mock.calls.some((c) => c[0] === path);
