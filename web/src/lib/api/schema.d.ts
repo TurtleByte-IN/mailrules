@@ -867,10 +867,41 @@ export interface paths {
          *     this request is dropped. There is one check per account: starting a new one replaces
          *     (and cancels) the previous. The result is held in the daemon's memory until Sort uses
          *     it or it is discarded, and is lost on a daemon restart.
+         *
+         *     A manual run can take any mix of mailboxes and rules. `account_ids` starts one check
+         *     per mailbox, together and each on its own (answered in `checks`, in the order asked);
+         *     the original `account_id` shape still answers `check` as well. `rule_ids` limits every
+         *     check to those rules, checked in their usual order: an email an unpicked rule would
+         *     have taken is not touched by it, and the picked rules get their turn. Sender rules
+         *     apply whatever rules are picked, and one that routes to an unpicked rule still routes
+         *     to it. Every mailbox must be connected, or nothing starts.
          */
         post: operations["startCleanupCheck"];
         /** Discard the account's current check */
         delete: operations["discardCleanupCheck"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cleanup/checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every account's current check
+         * @description Returns the current check of every account that has one, in account order, as
+         *     `GET /api/cleanup/check` would for each (a ready check whose rules changed is reported
+         *     `stale`). The screen asks it on opening to show a manual run over several mailboxes as it
+         *     stands.
+         */
+        get: operations["listCleanupChecks"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -911,7 +942,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Sort a finished check's kept rows, as one undoable batch
+         * Sort finished checks' kept rows, as one undoable batch per mailbox
          * @description Applies the answers a check already settled for its selectable rows, minus the ones
          *     the user unticked (`exclude`, row indices). It makes no model calls: the decisions
          *     are replayed, not asked again. Answers at once with the batch (kind `cleanup`, status
@@ -923,6 +954,12 @@ export interface paths {
          *     recorded as `dry_run`, nothing moves and no sender rule is learned. Undo the whole run with
          *     `POST /api/batches/{id}/undo`. The check is deleted once it has been used. One run per
          *     account at a time.
+         *
+         *     Name one check (`account_id`, `check_id`, `exclude`) and the answer carries `batch`, or
+         *     several in `runs` to sort them together as one manual run over several mailboxes: one
+         *     batch per mailbox, all started or none (every check is verified before the first
+         *     starts), answered in `batches` in the order of `runs`. Their batches carry the same
+         *     `run_id`, and each is undone on its own.
          */
         post: operations["runCleanup"];
         delete?: never;
@@ -1984,6 +2021,11 @@ export interface components {
             matched: number | null;
             /** @description Cleanup Sort: selected emails passed over because they were no longer where the check found them. 0 for the other kinds */
             skipped: number;
+            /**
+             * Format: int64
+             * @description A manual run over several mailboxes is one cleanup batch per mailbox; they all carry the same `run_id` (the id of the first). null for every other batch, a cleanup of one mailbox included. Each batch is still undone on its own with `POST /api/batches/{id}/undo`
+             */
+            run_id: number | null;
             /** @description How many of the batch's own actions have each status. An undo batch has none of its own */
             actions: {
                 done: number;
@@ -2001,10 +2043,18 @@ export interface components {
             /** @description Actions that could not be undone: the email is gone, or its account is not connected */
             failed: number;
         };
+        /**
+         * @description Name the mailbox in `account_id`, or several in `account_ids` (a manual run over any mix of
+         *     mailboxes), not both. The folder, `since` and `limit` apply to each mailbox.
+         */
         CleanupCheckRequest: {
             /** Format: int64 */
-            account_id: number;
-            /** @description One folder of the account; left out = INBOX. There is no "all folders" */
+            account_id?: number;
+            /** @description Mailboxes to check together, each on its own. Left out = the original `account_id` shape. Repeats are ignored */
+            account_ids?: number[];
+            /** @description Check only these rules, in their usual order; every other rule is left out of the walk. Left out = every enabled rule. A rule that does not exist or is switched off is refused. Sender rules (the user's "always keep" and "always trash" answers) apply either way, and one that routes to a rule left out still routes to it */
+            rule_ids?: number[];
+            /** @description One folder of each account; left out = INBOX. There is no "all folders" */
             folder?: string;
             /**
              * Format: int64
@@ -2022,13 +2072,27 @@ export interface components {
             /** @description Row indices (CleanupCheckRow.index) of selectable rows that are not ticked; empty = all ticked */
             exclude: number[];
         };
-        CleanupRunRequest: {
+        CleanupRunItem: {
             /** Format: int64 */
             account_id: number;
             /** @description The check to sort; it must still be the account's current one */
             check_id: string;
             /** @description Row indices (CleanupCheckRow.index) of selectable rows the user unticked; omitted or empty sorts every selectable row */
             exclude?: number[];
+        };
+        /**
+         * @description Give either one check (`account_id`, `check_id`, `exclude`: the original shape) or `runs`, one
+         *     such entry per mailbox, not both. `runs` starts them together as one manual run.
+         */
+        CleanupRunRequest: {
+            /** Format: int64 */
+            account_id?: number;
+            /** @description The check to sort; it must still be the account's current one */
+            check_id?: string;
+            /** @description Row indices (CleanupCheckRow.index) of selectable rows the user unticked; omitted or empty sorts every selectable row */
+            exclude?: number[];
+            /** @description One check per mailbox to sort together, each with its own `exclude`. A mailbox may be named once */
+            runs?: components["schemas"]["CleanupRunItem"][];
         };
         /** @description One real check of a mailbox, held in the daemon's memory until Sort uses it or it is discarded */
         CleanupCheck: {
@@ -2068,6 +2132,8 @@ export interface components {
             rows: components["schemas"]["CleanupCheckRow"][];
             /** @description The saved selection (PUT /api/cleanup/check/selection): indices of selectable rows that are not ticked, ascending; empty = all ticked. Present with the rows, empty otherwise */
             exclude: number[];
+            /** @description The rules the check was limited to (`CleanupCheckRequest.rule_ids`); null = every enabled rule */
+            rule_ids: number[] | null;
         };
         /** @description One checked email and how the real flow settled it */
         CleanupCheckRow: {
@@ -3753,7 +3819,10 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        check: components["schemas"]["CleanupCheck"];
+                        /** @description The check, when the request named one mailbox in `account_id`; absent for `account_ids` */
+                        check?: components["schemas"]["CleanupCheck"];
+                        /** @description One running check per mailbox, in the order asked */
+                        checks: components["schemas"]["CleanupCheck"][];
                     };
                 };
             };
@@ -3785,6 +3854,29 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+        };
+    };
+    listCleanupChecks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current checks, empty when there are none */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        checks: components["schemas"]["CleanupCheck"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
         };
     };
     saveCleanupSelection: {
@@ -3833,7 +3925,10 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        batch: components["schemas"]["Batch"];
+                        /** @description The batch, when the request named one check (`account_id`); absent for `runs` */
+                        batch?: components["schemas"]["Batch"];
+                        /** @description One batch per mailbox, in the order asked */
+                        batches: components["schemas"]["Batch"][];
                     };
                 };
             };

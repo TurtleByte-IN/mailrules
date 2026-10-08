@@ -1004,6 +1004,14 @@ paths:
         this request is dropped. There is one check per account: starting a new one replaces
         (and cancels) the previous. The result is held in the daemon's memory until Sort uses
         it or it is discarded, and is lost on a daemon restart.
+
+        A manual run can take any mix of mailboxes and rules. `account_ids` starts one check
+        per mailbox, together and each on its own (answered in `checks`, in the order asked);
+        the original `account_id` shape still answers `check` as well. `rule_ids` limits every
+        check to those rules, checked in their usual order: an email an unpicked rule would
+        have taken is not touched by it, and the picked rules get their turn. Sender rules
+        apply whatever rules are picked, and one that routes to an unpicked rule still routes
+        to it. Every mailbox must be connected, or nothing starts.
       requestBody:
         required: true
         content:
@@ -1016,10 +1024,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [check]
+                required: [checks]
                 properties:
-                  check: { $ref: '#/components/schemas/CleanupCheck' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | folder | since | limit), invalid_json
+                  check: { $ref: '#/components/schemas/CleanupCheck', description: 'The check, when the request named one mailbox in `account_id`; absent for `account_ids`' }
+                  checks: { type: array, items: { $ref: '#/components/schemas/CleanupCheck' }, description: 'One running check per mailbox, in the order asked' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | account_ids | rule_ids | folder | since | limit), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '409': { $ref: '#/components/responses/Conflict' } # account_offline
@@ -1058,6 +1067,27 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id)
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+  /api/cleanup/checks:
+    get:
+      tags: [Cleanup]
+      operationId: listCleanupChecks
+      summary: Every account's current check
+      description: |
+        Returns the current check of every account that has one, in account order, as
+        `GET /api/cleanup/check` would for each (a ready check whose rules changed is reported
+        `stale`). The screen asks it on opening to show a manual run over several mailboxes as it
+        stands.
+      responses:
+        '200':
+          description: The current checks, empty when there are none
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checks]
+                properties:
+                  checks: { type: array, items: { $ref: '#/components/schemas/CleanupCheck' } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
   /api/cleanup/check/selection:
     put:
       tags: [Cleanup]
@@ -1085,7 +1115,7 @@ paths:
     post:
       tags: [Cleanup]
       operationId: runCleanup
-      summary: Sort a finished check's kept rows, as one undoable batch
+      summary: Sort finished checks' kept rows, as one undoable batch per mailbox
       description: |
         Applies the answers a check already settled for its selectable rows, minus the ones
         the user unticked (`exclude`, row indices). It makes no model calls: the decisions
@@ -1098,6 +1128,12 @@ paths:
         recorded as `dry_run`, nothing moves and no sender rule is learned. Undo the whole run with
         `POST /api/batches/{id}/undo`. The check is deleted once it has been used. One run per
         account at a time.
+
+        Name one check (`account_id`, `check_id`, `exclude`) and the answer carries `batch`, or
+        several in `runs` to sort them together as one manual run over several mailboxes: one
+        batch per mailbox, all started or none (every check is verified before the first
+        starts), answered in `batches` in the order of `runs`. Their batches carry the same
+        `run_id`, and each is undone on its own.
       requestBody:
         required: true
         content:
@@ -1110,13 +1146,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [batch]
+                required: [batches]
                 properties:
-                  batch: { $ref: '#/components/schemas/Batch' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | check_id), invalid_json
+                  batch: { $ref: '#/components/schemas/Batch', description: 'The batch, when the request named one check (`account_id`); absent for `runs`' }
+                  batches: { type: array, items: { $ref: '#/components/schemas/Batch' }, description: 'One batch per mailbox, in the order asked' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | check_id | runs | runs[i].account_id | runs[i].check_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
-        '409': { $ref: '#/components/responses/Conflict' } # preview_stale (the check is gone or the rules changed), check_not_ready, account_offline, cleanup_running
+        '409': { $ref: '#/components/responses/Conflict' } # preview_stale (the check is gone or the rules changed), check_not_ready (both with path runs[i].check_id for runs), account_offline, cleanup_running
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error
   /api/templates:
     get:
@@ -2066,7 +2103,7 @@ components:
         failed: { type: integer, description: 'Actions that could not be undone and are still in effect; `item.actions` says which' }
     Batch:
       type: object
-      required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd, skipped, limit, matched]
+      required: [id, kind, status, total, done, created_at, actions, account_id, folder, since, tokens, cost_usd, skipped, limit, matched, run_id]
       properties:
         id: { type: integer, format: int64 }
         kind: { type: string, enum: [live, cleanup, review, correction, undo], description: '`live` is one per UTC day of live processing, so "undo today" is one batch undo' }
@@ -2082,6 +2119,7 @@ components:
         limit: { type: [integer, 'null'], description: 'Cleanup: the most emails its check was allowed to cover (the newest of its range). null for the other kinds, and for a cleanup made before this was recorded' }
         matched: { type: [integer, 'null'], description: 'Cleanup: how many emails the folder held in the range before `limit` cut it. With `since`, `limit` and this the batch can say what it covered: more than `limit` means the check took only the newest `limit`. null when `limit` is' }
         skipped: { type: integer, description: 'Cleanup Sort: selected emails passed over because they were no longer where the check found them. 0 for the other kinds' }
+        run_id: { type: [integer, 'null'], format: int64, description: 'A manual run over several mailboxes is one cleanup batch per mailbox; they all carry the same `run_id` (the id of the first). null for every other batch, a cleanup of one mailbox included. Each batch is still undone on its own with `POST /api/batches/{id}/undo`' }
         actions:
           type: object
           description: How many of the batch's own actions have each status. An undo batch has none of its own
@@ -2102,11 +2140,15 @@ components:
 
     CleanupCheckRequest:
       type: object
-      required: [account_id]
       additionalProperties: false
+      description: |
+        Name the mailbox in `account_id`, or several in `account_ids` (a manual run over any mix of
+        mailboxes), not both. The folder, `since` and `limit` apply to each mailbox.
       properties:
         account_id: { type: integer, format: int64 }
-        folder: { type: string, description: 'One folder of the account; left out = INBOX. There is no "all folders"' }
+        account_ids: { type: array, minItems: 1, items: { type: integer, format: int64 }, description: 'Mailboxes to check together, each on its own. Left out = the original `account_id` shape. Repeats are ignored' }
+        rule_ids: { type: array, minItems: 1, items: { type: integer, format: int64 }, description: 'Check only these rules, in their usual order; every other rule is left out of the walk. Left out = every enabled rule. A rule that does not exist or is switched off is refused. Sender rules (the user''s "always keep" and "always trash" answers) apply either way, and one that routes to a rule left out still routes to it' }
+        folder: { type: string, description: 'One folder of each account; left out = INBOX. There is no "all folders"' }
         since: { type: [integer, 'null'], format: int64, description: Only mail received on or after this time's date; null = all of it }
         limit: { type: integer, minimum: 1, maximum: 2000, description: 'Only the newest N emails of the range. Left out = 2000, the most a check covers: when the range holds more, `CleanupCheck.matched` says how many, and a further check covers the rest' }
     CleanupSelectionRequest:
@@ -2117,7 +2159,7 @@ components:
         account_id: { type: integer, format: int64 }
         check_id: { type: string, description: The check the ticks belong to; it must still be the account's current one }
         exclude: { type: array, items: { type: integer }, description: 'Row indices (CleanupCheckRow.index) of selectable rows that are not ticked; empty = all ticked' }
-    CleanupRunRequest:
+    CleanupRunItem:
       type: object
       required: [account_id, check_id]
       additionalProperties: false
@@ -2125,10 +2167,25 @@ components:
         account_id: { type: integer, format: int64 }
         check_id: { type: string, description: The check to sort; it must still be the account's current one }
         exclude: { type: array, items: { type: integer }, description: 'Row indices (CleanupCheckRow.index) of selectable rows the user unticked; omitted or empty sorts every selectable row' }
+    CleanupRunRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Give either one check (`account_id`, `check_id`, `exclude`: the original shape) or `runs`, one
+        such entry per mailbox, not both. `runs` starts them together as one manual run.
+      properties:
+        account_id: { type: integer, format: int64 }
+        check_id: { type: string, description: The check to sort; it must still be the account's current one }
+        exclude: { type: array, items: { type: integer }, description: 'Row indices (CleanupCheckRow.index) of selectable rows the user unticked; omitted or empty sorts every selectable row' }
+        runs:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/CleanupRunItem' }
+          description: 'One check per mailbox to sort together, each with its own `exclude`. A mailbox may be named once'
     CleanupCheck:
       type: object
       description: One real check of a mailbox, held in the daemon's memory until Sort uses it or it is discarded
-      required: [id, account_id, folder, since, limit, status, done, total, matched, model_calls, tokens, cost_usd, error, rows, exclude]
+      required: [id, account_id, folder, since, limit, rule_ids, status, done, total, matched, model_calls, tokens, cost_usd, error, rows, exclude]
       properties:
         id: { type: string, description: Changes with every new check of the account }
         account_id: { type: integer, format: int64 }
@@ -2145,6 +2202,7 @@ components:
         error: { type: string, description: Why the check failed; empty otherwise }
         rows: { type: array, items: { $ref: '#/components/schemas/CleanupCheckRow' }, description: 'One per checked email, newest first; present when ready or stale, empty otherwise' }
         exclude: { type: array, items: { type: integer }, description: 'The saved selection (PUT /api/cleanup/check/selection): indices of selectable rows that are not ticked, ascending; empty = all ticked. Present with the rows, empty otherwise' }
+        rule_ids: { type: [array, 'null'], items: { type: integer, format: int64 }, description: 'The rules the check was limited to (`CleanupCheckRequest.rule_ids`); null = every enabled rule' }
     CleanupCheckRow:
       type: object
       description: One checked email and how the real flow settled it

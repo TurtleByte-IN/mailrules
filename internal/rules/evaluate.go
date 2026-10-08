@@ -60,6 +60,10 @@ type Result struct {
 type Options struct {
 	MinConfidence float64   // threshold for rules that set none
 	Now           time.Time // for age_days
+	// RouteOnly are rules a sender rule may route to although they take no part in the
+	// walk: a manual run of only some rules leaves the others out of the walk, yet the
+	// user's standing sender answers still apply (MAI-43). nil in live sorting.
+	RouteOnly []Rule
 }
 
 // Evaluation is what Evaluate found. When Final is set the email is settled
@@ -105,8 +109,15 @@ func Evaluate(e message.Summary, rs []Rule, senders []SenderRule, opt Options) E
 			return ev
 		case VerdictRoute:
 			// A route to a rule that is gone or switched off falls through to the walk.
-			if i := slices.IndexFunc(rs, func(r Rule) bool { return r.ID == sr.RuleID && r.Enabled }); i >= 0 {
+			routed := func(r Rule) bool { return r.ID == sr.RuleID && r.Enabled }
+			if i := slices.IndexFunc(rs, routed); i >= 0 {
 				res := ev.result(&rs[i], StageSender, 1)
+				res.SenderRuleID = sr.ID
+				ev.Final = &res
+				return ev
+			}
+			if i := slices.IndexFunc(opt.RouteOnly, routed); i >= 0 {
+				res := ev.result(&opt.RouteOnly[i], StageSender, 1)
 				res.SenderRuleID = sr.ID
 				ev.Final = &res
 				return ev

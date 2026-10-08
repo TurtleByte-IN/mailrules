@@ -34,6 +34,9 @@ type Decider struct {
 	// Own are the mailbox's own addresses, whose mail is left alone: no sender rule, rule or
 	// model is consulted for it. Empty = none (the leave_own_mail setting is off). See OwnMail.
 	Own []string
+	// RouteOnly are rules a sender rule may route to although they are not in the rules
+	// given to Settle (see rules.Options.RouteOnly). nil = none.
+	RouteOnly []rules.Rule
 }
 
 // OwnMail returns the Decider.Own for an account: its own addresses while the
@@ -86,7 +89,10 @@ func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rul
 	for _, r := range rs {
 		names[r.ID] = r.Name
 	}
-	ev := rules.Evaluate(sum, rs, senders, rules.Options{MinConfidence: d.MinConfidence, Now: d.Now})
+	for _, r := range d.RouteOnly {
+		names[r.ID] = r.Name
+	}
+	ev := rules.Evaluate(sum, rs, senders, rules.Options{MinConfidence: d.MinConfidence, Now: d.Now, RouteOnly: d.RouteOnly})
 	if ev.Final != nil {
 		return Outcome{Result: *ev.Final, RuleName: names[ev.Final.RuleID], Reason: localReason(*ev.Final, names)}, nil
 	}

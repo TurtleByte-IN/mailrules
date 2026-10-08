@@ -116,7 +116,7 @@ func newEnv(t *testing.T, modules ...ext.Module) *env {
 	}
 	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(Options{
 		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Models: e, Master: master, Version: "test",
-		StartCheck: e.mgr.StartCheck, Checks: e.mgr.Checks(), Sort: e.mgr.Sort,
+		StartCheck: e.mgr.StartCheck, Checks: e.mgr.Checks(), SortAll: e.mgr.SortAll,
 		Connect: func(_ context.Context, acct store.Account, _ string) (mail.Mailbox, string, error) {
 			if e.connectErr != nil {
 				return nil, "", e.connectErr

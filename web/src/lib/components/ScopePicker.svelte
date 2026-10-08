@@ -7,16 +7,18 @@
   /**
    * Mailbox, Folder and Which emails, with the number box and what is wrong with it. The screen owns
    * the scope and applies `onchange`'s patch. `busy` locks every control; `locked` locks all but the
-   * mailbox. `id` prefixes the problem line's id. Laid out as children of the screen's card.
+   * mailbox. `id` prefixes the problem line's id. `mailbox` false leaves the Mailbox choice out, for a
+   * screen that picks its mailboxes itself. Laid out as children of the screen's card.
    */
   let {
     scope,
     folders,
     busy = false,
     locked = false,
+    mailbox = true,
     id,
     onchange,
-  }: { scope: Scope; folders: Folder[]; busy?: boolean; locked?: boolean; id: string; onchange: (patch: Partial<Scope>) => void } = $props();
+  }: { scope: Scope; folders: Folder[]; busy?: boolean; locked?: boolean; mailbox?: boolean; id: string; onchange: (patch: Partial<Scope>) => void } = $props();
 
   const choices: Record<Scope['mode'], string> = { newest: 'Newest emails', days: 'From the last days', all: 'All mail' };
   const problem = $derived(scopeProblem(scope));
@@ -27,14 +29,16 @@
 </script>
 
 <div class="flex flex-wrap gap-3">
-  <label class="flex flex-[1_1_200px] flex-col gap-1.5">
-    <span class="text-[13px] font-semibold">Mailbox</span>
-    <select class="field h-11 px-2.5" disabled={busy} value={scope.accountId} onchange={(e) => onchange({ accountId: e.currentTarget.value })}>
-      {#each accounts.list as a (a.id)}
-        <option value={String(a.id)}>{a.label}</option>
-      {/each}
-    </select>
-  </label>
+  {#if mailbox}
+    <label class="flex flex-[1_1_200px] flex-col gap-1.5">
+      <span class="text-[13px] font-semibold">Mailbox</span>
+      <select class="field h-11 px-2.5" disabled={busy} value={scope.accountId} onchange={(e) => onchange({ accountId: e.currentTarget.value })}>
+        {#each accounts.list as a (a.id)}
+          <option value={String(a.id)}>{a.label}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
   <label class="flex flex-[1_1_160px] flex-col gap-1.5">
     <span class="text-[13px] font-semibold">Folder</span>
     <select class="field h-11 px-2.5" disabled={busy || locked} value={scope.folder} onchange={(e) => onchange({ folder: e.currentTarget.value })}>

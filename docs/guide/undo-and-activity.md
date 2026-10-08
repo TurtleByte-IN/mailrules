@@ -54,7 +54,7 @@ Undo puts an email back in the folder it came from and restores its flags and re
 | One email | **Undo** on its row in Activity. No confirmation. |
 | Everything in the last hour | **Undo the last hour** at the top of Activity, then **Yes, undo the last hour**. |
 | Everything one rule did today | **Undo what it did today** on the rule in Rules, then **Yes, undo today**. |
-| A Cleanup run | **Undo batch** under **Batches you can undo** in Cleanup, then **Yes, undo this batch**. |
+| A Cleanup run | **Undo batch** under **Batches you can undo** in Cleanup, then **Yes, undo this batch**. For a run over several mailboxes, **Undo the whole run**, then **Yes, undo this run**, undoes every mailbox of it. |
 
 An undo can fail for one email and still work for the rest; the message says how many could not be undone. An email cannot be undone when:
 
@@ -71,12 +71,16 @@ An email you move back into the inbox yourself, from a folder a rule put it in o
 
 ## Cleanup: sorting mail you already have
 
-MailRules sorts only mail that arrives after a mailbox is connected. **Cleanup** applies your rules to mail already in the Inbox or Archive folder, in two steps:
+MailRules sorts only mail that arrives after a mailbox is connected. **Cleanup** applies your rules to mail already in the Inbox or Archive folder, on any mix of mailboxes and rules, in two steps:
 
-1. **Check what would move.** Choose the **Mailbox**, the **Folder**, and **Which emails**: the newest emails, those from the last few days, or all mail, up to the newest 2000 of the range. The check reads each email without marking it read and decides it as live mail would be decided, including asking the decision model, which costs money and is counted in **Usage**. Nothing moves. The check runs in the background, so you can close the tab, but it is lost if MailRules restarts.
-2. **Sort.** Review the result per rule, untick emails you want left alone with **Choose emails**, and click **Sort N emails**. Sort does what the check found, without asking the model again, oldest first, as one batch. Emails that moved since the check are skipped. If your rules changed since the check, check again first.
+1. **Check what would move.** Choose the **Mailboxes** (one, some, or **All mailboxes**; shown when you have more than one), the **Rules** (**Every rule**, or **Only some rules** with the ones to check ticked; shown when you have more than one rule), the **Folder**, and **Which emails**: the newest emails, those from the last few days, or all mail, up to the newest 2000 of the range. With several mailboxes, mail is taken from each Inbox. The check reads each email without marking it read and decides it as live mail would be decided, including asking the decision model, which costs money and is counted in **Usage**. Nothing moves. The check runs in the background, so you can close the tab, but it is lost if MailRules restarts. With several mailboxes each one is checked on its own and gets a line showing its progress; **Show** puts that mailbox's chart and list on screen.
+2. **Sort.** Review the result per rule, untick emails you want left alone with **Choose emails**, and click **Sort N emails**. Sort does what the check found, without asking the model again, oldest first, as one batch for each mailbox. Emails that moved since the check are skipped. If your rules changed since the check, check again first.
 
-Sort respects dry-run: with dry-run on, it records what it would do and moves nothing. Every run is listed under **Batches you can undo**, kept for 30 days; **Undo batch** puts every email back where it was.
+Choosing only some rules limits the check to them. The rules you pick are checked in their usual order, so an email that a rule you left out would have moved is not touched by it, and a picked rule further down gets its turn. Sender rules, your own "always keep" and "always trash" answers, apply whatever you pick, and a sender rule that sends a sender's mail to a rule you left out still does. A check made with some rules is only spoiled by a change to one of those rules, or to a sender rule.
+
+Only one Sort can run for a mailbox at a time. If one mailbox of a run is already being sorted, the whole run is refused and nothing starts.
+
+Sort respects dry-run: with dry-run on, it records what it would do and moves nothing. Every run is listed under **Batches you can undo**, kept for 30 days. A run over several mailboxes is shown as one card with a line for each mailbox: **Undo batch** on a line puts that mailbox's emails back where they were, and **Undo the whole run** does it for every mailbox that can still be undone.
 
 ## How long things are kept
 

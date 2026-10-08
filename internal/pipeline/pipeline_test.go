@@ -1206,3 +1206,88 @@ func TestSortSavedReplaysTheCheck(t *testing.T) {
 		t.Errorf("SortSaved of a gone reference = %v, %v", applied, err)
 	}
 }
+
+// A manual run of only some rules (MAI-43) hands Settle just those rules: the others are not
+// walked and the model is not offered them, while sender rules still apply, a route among
+// them reaching a rule that is not walked through Decider.RouteOnly.
+func TestSettleWithOnlySomeRules(t *testing.T) {
+	ctx := t.Context()
+	routeToReceipts := func(e *env) []rules.SenderRule {
+		return []rules.SenderRule{{UserID: e.user.ID, MatchType: rules.MatchAddress, Value: "orders@swiggy.example", RuleID: e.receipts.ID, Verdict: rules.VerdictRoute}}
+	}
+	block := rules.SenderRule{MatchType: rules.MatchDomain, Value: "junk.example", Verdict: rules.VerdictBlock}
+	tests := []struct {
+		name      string
+		from      string
+		walk      func(e *env) []rules.Rule
+		routeOnly func(e *env) []rules.Rule
+		senders   func(e *env) []rules.SenderRule
+		wantStage rules.Stage
+		wantRule  string
+		wantAsked []string // the rules the model was offered, in order; nil = not asked
+	}{
+		{name: "the model is offered only the picked rules", from: "hello@bank.example",
+			walk:      func(e *env) []rules.Rule { return []rules.Rule{e.food} },
+			wantStage: rules.StageDecider, wantRule: "Food", wantAsked: []string{"Food"}},
+		{name: "an unpicked condition rule above does not take the email", from: "weekly@news.example",
+			walk:      func(e *env) []rules.Rule { return []rules.Rule{e.receipts} },
+			wantStage: rules.StageDecider, wantRule: "Receipts", wantAsked: []string{"Receipts"}},
+		{name: "the picked rules decide in their usual order", from: "hello@bank.example",
+			walk:      func(e *env) []rules.Rule { return []rules.Rule{e.food, e.receipts} },
+			wantStage: rules.StageDecider, wantRule: "Food", wantAsked: []string{"Food", "Receipts"}},
+		{name: "a sender block applies whatever is picked", from: "spam@junk.example",
+			walk:      func(e *env) []rules.Rule { return []rules.Rule{e.food} },
+			senders:   func(*env) []rules.SenderRule { return []rules.SenderRule{block} },
+			wantStage: rules.StageSender},
+		{name: "a sender route to a rule that is not picked still routes, with no model call", from: "orders@swiggy.example",
+			walk:      func(e *env) []rules.Rule { return []rules.Rule{e.food} },
+			routeOnly: func(e *env) []rules.Rule { return []rules.Rule{e.receipts} },
+			senders:   routeToReceipts,
+			wantStage: rules.StageSender, wantRule: "Receipts"},
+		{name: "without RouteOnly the same route falls through to the picked rules", from: "orders@swiggy.example",
+			walk:      func(e *env) []rules.Rule { return []rules.Rule{e.food} },
+			senders:   routeToReceipts,
+			wantStage: rules.StageDecider, wantRule: "Food", wantAsked: []string{"Food"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.primary.DecideFunc = func(req models.DecideRequest) (models.Decision, models.Usage, error) {
+				return models.Decision{RuleID: req.Candidates[0].RuleID, Confidence: 0.95}, models.Usage{Provider: "fake", Model: "primary-1", TokensIn: 100, TokensOut: 5}, nil
+			}
+			ref := e.deliver(tc.from, "an email")
+			raw, err := e.mb.Fetch(ctx, ref, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum, err := message.Parse(raw, e.p.Account.ID, 2000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := Decider{Router: e.p.Router, MinConfidence: 0.75, Now: e.now}
+			if tc.routeOnly != nil {
+				d.RouteOnly = tc.routeOnly(e)
+			}
+			var senders []rules.SenderRule
+			if tc.senders != nil {
+				senders = tc.senders(e)
+			}
+			out, err := d.Settle(ctx, *sum, tc.walk(e), senders)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Stage != tc.wantStage || out.RuleName != tc.wantRule {
+				t.Errorf("settled as %s by %q, want %s by %q (%s)", out.Stage, out.RuleName, tc.wantStage, tc.wantRule, out.Reason)
+			}
+			var asked []string
+			for _, req := range e.primary.Requests() {
+				for _, c := range req.Candidates {
+					asked = append(asked, c.Name)
+				}
+			}
+			if !slices.Equal(asked, tc.wantAsked) {
+				t.Errorf("the model was offered %v, want %v", asked, tc.wantAsked)
+			}
+		})
+	}
+}

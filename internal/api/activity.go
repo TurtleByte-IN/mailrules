@@ -616,12 +616,15 @@ type batchJSON struct {
 	// held before that cut. null for the other kinds and for a cleanup made before it was recorded.
 	Limit   *int64 `json:"limit"`
 	Matched *int64 `json:"matched"`
+	// RunID joins the batches of one manual run over several mailboxes: the same number on
+	// each, one batch per mailbox (MAI-43). null for every other batch.
+	RunID *int64 `json:"run_id"`
 }
 
 // batchJSON adds the status counts of the batch's actions.
 func (s *server) batchJSON(ctx context.Context, b store.Batch) (batchJSON, error) {
 	out := batchJSON{ID: b.ID, Kind: b.Kind, Status: b.Status, Total: ts(int64(b.Total)), Done: b.Done, CreatedAt: b.CreatedAt,
-		AccountID: ts(b.AccountID), Folder: b.Folder, Since: ts(b.Since), Tokens: b.Tokens, CostUSD: b.CostUSD, Skipped: b.Skipped}
+		AccountID: ts(b.AccountID), Folder: b.Folder, Since: ts(b.Since), Tokens: b.Tokens, CostUSD: b.CostUSD, Skipped: b.Skipped, RunID: ts(b.RunID)}
 	if b.ScanLimit > 0 {
 		limit, matched := int64(b.ScanLimit), int64(b.ScanMatched)
 		out.Limit, out.Matched = &limit, &matched

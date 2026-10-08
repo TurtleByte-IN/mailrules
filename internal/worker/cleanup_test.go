@@ -259,3 +259,111 @@ func TestManagerSortPerAccount(t *testing.T) {
 	m.Stop(acct2.ID)
 	m.Wait()
 }
+
+// SortAll starts the Sort of several mailboxes together (MAI-43): one batch each, joined by a
+// run id, started all or none. A mailbox that is busy, not connected or named twice refuses
+// the whole run, and nothing is left claimed or recorded.
+func TestManagerSortAll(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	one, userID := e.sup.Account.ID, e.sup.Account.UserID
+	acct2, err := e.st.CreateAccount(ctx, make([]byte, 32),
+		store.Account{UserID: userID, Label: "two", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me2"}, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := acct2.ID
+	mb2 := mailtest.New(two)
+	mb2.AddFolder("Sent", mail.RoleSent)
+	mb2.AddFolder("Old", "")
+	e.mb.AddFolder("Old", "")
+	for i := range 3 {
+		mb2.Deliver("Old", eml(fmt.Sprintf("two %d", i)))
+		e.mb.Deliver("Old", eml(fmt.Sprintf("one %d", i)))
+	}
+	sup2 := &Supervisor{Account: acct2, Store: e.st, Hub: e.sup.Hub,
+		Open:       func(context.Context) (mail.Mailbox, error) { return mb2, nil },
+		Pipeline:   pipeline.Pipeline{Store: e.st, Hub: e.sup.Hub, MinConfidence: 0.75, BodyChars: 2000},
+		BackoffMin: time.Millisecond, BackoffMax: 5 * time.Millisecond}
+	m := &Manager{}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	m.Start(runCtx, e.sup)
+	eventually(t, "mailbox one", func() bool { _, err := m.Mailbox(one); return err == nil })
+	rows1 := checkRows(t, e.st, e.mb, one, userID, "Old")
+	rows2 := checkRows(t, e.st, mb2, two, userID, "Old")
+	run := func(ids ...int64) []SortRun {
+		var out []SortRun
+		for _, id := range ids {
+			rows := rows1
+			if id == two {
+				rows = rows2
+			}
+			out = append(out, SortRun{AccountID: id, Folder: "Old", Rows: rows})
+		}
+		return out
+	}
+	batchCount := func() int {
+		t.Helper()
+		bs, err := e.st.Batches(ctx, store.BatchCleanup, 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(bs)
+	}
+
+	// Mailbox two is not connected: nothing starts, and mailbox one is not left claimed.
+	if _, err := m.SortAll(ctx, run(one, two)); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("a run over a mailbox that is not connected: %v", err)
+	}
+	if n := batchCount(); n != 0 {
+		t.Fatalf("a refused run left %d batches", n)
+	}
+	m.Start(runCtx, sup2)
+	eventually(t, "mailbox two", func() bool { _, err := m.Mailbox(two); return err == nil })
+
+	// A mailbox named twice is refused whole.
+	if _, err := m.SortAll(ctx, run(one, one)); !errors.Is(err, ErrCleanupRunning) {
+		t.Fatalf("a mailbox named twice: %v", err)
+	}
+	if n := batchCount(); n != 0 {
+		t.Fatalf("a refused run left %d batches", n)
+	}
+
+	// Mailbox two is held and being sorted: a run over both is refused, mailbox one untouched.
+	unlock1, unlock2 := m.Lock(one), m.Lock(two)
+	busy, err := m.Sort(ctx, SortRun{AccountID: two, Folder: "Old", Rows: rows2})
+	if err != nil || busy.RunID != 0 {
+		t.Fatalf("sort of mailbox two = %+v, %v; want a batch with no run id", busy, err)
+	}
+	if _, err := m.SortAll(ctx, run(one, two)); !errors.Is(err, ErrCleanupRunning) {
+		t.Fatalf("a run over a busy mailbox: %v", err)
+	}
+	if n := batchCount(); n != 1 {
+		t.Fatalf("%d batches after the refused run, want only the busy one", n)
+	}
+	unlock2()
+	eventually(t, "the busy sort to finish", func() bool { b, _ := e.st.Batch(ctx, busy.ID); return b.Status == store.BatchDone })
+	// Mailbox one was never claimed by the refused run, so a run over both goes through now.
+	batches, err := m.SortAll(ctx, run(one, two))
+	if err != nil || len(batches) != 2 {
+		t.Fatalf("a run over both mailboxes = %+v, %v", batches, err)
+	}
+	if batches[0].AccountID != one || batches[1].AccountID != two || batches[0].ID == batches[1].ID ||
+		batches[0].RunID != batches[0].ID || batches[1].RunID != batches[0].ID || batches[0].Total != 3 || batches[1].Total != 3 {
+		t.Fatalf("batches = %+v", batches)
+	}
+	// While they run, neither mailbox takes another sort.
+	if _, err := m.Sort(ctx, SortRun{AccountID: one, Folder: "Old", Rows: rows1}); !errors.Is(err, ErrCleanupRunning) {
+		t.Errorf("a second sort of mailbox one: %v", err)
+	}
+	unlock1()
+	eventually(t, "the run to finish", func() bool {
+		a, _ := e.st.Batch(ctx, batches[0].ID)
+		b, _ := e.st.Batch(ctx, batches[1].ID)
+		return a.Status == store.BatchDone && b.Status == store.BatchDone
+	})
+	m.Stop(one)
+	m.Stop(two)
+	m.Wait()
+}

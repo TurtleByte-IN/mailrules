@@ -24,6 +24,9 @@ type Cleanup struct {
 	Folder    string
 	Since     time.Time // only mail received from this time on; zero = all of it
 	Limit     int       // only the newest Limit emails; 0 = no limit
+	// RuleIDs limits the check to these rules, checked in their usual order; nil = every
+	// enabled rule. Sender rules apply either way (MAI-43).
+	RuleIDs []int64
 }
 
 // SortRun is the Sort that follows a finished check: the rows the user kept, applied with
@@ -47,61 +50,106 @@ type SortRun struct {
 // batch, which makes the run undoable as a whole. One Sort per account at a time. ctx only
 // covers opening the batch.
 func (m *Manager) Sort(ctx context.Context, sr SortRun) (store.Batch, error) {
-	m.mu.Lock()
-	r := m.sups[sr.AccountID]
-	switch {
-	case r == nil:
-		m.mu.Unlock()
-		return store.Batch{}, fmt.Errorf("account %d: %w", sr.AccountID, ErrNotConnected)
-	case m.cleaning[sr.AccountID]:
-		m.mu.Unlock()
-		return store.Batch{}, ErrCleanupRunning
-	}
-	if m.cleaning == nil {
-		m.cleaning = map[int64]bool{}
-	}
-	m.cleaning[sr.AccountID] = true
-	m.mu.Unlock()
-	started := false
-	finish := func() {
-		m.mu.Lock()
-		delete(m.cleaning, sr.AccountID)
-		m.mu.Unlock()
-	}
-	defer func() {
-		if !started {
-			finish()
-		}
-	}()
-
-	s := r.sup
-	mb := s.Mailbox()
-	if mb == nil {
-		return store.Batch{}, fmt.Errorf("account %d: %w", sr.AccountID, ErrNotConnected)
-	}
-	now := time.Now
-	if s.Pipeline.Now != nil {
-		now = s.Pipeline.Now
-	}
-	// Oldest first, as the run has always sorted.
-	rows := append([]composer.CheckRow(nil), sr.Rows...)
-	slices.SortStableFunc(rows, func(a, b composer.CheckRow) int {
-		if a.ReceivedAt != b.ReceivedAt {
-			return cmp.Compare(a.ReceivedAt, b.ReceivedAt)
-		}
-		return cmp.Compare(a.Ref.UID, b.Ref.UID)
-	})
-	batch, err := s.Store.CreateCleanupBatch(ctx, sr.AccountID, sr.Folder, sr.Since, sr.Limit, sr.Matched, len(rows), now().Unix())
+	bs, err := m.SortAll(ctx, []SortRun{sr})
 	if err != nil {
 		return store.Batch{}, err
 	}
+	return bs[0], nil
+}
+
+// SortAll starts the Sort of several mailboxes together, one batch each, and returns the
+// batches in the order of runs. They are all started or none is: when a mailbox is not
+// connected or already being sorted, nothing starts and the error says so. More than one
+// batch makes a manual run over several mailboxes: they share a store.Batch.RunID, so they
+// read back as one run, and each is undone on its own like any cleanup batch (MAI-43). A
+// mailbox may be named only once.
+func (m *Manager) SortAll(ctx context.Context, runs []SortRun) ([]store.Batch, error) {
+	if len(runs) == 0 {
+		return nil, nil
+	}
+	type taken struct {
+		sr   SortRun
+		r    *running
+		mb   mail.Mailbox
+		sort *Supervisor
+	}
+	var (
+		parts   = make([]taken, len(runs))
+		claimed []int64
+		started bool
+	)
+	release := func(ids ...int64) {
+		m.mu.Lock()
+		for _, id := range ids {
+			delete(m.cleaning, id)
+		}
+		m.mu.Unlock()
+	}
+	// Anything claimed and not handed to a goroutine is let go again.
+	defer func() {
+		if !started {
+			release(claimed...)
+		}
+	}()
+
+	m.mu.Lock()
+	for i, sr := range runs {
+		r := m.sups[sr.AccountID]
+		var err error
+		switch {
+		case r == nil:
+			err = fmt.Errorf("account %d: %w", sr.AccountID, ErrNotConnected)
+		case m.cleaning[sr.AccountID]:
+			err = ErrCleanupRunning
+		}
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		if m.cleaning == nil {
+			m.cleaning = map[int64]bool{}
+		}
+		m.cleaning[sr.AccountID] = true
+		claimed = append(claimed, sr.AccountID)
+		parts[i] = taken{sr: sr, r: r}
+	}
+	m.mu.Unlock()
+
+	now := time.Now
+	specs := make([]store.CleanupBatch, len(runs))
+	for i := range parts {
+		p := &parts[i]
+		p.sort = p.r.sup
+		if p.mb = p.sort.Mailbox(); p.mb == nil {
+			return nil, fmt.Errorf("account %d: %w", p.sr.AccountID, ErrNotConnected)
+		}
+		if i == 0 && p.sort.Pipeline.Now != nil {
+			now = p.sort.Pipeline.Now
+		}
+		specs[i] = store.CleanupBatch{AccountID: p.sr.AccountID, Folder: p.sr.Folder, Since: p.sr.Since,
+			ScanLimit: p.sr.Limit, ScanMatched: p.sr.Matched, Total: len(p.sr.Rows)}
+	}
+	batches, err := parts[0].sort.Store.CreateCleanupRun(ctx, specs, now().Unix())
+	if err != nil {
+		return nil, err
+	}
 	started = true
-	slog.InfoContext(ctx, "cleanup sort started", "account", sr.AccountID, "batch", batch.ID, "folder", sr.Folder, "messages", len(rows))
-	m.wg.Go(func() {
-		defer finish()
-		s.sort(r.ctx, mb, batch.ID, rows)
-	})
-	return batch, nil
+	for i, p := range parts {
+		// Oldest first, as the run has always sorted.
+		rows := append([]composer.CheckRow(nil), p.sr.Rows...)
+		slices.SortStableFunc(rows, func(a, b composer.CheckRow) int {
+			if a.ReceivedAt != b.ReceivedAt {
+				return cmp.Compare(a.ReceivedAt, b.ReceivedAt)
+			}
+			return cmp.Compare(a.Ref.UID, b.Ref.UID)
+		})
+		slog.InfoContext(ctx, "cleanup sort started", "account", p.sr.AccountID, "batch", batches[i].ID, "folder", p.sr.Folder, "messages", len(rows), "run_size", len(runs))
+		m.wg.Go(func() {
+			defer release(p.sr.AccountID)
+			p.sort.sort(p.r.ctx, p.mb, batches[i].ID, rows)
+		})
+	}
+	return batches, nil
 }
 
 // sort applies the kept rows, oldest first. Between two emails it lets go of the account,
