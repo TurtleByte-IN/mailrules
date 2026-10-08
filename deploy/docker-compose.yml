@@ -4,6 +4,9 @@
 # ghcr.io/turtlebyte-in/mailrules:latest) in .env and leave out --build.
 # Then open http://127.0.0.1:8080 on the same machine (or the port set in MAILRULES_PORT).
 #
+# To make `--build` report the release it was built from instead of "dev", pass the version
+# in: VERSION=$(make -s version) docker compose -f deploy/docker-compose.yml up -d --build
+#
 # Settings are read from the shell or from a file named .env next to this file. Leave a
 # variable unset to keep the daemon's default. Never write a key into this file. Provider
 # keys can also be set in the browser, where they are stored encrypted in the data volume.
@@ -12,6 +15,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # What the build reports (log, `mailrules version`, Settings); "dev" without VERSION.
+        VERSION: ${VERSION:-dev}
     # Without --build, Compose pulls this image when it is not present, and builds it
     # only if the pull fails.
     image: ${MAILRULES_IMAGE:-mailrules:local}
@@ -31,6 +37,9 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
+      # MAILRULES_LISTEN is deliberately not passed on: inside the container the daemon
+      # must listen on 0.0.0.0:8080 (set in the image) for the published port to work.
+      # Change the host port with MAILRULES_PORT instead.
       MAILRULES_DRY_RUN: ${MAILRULES_DRY_RUN:-}
       MAILRULES_DECIDER: ${MAILRULES_DECIDER:-}
       MAILRULES_DECIDER_MODEL: ${MAILRULES_DECIDER_MODEL:-}
@@ -39,6 +48,11 @@ services:
       MAILRULES_ESCALATE_BELOW: ${MAILRULES_ESCALATE_BELOW:-}
       MAILRULES_MIN_CONFIDENCE: ${MAILRULES_MIN_CONFIDENCE:-}
       MAILRULES_BODY_CHARS: ${MAILRULES_BODY_CHARS:-}
+      MAILRULES_PRICES_FILE: ${MAILRULES_PRICES_FILE:-}
+      # Keeps the master key outside the data volume. Set one of these, not both. A _FILE
+      # path is read inside the container, so mount the file first (see "secrets" below).
+      MAILRULES_MASTER_KEY: ${MAILRULES_MASTER_KEY:-}
+      MAILRULES_MASTER_KEY_FILE: ${MAILRULES_MASTER_KEY_FILE:-}
       MAILRULES_MODEL_CONCURRENCY: ${MAILRULES_MODEL_CONCURRENCY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
@@ -54,6 +68,7 @@ services:
       MAILRULES_SMTP_PORT: ${MAILRULES_SMTP_PORT:-}
       MAILRULES_SMTP_USER: ${MAILRULES_SMTP_USER:-}
       MAILRULES_SMTP_PASSWORD: ${MAILRULES_SMTP_PASSWORD:-}
+      MAILRULES_SMTP_PASSWORD_FILE: ${MAILRULES_SMTP_PASSWORD_FILE:-}
       MAILRULES_SMTP_FROM: ${MAILRULES_SMTP_FROM:-}
       MAILRULES_SMTP_TLS: ${MAILRULES_SMTP_TLS:-}
       # Where links in the summary email lead: the published port, or your proxy's address.
@@ -61,6 +76,17 @@ services:
       # This file publishes the port to 127.0.0.1 over plain HTTP, so login cookies
       # must not be HTTPS-only. Set to "true" in .env once a TLS reverse proxy is in front.
       MAILRULES_COOKIE_SECURE: ${MAILRULES_COOKIE_SECURE:-false}
+
+    # Example: keep the master key in a file outside the data volume. Create the file, then
+    # uncomment this, the top-level `secrets:` below, and set
+    # MAILRULES_MASTER_KEY_FILE=/run/secrets/master_key in .env. The same works for
+    # MAILRULES_SMTP_PASSWORD_FILE with a second secret.
+    # secrets:
+    #   - master_key
+
+# secrets:
+#   master_key:
+#     file: ./master.key
 
 volumes:
   mailrules-data:

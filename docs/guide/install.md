@@ -51,10 +51,10 @@ MAILRULES_IMAGE=ghcr.io/turtlebyte-in/mailrules:0.1.0
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-To build the image from the checkout instead, leave `MAILRULES_IMAGE` unset and add `--build`:
+To build the image from the checkout instead, leave `MAILRULES_IMAGE` unset and add `--build`. Pass `VERSION` so the build reports the release it was made from (for example `0.1.1`) rather than `dev`:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build
+VERSION=$(make -s version) docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 What the compose file sets up:
@@ -64,7 +64,9 @@ What the compose file sets up:
 - The container runs with a read-only root filesystem, no capabilities and `no-new-privileges`.
 - `MAILRULES_COOKIE_SECURE` defaults to `false`, for the same reason as with `docker run`. Set it to `true` in `deploy/.env` once a TLS reverse proxy is in front.
 
-Put your settings in `deploy/.env`, never in the compose file itself. Compose passes on only the variables listed in the `environment:` section of `deploy/docker-compose.yml`; to use a setting that is not listed there, such as `MAILRULES_PRICES_FILE`, add it to that section.
+Put your settings in `deploy/.env`, never in the compose file itself. Compose passes on only the variables listed in the `environment:` section of `deploy/docker-compose.yml`. That is every setting in the [settings reference](./settings.md) except `MAILRULES_LISTEN`: inside the container MailRules must listen on `0.0.0.0:8080` for the published port to work, so change the port on your machine with `MAILRULES_PORT` instead.
+
+The `_FILE` settings (`MAILRULES_MASTER_KEY_FILE`, `MAILRULES_SMTP_PASSWORD_FILE`) name a path inside the container, which has a read-only filesystem, so mount the file there first or MailRules will not start. The compose file has a commented `secrets:` example that mounts a key file at `/run/secrets/master_key`.
 
 Run commands with `exec`:
 
@@ -188,7 +190,7 @@ docker compose -f deploy/docker-compose.yml up -d
 
 ```bash
 git pull
-docker compose -f deploy/docker-compose.yml up -d --build
+VERSION=$(make -s version) docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 **Homebrew.**

@@ -163,11 +163,20 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
 		})
 	}
+	watcher := newAccountWatcher(st, start)
+	watcher.Seed(accounts)
 	for _, acct := range accounts {
 		if acct.Status != worker.StatusPaused {
 			start(acct)
 		}
 	}
+	// Mailboxes added with `mailrules accounts add` while this runs are picked up here.
+	watching := make(chan struct{})
+	defer func() { stopAll(); <-watching }()
+	go func() {
+		defer close(watching)
+		watcher.Run(ctx, accountPollInterval)
+	}()
 	dryRun, err := st.DryRun(ctx, cfg.DryRun)
 	if err != nil {
 		return err
@@ -195,7 +204,7 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 			}
 			return mb, username, nil
 		},
-		StartAccount: start, StopAccount: supervisors.Stop, Summary: sum,
+		StartAccount: watcher.Start, StopAccount: supervisors.Stop, Summary: sum,
 		StartCheck: supervisors.StartCheck, Checks: supervisors.Checks(), Sort: supervisors.Sort,
 		Modules: modules,
 	})
