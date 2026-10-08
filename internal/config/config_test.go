@@ -38,6 +38,32 @@ func TestSettingsDescribed(t *testing.T) {
 	}
 }
 
+// deploy/docker-compose.yml passes settings to the container one by one, so a setting added
+// here and forgotten there silently does nothing for Compose users. The ones it leaves out
+// on purpose are fixed by the image or meaningless in a container.
+func TestComposePassesEverySetting(t *testing.T) {
+	notPassed := map[string]bool{"MAILRULES_LISTEN": true, "MAILRULES_DATA_DIR": true, "MAILRULES_MODE": true}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "docker-compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	passed := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		name, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if ok && !strings.HasPrefix(name, "#") && strings.Contains(value, "${"+name) {
+			passed[name] = true
+		}
+	}
+	for _, s := range Settings() {
+		switch {
+		case notPassed[s.Env] && passed[s.Env]:
+			t.Errorf("%s is passed by deploy/docker-compose.yml but listed here as left out on purpose", s.Env)
+		case !notPassed[s.Env] && !passed[s.Env]:
+			t.Errorf("deploy/docker-compose.yml does not pass %s; add `%s: ${%s:-}` to its environment list", s.Env, s.Env, s.Env)
+		}
+	}
+}
+
 func TestLoadPrecedence(t *testing.T) {
 	c, err := Load([]string{"--listen", "127.0.0.1:9000"}, env(map[string]string{
 		"MAILRULES_LISTEN":  "127.0.0.1:7000",

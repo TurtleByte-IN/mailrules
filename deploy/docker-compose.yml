@@ -37,9 +37,10 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      # MAILRULES_LISTEN is deliberately not passed on: inside the container the daemon
-      # must listen on 0.0.0.0:8080 (set in the image) for the published port to work.
-      # Change the host port with MAILRULES_PORT instead.
+      # MAILRULES_LISTEN and MAILRULES_DATA_DIR are deliberately not passed on: inside the
+      # container the daemon must listen on 0.0.0.0:8080 and keep its data in /data (both
+      # set in the image) for the published port and the volume to work. Change the host
+      # port with MAILRULES_PORT instead. MAILRULES_MODE stays selfhost here.
       MAILRULES_DRY_RUN: ${MAILRULES_DRY_RUN:-}
       MAILRULES_DECIDER: ${MAILRULES_DECIDER:-}
       MAILRULES_DECIDER_MODEL: ${MAILRULES_DECIDER_MODEL:-}
@@ -53,6 +54,9 @@ services:
       # path is read inside the container, so mount the file first (see "secrets" below).
       MAILRULES_MASTER_KEY: ${MAILRULES_MASTER_KEY:-}
       MAILRULES_MASTER_KEY_FILE: ${MAILRULES_MASTER_KEY_FILE:-}
+      # Only to start again after master.key was lost: every stored password and key must
+      # then be entered again. See docs/guide/backup.md.
+      MAILRULES_NEW_MASTER_KEY: ${MAILRULES_NEW_MASTER_KEY:-}
       MAILRULES_MODEL_CONCURRENCY: ${MAILRULES_MODEL_CONCURRENCY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
@@ -76,6 +80,9 @@ services:
       # This file publishes the port to 127.0.0.1 over plain HTTP, so login cookies
       # must not be HTTPS-only. Set to "true" in .env once a TLS reverse proxy is in front.
       MAILRULES_COOKIE_SECURE: ${MAILRULES_COOKIE_SECURE:-false}
+      # Behind a reverse proxy: its address, so sign-in limits count each visitor rather
+      # than the proxy. See docs/guide/security.md.
+      MAILRULES_TRUSTED_PROXIES: ${MAILRULES_TRUSTED_PROXIES:-}
 
     # Example: keep the master key in a file outside the data volume. Create the file, then
     # uncomment this, the top-level `secrets:` below, and set
