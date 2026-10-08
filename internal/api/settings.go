@@ -10,9 +10,10 @@ import (
 )
 
 // features are the later-phase features the UI prototype draws. The UI hides each one
-// until its flag is true; a flag turns true in the release that builds the feature.
+// until its flag is true; a flag turns true in the release that builds the feature, or, for
+// a feature a module provides (suggest), while the module is in the build (server.features).
 var features = map[string]bool{"digest": false, "notifications": false, "timed_actions": false, "draft_replies": false,
-	"billing": false, "unsubscribe": false, "oauth_providers": false}
+	"billing": false, "unsubscribe": false, "oauth_providers": false, "suggest": false}
 
 // limits are the bounds the daemon enforces on how many emails one run reads, reported so
 // the UI's number boxes follow the daemon instead of repeating its numbers (MAI-41).
@@ -36,7 +37,7 @@ func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		"warnings":                  v.Warnings, // what the chosen decider still lacks
 		"server":                    map[string]string{"version": s.Version, "data_dir": env.DataDir, "listen": env.Listen, "mode": env.Mode},
 		"limits":                    limits,
-		"features":                  features,
+		"features":                  s.features(),
 	})
 }
 

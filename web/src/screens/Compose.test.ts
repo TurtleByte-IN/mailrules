@@ -27,8 +27,9 @@ async function describe(text: string) {
 }
 
 beforeEach(() => {
-  // The limits GET /api/settings reports.
+  // The limits GET /api/settings reports, and a daemon built without the suggest module.
   Object.assign(settings.value, { limits: { test_default: 200, test_max: 2000, check_max: 2000 } });
+  settings.value.features.suggest = false;
   Object.assign(compose, { text: '', drafts: [], unparsed: [], busy: false, templates: [], needsModel: '' });
   Object.assign(rules, { list: [], loaded: true, error: '' });
   Object.assign(accounts, { list: [], loaded: true });
@@ -299,6 +300,7 @@ it('a draft card says how many emails the draft was tested on, and nothing when 
 });
 
 it('the ways to add rules are tabs: one selected, its panel labelled by it, the arrow keys move between them', async () => {
+  settings.value.features.suggest = true;
   serve({});
   render(Compose);
   const list = screen.getByRole('tablist', { name: 'How to add rules' });
@@ -332,4 +334,16 @@ it('the ways to add rules are tabs: one selected, its panel labelled by it, the 
   await fireEvent.click(tabs[2]);
   expect(selected()).toEqual(['Templates']);
   expect(panel().getAttribute('aria-labelledby')).toBe(tabs[2].id);
+});
+
+it('offers Suggest from my mail only when the daemon has its module', async () => {
+  serve({});
+  render(Compose);
+  const tabs = screen.getAllByRole('tab');
+  expect(tabs.map((t) => t.textContent)).toEqual(['Describe it', 'Build with conditions', 'Templates']);
+  expect(screen.getByText(/or start from a template\.$/)).toBeTruthy();
+  await fireEvent.keyDown(tabs[0], { key: 'End' });
+  expect(tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent)).toEqual(['Templates']);
+  await fireEvent.keyDown(tabs[2], { key: 'ArrowRight' });
+  expect(tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent)).toEqual(['Describe it']);
 });

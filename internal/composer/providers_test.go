@@ -14,7 +14,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 )
 
-// spy remembers the schema the composer or the suggester asked a real adapter for.
+// spy remembers the schema the composer asked a real adapter for.
 type spy struct {
 	models.Generator
 	schema json.RawMessage
@@ -152,4 +152,3 @@ func TestComposeOnEveryProvider(t *testing.T) {
 		})
 	}
 }
-

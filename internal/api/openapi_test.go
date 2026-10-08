@@ -243,3 +243,53 @@ func TestTestLimitsAgreeWithTheContract(t *testing.T) {
 	}
 }
 
+// What a suggestion scan sends when the request does not say is stated by the contract,
+// and the web UI starts its controls on it (SUGGEST_START). The module that serves the
+// scan checks its own defaults against the contract; a change to the contract without the
+// web UI fails here.
+func TestSuggestDefaultsAgreeWithTheWebUI(t *testing.T) {
+	props := spec(t)["components"].(map[string]any)["schemas"].(map[string]any)["SuggestRequest"].(map[string]any)["properties"].(map[string]any)
+	samples := regexp.MustCompile(`Left out = (\d+)\.`).FindStringSubmatch(props["samples"].(map[string]any)["description"].(string))
+	body := regexp.MustCompile(`Left out = (\w+)\.`).FindStringSubmatch(props["body"].(map[string]any)["description"].(string))
+	if samples == nil || body == nil {
+		t.Fatal("api/openapi.yaml SuggestRequest.samples and .body do not say \"Left out = ...\"")
+	}
+	web, err := os.ReadFile("../../web/src/lib/api/suggest.ts")
+	if os.IsNotExist(err) {
+		t.Skip("web/ is not in this checkout")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`SUGGEST_START = \{ samples: (\d+), body: '(\w+)' \}`).FindSubmatch(web)
+	if m == nil {
+		t.Fatal("web/src/lib/api/suggest.ts has no SUGGEST_START = { samples: N, body: '...' }")
+	}
+	if string(m[1]) != samples[1] || string(m[2]) != body[1] {
+		t.Errorf("web/src/lib/api/suggest.ts SUGGEST_START is %s samples, body %s; the contract's defaults are %s and %s", m[1], m[2], samples[1], body[1])
+	}
+}
+
+// The routes a module provides are marked x-module in the contract, with the module's
+// name, and only those: the daemon refuses each one while no module serves it.
+func TestModuleRoutesAreMarked(t *testing.T) {
+	var inSpec, optional []string
+	for path, item := range spec(t)["paths"].(map[string]any) {
+		for method, op := range item.(map[string]any) {
+			if !slices.Contains(methods, method) {
+				continue
+			}
+			if module, ok := op.(map[string]any)["x-module"]; ok {
+				inSpec = append(inSpec, fmt.Sprintf("%s %s %v", strings.ToUpper(method), path, module))
+			}
+		}
+	}
+	for _, o := range optionalRoutes {
+		optional = append(optional, o.method+" "+o.path+" "+o.module)
+	}
+	sort.Strings(inSpec)
+	sort.Strings(optional)
+	if !slices.Equal(inSpec, optional) {
+		t.Errorf("api/openapi.yaml marks %v with x-module, the daemon's optional routes are %v", inSpec, optional)
+	}
+}

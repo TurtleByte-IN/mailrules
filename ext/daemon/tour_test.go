@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func TestAPITourInDocsRuns(t *testing.T) {
 	}
 	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, cfg) }()
+	go func() { done <- serve(ctx, cfg, "test", nil) }()
 	defer func() {
 		stop()
 		if err := <-done; err != nil {

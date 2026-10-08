@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
@@ -72,7 +73,8 @@ func (e *env) Composer(ctx context.Context) (models.Generator, error) {
 	return e.gen, nil
 }
 
-func newEnv(t *testing.T) *env {
+// newEnv builds the daemon with the modules given, as a build that compiles them in would.
+func newEnv(t *testing.T, modules ...ext.Module) *env {
 	t.Helper()
 	ctx := t.Context()
 	db, err := store.Open(ctx, t.TempDir())
@@ -115,7 +117,7 @@ func newEnv(t *testing.T) *env {
 			}
 			return e.mb, acct.Username, nil
 		},
-		StartAccount: start, StopAccount: e.mgr.Stop,
+		StartAccount: start, StopAccount: e.mgr.Stop, Modules: modules,
 	})}
 	return e
 }

@@ -81,9 +81,9 @@ func TestAnthropicWorkspaceSettings(t *testing.T) {
 	workspace(e.call(http.MethodPatch, "/api/settings", `{"anthropic_workspace_id":"wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ"}`, http.StatusOK), "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ", "", false)
 }
 
-// When Claude refuses the key for want of a workspace, Describe it, Rewrite with AI, Suggest
-// from my mail and the rule tester answer 409 anthropic_workspace_needed, and a stream that
-// had begun ends with an error event saying the same.
+// When Claude refuses the key for want of a workspace, Describe it, Rewrite with AI and the
+// rule tester answer 409 anthropic_workspace_needed, and a stream that had begun ends with
+// an error event saying the same. A module's routes answer the same way (TestModuleHost).
 func TestAnthropicWorkspaceNeeded(t *testing.T) {
 	e := newEnv(t)
 	for i := range 4 {
@@ -103,7 +103,6 @@ func TestAnthropicWorkspaceNeeded(t *testing.T) {
 	for _, c := range []struct{ feature, path, body string }{
 		{"Describe it", "/api/rules/compose", `{"text":"Put Swiggy in Food"}`},
 		{"Rewrite with AI", "/api/rules/1/compose", `{"text":"and Zomato"}`},
-		{"Suggest from my mail", "/api/rules/suggest", `{"account_id":1}`},
 		{"the rule tester", "/api/rules/test", `{"account_id":1,"limit":5}`},
 	} {
 		r := e.do(http.MethodPost, c.path, c.body)
@@ -112,7 +111,6 @@ func TestAnthropicWorkspaceNeeded(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ feature, path, body string }{
-		{"Suggest from my mail", "/api/rules/suggest", `{"account_id":1}`},
 		{"the rule tester", "/api/rules/test", `{"account_id":1,"limit":5}`},
 	} {
 		r := e.sse(c.path, c.body)

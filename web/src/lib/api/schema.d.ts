@@ -369,7 +369,11 @@ export interface paths {
         put?: never;
         /**
          * Scan the mail already in a folder and have the AI suggest rules
-         * @description Nothing is saved and the mailbox is not changed: mail is read with BODY.PEEK, so it
+         * @description Provided by the `suggest` module (`x-module`), which the hosted build includes and
+         *     the free self-host build does not. Without it this route answers 404
+         *     `not_available` and `features.suggest` in GET /api/settings is false.
+         *
+         *     Nothing is saved and the mailbox is not changed: mail is read with BODY.PEEK, so it
          *     stays unread and where it is. The scope is the one a cleanup check takes (one
          *     folder, the mail from `since` on, the newest `limit` of it, at most 2000). The body
          *     of an email is fetched only when `body` is not `none`.
@@ -2232,7 +2236,7 @@ export interface components {
                 /** @description The largest `limit` a cleanup check or a rule suggestion scan takes, and what one with no `limit` covers */
                 check_max: number;
             };
-            /** @description Later-phase features the UI draws; each stays hidden until its flag is true */
+            /** @description Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module */
             readonly features: {
                 digest: boolean;
                 notifications: boolean;
@@ -2241,6 +2245,8 @@ export interface components {
                 billing: boolean;
                 unsubscribe: boolean;
                 oauth_providers: boolean;
+                /** @description Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works */
+                suggest: boolean;
             };
         };
         /** @description For every field: left out = unchanged; `null` = forget the stored value, so the environment's default is back in force; an empty string = that value, stored (see each field), or refused where empty cannot work */
@@ -2327,6 +2333,15 @@ export interface components {
         };
         /** @description `not_found` */
         NotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description `not_available`: this build of MailRules does not include the module that provides this route (`x-module`) */
+        NotAvailable: {
             headers: {
                 [name: string]: unknown;
             };
@@ -2935,6 +2950,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotAvailable"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };

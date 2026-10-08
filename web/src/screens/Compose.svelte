@@ -2,6 +2,7 @@
   import { router } from 'svelte-spa-router';
   import { compose } from '../lib/state/compose.svelte';
   import { rules } from '../lib/state/rules.svelte';
+  import { settings } from '../lib/state/settings.svelte';
   import Build from './compose/Build.svelte';
   import Describe from './compose/Describe.svelte';
   import Suggest from './compose/Suggest.svelte';
@@ -15,13 +16,16 @@
 
   const editing = $derived(rules.list.find((r) => String(r.id) === query.get('edit')));
 
-  const modes = [
+  const all = [
     ['describe', 'Describe it'],
     ['build', 'Build with conditions'],
     ['templates', 'Templates'],
     ['suggest', 'Suggest from my mail'],
   ] as const;
-  let mode = $state<(typeof modes)[number][0]>(/(^|&)(edit=|mode=build)/.test(router.querystring ?? '') ? 'build' : 'describe');
+  // Suggest from my mail is a module only some builds include (the hosted one): the daemon
+  // says in its settings whether this one has it, and its tab is offered only then.
+  const modes = $derived(all.filter(([id]) => id !== 'suggest' || settings.value.features.suggest));
+  let mode = $state<(typeof all)[number][0]>(/(^|&)(edit=|mode=build)/.test(router.querystring ?? '') ? 'build' : 'describe');
 
   // The WAI-ARIA tabs pattern: only the shown tab is in the Tab order; the arrow keys, Home and End
   // move to another tab and show it at once.
@@ -39,9 +43,13 @@
 <div class="flex max-w-[980px] flex-col gap-[18px]">
   <header>
     <h1>Add rules</h1>
-    <p class="mt-1 text-secondary">Describe rules in your own words, build one from exact conditions, or let the AI suggest rules from the mail you already have.</p>
+    <p class="mt-1 text-secondary">
+      {settings.value.features.suggest
+        ? 'Describe rules in your own words, build one from exact conditions, or let the AI suggest rules from the mail you already have.'
+        : 'Describe rules in your own words, build one from exact conditions, or start from a template.'}
+    </p>
   </header>
-  <!-- Two by two below lg (and on a phone): the four labels only fit in one row from lg up. -->
+  <!-- Two by two below lg (and on a phone): four labels only fit in one row from lg up. -->
   <div role="tablist" aria-label="How to add rules" class="inline-flex gap-1 self-start rounded-md bg-line-divider p-1 max-lg:grid max-lg:grid-cols-2 max-lg:self-stretch">
     {#each modes as [id, label], i (id)}
       <!-- Only the shown panel exists, so only its tab names it in aria-controls. -->

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
@@ -20,18 +21,10 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
-// scopeInput is the selection of mail a cleanup check, or a rule suggestion scan, takes:
-// mailbox, folder, "emails from" range, optional limit.
-type scopeInput struct {
-	AccountID int64  `json:"account_id"`
-	Folder    string `json:"folder"`
-	Since     *int64 `json:"since"`
-	Limit     *int   `json:"limit"`
-}
-
-// cleanupScope reads the body a cleanup check takes: which mail to check.
+// cleanupScope reads the body a cleanup check takes: which mail to check (the contract's
+// CleanupCheckRequest, which a module's scan of mail takes too).
 func (s *server) cleanupScope(w http.ResponseWriter, r *http.Request) (worker.Cleanup, bool) {
-	var in scopeInput
+	var in ext.ScopeInput
 	if !readJSON(w, r, &in) {
 		return worker.Cleanup{}, false
 	}
@@ -40,7 +33,7 @@ func (s *server) cleanupScope(w http.ResponseWriter, r *http.Request) (worker.Cl
 
 // scope checks a selection of mail and fills in what it leaves out, answering 400 itself
 // when it cannot be used.
-func (s *server) scope(w http.ResponseWriter, r *http.Request, in scopeInput) (worker.Cleanup, bool) {
+func (s *server) scope(w http.ResponseWriter, r *http.Request, in ext.ScopeInput) (worker.Cleanup, bool) {
 	// Every check covers at most the newest composer.MaxLimit emails of its range (MAI-48):
 	// a request that names no limit gets the most, so no client can ask for an unbounded run.
 	c := worker.Cleanup{AccountID: in.AccountID, Folder: in.Folder, Limit: composer.MaxLimit}

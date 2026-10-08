@@ -70,11 +70,9 @@ func TestComposeOnOtherProviders(t *testing.T) {
 			url, calls := fakeProvider(t, tc.name, fiveDrafts)
 			e.call(http.MethodPatch, "/api/settings", tc.settings(url), http.StatusOK)
 
-			for path, body := range map[string]string{"/api/rules/compose": `{"text":"Put Swiggy in Food","account_id":1}`, "/api/rules/suggest": `{"account_id":1}`} {
-				r := e.do(http.MethodPost, path, body)
-				if r.status != http.StatusConflict || r.body.Error.Code != "no_composer_model" || r.body.Error.Message != tc.missing {
-					t.Fatalf("%s without the provider's key or URL = %d %s %q", path, r.status, r.body.Error.Code, r.body.Error.Message)
-				}
+			r := e.do(http.MethodPost, "/api/rules/compose", `{"text":"Put Swiggy in Food","account_id":1}`)
+			if r.status != http.StatusConflict || r.body.Error.Code != "no_composer_model" || r.body.Error.Message != tc.missing {
+				t.Fatalf("composing without the provider's key or URL = %d %s %q", r.status, r.body.Error.Code, r.body.Error.Message)
 			}
 			if tc.complete == nil {
 				return

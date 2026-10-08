@@ -26,7 +26,7 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     warnings: [],
     server: { version: '', data_dir: '', listen: '', mode: 'selfhost' },
     limits: { test_default: 0, test_max: 0, check_max: 0 },
-    features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false },
+    features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false },
   },
   loaded: false,
   error: '',

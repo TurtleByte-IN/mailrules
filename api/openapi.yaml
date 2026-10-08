@@ -34,6 +34,10 @@ info:
       Call `GET /api/auth/me` first: it hands out the cookie and says which screen to show.
     - The only message text the API ever returns is `snippet`, at most 200 characters.
       Passwords and provider keys are write-only: no response contains one.
+    - An operation marked `x-module` is provided by an optional module that is not part of
+      this repository (the hosted build has it). Without the module the route is still
+      there and answers 404 `not_available`, and GET /api/settings reports the module's
+      name as false in `features`, so the UI does not offer it.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -461,8 +465,13 @@ paths:
     post:
       tags: [Rules]
       operationId: suggestRules
+      x-module: suggest
       summary: Scan the mail already in a folder and have the AI suggest rules
       description: |
+        Provided by the `suggest` module (`x-module`), which the hosted build includes and
+        the free self-host build does not. Without it this route answers 404
+        `not_available` and `features.suggest` in GET /api/settings is false.
+
         Nothing is saved and the mailbox is not changed: mail is read with BODY.PEEK, so it
         stays unread and where it is. The scope is the one a cleanup check takes (one
         folder, the mail from `since` on, the newest `limit` of it, at most 2000). The body
@@ -515,6 +524,7 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: account_id | folder | since | limit | samples | body), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotAvailable' } # not_available: this build has no suggest module
         '409': { $ref: '#/components/responses/Conflict' } # account_offline, no_composer_model, anthropic_workspace_needed
         '502': { $ref: '#/components/responses/Upstream' } # model_error, mailbox_error
   /api/rules/export:
@@ -1377,6 +1387,11 @@ components:
           schema: { $ref: '#/components/schemas/ErrorBody' }
     NotFound:
       description: '`not_found`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotAvailable:
+      description: '`not_available`: this build of MailRules does not include the module that provides this route (`x-module`)'
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -2282,8 +2297,8 @@ components:
         features:
           type: object
           readOnly: true
-          description: Later-phase features the UI draws; each stays hidden until its flag is true
-          required: [digest, notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers]
+          description: Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module
+          required: [digest, notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest]
           properties:
             digest: { type: boolean }
             notifications: { type: boolean }
@@ -2292,6 +2307,7 @@ components:
             billing: { type: boolean }
             unsubscribe: { type: boolean }
             oauth_providers: { type: boolean }
+            suggest: { type: boolean, description: 'Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works' }
     SettingsPatch:
       type: object
       additionalProperties: false

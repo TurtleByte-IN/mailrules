@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
@@ -51,6 +52,11 @@ type Options struct {
 	// mail already queued is finished.
 	StartAccount func(acct store.Account)
 	StopAccount  func(accountID int64)
+	// Modules are the features compiled in from outside this repository. Their routes are
+	// served like the built-in ones, and each one's name is on in GET /api/settings
+	// features. A route of the contract that only a module provides is refused with 404
+	// not_available while no module serves it.
+	Modules []ext.Module
 }
 
 type server struct {
@@ -69,13 +75,14 @@ type route struct {
 	public       bool // reachable without a session
 }
 
-// routes is the single list of endpoints; a test keeps it in step with api/openapi.yaml.
+// routes is the single list of endpoints, the modules' included; a test keeps it in step
+// with api/openapi.yaml.
 func (s *server) routes() []route {
 	get, post, put, patch, del := http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete
 	on := func(method, path string, h http.HandlerFunc) route {
 		return route{method: method, path: path, handler: h}
 	}
-	return []route{
+	builtIn := []route{
 		{post, "/api/auth/setup", s.handleSetup, true},
 		{post, "/api/auth/login", s.handleLogin, true},
 		{post, "/api/auth/logout", s.handleLogout, true},
@@ -97,7 +104,6 @@ func (s *server) routes() []route {
 		on(post, "/api/rules/batch", s.handleRulesBatch),
 		on(post, "/api/rules/reorder", s.handleRulesReorder),
 		on(post, "/api/rules/test", s.handleRulesTest),
-		on(post, "/api/rules/suggest", s.handleRulesSuggest),
 		on(get, "/api/rules/export", s.handleRulesExport),
 		on(post, "/api/rules/import", s.handleRulesImport),
 		on(get, "/api/rules/{id}", s.handleRule),
@@ -136,6 +142,7 @@ func (s *server) routes() []route {
 		on(get, "/api/settings/anthropic-workspaces", s.handleAnthropicWorkspaces),
 		on(get, "/api/events", s.handleEvents),
 	}
+	return append(builtIn, s.moduleRoutes()...)
 }
 
 // NewHandler returns the daemon's HTTP routes.
