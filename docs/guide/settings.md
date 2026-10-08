@@ -54,6 +54,7 @@ Where to put the variables depends on how you run MailRules; see [Install](./ins
 | Variable | Flag | Default | What it does |
 | --- | --- | --- | --- |
 | `MAILRULES_COOKIE_SECURE` | `--cookie-secure` | `auto` | Send the login cookie over HTTPS only: `auto` (yes unless MailRules listens on loopback only), `true` or `false`. Set `true` behind a TLS proxy; `false` only when the UI is opened over plain HTTP on this machine, as with Docker. |
+| `MAILRULES_TRUSTED_PROXIES` | `--trusted-proxies` | none | Reverse proxies whose `X-Forwarded-For` header MailRules believes, as IP addresses or CIDR ranges separated by commas, such as `127.0.0.1,172.18.0.0/16`. Sign-in limits then count the real visitor instead of the proxy. Empty trusts no one, which is right when nothing sits in front of MailRules; never list a range that visitors can reach directly. |
 | `MAILRULES_PUBLIC_URL` | `--public-url` | `http://127.0.0.1:8080` | Where you open MailRules; links in the summary email start with it. Set it to your proxy's address, such as `https://mailrules.example.com`. |
 
 ## Summary email

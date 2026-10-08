@@ -98,7 +98,7 @@ paths:
         '401': { $ref: '#/components/responses/Error' } # invalid_credentials
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '429':
-          description: rate_limited; five failed sign-ins per minute per IP
+          description: rate_limited; five failed sign-ins per minute from one client address, or ten for one email
           headers:
             Retry-After:
               schema: { type: integer }

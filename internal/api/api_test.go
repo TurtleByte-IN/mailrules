@@ -80,6 +80,12 @@ func (e *env) Composer(ctx context.Context) (models.Generator, error) {
 // newEnv builds the daemon with the modules given, as a build that compiles them in would.
 func newEnv(t *testing.T, modules ...ext.Module) *env {
 	t.Helper()
+	return newEnvWith(t, nil, modules...)
+}
+
+// newEnvWith is newEnv with a say in the handler's options.
+func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env {
+	t.Helper()
 	ctx := t.Context()
 	db, err := store.Open(ctx, t.TempDir())
 	if err != nil {
@@ -114,7 +120,7 @@ func newEnv(t *testing.T, modules ...ext.Module) *env {
 			BackoffMin: time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 		})
 	}
-	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(Options{
+	opts := Options{
 		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Models: e, Master: master, Version: "test",
 		StartCheck: e.mgr.StartCheck, Checks: e.mgr.Checks(), Sort: e.mgr.Sort,
 		Connect: func(_ context.Context, acct store.Account, _ string) (mail.Mailbox, string, error) {
@@ -124,7 +130,11 @@ func newEnv(t *testing.T, modules ...ext.Module) *env {
 			return e.mb, acct.Username, nil
 		},
 		StartAccount: start, StopAccount: e.mgr.Stop, Modules: modules, Summary: e.summary,
-	})}
+	}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(opts)}
 	return e
 }
 
