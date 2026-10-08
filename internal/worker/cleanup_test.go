@@ -159,9 +159,6 @@ func TestManagerSortCutShort(t *testing.T) {
 	rows := checkRows(t, e.st, e.mb, id, e.sup.Account.UserID, "Old")
 
 	m := &Manager{}
-	// Stop below runs while the test holds the account, so the supervisor cannot drain mail
-	// it has queued; with the default 10 s grace the run would end after this test gives up.
-	e.sup.DrainTimeout = 50 * time.Millisecond
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m.Start(runCtx, e.sup)
@@ -172,7 +169,13 @@ func TestManagerSortCutShort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { m.Stop(id); unlock() }() // Stop cancels the account; the run then fails fast
+	// The account stops: its context ends, which is what Stop does first. Stop itself is not
+	// called here, because it waits for the supervisor, and a supervisor that has just woken
+	// for mail or a retry waits for the account this test is holding: neither would move.
+	// Only then is the account let go, and the run, taking it for its next email, finds the
+	// context ended.
+	cancel()
+	unlock()
 	eventually(t, "the run to end failed", func() bool {
 		got, err := e.st.Batch(ctx, b.ID)
 		return err == nil && got.Status == store.BatchFailed
