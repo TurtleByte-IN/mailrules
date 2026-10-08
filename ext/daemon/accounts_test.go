@@ -156,9 +156,28 @@ func TestAccountsAddListTest(t *testing.T) {
 	}()
 	waitFor(t, func() bool { return strings.Contains(watchOut.String(), "watching INBOX") })
 	srv.Append(t, "INBOX", "From: Shop <news@shop.example>\r\nSubject: Big sale\r\n\r\nSECRET-BODY-TEXT\r\n")
-	waitFor(t, func() bool {
+	unseen := 2 // the email already there, and Big sale
+	seen := func() bool {
 		return strings.Contains(watchOut.String(), `new mail uid=2 from=news@shop.example subject="Big sale"`)
-	})
+	}
+	// The test server announces new mail only to a watcher that is already idling: an email
+	// delivered between the watcher's search and the start of its IDLE is never announced
+	// (real servers report it when IDLE starts). If Big sale lands in that gap, a second
+	// delivery wakes the watcher, and its search then finds both.
+	for range 10 {
+		for range 100 {
+			if seen() {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if seen() {
+			break
+		}
+		srv.Append(t, "INBOX", "From: Nudge <nudge@shop.example>\r\nSubject: Nudge\r\n\r\nNUDGE\r\n")
+		unseen++
+	}
+	waitFor(t, seen)
 	cancel()
 	if err := <-done; err != nil {
 		t.Errorf("test --watch returned %v", err)
@@ -166,8 +185,8 @@ func TestAccountsAddListTest(t *testing.T) {
 	if got := watchOut.String(); strings.Contains(got, "SECRET-BODY-TEXT") || strings.Contains(got, "already here") {
 		t.Errorf("watch output leaked a body or reported old mail: %s", got)
 	}
-	if st, err := srv.User.Status("INBOX", &imap.StatusOptions{NumUnseen: true}); err != nil || *st.NumUnseen != 2 {
-		t.Errorf("unseen after watching = %v, %v, want 2", st.NumUnseen, err)
+	if st, err := srv.User.Status("INBOX", &imap.StatusOptions{NumUnseen: true}); err != nil || int(*st.NumUnseen) != unseen {
+		t.Errorf("unseen after watching = %v, %v, want %d", st.NumUnseen, err, unseen)
 	}
 }
 
