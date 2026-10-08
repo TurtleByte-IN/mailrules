@@ -1,0 +1,136 @@
+name: verify-release
+# Installs a published release the way users do and runs it (scripts/release-smoke.sh):
+# every archive on its own platform, the image on amd64 and arm64, and the Homebrew cask on
+# macOS and Linux. release.yml calls this before it makes the release the latest; it also
+# runs by hand against any tag, and on a pull request that changes the release machinery
+# (then against the latest release, with the cask from the tap).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag, for example v0.1.4.
+        type: string
+        required: true
+      cask-artifact:
+        description: An artifact of this run holding mailrules.rb; empty = the cask in the tap.
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag, for example v0.1.3.
+        type: string
+        required: true
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/workflows/verify-release.yml
+      - .goreleaser.yaml
+      - scripts/release-smoke.sh
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then TAG=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName); fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  archive:
+    needs: tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, platform: linux_amd64 }
+          - { runner: ubuntu-24.04-arm, platform: linux_arm64 }
+          - { runner: macos-latest, platform: darwin_arm64 }
+          - { runner: macos-15-intel, platform: darwin_amd64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          archive="mailrules_${VERSION}_${{ matrix.platform }}.tar.gz"
+          mkdir dl && cd dl
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p checksums.txt -p "$archive"
+          if command -v sha256sum >/dev/null; then sha256sum --ignore-missing -c checksums.txt; else shasum -a 256 --ignore-missing -c checksums.txt; fi
+          tar xzf "$archive"
+          ../scripts/release-smoke.sh bin ./mailrules "$VERSION"
+
+  image:
+    needs: tag
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          image="ghcr.io/turtlebyte-in/mailrules:$VERSION"
+          docker pull "$image"
+          got=$(docker run --rm "$image" version)
+          [ "$got" = "$VERSION" ] || { echo "image version $got, want $VERSION"; exit 1; }
+          # As the README runs it: read-only root filesystem, published to this host only.
+          docker run -d --name mailrules --read-only --tmpfs /tmp -p 127.0.0.1:8080:8080 \
+            -e MAILRULES_COOKIE_SECURE=false -v mailrules-data:/data "$image"
+          scripts/release-smoke.sh url http://127.0.0.1:8080 "$VERSION" || { docker logs mailrules; exit 1; }
+
+  brew:
+    needs: tag
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - if: inputs.cask-artifact != ''
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.cask-artifact }}
+          path: cask
+      - if: inputs.cask-artifact == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir cask
+          gh api repos/TurtleByte-IN/homebrew-tap/contents/Casks/mailrules.rb --jq .content | base64 --decode > cask/mailrules.rb
+      - env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
+          grep -q "version \"$VERSION\"" cask/mailrules.rb || { echo "the cask is not for $VERSION:"; cat cask/mailrules.rb; exit 1; }
+          # A local tap holding exactly this cask, so it is tried before it reaches users.
+          brew tap-new --no-git local/verify
+          mkdir -p "$(brew --repository local/verify)/Casks"
+          cp cask/mailrules.rb "$(brew --repository local/verify)/Casks/"
+          brew install --cask local/verify/mailrules
+          scripts/release-smoke.sh bin "$(command -v mailrules)" "$VERSION"
