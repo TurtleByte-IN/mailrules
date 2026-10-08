@@ -134,7 +134,15 @@ type Patch struct {
 	Keys                 map[string]string
 }
 
-// Settings reads and changes the stored settings.
+// Settings reads and changes the stored settings. Every setting belongs to a tenant: each
+// method names the tenant it reads or changes, and a tenant with nothing stored has the
+// environment's defaults.
+//
+// In MAILRULES_MODE=cloud the provider keys in the environment are the operator's: a
+// tenant's calls use one only while that tenant has no key of its own for the provider,
+// View never reports it (the key reads as not set, with no hint of where one is), and the
+// calls made with it are booked with the operator mark (store.Ledger). In selfhost mode an
+// environment key is the admin's own and is shown as set in the environment.
 type Settings struct {
 	Store  *store.Store
 	Master []byte
@@ -144,17 +152,76 @@ type Settings struct {
 	// user types it.
 	Workspaces WorkspaceFinder
 
-	mu        sync.Mutex
-	print     string // the stored settings the cached routers were built from
-	built     bool
-	cfg       config.Config // the configuration in force when the routers were built
-	router    *models.Router
-	overrides map[string]*models.Router // per-rule model overrides, by decider spec; nil = cannot be built
-	minCon    float64
+	mu      sync.Mutex
+	tenants map[int64]*routers // the routers built for each tenant, kept until its rows change
 
 	// lookupMu keeps the workspace lookups, and changes to the key and the workspace,
 	// one at a time, so a lookup for a key that is being replaced stores nothing stale.
 	lookupMu sync.Mutex
+}
+
+// routers are the routers built for one tenant from its stored settings.
+type routers struct {
+	print     string        // the stored settings they were built from
+	cfg       config.Config // the configuration in force when they were built
+	router    *models.Router
+	overrides map[string]*models.Router // per-rule model overrides, by decider spec; nil = cannot be built
+	minCon    float64
+}
+
+// cloud reports whether environment keys are the operator's (MAILRULES_MODE=cloud).
+func (s *Settings) cloud() bool { return s.Env.Mode == "cloud" }
+
+// usageKeys are the keys a call to each provider (models.Usage.Provider) is made with.
+var usageKeys = map[string][]string{
+	"anthropic":  {"anthropic_api_key"},
+	"openai":     {"openai_api_key"},
+	"openrouter": {"openrouter_api_key"},
+	"cloudflare": {"cloudflare_account_id", "cloudflare_api_token"},
+}
+
+// operatorKey reports whether the provider key name in force for a tenant, whose stored
+// rows are rows, is the operator's: cloud mode, none stored by the tenant, one in the
+// environment.
+func (s *Settings) operatorKey(rows map[string]string, name string) bool {
+	if !s.cloud() || keyFields[name] == nil || *keyFields[name](s.Env) == "" {
+		return false
+	}
+	stored, ok := rows[keyPrefix+name]
+	if ok {
+		_, err := s.open(name, stored)
+		ok = !errors.Is(err, crypto.ErrDecrypt) // one the master key cannot open is not set
+	}
+	return !ok
+}
+
+// operator says, for the tenant whose stored rows are rows, which providers' calls go out
+// on an operator key.
+func (s *Settings) operator(rows map[string]string) func(provider string) bool {
+	return func(provider string) bool {
+		for _, name := range usageKeys[provider] {
+			if s.operatorKey(rows, name) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// ledger books a tenant's model calls, marking those made on an operator key.
+func (s *Settings) ledger(tenantID int64, rows map[string]string) store.Ledger {
+	return store.Ledger{Store: s.Store, TenantID: tenantID, Operator: s.operator(rows)}
+}
+
+// Ledger books a tenant's model calls made outside a router (the rule composer, a module),
+// marking those made on an operator key as the tenant's settings stand now.
+func (s *Settings) Ledger(ctx context.Context, tenantID int64) store.Ledger {
+	rows, err := s.Store.Settings(ctx, tenantID)
+	if err != nil {
+		slog.WarnContext(ctx, "could not read settings to book model usage", "error", err.Error())
+		rows = map[string]string{}
+	}
+	return s.ledger(tenantID, rows)
 }
 
 // ErrNoComposer means no generative model is configured for the rule composer.
@@ -267,11 +334,11 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 	return cfg, o, nil
 }
 
-// Effective returns the configuration in force: the environment with the stored settings
-// laid over it. It holds decrypted provider keys, so it is for building model adapters,
-// never for showing.
-func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
-	rows, err := s.Store.Settings(ctx)
+// Effective returns the tenant's configuration in force: the environment with the
+// tenant's stored settings laid over it. It holds decrypted provider keys, so it is for
+// building model adapters, never for showing.
+func (s *Settings) Effective(ctx context.Context, tenantID int64) (config.Config, error) {
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -281,6 +348,9 @@ func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
 
 func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
+	if s.operatorKey(rows, "anthropic_api_key") {
+		l = workspaceLookup{} // learnt about the operator's key: not the tenant's to see
+	}
 	reason := models.FallbackSkipped(&cfg, cfg.DeciderSpec())
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
 		FallbackActive: cfg.FallbackModel != "" && reason == models.FallbackNotSkipped, FallbackNote: fallbackNote(cfg.FallbackModel, reason),
@@ -289,6 +359,9 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 		OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
 		Keys: map[string]string{}, Warnings: append(warnings(cfg), workspaceWarning(cfg, l)...),
 		AnthropicWorkspaceID: cfg.AnthropicWorkspaceID, AnthropicWorkspaceFound: l.Found != "" && l.Found == cfg.AnthropicWorkspaceID}
+	if s.operatorKey(rows, "anthropic_api_key") && cfg.AnthropicWorkspaceID == s.Env.AnthropicWorkspaceID {
+		v.AnthropicWorkspaceID = "" // the operator's workspace, set in the environment
+	}
 	for _, w := range l.Workspaces {
 		if w.ID == cfg.AnthropicWorkspaceID {
 			v.AnthropicWorkspaceName = w.Name
@@ -304,7 +377,7 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 		switch {
 		case hasRow:
 			v.Keys[name] = KeyStored
-		case *field(s.Env) != "":
+		case *field(s.Env) != "" && !s.cloud(): // in cloud mode it is the operator's, never shown
 			v.Keys[name] = KeyEnvironment
 		default:
 			v.Keys[name] = KeyNone
@@ -375,9 +448,9 @@ func composerMissing(cfg config.Config) *ComposerMissing {
 	return nil
 }
 
-// View returns the settings in force.
-func (s *Settings) View(ctx context.Context) (View, error) {
-	rows, err := s.Store.Settings(ctx)
+// View returns the tenant's settings in force.
+func (s *Settings) View(ctx context.Context, tenantID int64) (View, error) {
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		return View{}, err
 	}
@@ -399,12 +472,12 @@ var resettable = []string{"dry_run", "decider", "decider_model", "fallback_model
 // leave_own_mail for every email, and Live rebuilds the router.
 // A Claude key saved or replaced forgets what was learnt about the old one's workspace,
 // and a workspace MailRules found for it; then, with no workspace set, it is looked up.
-func (s *Settings) Apply(ctx context.Context, p Patch) error {
+func (s *Settings) Apply(ctx context.Context, tenantID int64, p Patch) error {
 	s.lookupMu.Lock()
-	newKey, err := s.apply(ctx, p)
+	newKey, err := s.apply(ctx, tenantID, p)
 	s.lookupMu.Unlock()
 	if err == nil && newKey {
-		if _, err := s.LookupWorkspaces(ctx); err != nil && ctx.Err() == nil {
+		if _, err := s.LookupWorkspaces(ctx, tenantID); err != nil && ctx.Err() == nil {
 			slog.WarnContext(ctx, "could not look up the Anthropic workspace", "error", err.Error())
 		}
 	}
@@ -413,8 +486,8 @@ func (s *Settings) Apply(ctx context.Context, p Patch) error {
 
 // apply is Apply under lookupMu. newKey reports that a Claude key was saved while no
 // workspace is set, so its workspace is to be looked up.
-func (s *Settings) apply(ctx context.Context, p Patch) (newKey bool, err error) {
-	rows, err := s.Store.Settings(ctx)
+func (s *Settings) apply(ctx context.Context, tenantID int64, p Patch) (newKey bool, err error) {
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		return false, err
 	}
@@ -527,23 +600,32 @@ func (s *Settings) apply(ctx context.Context, p Patch) (newKey bool, err error) 
 	if err := cfg.Validate(); err != nil { // whatever config.Validate learns to check later
 		return false, &Invalid{"", "These settings cannot be used together: " + err.Error() + "."}
 	}
-	return newKey, s.Store.SetSettings(ctx, set)
+	return newKey, s.Store.SetSettings(ctx, tenantID, set)
 }
 
-// Live returns the decision router and the act threshold for the settings as stored right
-// now; pipeline.Pipeline.Live is this method. The router is rebuilt only when a stored
-// setting has changed since the last call, whoever changed it, so a save in the browser
-// reaches the next email without a restart. router is nil while the decider lacks its key.
-func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfidence float64) {
+// Live returns the tenant's decision router and act threshold for its settings as stored
+// right now; pipeline.Pipeline.Live is this method. The router is rebuilt only when one
+// of the tenant's stored settings has changed since the last call, whoever changed it, so
+// a save in the browser reaches the next email without a restart. router is nil while the
+// decider lacks its key.
+func (s *Settings) Live(ctx context.Context, tenantID int64) (router *models.Router, minConfidence float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.Store.Settings(ctx)
+	t, _ := s.live(ctx, tenantID)
+	if t == nil {
+		return nil, s.Env.MinConfidence
+	}
+	return t.router, t.minCon
+}
+
+// live is Live under mu: the tenant's routers, rebuilt when its rows changed. It is nil
+// when the settings cannot be read and nothing was built before.
+func (s *Settings) live(ctx context.Context, tenantID int64) (*routers, map[string]string) {
+	t := s.tenants[tenantID]
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read settings; keeping the last ones", "error", err.Error())
-		if !s.built {
-			return nil, s.Env.MinConfidence
-		}
-		return s.router, s.minCon
+		return t, nil
 	}
 	keys := make([]string, 0, len(rows))
 	for k := range rows {
@@ -554,29 +636,32 @@ func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfiden
 	for _, k := range keys {
 		b.WriteString(k + "\x00" + rows[k] + "\x00")
 	}
-	if s.built && b.String() == s.print {
-		return s.router, s.minCon
+	if t != nil && b.String() == t.print {
+		return t, rows
 	}
 	cfg, _, err := s.effective(rows)
 	if err != nil {
 		slog.WarnContext(ctx, "stored settings cannot be used; mail that needs a model waits in Needs review", "error", err.Error())
 		cfg = *s.Env
 	}
-	s.router, s.overrides, s.cfg = nil, map[string]*models.Router{}, cfg
+	t = &routers{print: b.String(), cfg: cfg, overrides: map[string]*models.Router{}, minCon: cfg.MinConfidence}
 	if ready := cfg.DeciderReady(); ready != nil {
-		slog.WarnContext(ctx, "no decision model yet; new mail that needs one waits in Needs review until it is set", "missing", ready.Error())
-	} else if s.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(), s.Store); err != nil {
-		slog.WarnContext(ctx, "could not set up the decision model", "error", err.Error())
-		s.router = nil
+		slog.WarnContext(ctx, "no decision model yet; new mail that needs one waits in Needs review until it is set", "tenant", tenantID, "missing", ready.Error())
+	} else if t.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(tenantID), s.ledger(tenantID, rows)); err != nil {
+		slog.WarnContext(ctx, "could not set up the decision model", "tenant", tenantID, "error", err.Error())
+		t.router = nil
 	}
-	if s.router != nil {
+	if t.router != nil {
 		// One line each time the settings change, not per email: this runs only on a rebuild.
 		if note := fallbackNote(cfg.FallbackModel, models.FallbackSkipped(&cfg, cfg.DeciderSpec())); note != "" {
-			slog.WarnContext(ctx, "fallback model is not active, so low-confidence decisions are not double-checked", "fallback_model", cfg.FallbackModel, "reason", strings.TrimPrefix(note, "Not active: "))
+			slog.WarnContext(ctx, "fallback model is not active, so low-confidence decisions are not double-checked", "tenant", tenantID, "fallback_model", cfg.FallbackModel, "reason", strings.TrimPrefix(note, "Not active: "))
 		}
 	}
-	s.print, s.built, s.minCon = b.String(), true, cfg.MinConfidence
-	return s.router, s.minCon
+	if s.tenants == nil {
+		s.tenants = map[int64]*routers{}
+	}
+	s.tenants[tenantID] = t
+	return t, rows
 }
 
 // CheckModel says, in a sentence, what is wrong with a rule's model override, or "" when it
@@ -596,52 +681,56 @@ func CheckModel(spec string) string {
 	return ""
 }
 
-// RouterFor returns the router for a rule's model override (a decider spec, see
-// CheckModel), built from the settings in force and kept until they change. It is nil
-// when that decider cannot be used, for example because its key is not set; the caller
+// RouterFor returns the tenant's router for a rule's model override (a decider spec, see
+// CheckModel), built from the tenant's settings in force and kept until they change. It is
+// nil when that decider cannot be used, for example because its key is not set; the caller
 // then decides with the default router. pipeline.Pipeline.Override is this method.
-func (s *Settings) RouterFor(ctx context.Context, spec string) *models.Router {
-	s.Live(ctx) // rebuilds, and forgets the overrides, when a stored setting changed
+func (s *Settings) RouterFor(ctx context.Context, tenantID int64, spec string) *models.Router {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r, ok := s.overrides[spec]; ok {
+	t, rows := s.live(ctx, tenantID) // rebuilds, and forgets the overrides, when a stored setting changed
+	if t == nil {
+		return nil
+	}
+	if r, ok := t.overrides[spec]; ok {
 		return r
 	}
-	r, err := models.NewRouter(&s.cfg, spec, s.deps(), s.Store)
+	if rows == nil { // the settings could not be read just now: book as the last build did
+		rows = map[string]string{}
+	}
+	r, err := models.NewRouter(&t.cfg, spec, s.deps(tenantID), s.ledger(tenantID, rows))
 	if err != nil {
 		slog.WarnContext(ctx, "a rule's model cannot be used; the default decides instead", "model", spec, "error", err.Error())
 		r = nil
 	}
-	if s.overrides == nil {
-		s.overrides = map[string]*models.Router{}
-	}
-	s.overrides[spec] = r
+	t.overrides[spec] = r
 	return r
 }
 
-// Composer returns the generative model the rule composer writes rules with: composer_model
-// as config.SplitComposerModel reads it, on Anthropic, an OpenAI-compatible endpoint or
-// Ollama. Until that provider has its key or URL it is a *ComposerMissing, which is
-// ErrNoComposer.
-func (s *Settings) Composer(ctx context.Context) (models.Generator, error) {
-	cfg, err := s.Effective(ctx)
+// Composer returns the generative model the tenant's rule composer writes rules with:
+// composer_model as config.SplitComposerModel reads it, on Anthropic, an
+// OpenAI-compatible endpoint or Ollama. Until that provider has its key or URL it is a
+// *ComposerMissing, which is ErrNoComposer. Its calls are booked by the caller, through
+// Ledger.
+func (s *Settings) Composer(ctx context.Context, tenantID int64) (models.Generator, error) {
+	cfg, err := s.Effective(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	if m := composerMissing(cfg); m != nil {
 		return nil, m
 	}
-	gen, err := models.NewGenerator(&cfg, cfg.ComposerModel, s.deps())
+	gen, err := models.NewGenerator(&cfg, cfg.ComposerModel, s.deps(tenantID))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoComposer, err)
 	}
 	return gen, nil
 }
 
-// RetentionDays returns the retention_days setting in force: how long message snippets
-// are kept. When the settings cannot be read it is the default.
-func (s *Settings) RetentionDays(ctx context.Context) int {
-	v, err := s.View(ctx)
+// RetentionDays returns the tenant's retention_days setting in force: how long message
+// snippets are kept. When the settings cannot be read it is the default.
+func (s *Settings) RetentionDays(ctx context.Context, tenantID int64) int {
+	v, err := s.View(ctx, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read the retention setting; using the default", "error", err.Error())
 		return DefaultRetentionDays

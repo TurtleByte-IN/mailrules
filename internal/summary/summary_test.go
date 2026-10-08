@@ -53,7 +53,7 @@ func newFixture(t *testing.T) *fixture {
 		name string
 		dst  *int64
 	}{{"Receipts", &f.receipts}, {"Scams", &f.scams}} {
-		saved, err := f.st.CreateRule(ctx, rules.Rule{UserID: f.user.ID, Name: r.name, Actions: []rules.Action{{Type: rules.ActMove, Folder: r.name}}, Priority: 1, Enabled: true}, 1)
+		saved, err := f.st.CreateRule(ctx, 1, rules.Rule{UserID: f.user.ID, Name: r.name, Actions: []rules.Action{{Type: rules.ActMove, Folder: r.name}}, Priority: 1, Enabled: true}, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,7 +170,7 @@ func TestBuild(t *testing.T) {
 			for _, e := range tt.emails(f) {
 				f.add(t, e)
 			}
-			c, err := build(t.Context(), f.st, f.user.ID, tuesday8.Add(-24*time.Hour), tuesday8, false)
+			c, err := build(t.Context(), f.st, f.user.Viewer(), tuesday8.Add(-24*time.Hour), tuesday8, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -214,7 +214,7 @@ func TestBuildCapsTheLists(t *testing.T) {
 	for range maxReview + 2 {
 		f.add(t, email{from: "r@x.example", subject: "Which?", state: store.StateReview, at: in})
 	}
-	c, err := build(t.Context(), f.st, f.user.ID, tuesday8.Add(-24*time.Hour), tuesday8, false)
+	c, err := build(t.Context(), f.st, f.user.Viewer(), tuesday8.Add(-24*time.Hour), tuesday8, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func newService(f *fixture, sender mailer.Sender, ck *clockAt) *Service {
 
 func (f *fixture) switchOn(t *testing.T, s Settings) {
 	t.Helper()
-	if err := save(t.Context(), f.st, s); err != nil {
+	if err := save(t.Context(), f.st, 1, s); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -659,17 +659,17 @@ func TestPrepareStoresNothingUntilCommit(t *testing.T) {
 	f := newFixture(t)
 	svc := newService(f, &mailertest.Sender{}, &clockAt{tuesday8})
 	on := true
-	commit, err := svc.Prepare(t.Context(), Patch{Enabled: &on})
+	commit, err := svc.Prepare(t.Context(), 1, Patch{Enabled: &on})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := load(t.Context(), f.st); s.Enabled {
+	if s, _ := load(t.Context(), f.st, 1); s.Enabled {
 		t.Fatal("stored before commit")
 	}
 	if err := commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := load(context.Background(), f.st); !s.Enabled || s.EnabledAt != tuesday8.Unix() {
+	if s, _ := load(context.Background(), f.st, 1); !s.Enabled || s.EnabledAt != tuesday8.Unix() {
 		t.Fatalf("after commit: %+v", s)
 	}
 }

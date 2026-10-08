@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
 // senderWindow is how far back the Senders screen counts mail, in seconds.
@@ -34,12 +35,12 @@ type senderJSON struct {
 // with a rule, counted over its addresses.
 // ponytail: built in memory on every call; one user's 30 days are a few thousand
 // addresses. Page in SQL if the Senders screen gets slow.
-func (s *server) senders(ctx context.Context, userID int64) ([]senderJSON, error) {
-	seen, err := s.store.SendersSeen(ctx, userID, s.now().Unix()-senderWindow)
+func (s *server) senders(ctx context.Context, v store.Viewer) ([]senderJSON, error) {
+	seen, err := s.store.SendersSeen(ctx, v, s.now().Unix()-senderWindow)
 	if err != nil {
 		return nil, err
 	}
-	srs, err := s.store.SenderRules(ctx, userID)
+	srs, err := s.store.SenderRules(ctx, v.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +95,7 @@ func (s *server) handleSenders(w http.ResponseWriter, r *http.Request) {
 			*dst = n
 		}
 	}
-	all, err := s.senders(r.Context(), user(r).ID)
+	all, err := s.senders(r.Context(), viewer(r))
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -163,7 +164,7 @@ func (s *server) handleSenderPut(w http.ResponseWriter, r *http.Request) {
 			invalid(w, "rule_id", "Say which rule the sender's mail goes to.")
 			return
 		}
-		if _, err := s.store.Rule(r.Context(), user(r).ID, *in.RuleID); err != nil {
+		if _, err := s.store.Rule(r.Context(), viewer(r).TenantID, *in.RuleID); err != nil {
 			invalid(w, "rule_id", "No such rule.")
 			return
 		}
@@ -172,11 +173,11 @@ func (s *server) handleSenderPut(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "verdict", "The verdict is route, keep or block.")
 		return
 	}
-	if _, err := s.store.PutSenderRule(r.Context(), sr, s.now().Unix()); err != nil {
+	if _, err := s.store.PutSenderRule(r.Context(), viewer(r).TenantID, sr, s.now().Unix()); err != nil {
 		internalError(w, r, err)
 		return
 	}
-	all, err := s.senders(r.Context(), user(r).ID)
+	all, err := s.senders(r.Context(), viewer(r))
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -191,7 +192,7 @@ func (s *server) handleSenderDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteSenderRule(r.Context(), user(r).ID, matchType, value); err != nil {
+	if err := s.store.DeleteSenderRule(r.Context(), viewer(r).TenantID, matchType, value); err != nil {
 		internalError(w, r, err)
 		return
 	}

@@ -187,7 +187,7 @@ func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, r
 			slog.ErrorContext(ctx, "could not record cleanup sort progress", "account", acct.ID, "batch", batchID, "error", err.Error())
 			return
 		}
-		s.Hub.Publish(events.BatchProgress, b)
+		s.Hub.Publish(acct.TenantID, acct.ID, events.BatchProgress, b)
 		if status != "" {
 			slog.InfoContext(ctx, "cleanup sort finished", "account", acct.ID, "batch", batchID, "status", status,
 				"handled", total.handled, "of", len(rows), "skipped", total.skipped, "duration_ms", time.Since(began).Milliseconds())

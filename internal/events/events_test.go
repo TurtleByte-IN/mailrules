@@ -12,11 +12,11 @@ func ids(evs []Event) []int64 {
 
 func TestHubReplayAndLive(t *testing.T) {
 	var none *Hub
-	none.Publish(UsageUpdated, nil) // a nil hub drops events
+	none.Publish(1, 0, UsageUpdated, nil) // a nil hub drops events
 
 	h := NewHub()
 	for i := range 5 {
-		h.Publish(MessageProcessed, i)
+		h.Publish(1, 0, MessageProcessed, i)
 	}
 	tests := []struct {
 		name   string
@@ -39,8 +39,8 @@ func TestHubReplayAndLive(t *testing.T) {
 	}
 
 	missed, live, cancel := h.Subscribe(4)
-	h.Publish(MessageReview, "six")
-	if ev := <-live; len(missed) != 1 || missed[0].ID != 5 || ev.ID != 6 || ev.Name != MessageReview || ev.Data != "six" {
+	h.Publish(2, 7, MessageReview, "six")
+	if ev := <-live; len(missed) != 1 || missed[0].ID != 5 || ev.ID != 6 || ev.Name != MessageReview || ev.Data != "six" || ev.TenantID != 2 || ev.AccountID != 7 {
 		t.Errorf("missed = %v, live = %+v", ids(missed), ev)
 	}
 	cancel()
@@ -48,7 +48,7 @@ func TestHubReplayAndLive(t *testing.T) {
 	if _, open := <-live; open {
 		t.Error("channel still open after cancel")
 	}
-	h.Publish(UsageUpdated, nil) // no subscriber left: must not panic
+	h.Publish(1, 0, UsageUpdated, nil) // no subscriber left: must not panic
 }
 
 func TestHubKeepsLast200AndDropsSlowSubscribers(t *testing.T) {
@@ -56,7 +56,7 @@ func TestHubKeepsLast200AndDropsSlowSubscribers(t *testing.T) {
 	_, slow, cancel := h.Subscribe(0)
 	defer cancel()
 	for range Keep + subBuffer + 50 {
-		h.Publish(MessageProcessed, nil)
+		h.Publish(1, 0, MessageProcessed, nil)
 	}
 	missed, _, cancel2 := h.Subscribe(1)
 	defer cancel2()

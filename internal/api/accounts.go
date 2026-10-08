@@ -45,6 +45,8 @@ type accountJSON struct {
 	CanMove      bool     `json:"can_move"`
 	FolderCount  int      `json:"folder_count"`
 	CreatedAt    int64    `json:"created_at"`
+	Shared       bool     `json:"shared"` // everyone in the tenant sees it
+	Mine         bool     `json:"mine"`   // the viewer owns it, so may manage it
 }
 
 type folderJSON struct {
@@ -53,10 +55,12 @@ type folderJSON struct {
 	SpecialUse string `json:"special_use"`
 }
 
-func (s *server) accountJSON(ctx context.Context, a store.Account) accountJSON {
+// accountJSON shapes an account as v sees it.
+func (s *server) accountJSON(ctx context.Context, v store.Viewer, a store.Account) accountJSON {
 	out := accountJSON{ID: a.ID, Label: a.Label, Preset: a.Preset, Host: a.Host, Port: a.Port, TLSMode: a.TLSMode,
 		Username: a.Username, WatchFolder: a.WatchFolder, Status: a.Status, LastError: a.LastError,
-		LastEventAt: ts(a.LastEventAt), Capabilities: append([]string{}, a.Capabilities...), CreatedAt: a.CreatedAt}
+		LastEventAt: ts(a.LastEventAt), Capabilities: append([]string{}, a.Capabilities...), CreatedAt: a.CreatedAt,
+		Shared: a.Shared, Mine: a.UserID == v.UserID}
 	for _, c := range a.Capabilities {
 		out.CanMove = out.CanMove || c == "MOVE" || c == "UIDPLUS"
 	}
@@ -205,9 +209,10 @@ func (s *server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 
 // handleStoredAccountTest checks a connected account's stored login on a connection of its
 // own, opened for this and closed again. The account's watcher is not touched: its
-// connection, its status and what it is doing stay as they are.
+// connection, its status and what it is doing stay as they are. It uses the owner's stored
+// password, so only the owner may.
 func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.account(w, r)
+	a, ok := s.ownAccount(w, r)
 	if !ok {
 		return
 	}
@@ -226,14 +231,15 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
-	accounts, err := s.store.Accounts(r.Context())
+	v := viewer(r)
+	accounts, err := s.store.VisibleAccounts(r.Context(), v)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
 	out := make([]accountJSON, len(accounts))
 	for i, a := range accounts {
-		out[i] = s.accountJSON(r.Context(), a)
+		out[i] = s.accountJSON(r.Context(), v, a)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -255,7 +261,10 @@ func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	existing, err := s.store.Accounts(ctx)
+	// A mailbox connected twice in one tenant would be sorted twice by the same rules, so
+	// the check spans the tenant, teammates' private mailboxes included. What it finds is
+	// only ever this refusal, never the other mailbox.
+	existing, err := s.store.TenantAccounts(ctx, viewer(r).TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -279,42 +288,30 @@ func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.StartAccount(acct)
-	writeJSON(w, http.StatusCreated, map[string]any{"account": s.accountJSON(ctx, acct)})
-}
-
-// account loads the account a path names, answering 404 itself.
-func (s *server) account(w http.ResponseWriter, r *http.Request) (store.Account, bool) {
-	id, ok := pathID(w, r, "id", "account")
-	if !ok {
-		return store.Account{}, false
-	}
-	a, err := s.store.Account(r.Context(), id)
-	if err != nil {
-		fail(w, r, err, "account")
-		return store.Account{}, false
-	}
-	return a, true
+	writeJSON(w, http.StatusCreated, map[string]any{"account": s.accountJSON(ctx, viewer(r), acct)})
 }
 
 func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
-	if a, ok := s.account(w, r); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(r.Context(), a)})
+	if a, ok := s.visibleAccount(w, r); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(r.Context(), viewer(r), a)})
 	}
 }
 
-// handleAccountPatch edits the label, the watched folder, the app password, or pauses and
-// resumes the account. Anything but the label restarts the account's supervisor, so the
-// change is in force when the response arrives.
+// handleAccountPatch edits the label, the watched folder, the app password, whether the
+// account is shared with the tenant, or pauses and resumes the account. Only the owner may:
+// to anyone else the account answers as missing. A change of folder, password or pause
+// restarts the account's supervisor, so the change is in force when the response arrives.
 func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	a, ok := s.account(w, r)
+	a, ok := s.ownAccount(w, r)
 	if !ok {
 		return
 	}
 	var password string
-	paused := a.Status == worker.StatusPaused
+	paused, shared := a.Status == worker.StatusPaused, a.Shared
 	wasPaused, oldFolder := paused, a.WatchFolder
-	sent, ok := readPatch(w, r, map[string]any{"label": &a.Label, "watch_folder": &a.WatchFolder, "password": &password, "paused": &paused})
+	sent, ok := readPatch(w, r, map[string]any{"label": &a.Label, "watch_folder": &a.WatchFolder, "password": &password,
+		"paused": &paused, "shared": &shared})
 	if !ok {
 		return
 	}
@@ -344,6 +341,11 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	if err == nil && sent["password"] {
 		err = s.store.SetAccountSecret(ctx, s.Master, a.ID, password)
 	}
+	if err == nil && shared != a.Shared {
+		if err = s.store.SetAccountShared(ctx, a.ID, shared); err == nil {
+			a.Shared = shared
+		}
+	}
 	if err != nil {
 		fail(w, r, err, "account")
 		return
@@ -351,12 +353,14 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	if restart && !paused {
 		s.StartAccount(a)
 	}
-	s.Hub.Publish(events.AccountStatus, a)
-	writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(ctx, a)})
+	s.publish(r, a.ID, events.AccountStatus, a)
+	writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(ctx, viewer(r), a)})
 }
 
+// handleAccountDelete removes a mailbox and everything MailRules kept of it. Only its
+// owner may.
 func (s *server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.account(w, r)
+	a, ok := s.ownAccount(w, r)
 	if !ok {
 		return
 	}
@@ -371,15 +375,16 @@ func (s *server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 			"rule_id", rule.ID, "rule", rule.Name, "switched_off", rule.MailboxRemoved)
 	}
 	if len(changed) > 0 {
-		s.Hub.Publish(events.RulesChanged, nil)
+		s.publish(r, 0, events.RulesChanged, nil)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleAccountReconnect drops the account's connection and connects again, which is also
-// how an account that stopped on wrong credentials or a TLS failure is started again.
+// how an account that stopped on wrong credentials or a TLS failure is started again. Only
+// its owner may.
 func (s *server) handleAccountReconnect(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.account(w, r)
+	a, ok := s.ownAccount(w, r)
 	if !ok {
 		return
 	}
@@ -388,11 +393,11 @@ func (s *server) handleAccountReconnect(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.StartAccount(a)
-	writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(r.Context(), a)})
+	writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(r.Context(), viewer(r), a)})
 }
 
 func (s *server) handleAccountFolders(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.account(w, r)
+	a, ok := s.visibleAccount(w, r)
 	if !ok {
 		return
 	}

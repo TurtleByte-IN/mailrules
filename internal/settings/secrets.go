@@ -41,23 +41,25 @@ func CheckSecrets(ctx context.Context, st *store.Store, master []byte) (SecretsC
 			return c, fmt.Errorf("check stored secrets: %w", err)
 		}
 	}
-	rows, err := st.Settings(ctx)
+	tenants, err := st.SettingsLike(ctx, keyPrefix) // every tenant's stored provider keys
 	if err != nil {
 		return c, fmt.Errorf("check stored secrets: %w", err)
 	}
 	s := &Settings{Master: master}
-	for key, stored := range rows {
-		name, ok := strings.CutPrefix(key, keyPrefix)
-		if !ok {
-			continue
-		}
-		c.Total++
-		if master == nil {
-			c.Unreadable++
-		} else if _, err := s.open(name, stored); err != nil {
-			// A row that cannot be opened for any reason, a wrong key or a damaged value,
-			// is one the key does not protect.
-			c.Unreadable++
+	for _, rows := range tenants {
+		for key, stored := range rows {
+			name, ok := strings.CutPrefix(key, keyPrefix)
+			if !ok {
+				continue
+			}
+			c.Total++
+			if master == nil {
+				c.Unreadable++
+			} else if _, err := s.open(name, stored); err != nil {
+				// A row that cannot be opened for any reason, a wrong key or a damaged value,
+				// is one the key does not protect.
+				c.Unreadable++
+			}
 		}
 	}
 	return c, nil

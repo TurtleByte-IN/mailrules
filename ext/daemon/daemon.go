@@ -146,7 +146,9 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 	deps := models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}
 	sett := &settings.Settings{Store: st, Master: master, Env: cfg, Deps: deps,
 		Workspaces: models.AnthropicWorkspaces{Deps: deps}} // finds the workspace a Claude key that covers a whole organisation needs
-	sett.Live(ctx) // logs now if the decider is not ready, rather than at the first email
+	// Logs now if self-host's decider is not ready, rather than at the first email. Another
+	// tenant's settings are read when its first email arrives.
+	sett.Live(ctx, store.SelfHostTenant)
 
 	// One supervisor per account. They stop with ctx and get a few seconds to finish
 	// queued mail; the database closes only after they have.
@@ -194,7 +196,7 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		defer close(watching)
 		watcher.Run(ctx, accountPollInterval)
 	}()
-	dryRun, err := st.DryRun(ctx, cfg.DryRun)
+	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
 		return err
 	}
@@ -276,12 +278,19 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 		return err
 	}
 	st := store.New(db)
+	// The command line acts for the first user, in that user's tenant (self-host's one).
+	tenant := store.SelfHostTenant
+	if u, err := st.FirstUser(ctx); err == nil {
+		tenant = u.TenantID
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
 	if len(args) == 1 {
-		if err := st.SetDryRun(ctx, args[0] == "on"); err != nil {
+		if err := st.SetDryRun(ctx, tenant, args[0] == "on"); err != nil {
 			return err
 		}
 	}
-	on, err := st.DryRun(ctx, cfg.DryRun)
+	on, err := st.DryRun(ctx, tenant, cfg.DryRun)
 	if err != nil {
 		return err
 	}

@@ -263,7 +263,7 @@ func TestOpenMasterKeyOnlyAProviderKeyStored(t *testing.T) {
 	dir, st := emptyStore(t)
 	// A provider key entered in the browser while the install had another key.
 	sett := &settings.Settings{Store: st, Master: testKey(1), Env: loadCfg(t, dir, nil)}
-	if err := sett.Apply(t.Context(), settings.Patch{Keys: map[string]string{"openrouter_api_key": "sk-or-secret"}}); err != nil {
+	if err := sett.Apply(t.Context(), store.SelfHostTenant, settings.Patch{Keys: map[string]string{"openrouter_api_key": "sk-or-secret"}}); err != nil {
 		t.Fatal(err)
 	}
 	// There is no master.key, so a new one would orphan it.

@@ -21,15 +21,16 @@ func mustRule(t *testing.T, s *Store, r rules.Rule) rules.Rule {
 	if r.Actions == nil {
 		r.Actions = []rules.Action{{Type: rules.ActKeep}}
 	}
-	saved, err := s.CreateRule(t.Context(), r, 100)
+	saved, err := s.CreateRule(t.Context(), SelfHostTenant, r, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return saved
 }
 
-// Removing a mailbox keeps every user's rules that name it, rewritten, in the transaction
-// that deletes it: a failed delete leaves the rules as they were.
+// Removing a mailbox keeps the tenant's rules that name it, rewritten, in the transaction
+// that deletes it: a failed delete leaves the rules as they were. Rules are tenant-owned,
+// so a teammate's rule naming the mailbox is rewritten too.
 func TestDeleteAccountKeepsRules(t *testing.T) {
 	s, db := open(t)
 	ctx := t.Context()
@@ -62,10 +63,10 @@ func TestDeleteAccountKeepsRules(t *testing.T) {
 	if _, err := s.DeleteAccount(ctx, x.ID, 500); err == nil {
 		t.Fatal("DeleteAccount went through the refusing trigger")
 	}
-	if got, _ := s.Rule(ctx, x.UserID, scoped.ID); got.AccountID != x.ID || !got.Enabled || got.MailboxRemoved || got.Version != 1 {
+	if got, _ := s.Rule(ctx, SelfHostTenant, scoped.ID); got.AccountID != x.ID || !got.Enabled || got.MailboxRemoved || got.Version != 1 {
 		t.Errorf("after a failed delete the scoped rule = %+v", got)
 	}
-	if got, _ := s.Rule(ctx, other, theirs.ID); treeJSON(t, got.Conditions) != treeJSON(t, theirs.Conditions) {
+	if got, _ := s.Rule(ctx, SelfHostTenant, theirs.ID); treeJSON(t, got.Conditions) != treeJSON(t, theirs.Conditions) {
 		t.Errorf("after a failed delete their rule = %s", treeJSON(t, got.Conditions))
 	}
 	if _, err := db.ExecContext(ctx, `DROP TRIGGER refuse`); err != nil {
@@ -96,7 +97,7 @@ func TestDeleteAccountKeepsRules(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := s.Rule(ctx, tt.user, tt.id)
+			got, err := s.Rule(ctx, SelfHostTenant, tt.id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,16 +134,16 @@ func TestReconcileRemovedMailboxes(t *testing.T) {
 	if len(changed) != 2 {
 		t.Fatalf("changed %d rules, want 2: %+v", len(changed), changed)
 	}
-	got, _ := s.Rule(ctx, a.UserID, either.ID)
+	got, _ := s.Rule(ctx, SelfHostTenant, either.ID)
 	if !got.Enabled || got.MailboxRemoved || got.Version != 2 || treeJSON(t, got.Conditions) != treeJSON(t, rules.Cond{Any: []rules.Cond{subj}}) ||
 		treeJSON(t, got.Exceptions) != treeJSON(t, either.Exceptions) {
 		t.Errorf("either = %+v", got)
 	}
-	got, _ = s.Rule(ctx, a.UserID, only.ID)
+	got, _ = s.Rule(ctx, SelfHostTenant, only.ID)
 	if got.Enabled || !got.MailboxRemoved || got.Version != 2 || treeJSON(t, got.Conditions) != treeJSON(t, rules.Cond{All: []rules.Cond{subj}}) {
 		t.Errorf("only = %+v", got)
 	}
-	if got, _ = s.Rule(ctx, a.UserID, fine.ID); got.Version != 1 {
+	if got, _ = s.Rule(ctx, SelfHostTenant, fine.ID); got.Version != 1 {
 		t.Errorf("a rule naming a connected mailbox was changed: %+v", got)
 	}
 
@@ -150,7 +151,7 @@ func TestReconcileRemovedMailboxes(t *testing.T) {
 	if err != nil || len(again) != 0 {
 		t.Errorf("a second run changed %+v, %v", again, err)
 	}
-	if got, _ = s.Rule(ctx, a.UserID, only.ID); got.Version != 2 || got.UpdatedAt != 700 {
+	if got, _ = s.Rule(ctx, SelfHostTenant, only.ID); got.Version != 2 || got.UpdatedAt != 700 {
 		t.Errorf("after a second run only = %+v", got)
 	}
 }

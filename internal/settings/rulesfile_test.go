@@ -31,7 +31,7 @@ func withMailboxes(t *testing.T, env map[string]string) (s *Settings, user store
 		{Name: "Home", Conditions: rules.Cond{All: []rules.Cond{{Field: "from_domain", Op: rules.OpEq, Value: "home.example"}}}},
 	} {
 		r.UserID, r.Priority, r.Enabled, r.Actions = user.ID, i+1, true, []rules.Action{{Type: rules.ActKeep}}
-		if _, err := s.Store.CreateRule(ctx, r, 1); err != nil {
+		if _, err := s.Store.CreateRule(ctx, 1, r, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -43,16 +43,16 @@ func TestExportRules(t *testing.T) {
 	s, user := withMailboxes(t, map[string]string{"MAILRULES_DECIDER": "clef"})
 	// A stored setting wins over the environment: the file says what is in force.
 	model := "clef-flash"
-	if err := s.Apply(ctx, Patch{DeciderModel: &model}); err != nil {
+	if err := s.Apply(ctx, 1, Patch{DeciderModel: &model}); err != nil {
 		t.Fatal(err)
 	}
 	accountRule := rules.Rule{UserID: user.ID, Name: "Not work", Priority: 3, Enabled: true, Actions: []rules.Action{{Type: rules.ActKeep}},
 		Conditions: rules.Cond{All: []rules.Cond{{Field: "account", Op: rules.OpEq, Value: 2}}},
 		Exceptions: rules.Cond{Any: []rules.Cond{{Field: "is_bulk", Op: rules.OpEq, Value: true}, {All: []rules.Cond{{Field: "account", Op: rules.OpIn, Value: []any{1, 2}}}}}}}
-	if _, err := s.Store.CreateRule(ctx, accountRule, 1); err != nil {
+	if _, err := s.Store.CreateRule(ctx, 1, accountRule, 1); err != nil {
 		t.Fatal(err)
 	}
-	f, err := s.ExportRules(ctx, user.ID)
+	f, err := s.ExportRules(ctx, user.Viewer())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +73,10 @@ func TestExportRules(t *testing.T) {
 
 	// A fallback turned off is not written.
 	off := ""
-	if err := s.Apply(ctx, Patch{FallbackModel: &off}); err != nil {
+	if err := s.Apply(ctx, 1, Patch{FallbackModel: &off}); err != nil {
 		t.Fatal(err)
 	}
-	if f, err = s.ExportRules(ctx, user.ID); err != nil || f.Defaults.FallbackModel != "" {
+	if f, err = s.ExportRules(ctx, user.Viewer()); err != nil || f.Defaults.FallbackModel != "" {
 		t.Errorf("defaults = %+v, err %v", f.Defaults, err)
 	}
 }
@@ -88,10 +88,10 @@ func TestExportRulesMailboxGone(t *testing.T) {
 	s, user := withMailboxes(t, nil)
 	gone := rules.Rule{UserID: user.ID, Name: "Gone", Priority: 3, Enabled: true, Intent: "x", Actions: []rules.Action{{Type: rules.ActKeep}},
 		Exceptions: rules.Cond{All: []rules.Cond{{Field: "account", Op: rules.OpIn, Value: []any{1, 9}}}}}
-	if _, err := s.Store.CreateRule(ctx, gone, 1); err != nil {
+	if _, err := s.Store.CreateRule(ctx, 1, gone, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ExportRules(ctx, user.ID); err == nil || !strings.Contains(err.Error(), `rule "Gone" has a condition on mailbox 9, which no longer exists`) {
+	if _, err := s.ExportRules(ctx, user.Viewer()); err == nil || !strings.Contains(err.Error(), `rule "Gone" has a condition on mailbox 9, which no longer exists`) {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -167,7 +167,7 @@ func TestPrepareImport(t *testing.T) {
 			}
 			if tt.fallbackOff {
 				off := ""
-				if err := s.Apply(ctx, Patch{FallbackModel: &off}); err != nil {
+				if err := s.Apply(ctx, 1, Patch{FallbackModel: &off}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -185,7 +185,7 @@ func TestPrepareImport(t *testing.T) {
 				t.Fatalf("the test file is wrong: %v\n%s", err, b.String())
 			}
 			parsed := jsonOf(t, f.Rules)
-			got, err := s.PrepareImport(ctx, user.ID, f)
+			got, err := s.PrepareImport(ctx, user.Viewer(), f)
 			if len(tt.problems) > 0 {
 				if err == nil {
 					t.Fatalf("accepted, want problems %q", tt.problems)
@@ -238,7 +238,7 @@ func TestPrepareImportMailboxNumber(t *testing.T) {
 	s, user := withMailboxes(t, nil)
 	f := rules.File{Rules: []rules.Rule{{Name: "New", Enabled: true, Actions: []rules.Action{{Type: rules.ActKeep}},
 		Conditions: rules.Cond{Any: []rules.Cond{{Field: "account", Op: rules.OpIn, Value: []any{"me@icloud.com", 1.0}}}}}}}
-	_, err := s.PrepareImport(t.Context(), user.ID, f)
+	_, err := s.PrepareImport(t.Context(), user.Viewer(), f)
 	var p *ImportProblem
 	if !errors.As(err, &p) || p.Path != "rules[0].match" || p.Message != `Rule 1 ("New"): `+rules.AccountByAddress {
 		t.Errorf("err = %v", err)

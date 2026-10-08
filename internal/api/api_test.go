@@ -53,23 +53,23 @@ type env struct {
 
 // Live, RouterFor and Composer make env the daemon's source of models (ModelSource), with
 // scripted fakes in place of the providers.
-func (e *env) Live(context.Context) (*models.Router, float64) {
+func (e *env) Live(_ context.Context, tenantID int64) (*models.Router, float64) {
 	if e.noDecider {
 		return nil, 0.75
 	}
-	return &models.Router{Primary: e.decider, Usage: e.st, Now: e.ck.now}, 0.75
+	return &models.Router{Primary: e.decider, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now}, 0.75
 }
 
-func (e *env) RouterFor(_ context.Context, spec string) *models.Router {
+func (e *env) RouterFor(_ context.Context, tenantID int64, spec string) *models.Router {
 	if d := e.own[spec]; d != nil {
-		return &models.Router{Primary: d, Usage: e.st, Now: e.ck.now}
+		return &models.Router{Primary: d, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now}
 	}
 	return nil
 }
 
-func (e *env) Composer(ctx context.Context) (models.Generator, error) {
+func (e *env) Composer(ctx context.Context, tenantID int64) (models.Generator, error) {
 	if e.realGen {
-		return e.sett.Composer(ctx)
+		return e.sett.Composer(ctx, tenantID)
 	}
 	if e.gen == nil {
 		return nil, settings.ErrNoComposer
@@ -754,7 +754,7 @@ func TestSettings(t *testing.T) {
 			t.Errorf("key %s reads as %v on a fresh install", name, set)
 		}
 	}
-	if router, _ := e.sett.Live(ctx); router != nil {
+	if router, _ := e.sett.Live(ctx, 1); router != nil {
 		t.Fatal("a decision model is in use before any key is set")
 	}
 
@@ -812,36 +812,36 @@ func TestSettings(t *testing.T) {
 	if v := stored["key.openrouter_api_key"]; v == "" || strings.Contains(fmt.Sprint(stored), secret) {
 		t.Fatalf("the key is missing from the settings table or stored in plain text: %v", stored)
 	}
-	if cfg, err := e.sett.Effective(ctx); err != nil || cfg.OpenRouterAPIKey != secret {
+	if cfg, err := e.sett.Effective(ctx, 1); err != nil || cfg.OpenRouterAPIKey != secret {
 		t.Fatalf("the stored key does not decrypt: %v", err)
 	}
 	// The stored key is bound to its name: moved to another row, it does not open.
-	if _, err := e.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('key.anthropic_api_key', ?)`, stored["key.openrouter_api_key"]); err != nil {
+	if _, err := e.db.ExecContext(ctx, `INSERT INTO settings (tenant_id, key, value) VALUES (1, 'key.anthropic_api_key', ?)`, stored["key.openrouter_api_key"]); err != nil {
 		t.Fatal(err)
 	}
 	// It reads as not set (a key that cannot be opened must not take the other settings down),
 	// and never as the key it holds.
-	if cfg, err := e.sett.Effective(ctx); err != nil || cfg.AnthropicAPIKey != "" {
+	if cfg, err := e.sett.Effective(ctx, 1); err != nil || cfg.AnthropicAPIKey != "" {
 		t.Errorf("a key moved to another row: effective Anthropic key %q, err %v; want it not set", cfg.AnthropicAPIKey, err)
 	}
-	if _, err := e.db.ExecContext(ctx, `DELETE FROM settings WHERE key = 'key.anthropic_api_key'`); err != nil {
+	if _, err := e.db.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = 1 AND key = 'key.anthropic_api_key'`); err != nil {
 		t.Fatal(err)
 	}
 
 	// The change is in force at once, with no restart: the next email gets a router and the new threshold.
-	router, minConfidence := e.sett.Live(ctx)
+	router, minConfidence := e.sett.Live(ctx, 1)
 	if router == nil || router.Name() != "jev" || router.Fallback != nil || router.EscalateBelow != 0.6 || minConfidence != 0.8 {
 		t.Fatalf("after the key was set: router %v, threshold %v", router, minConfidence)
 	}
-	if same, _ := e.sett.Live(ctx); same != router {
+	if same, _ := e.sett.Live(ctx, 1); same != router {
 		t.Error("the router was rebuilt although nothing changed")
 	}
-	if on, _ := e.st.DryRun(ctx, true); on {
+	if on, _ := e.st.DryRun(ctx, 1, true); on {
 		t.Error("the executor still sees dry-run on")
 	}
 	// Removing the stored key puts the environment's (none here) back in force.
 	e.call(http.MethodPatch, "/api/settings", `{"keys":{"openrouter_api_key":""}}`, http.StatusOK)
-	if router, _ := e.sett.Live(ctx); router != nil {
+	if router, _ := e.sett.Live(ctx, 1); router != nil {
 		t.Error("the decision model is still in use after its key was removed")
 	}
 }
@@ -910,8 +910,8 @@ func TestEventStream(t *testing.T) {
 	if _, status := e.stream(t, srv.URL, ""); status != http.StatusUnauthorized {
 		t.Fatalf("stream without a session = %d", status)
 	}
-	e.hub.Publish(events.UsageUpdated, nil) // event 1, before anyone listens
-	e.connect()                             // account.status events as the account goes live
+	e.hub.Publish(1, 0, events.UsageUpdated, nil) // event 1, before anyone listens
+	e.connect()                                   // account.status events as the account goes live
 	e.call(http.MethodPost, "/api/rules/import", rulesYAML, http.StatusOK)
 	published := 0
 	missed, _, cancel := e.hub.Subscribe(-1)
@@ -961,7 +961,7 @@ func TestEventStream(t *testing.T) {
 		}
 	}
 	// And then goes on live.
-	e.hub.Publish(events.UsageUpdated, nil)
+	e.hub.Publish(1, 0, events.UsageUpdated, nil)
 	if eventID, name, _ := next(t, replay); eventID != fmt.Sprint(published+4) || name != events.UsageUpdated {
 		t.Errorf("after the replay: id %s %s", eventID, name)
 	}

@@ -182,7 +182,7 @@ func TestNoExpungeBeyondTheMovedMessage(t *testing.T) {
 			if err := srv.User.Create("Trash", nil); err != nil {
 				t.Fatal(err)
 			}
-			if err := e.st.SetTrashToFolder(ctx, tc.toOwn); err != nil {
+			if err := e.st.SetTrashToFolder(ctx, 1, tc.toOwn); err != nil {
 				t.Fatal(err)
 			}
 			if e.raw.Capabilities().Move {
@@ -243,7 +243,7 @@ func trashEnv(t *testing.T, toOwn bool) (*env, *imaptest.Server) {
 			t.Fatal(err)
 		}
 	}
-	if err := e.st.SetTrashToFolder(t.Context(), toOwn); err != nil {
+	if err := e.st.SetTrashToFolder(t.Context(), 1, toOwn); err != nil {
 		t.Fatal(err)
 	}
 	return e, srv
@@ -299,7 +299,7 @@ func TestTrashToFolder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e, srv := trashEnv(t, tt.toOwn)
 			ctx := t.Context()
-			if err := e.st.SetDryRun(ctx, tt.dry); err != nil {
+			if err := e.st.SetDryRun(ctx, 1, tt.dry); err != nil {
 				t.Fatal(err)
 			}
 			srv.RefuseCreate(tt.refuse)
@@ -352,7 +352,7 @@ func TestTrashToFolderMadeOnceAndUndone(t *testing.T) {
 		t.Errorf("record = %+v", recs[0])
 	}
 	for _, d := range []DecisionRecord{second, first} {
-		if _, u, why, err := e.x.UndoMessage(ctx, d.MessageID); err != nil || why != nil || u.Actions != 1 {
+		if _, u, why, err := e.x.UndoMessage(ctx, e.user.Viewer(), d.MessageID); err != nil || why != nil || u.Actions != 1 {
 			t.Fatalf("undo: %+v, %v, %v", u, why, err)
 		}
 		if ref, _ := e.where(d.MessageID); ref.Folder != "INBOX" {
@@ -374,7 +374,7 @@ func TestUndoOfARealTrashWithTheSettingOn(t *testing.T) {
 	if err != nil || recs[0].After.Folder != "Trash" {
 		t.Fatalf("trash with the setting off: %+v, %v", recs, err)
 	}
-	if err := e.st.SetTrashToFolder(ctx, true); err != nil {
+	if err := e.st.SetTrashToFolder(ctx, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.x.Undo(ctx, recs[0].ID); err != nil {
@@ -393,7 +393,7 @@ func TestUndoOfARealTrashWithTheSettingOn(t *testing.T) {
 func TestUnreadableTrashSetting(t *testing.T) {
 	e, srv := trashEnv(t, true)
 	ctx := t.Context()
-	if err := e.st.SetSetting(ctx, store.SettingTrashToFolder, "maybe"); err != nil {
+	if err := e.st.SetSetting(ctx, 1, store.SettingTrashToFolder, "maybe"); err != nil {
 		t.Fatal(err)
 	}
 	d := e.arrive(srv, "1")
@@ -438,7 +438,7 @@ func TestAnswerReviewForMailGoneElsewhere(t *testing.T) {
 				if err := srv.User.Create("Archive", nil); err != nil {
 					t.Fatal(err)
 				}
-				food, err := e.st.CreateRule(ctx, rules.Rule{UserID: e.user.ID, Name: "Food", Intent: "Food", Actions: act("move:Food"), Enabled: true}, 1)
+				food, err := e.st.CreateRule(ctx, 1, rules.Rule{UserID: e.user.ID, Name: "Food", Intent: "Food", Actions: act("move:Food"), Enabled: true}, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -465,7 +465,7 @@ func TestAnswerReviewForMailGoneElsewhere(t *testing.T) {
 				if keep {
 					right = 0
 				}
-				_, err = e.x.Correct(ctx, Correction{MessageID: d.MessageID, RightRuleID: right, Review: true})
+				_, err = e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: d.MessageID, RightRuleID: right, Review: true})
 				m, _ := e.st.Message(ctx, d.MessageID)
 				corrs, _ := e.st.MessageCorrections(ctx, d.MessageID)
 				if !tc.gone {

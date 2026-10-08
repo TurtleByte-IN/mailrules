@@ -41,20 +41,22 @@ type Decider struct {
 
 // OwnMail returns the Decider.Own for an account: its own addresses while the
 // leave_own_mail setting is on, nil while it is off. The live pipeline reads it for every
-// email; a cleanup check and a test run once, as they start.
+// email; a cleanup check and a test run once, as they start. The setting is the account's
+// tenant's.
 func OwnMail(ctx context.Context, st *store.Store, a store.Account) ([]string, error) {
-	on, err := st.LeaveOwnMail(ctx)
+	on, err := st.LeaveOwnMail(ctx, a.TenantID)
 	if err != nil || !on {
 		return nil, err
 	}
 	return a.OwnAddresses(), nil
 }
 
-// Corrections is the Examples of a Decider that learns from the user's corrections. A
-// failure to read them is logged and costs the examples, never the decision.
-func Corrections(st *store.Store, userID int64) func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example {
+// Corrections is the Examples of a Decider that learns from the corrections made to mail
+// of the mailboxes v sees. A failure to read them is logged and costs the examples, never
+// the decision.
+func Corrections(st *store.Store, v store.Viewer) func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example {
 	return func(ctx context.Context, email message.Summary, candidates []int64) []learn.Example {
-		ex, err := learn.Examples(ctx, st, userID, email, candidates)
+		ex, err := learn.Examples(ctx, st, v, email, candidates)
 		if err != nil {
 			slog.WarnContext(ctx, "could not read corrections for the fallback model", "error", err.Error())
 		}

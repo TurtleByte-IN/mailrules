@@ -253,7 +253,7 @@ func parseFeedCursor(s string) (store.FeedCursor, bool) {
 func (s *server) page(w http.ResponseWriter, r *http.Request, f store.ActivityFilter) (map[string]any, bool) {
 	limit := f.Limit
 	f.Limit++
-	rows, err := s.store.Activity(r.Context(), f)
+	rows, err := s.store.Activity(r.Context(), viewer(r), f)
 	if err != nil {
 		internalError(w, r, err)
 		return nil, false
@@ -293,7 +293,7 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	total, err := s.store.CountMessages(r.Context(), store.StateReview)
+	total, err := s.store.CountMessages(r.Context(), viewer(r), store.StateReview)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -337,14 +337,15 @@ type candidateJSON struct {
 	Probability float64 `json:"probability"`
 }
 
-// candidates lists a decision's per-rule probabilities, likeliest first.
-func (s *server) candidates(ctx context.Context, userID int64, d store.Decision) []candidateJSON {
+// candidates lists a decision's per-rule probabilities, likeliest first, named by the
+// tenant's rules.
+func (s *server) candidates(ctx context.Context, tenantID int64, d store.Decision) []candidateJSON {
 	out := make([]candidateJSON, 0, len(d.Probabilities))
 	if len(d.Probabilities) == 0 {
 		return out
 	}
 	names := map[int64]string{}
-	rs, _ := s.store.Rules(ctx, userID) // without the names the ids still say which rule
+	rs, _ := s.store.Rules(ctx, tenantID) // without the names the ids still say which rule
 	for _, r := range rs {
 		names[r.ID] = r.Name
 	}
@@ -397,8 +398,8 @@ func actionDetail(a store.Action) string {
 }
 
 // trace lays out, oldest first, every decision made for a message, every action taken on
-// it and every correction the user made.
-func (s *server) trace(ctx context.Context, userID int64, row store.ActivityRow) ([]traceStep, error) {
+// it and every correction made to it. The caller has checked that the viewer sees it.
+func (s *server) trace(ctx context.Context, tenantID int64, row store.ActivityRow) ([]traceStep, error) {
 	decisions, err := s.store.MessageDecisions(ctx, row.Message.ID)
 	if err != nil {
 		return nil, err
@@ -412,7 +413,7 @@ func (s *server) trace(ctx context.Context, userID int64, row store.ActivityRow)
 		dj := toDecisionJSON(d)
 		step := traceStep{Kind: d.Stage, Label: stageLabels[d.Stage], Detail: d.Reason, RuleID: dj.RuleID, RuleName: dj.RuleName,
 			Model: d.Model, TokensIn: d.TokensIn, TokensOut: d.TokensOut, CostUSD: d.CostUSD, LatencyMS: d.LatencyMS, At: d.CreatedAt,
-			Candidates: s.candidates(ctx, userID, d)}
+			Candidates: s.candidates(ctx, tenantID, d)}
 		if d.Stage != "none" || d.Model != "" {
 			step.Confidence = &d.Confidence
 		}
@@ -446,12 +447,12 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	row, err := s.store.ActivityFor(r.Context(), id)
+	row, err := s.store.ActivityFor(r.Context(), viewer(r), id)
 	if err != nil {
 		fail(w, r, err, "message")
 		return
 	}
-	trace, err := s.trace(r.Context(), user(r).ID, row)
+	trace, err := s.trace(r.Context(), viewer(r).TenantID, row)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -481,7 +482,7 @@ func (s *server) correct(w http.ResponseWriter, r *http.Request, m store.Message
 	if !readJSON(w, r, &in) {
 		return
 	}
-	c := actions.Correction{MessageID: messageID, Always: in.AlwaysFor, Review: review}
+	c := actions.Correction{By: viewer(r), MessageID: messageID, Always: in.AlwaysFor, Review: review}
 	if c.Always == "" && in.AlwaysForSender {
 		c.Always = rules.MatchAddress
 	}
@@ -498,7 +499,7 @@ func (s *server) correct(w http.ResponseWriter, r *http.Request, m store.Message
 		return
 	}
 	if in.RuleID != nil {
-		if _, err := s.store.Rule(r.Context(), user(r).ID, *in.RuleID); err != nil {
+		if _, err := s.store.Rule(r.Context(), viewer(r).TenantID, *in.RuleID); err != nil {
 			invalid(w, "rule_id", "No such rule.")
 			return
 		}
@@ -509,7 +510,7 @@ func (s *server) correct(w http.ResponseWriter, r *http.Request, m store.Message
 		fail(w, r, err, "message")
 		return
 	}
-	row, err := s.store.ActivityFor(r.Context(), messageID)
+	row, err := s.store.ActivityFor(r.Context(), viewer(r), messageID)
 	if err != nil {
 		fail(w, r, err, "message")
 		return
@@ -526,11 +527,11 @@ func (s *server) handleMessageUndo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.store.Message(r.Context(), id); err != nil {
+	if _, err := s.store.VisibleMessage(r.Context(), viewer(r), id); err != nil {
 		fail(w, r, err, "message")
 		return
 	}
-	batchID, u, why, err := s.Exec.UndoMessage(r.Context(), id)
+	batchID, u, why, err := s.Exec.UndoMessage(r.Context(), viewer(r), id)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -539,7 +540,7 @@ func (s *server) handleMessageUndo(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, why, "message")
 		return
 	}
-	row, err := s.store.ActivityFor(r.Context(), id)
+	row, err := s.store.ActivityFor(r.Context(), viewer(r), id)
 	if err != nil {
 		fail(w, r, err, "message")
 		return
@@ -552,7 +553,7 @@ func (s *server) handleCorrect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	m, err := s.store.Message(r.Context(), id)
+	m, err := s.store.VisibleMessage(r.Context(), viewer(r), id)
 	if err != nil {
 		fail(w, r, err, "message")
 		return
@@ -567,7 +568,7 @@ func (s *server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	m, err := s.store.Message(r.Context(), id)
+	m, err := s.store.VisibleMessage(r.Context(), viewer(r), id)
 	if err != nil {
 		fail(w, r, err, "message")
 		return
@@ -582,6 +583,10 @@ func (s *server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleActionUndo(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "id", "action")
 	if !ok {
+		return
+	}
+	if _, err := s.store.VisibleAction(r.Context(), viewer(r), id); err != nil {
+		fail(w, r, err, "action")
 		return
 	}
 	if err := s.Exec.Undo(r.Context(), id); err != nil {
@@ -621,8 +626,8 @@ type batchJSON struct {
 	RunID *int64 `json:"run_id"`
 }
 
-// batchJSON adds the status counts of the batch's actions.
-func (s *server) batchJSON(ctx context.Context, b store.Batch) (batchJSON, error) {
+// batchJSON adds the status counts of the batch's actions on the mailboxes v sees.
+func (s *server) batchJSON(ctx context.Context, v store.Viewer, b store.Batch) (batchJSON, error) {
 	out := batchJSON{ID: b.ID, Kind: b.Kind, Status: b.Status, Total: ts(int64(b.Total)), Done: b.Done, CreatedAt: b.CreatedAt,
 		AccountID: ts(b.AccountID), Folder: b.Folder, Since: ts(b.Since), Tokens: b.Tokens, CostUSD: b.CostUSD, Skipped: b.Skipped, RunID: ts(b.RunID)}
 	if b.ScanLimit > 0 {
@@ -634,18 +639,18 @@ func (s *server) batchJSON(ctx context.Context, b store.Batch) (batchJSON, error
 		out.Total = &total
 	}
 	var err error
-	out.Actions, err = s.store.BatchActionCounts(ctx, b.ID)
+	out.Actions, err = s.store.BatchActionCounts(ctx, v, b.ID)
 	return out, err
 }
 
-// writeBatch answers with a batch, and after an undo with how it went.
+// writeBatch answers with a batch the viewer sees, and after an undo with how it went.
 func (s *server) writeBatch(w http.ResponseWriter, r *http.Request, id int64, extra map[string]any) {
-	b, err := s.store.Batch(r.Context(), id)
+	b, err := s.store.VisibleBatch(r.Context(), viewer(r), id)
 	if err != nil {
 		fail(w, r, err, "batch")
 		return
 	}
-	bj, err := s.batchJSON(r.Context(), b)
+	bj, err := s.batchJSON(r.Context(), viewer(r), b)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -663,14 +668,15 @@ func (s *server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleBatchUndo undoes a batch's actions, newest first. One that cannot be undone (its
-// message is gone) does not stop the rest: the answer counts both, and the emails put back.
+// handleBatchUndo undoes a batch's actions on the mailboxes the viewer sees, newest first.
+// One that cannot be undone (its message is gone) does not stop the rest: the answer
+// counts both, and the emails put back.
 func (s *server) handleBatchUndo(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "id", "batch")
 	if !ok {
 		return
 	}
-	b, err := s.store.Batch(r.Context(), id)
+	b, err := s.store.VisibleBatch(r.Context(), viewer(r), id)
 	if err != nil {
 		fail(w, r, err, "batch")
 		return
@@ -679,7 +685,7 @@ func (s *server) handleBatchUndo(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, actions.ErrTooOld, "batch")
 		return
 	}
-	u, err := s.Exec.UndoBatch(r.Context(), id)
+	u, err := s.Exec.UndoBatch(r.Context(), viewer(r), id)
 	if err != nil && u.Failed == 0 { // not an action that would not undo: the database, say
 		internalError(w, r, err)
 		return
@@ -692,10 +698,10 @@ func undid(u actions.Undid) map[string]any {
 	return map[string]any{"undone": u.Actions, "emails": u.Emails, "failed": u.Failed}
 }
 
-// undoSince undoes everything done since a time, by one rule or (ruleID 0) by all of
-// them, and answers with the undo batch it was recorded as.
+// undoSince undoes everything done in the mailboxes the viewer sees since a time, by one
+// rule or (ruleID 0) by all of them, and answers with the undo batch it was recorded as.
 func (s *server) undoSince(w http.ResponseWriter, r *http.Request, ruleID, from int64) {
-	batchID, u, err := s.Exec.UndoSince(r.Context(), ruleID, from)
+	batchID, u, err := s.Exec.UndoSince(r.Context(), viewer(r), ruleID, from)
 	if err != nil {
 		internalError(w, r, err)
 		return

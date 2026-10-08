@@ -20,7 +20,7 @@ func TestTrashToFolderSetting(t *testing.T) {
 	ctx := t.Context()
 	// An existing install: settings were saved before trash_to_folder existed.
 	for key, value := range map[string]string{"dry_run": "false", "retention_days": "90"} {
-		if err := e.st.SetSetting(ctx, key, value); err != nil {
+		if err := e.st.SetSetting(ctx, 1, key, value); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -71,7 +71,7 @@ func TestTrashToFolderSetting(t *testing.T) {
 	// Off: trash goes to the server's Trash again, and says so.
 	got := e.call(http.MethodPatch, "/api/settings", `{"trash_to_folder":false}`, http.StatusOK)
 	conform(t, e.doc, "Settings", got)
-	if v, err := e.st.Setting(ctx, store.SettingTrashToFolder); got["trash_to_folder"] != false || err != nil || v != "false" {
+	if v, err := e.st.Setting(ctx, 1, store.SettingTrashToFolder); got["trash_to_folder"] != false || err != nil || v != "false" {
 		t.Fatalf("after patch: %v, stored %q %v", got["trash_to_folder"], v, err)
 	}
 	e.deliver("spam@junk.example", "spam two")
@@ -88,7 +88,7 @@ func TestTrashToFolderSetting(t *testing.T) {
 	if got := e.call(http.MethodPatch, "/api/settings", `{"trash_to_folder":null}`, http.StatusOK); got["trash_to_folder"] != true {
 		t.Errorf("after null: trash_to_folder %v, want true", got["trash_to_folder"])
 	}
-	if _, err := e.st.Setting(ctx, store.SettingTrashToFolder); err == nil {
+	if _, err := e.st.Setting(ctx, 1, store.SettingTrashToFolder); err == nil {
 		t.Error("null left a stored trash_to_folder")
 	}
 }

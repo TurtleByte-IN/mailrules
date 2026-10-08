@@ -36,7 +36,7 @@ func TestOpenAndMigrate(t *testing.T) {
 		}
 	}
 	want := []string{"accounts", "actions", "batches", "contacts", "corrections", "decisions", "folders",
-		"messages", "rules", "sender_rules", "sessions", "settings", "summaries", "usage_daily", "users"}
+		"identities", "messages", "rules", "sender_rules", "sessions", "settings", "summaries", "tenants", "usage_daily", "users"}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'goose%' AND name NOT LIKE 'sqlite%' ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
@@ -156,14 +156,14 @@ func TestSetPasswordEndsSessions(t *testing.T) {
 func TestSettings(t *testing.T) {
 	s, _ := open(t)
 	ctx := t.Context()
-	if _, err := s.Setting(ctx, "dry_run"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Setting(ctx, SelfHostTenant, "dry_run"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing setting: got %v", err)
 	}
 	for _, v := range []string{"true", "false"} {
-		if err := s.SetSetting(ctx, "dry_run", v); err != nil {
+		if err := s.SetSetting(ctx, SelfHostTenant, "dry_run", v); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := s.Setting(ctx, "dry_run"); err != nil || got != v {
+		if got, err := s.Setting(ctx, SelfHostTenant, "dry_run"); err != nil || got != v {
 			t.Fatalf("setting = %q, %v", got, err)
 		}
 	}
@@ -183,7 +183,7 @@ func TestAddUsage(t *testing.T) {
 		{"2026-10-07", "decide", 2, 100, 0, 0.00001},
 	}
 	for _, a := range adds {
-		if err := s.AddUsage(ctx, a.day, "openrouter", "typesafe/jev-1.13", a.purpose, a.calls, a.in, a.out, a.cost); err != nil {
+		if err := s.AddUsage(ctx, SelfHostTenant, false, a.day, "openrouter", "typesafe/jev-1.13", a.purpose, a.calls, a.in, a.out, a.cost); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -244,7 +244,7 @@ func TestCreateCleanupRun(t *testing.T) {
 		}
 	}
 	// Read back through the listing, as the screen does, the run id is there.
-	list, err := st.Batches(ctx, BatchCleanup, 0, 10)
+	list, err := st.Batches(ctx, a1.Owner(), BatchCleanup, 0, 10)
 	if err != nil || len(list) != 2 || list[0].RunID != got[0].ID || list[1].RunID != got[0].ID {
 		t.Errorf("Batches = %+v, %v", list, err)
 	}
@@ -256,4 +256,32 @@ func TestCreateCleanupRun(t *testing.T) {
 	if b, err := st.CreateCleanupBatch(ctx, a1.ID, "INBOX", 0, 0, 0, 3, 1002); err != nil || b.RunID != 0 {
 		t.Errorf("CreateCleanupBatch = %+v, %v; want no run id", b, err)
 	}
+}
+
+// legacyUser inserts the admin user straight into a database whose schema is from before
+// migration 0011 (no users.tenant_id). It returns its id, which is 1, so after the full
+// migration it is the self-host tenant's user.
+func legacyUser(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	res, err := db.ExecContext(t.Context(),
+		`INSERT INTO users (email, password_hash, created_at) VALUES ('me@icloud.com', 'hash', 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// legacyAccount inserts a mailbox straight into a pre-0011 schema (no tenant_id/shared) and
+// returns its id.
+func legacyAccount(t *testing.T, db *sql.DB, userID int64) int64 {
+	t.Helper()
+	res, err := db.ExecContext(t.Context(),
+		`INSERT INTO accounts (user_id, label, preset, host, port, tls_mode, username, secret_enc, dek_enc, watch_folder, status, created_at)
+		 VALUES (?, 'Personal', 'icloud', 'imap.mail.me.com', 993, 'implicit', 'me@icloud.com', x'', x'', 'INBOX', 'new', 1)`, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
 }

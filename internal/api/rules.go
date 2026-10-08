@@ -51,11 +51,11 @@ func toRuleJSON(r rules.Rule, st store.RuleStat) ruleJSON {
 
 // rulesJSON lists the user's rules in priority order with this week's hit counts.
 func (s *server) rulesJSON(r *http.Request) ([]ruleJSON, error) {
-	rs, err := s.store.Rules(r.Context(), user(r).ID)
+	rs, err := s.store.Rules(r.Context(), viewer(r).TenantID)
 	if err != nil {
 		return nil, err
 	}
-	stats, err := s.store.RuleStats(r.Context(), user(r).ID, s.now().Unix()-week)
+	stats, err := s.store.RuleStats(r.Context(), viewer(r), s.now().Unix()-week)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,7 @@ func (s *server) rule(w http.ResponseWriter, r *http.Request) (rules.Rule, bool)
 	if !ok {
 		return rules.Rule{}, false
 	}
-	rule, err := s.store.Rule(r.Context(), user(r).ID, id)
+	rule, err := s.store.Rule(r.Context(), viewer(r).TenantID, id)
 	if err != nil {
 		fail(w, r, err, "rule")
 		return rules.Rule{}, false
@@ -96,12 +96,12 @@ func (s *server) rule(w http.ResponseWriter, r *http.Request) (rules.Rule, bool)
 }
 
 func (s *server) writeRule(w http.ResponseWriter, r *http.Request, id int64) {
-	rule, err := s.store.Rule(r.Context(), user(r).ID, id)
+	rule, err := s.store.Rule(r.Context(), viewer(r).TenantID, id)
 	if err != nil {
 		fail(w, r, err, "rule")
 		return
 	}
-	stats, err := s.store.RuleStats(r.Context(), user(r).ID, s.now().Unix()-week)
+	stats, err := s.store.RuleStats(r.Context(), viewer(r), s.now().Unix()-week)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -183,7 +183,7 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 		rule.AccountID = *accountID
 	}
 	if sent["account_id"] && rule.AccountID != 0 {
-		if _, err := s.store.Account(r.Context(), rule.AccountID); err != nil {
+		if _, err := s.store.VisibleAccount(r.Context(), viewer(r), rule.AccountID); err != nil {
 			invalid(w, "account_id", "No such account.")
 			return
 		}
@@ -200,11 +200,11 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "rule_invalid", msg, path)
 		return
 	}
-	if err := s.store.UpdateRule(r.Context(), rule, s.now().Unix()); err != nil {
+	if err := s.store.UpdateRule(r.Context(), viewer(r).TenantID, rule, s.now().Unix()); err != nil {
 		fail(w, r, err, "rule")
 		return
 	}
-	s.Hub.Publish(events.RulesChanged, nil)
+	s.publish(r, 0, events.RulesChanged, nil)
 	s.writeRule(w, r, rule.ID)
 }
 
@@ -215,11 +215,11 @@ func (s *server) handleRuleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.DeleteRule(r.Context(), user(r).ID, rule.ID); err != nil {
+	if err := s.store.DeleteRule(r.Context(), viewer(r).TenantID, rule.ID); err != nil {
 		fail(w, r, err, "rule")
 		return
 	}
-	s.Hub.Publish(events.RulesChanged, nil)
+	s.publish(r, 0, events.RulesChanged, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -230,7 +230,7 @@ func (s *server) handleRulesReorder(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
-	err := s.store.ReorderRules(r.Context(), user(r).ID, in.IDs)
+	err := s.store.ReorderRules(r.Context(), viewer(r).TenantID, in.IDs)
 	if errors.Is(err, store.ErrRuleSet) {
 		invalid(w, "ids", "List every rule's id exactly once, in the new order.")
 		return
@@ -239,12 +239,12 @@ func (s *server) handleRulesReorder(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
-	s.Hub.Publish(events.RulesChanged, nil)
+	s.publish(r, 0, events.RulesChanged, nil)
 	s.writeRules(w, r, nil)
 }
 
 func (s *server) handleRulesExport(w http.ResponseWriter, r *http.Request) {
-	f, err := s.Settings.ExportRules(r.Context(), user(r).ID)
+	f, err := s.Settings.ExportRules(r.Context(), viewer(r))
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -272,7 +272,7 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 		importInvalid(w, r, err)
 		return
 	}
-	toStore, err := s.Settings.PrepareImport(r.Context(), user(r).ID, f)
+	toStore, err := s.Settings.PrepareImport(r.Context(), viewer(r), f)
 	var problem *settings.ImportProblem
 	if errors.As(err, &problem) {
 		var lines []string
@@ -295,12 +295,12 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	created, updated, err := s.store.ImportRules(r.Context(), user(r).ID, toStore, s.now().Unix())
+	created, updated, err := s.store.ImportRules(r.Context(), viewer(r).TenantID, user(r).ID, toStore, s.now().Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	s.Hub.Publish(events.RulesChanged, nil)
+	s.publish(r, 0, events.RulesChanged, nil)
 	s.writeRules(w, r, map[string]any{"created": created, "updated": updated})
 }
 

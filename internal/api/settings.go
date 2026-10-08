@@ -22,7 +22,7 @@ var features = map[string]bool{"notifications": false, "timed_actions": false, "
 var limits = map[string]int{"test_default": composer.DefaultLimit, "test_max": composer.MaxLimit, "check_max": composer.MaxLimit}
 
 func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
-	v, err := s.Settings.View(r.Context())
+	v, err := s.Settings.View(r.Context(), viewer(r).TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -55,7 +55,7 @@ func (s *server) handleSettings(w http.ResponseWriter, r *http.Request) { s.writ
 // handleAnthropicWorkspaces says which workspace the Claude key in force needs, asking
 // Anthropic only while that is not known yet (settings.Settings.LookupWorkspaces).
 func (s *server) handleAnthropicWorkspaces(w http.ResponseWriter, r *http.Request) {
-	l, err := s.Settings.LookupWorkspaces(r.Context())
+	l, err := s.Settings.LookupWorkspaces(r.Context(), viewer(r).TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -92,7 +92,7 @@ func (s *server) handleSettingsPatch(w http.ResponseWriter, r *http.Request) {
 	var commitSummary func(context.Context) error
 	if sum != nil {
 		var err error
-		commitSummary, err = s.Summary.Prepare(r.Context(), *sum)
+		commitSummary, err = s.Summary.Prepare(r.Context(), viewer(r).TenantID, *sum)
 		if summaryRefused(w, err) {
 			return
 		}
@@ -101,7 +101,7 @@ func (s *server) handleSettingsPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	err := s.Settings.Apply(r.Context(), p)
+	err := s.Settings.Apply(r.Context(), viewer(r).TenantID, p)
 	var bad *settings.Invalid
 	if errors.As(err, &bad) {
 		invalid(w, bad.Path, bad.Message)

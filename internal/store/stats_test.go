@@ -69,7 +69,7 @@ func TestStatsTotalsWithoutModel(t *testing.T) {
 					}
 				}
 			}
-			got, err := s.StatsTotals(ctx, u.ID, 0)
+			got, err := s.StatsTotals(ctx, u.Viewer(), 0)
 			if err != nil {
 				t.Fatal(err)
 			}

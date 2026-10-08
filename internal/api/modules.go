@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
+	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
@@ -68,11 +70,15 @@ func (h host) EventStream(w http.ResponseWriter) ext.EventStream {
 }
 func (h host) UserID(r *http.Request) int64 { return user(r).ID }
 
+// Scope refuses an account the signed-in user does not see as it refuses a missing one
+// (400 invalid_input at account_id).
 func (h host) Scope(w http.ResponseWriter, r *http.Request, in ext.ScopeInput) (ext.Scope, bool) {
 	c, ok := h.s.scope(w, r, in)
 	return ext.Scope{AccountID: c.AccountID, Folder: c.Folder, Since: c.Since, Limit: c.Limit}, ok
 }
 
+// Mail reads an account's mail. The id must come from Scope, which checked that the user
+// sees the account.
 func (h host) Mail(accountID int64) (ext.Mail, error) {
 	mb, err := h.s.reader(accountID)
 	if err != nil {
@@ -81,30 +87,60 @@ func (h host) Mail(accountID int64) (ext.Mail, error) {
 	return composer.Scanner{Store: h.s.store, Mailbox: mb, AccountID: accountID}, nil
 }
 
+// Folders lists an account's folders. The id must come from Scope.
 func (h host) Folders(ctx context.Context, accountID int64) ([]string, error) {
-	return composer.Composer{Store: h.s.store}.Folders(ctx, &store.Account{ID: accountID})
+	a := &store.Account{ID: accountID}
+	return composer.Composer{Store: h.s.store}.Folders(ctx, store.Viewer{}, a)
 }
 
+// Rules are the rules of the user's tenant.
 func (h host) Rules(ctx context.Context, userID int64) ([]ext.Rule, error) {
-	return h.s.store.Rules(ctx, userID)
+	u, err := h.s.store.User(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return h.s.store.Rules(ctx, u.TenantID)
 }
 
+// errNoUser is what a Host call that needs the signed-in user answers when ctx is not a
+// signed-in request's context.
+var errNoUser = errors.New("no signed-in user in the context: pass the request's context")
+
+// Composer is the generative model of the signed-in user's tenant; ctx must be the
+// request's context.
 func (h host) Composer(ctx context.Context) (ext.Generator, error) {
-	gen, err := h.s.modelSource().Composer(ctx)
+	u, ok := ctxUser(ctx)
+	if !ok {
+		return nil, errNoUser
+	}
+	gen, err := h.s.modelSource().Composer(ctx, u.TenantID)
 	if err != nil {
 		return nil, err // not gen: a nil models.Generator is not a nil ext.Generator
 	}
 	return gen, nil
 }
 
+// RecordUsage books a model call to the signed-in user's tenant, marked when it went out on
+// an operator key; ctx must be the request's context.
 func (h host) RecordUsage(ctx context.Context, purpose string, u ext.Usage) {
-	if err := h.s.store.AddUsage(ctx, h.s.now().UTC().Format("2006-01-02"), u.Provider, u.Model, purpose, 1,
+	who, ok := ctxUser(ctx)
+	if !ok {
+		slog.WarnContext(ctx, "could not record model usage", "error", errNoUser.Error())
+		return
+	}
+	var ledger models.UsageStore = store.Ledger{Store: h.s.store, TenantID: who.TenantID}
+	if h.s.Settings != nil {
+		ledger = h.s.Settings.Ledger(ctx, who.TenantID)
+	}
+	if err := ledger.AddUsage(ctx, h.s.now().UTC().Format("2006-01-02"), u.Provider, u.Model, purpose, 1,
 		u.TokensIn, u.TokensOut, u.CostUSD); err != nil {
 		slog.WarnContext(ctx, "could not record model usage", "error", err.Error())
 	}
 }
 
-func (h host) UsageChanged() { h.s.Hub.Publish(events.UsageUpdated, nil) }
+// UsageChanged nudges every open stream to read its usage again. It is not told whose
+// usage changed, so the nudge carries no tenant and no data (events.Event).
+func (h host) UsageChanged() { h.s.Hub.Publish(0, 0, events.UsageUpdated, nil) }
 
 // moduleStream is eventStream as a module writes it (ext.EventStream).
 type moduleStream struct{ es eventStream }

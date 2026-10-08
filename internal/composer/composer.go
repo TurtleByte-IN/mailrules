@@ -30,15 +30,18 @@ var ErrModel = errors.New("the composer model failed")
 
 // Composer turns free text into draft rules. It saves nothing.
 type Composer struct {
-	Store     *store.Store
-	Gen       models.Generator
+	Store *store.Store
+	Gen   models.Generator
+	// Usage books the composer's model calls; nil books them to the requester's tenant
+	// with no operator mark (settings.Settings.Ledger knows that mark).
+	Usage     models.UsageStore
 	Now       func() time.Time // nil = time.Now
 	BodyChars int
 }
 
 // Request is one compose call.
 type Request struct {
-	UserID int64
+	Viewer store.Viewer // who asks: the rules are their tenant's, the mailboxes the ones they see
 	Text   string
 	// Rule, when set, is re-optimized: the model is given its original wording with Text
 	// and answers with a single draft to replace it.
@@ -123,11 +126,11 @@ type Output struct {
 // draft instead of failing the request, and test the valid drafts on the account's newest
 // mail. Nothing is saved.
 func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
-	existing, err := c.Store.Rules(ctx, req.UserID)
+	existing, err := c.Store.Rules(ctx, req.Viewer.TenantID)
 	if err != nil {
 		return Output{}, err
 	}
-	folders, err := c.Folders(ctx, req.Account)
+	folders, err := c.Folders(ctx, req.Viewer, req.Account)
 	if err != nil {
 		return Output{}, err
 	}
@@ -147,7 +150,11 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 		now = c.Now
 	}
 	if err == nil || usage.TokensIn+usage.TokensOut > 0 { // an unusable answer was paid for too
-		if uerr := c.Store.AddUsage(ctx, now().UTC().Format("2006-01-02"), usage.Provider, usage.Model, "compose", 1,
+		ledger := c.Usage
+		if ledger == nil {
+			ledger = store.Ledger{Store: c.Store, TenantID: req.Viewer.TenantID}
+		}
+		if uerr := ledger.AddUsage(ctx, now().UTC().Format("2006-01-02"), usage.Provider, usage.Model, "compose", 1,
 			usage.TokensIn, usage.TokensOut, usage.CostUSD); uerr != nil {
 			slog.WarnContext(ctx, "could not record model usage", "error", uerr.Error())
 		}
@@ -200,14 +207,14 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 	return out, nil
 }
 
-// Folders lists the folder names that exist: the account's, or with no account every
-// account's.
-func (c Composer) Folders(ctx context.Context, acct *store.Account) ([]string, error) {
+// Folders lists the folder names that exist: the account's, or with no account those of
+// every account the viewer sees.
+func (c Composer) Folders(ctx context.Context, v store.Viewer, acct *store.Account) ([]string, error) {
 	var ids []int64
 	if acct != nil {
 		ids = []int64{acct.ID}
 	} else {
-		all, err := c.Store.Accounts(ctx)
+		all, err := c.Store.VisibleAccounts(ctx, v)
 		if err != nil {
 			return nil, err
 		}
@@ -349,7 +356,7 @@ func (c Composer) test(ctx context.Context, req Request, drafts []Draft) {
 			continue
 		}
 		r := d.Rule()
-		r.ID, r.Priority, r.UserID = -int64(i+1), i, req.UserID
+		r.ID, r.Priority, r.UserID = -int64(i+1), i, req.Viewer.UserID
 		rs = append(rs, r)
 	}
 	if len(rs) == 0 {

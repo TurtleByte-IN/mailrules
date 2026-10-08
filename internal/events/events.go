@@ -26,10 +26,17 @@ const subBuffer = 256
 
 // Event is one published event. IDs grow by one per event and restart with the daemon.
 // Data is the Go value; the HTTP layer chooses its JSON shape.
+//
+// TenantID and AccountID say who may receive it: the HTTP layer hands an event only to a
+// subscriber of that tenant and, when AccountID is set, only to one who sees that mailbox
+// at the moment it is sent. TenantID 0 is an event of no tenant: a nudge with no data
+// (UsageUpdated from a module, which cannot say whose), which every subscriber gets.
 type Event struct {
-	ID   int64
-	Name string
-	Data any
+	ID        int64
+	Name      string
+	Data      any
+	TenantID  int64
+	AccountID int64 // 0 = not about one mailbox
 }
 
 // Hub fans events out to subscribers and remembers the last Keep. A nil *Hub drops
@@ -44,17 +51,18 @@ type Hub struct {
 // NewHub returns an empty hub.
 func NewHub() *Hub { return &Hub{subs: map[chan Event]struct{}{}} }
 
-// Publish stores the event and hands it to every subscriber. It never blocks: a
-// subscriber that has fallen subBuffer events behind is dropped (its channel closes) and
-// catches up by subscribing again with the last id it saw.
-func (h *Hub) Publish(name string, data any) {
+// Publish stores the event, for tenantID and, when it is about one mailbox, accountID (0 =
+// none), and hands it to every subscriber. It never blocks: a subscriber that has fallen
+// subBuffer events behind is dropped (its channel closes) and catches up by subscribing
+// again with the last id it saw.
+func (h *Hub) Publish(tenantID, accountID int64, name string, data any) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.last++
-	ev := Event{ID: h.last, Name: name, Data: data}
+	ev := Event{ID: h.last, Name: name, Data: data, TenantID: tenantID, AccountID: accountID}
 	h.recent = append(h.recent, ev)
 	if len(h.recent) > Keep {
 		h.recent = h.recent[len(h.recent)-Keep:]

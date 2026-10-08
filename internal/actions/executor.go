@@ -93,11 +93,15 @@ func isMove(kind string) bool { return kind == rules.ActMove || moveRole[kind] !
 // about a retry. With trash_to_folder on, a trash row names TrashFolder as its folder,
 // in dry-run too, so what it says it did (or would do) is where the mail went.
 func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action, batchID int64) ([]ActionRecord, error) {
-	dry, err := x.Store.DryRun(ctx, x.DryRunDefault)
+	tenant, err := x.Store.AccountTenant(ctx, d.Ref.AccountID)
 	if err != nil {
 		return nil, err
 	}
-	if acts, err = x.trashDestination(ctx, acts); err != nil {
+	dry, err := x.Store.DryRun(ctx, tenant, x.DryRunDefault)
+	if err != nil {
+		return nil, err
+	}
+	if acts, err = x.trashDestination(ctx, tenant, acts); err != nil {
 		return nil, err
 	}
 	cur := store.Snapshot{Folder: d.Ref.Folder, UIDValidity: d.Ref.UIDValidity, UID: d.Ref.UID}
@@ -152,14 +156,15 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 	return recs, nil
 }
 
-// trashDestination returns acts with every trash action pointed at TrashFolder while
-// trash_to_folder is on, and acts as they are otherwise. The setting is read only when
-// there is something to trash; one that cannot be read stops the actions, as dry-run does.
-func (x *Exec) trashDestination(ctx context.Context, acts []rules.Action) ([]rules.Action, error) {
+// trashDestination returns acts with every trash action pointed at TrashFolder while the
+// tenant's trash_to_folder is on, and acts as they are otherwise. The setting is read only
+// when there is something to trash; one that cannot be read stops the actions, as dry-run
+// does.
+func (x *Exec) trashDestination(ctx context.Context, tenantID int64, acts []rules.Action) ([]rules.Action, error) {
 	if !slices.ContainsFunc(acts, func(a rules.Action) bool { return a.Type == rules.ActTrash }) {
 		return acts, nil
 	}
-	on, err := x.Store.TrashToFolder(ctx)
+	on, err := x.Store.TrashToFolder(ctx, tenantID)
 	if err != nil || !on {
 		return acts, err
 	}
@@ -245,11 +250,18 @@ func (x *Exec) roleFolder(ctx context.Context, accountID int64, role string) (st
 }
 
 // EnsureFolders creates folders on an account's server, ahead of the rules that will move
-// mail into them. It is a mailbox change like any other: in dry-run it does nothing, and
-// the first live move creates the folder then.
+// mail into them. It is a mailbox change like any other: in the account's tenant's
+// dry-run it does nothing, and the first live move creates the folder then.
 func (x *Exec) EnsureFolders(ctx context.Context, accountID int64, names []string) error {
-	dry, err := x.Store.DryRun(ctx, x.DryRunDefault)
-	if err != nil || dry || len(names) == 0 {
+	if len(names) == 0 {
+		return nil
+	}
+	tenant, err := x.Store.AccountTenant(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	dry, err := x.Store.DryRun(ctx, tenant, x.DryRunDefault)
+	if err != nil || dry {
 		return err
 	}
 	mb, err := x.Accounts.Mailbox(accountID)
@@ -326,8 +338,17 @@ func (x *Exec) undo(ctx context.Context, actionID int64) error {
 		return err
 	}
 	a.Status = store.ActionUndone
-	x.Hub.Publish(events.ActionUndone, a)
+	x.publish(ctx, a.AccountID, events.ActionUndone, a)
 	return nil
+}
+
+// publish sends an event about one account's mailbox, for its tenant.
+func (x *Exec) publish(ctx context.Context, accountID int64, name string, data any) {
+	tenant, err := x.Store.AccountTenant(context.WithoutCancel(ctx), accountID)
+	if err != nil {
+		return // the account is gone: nobody is left to tell
+	}
+	x.Hub.Publish(tenant, accountID, name, data)
 }
 
 // locate finds the message an action left at a.After: by UID, or, when that folder's
@@ -376,16 +397,18 @@ type Undid struct {
 	Failed int // actions that could not be undone and are still in effect
 }
 
-// UndoBatch undoes a batch's actions, newest first, and says what it undid. An action
-// that cannot be undone does not stop the rest: its error is joined into the one returned,
-// and the batch is marked undone only when every action was. A batch that never changed a
-// mailbox (all its actions were recorded in dry-run, or failed) has nothing to undo: that
-// is a no-op, and the batch stays as it is.
-func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (Undid, error) {
-	if _, err := x.Store.Batch(ctx, batchID); err != nil {
+// UndoBatch undoes the actions of a batch the viewer sees, on the mailboxes they see,
+// newest first, and says what it undid. An action that cannot be undone does not stop the
+// rest: its error is joined into the one returned, and the batch is marked undone only
+// when every action was, a teammate's ones the viewer does not see included. A batch that
+// never changed a mailbox (all its actions were recorded in dry-run, or failed) has
+// nothing to undo: that is a no-op, and the batch stays as it is. A batch the viewer does
+// not see is ErrNotFound.
+func (x *Exec) UndoBatch(ctx context.Context, v store.Viewer, batchID int64) (Undid, error) {
+	if _, err := x.Store.VisibleBatch(ctx, v, batchID); err != nil {
 		return Undid{}, err
 	}
-	acts, err := x.Store.BatchActions(ctx, batchID)
+	acts, err := x.Store.VisibleBatchActions(ctx, v, batchID)
 	if err != nil {
 		return Undid{}, err
 	}
@@ -410,14 +433,22 @@ func (x *Exec) UndoBatch(ctx context.Context, batchID int64) (Undid, error) {
 	if len(errs) > 0 {
 		return u, errors.Join(errs...)
 	}
-	if changed {
-		err = x.Store.SetBatchStatus(ctx, batchID, store.BatchUndone)
+	if !changed {
+		return u, nil
 	}
-	return u, err
+	all, err := x.Store.BatchActions(ctx, batchID)
+	if err != nil {
+		return u, err
+	}
+	if slices.ContainsFunc(all, func(a store.Action) bool { return a.Status == store.ActionDone }) {
+		return u, nil // what someone else's mailbox holds of it is still in effect
+	}
+	return u, x.Store.SetBatchStatus(ctx, batchID, store.BatchUndone)
 }
 
-// Correction is the user saying a message belongs to another rule.
+// Correction is someone saying a message belongs to another rule.
 type Correction struct {
+	By          store.Viewer // who corrects: they must see the message, and the rule is their tenant's
 	MessageID   int64
 	RightRuleID int64 // 0 = keep in the inbox
 	// Always also stores a user sender rule, so future mail goes the same way: for the
@@ -436,17 +467,14 @@ type Correction struct {
 // An email waiting in Needs review that is no longer where MailRules saw it is taken off
 // the queue instead, with nothing done to any mailbox, and the error is ErrLeftReview.
 func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err error) {
-	msg, err := x.Store.Message(ctx, c.MessageID)
+	msg, err := x.Store.VisibleMessage(ctx, c.By, c.MessageID)
 	if err != nil {
 		return 0, err
 	}
-	acct, err := x.Store.Account(ctx, msg.AccountID)
-	if err != nil {
-		return 0, err
-	}
+	tenant := c.By.TenantID
 	acts := []rules.Action{{Type: rules.ActKeep}}
 	if c.RightRuleID != 0 {
-		rule, err := x.Store.Rule(ctx, acct.UserID, c.RightRuleID)
+		rule, err := x.Store.Rule(ctx, tenant, c.RightRuleID)
 		if err != nil {
 			return 0, err
 		}
@@ -458,23 +486,23 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 	// where its row saw it. If the user moved or deleted it since, there is nothing to answer.
 	at := msg.Location()
 	if msg.State == store.StateReview {
-		if at, err = x.reviewed(ctx, msg); err != nil {
+		if at, err = x.reviewed(ctx, tenant, msg); err != nil {
 			return 0, err
 		}
 	}
-	row, err := x.Store.ActivityFor(ctx, msg.ID)
+	row, err := x.Store.MessageActivity(ctx, msg.ID)
 	if err != nil {
 		return 0, err
 	}
-	if batchID, err = x.Store.CreateBatch(ctx, store.BatchCorrection, store.BatchRunning, x.now()); err != nil {
+	if batchID, err = x.Store.CreateBatch(ctx, tenant, store.BatchCorrection, store.BatchRunning, x.now()); err != nil {
 		return 0, err
 	}
 	status := store.BatchFailed
 	defer func() {
 		recCtx := context.WithoutCancel(ctx)
 		err = errors.Join(err, x.Store.SetBatchStatus(recCtx, batchID, status))
-		if row, rowErr := x.Store.ActivityFor(recCtx, msg.ID); rowErr == nil {
-			x.Hub.Publish(events.MessageProcessed, row)
+		if row, rowErr := x.Store.MessageActivity(recCtx, msg.ID); rowErr == nil {
+			x.Hub.Publish(tenant, msg.AccountID, events.MessageProcessed, row)
 		}
 	}()
 
@@ -513,7 +541,7 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 	if c.Review {
 		corr.Kind = store.CorrectionReview
 	}
-	if _, err := x.Store.AddCorrection(ctx, acct.UserID, corr, c.Always); err != nil {
+	if _, err := x.Store.AddCorrection(ctx, tenant, c.By.UserID, corr, c.Always); err != nil {
 		return batchID, err
 	}
 	status = store.BatchDone
@@ -523,11 +551,11 @@ func (x *Exec) Correct(ctx context.Context, c Correction) (batchID int64, err er
 // reviewed returns where an email waiting in Needs review is now. When it is no longer
 // there (and a Message-ID search of a rebuilt folder does not find it), the email leaves
 // the queue as skipped, the state of an email no longer where its row saw it, the row goes
-// out as message.processed, and the error is ErrLeftReview. In dry-run the server is not
-// asked, as Apply does not ask it either.
-func (x *Exec) reviewed(ctx context.Context, msg store.Message) (mail.MsgRef, error) {
+// out as message.processed, and the error is ErrLeftReview. In the tenant's dry-run the
+// server is not asked, as Apply does not ask it either.
+func (x *Exec) reviewed(ctx context.Context, tenantID int64, msg store.Message) (mail.MsgRef, error) {
 	at := msg.Location()
-	dry, err := x.Store.DryRun(ctx, x.DryRunDefault)
+	dry, err := x.Store.DryRun(ctx, tenantID, x.DryRunDefault)
 	if err != nil || dry {
 		return at, err
 	}
@@ -543,32 +571,37 @@ func (x *Exec) reviewed(ctx context.Context, msg store.Message) (mail.MsgRef, er
 	if err := x.Store.SetMessageState(recCtx, msg.ID, store.StateSkipped, msg.Attempts, 0); err != nil {
 		return at, err
 	}
-	if row, err := x.Store.ActivityFor(recCtx, msg.ID); err == nil {
-		x.Hub.Publish(events.MessageProcessed, row)
+	if row, err := x.Store.MessageActivity(recCtx, msg.ID); err == nil {
+		x.Hub.Publish(tenantID, msg.AccountID, events.MessageProcessed, row)
 	}
 	return at, ErrLeftReview
 }
 
-// UndoSince reverses every action made at or after since that is still in effect, newest
-// first: "undo the last hour". With ruleID it only takes the actions that rule led to. The
-// run is recorded as one batch of kind undo, whose id is returned with what was undone and
-// how many actions could not be (their message is gone, or its account is not connected).
-// One that cannot be undone does not stop the rest.
-func (x *Exec) UndoSince(ctx context.Context, ruleID, since int64) (batchID int64, u Undid, err error) {
+// UndoSince reverses every action on the mailboxes the viewer sees made at or after since
+// that is still in effect, newest first: "undo the last hour". With ruleID it only takes
+// the actions that rule led to. The run is recorded as one batch of kind undo in the
+// viewer's tenant, whose id is returned with what was undone and how many actions could
+// not be (their message is gone, or its account is not connected). One that cannot be
+// undone does not stop the rest.
+func (x *Exec) UndoSince(ctx context.Context, v store.Viewer, ruleID, since int64) (batchID int64, u Undid, err error) {
 	// What is older than the undo window is not looked at: it could only fail as too old.
-	acts, err := x.Store.DoneActionsSince(ctx, ruleID, max(since, x.now()-store.UndoDays*24*3600))
+	acts, err := x.Store.DoneActionsSince(ctx, v, ruleID, max(since, x.now()-store.UndoDays*24*3600))
 	if err != nil {
 		return 0, Undid{}, err
 	}
-	batchID, u, _, err = x.undoAll(ctx, acts)
+	batchID, u, _, err = x.undoAll(ctx, v.TenantID, acts)
 	return batchID, u, err
 }
 
-// UndoMessage reverses everything still in effect on one message, newest first, as one
-// batch of kind undo: "undo this email" in one step. An action that cannot be undone does
-// not stop the others; why is the first such failure (ErrGone when the message is gone),
-// nil when there was none.
-func (x *Exec) UndoMessage(ctx context.Context, messageID int64) (batchID int64, u Undid, why, err error) {
+// UndoMessage reverses everything still in effect on one message the viewer sees, newest
+// first, as one batch of kind undo: "undo this email" in one step. An action that cannot
+// be undone does not stop the others; why is the first such failure (ErrGone when the
+// message is gone), nil when there was none. A message the viewer does not see is
+// ErrNotFound.
+func (x *Exec) UndoMessage(ctx context.Context, v store.Viewer, messageID int64) (batchID int64, u Undid, why, err error) {
+	if _, err := x.Store.VisibleMessage(ctx, v, messageID); err != nil {
+		return 0, Undid{}, nil, err
+	}
 	all, err := x.Store.MessageActions(ctx, messageID)
 	if err != nil {
 		return 0, Undid{}, nil, err
@@ -579,12 +612,12 @@ func (x *Exec) UndoMessage(ctx context.Context, messageID int64) (batchID int64,
 			acts = append(acts, a)
 		}
 	}
-	return x.undoAll(ctx, acts)
+	return x.undoAll(ctx, v.TenantID, acts)
 }
 
-// undoAll undoes acts in the order given and records the run as one undo batch.
-func (x *Exec) undoAll(ctx context.Context, acts []store.Action) (batchID int64, u Undid, why, err error) {
-	if batchID, err = x.Store.CreateBatch(ctx, store.BatchUndo, store.BatchRunning, x.now()); err != nil {
+// undoAll undoes acts in the order given and records the run as one undo batch of the tenant.
+func (x *Exec) undoAll(ctx context.Context, tenantID int64, acts []store.Action) (batchID int64, u Undid, why, err error) {
+	if batchID, err = x.Store.CreateBatch(ctx, tenantID, store.BatchUndo, store.BatchRunning, x.now()); err != nil {
 		return 0, Undid{}, nil, err
 	}
 	emails := map[int64]bool{}

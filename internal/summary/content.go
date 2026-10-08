@@ -35,24 +35,24 @@ type Content struct {
 	ModelCalls   int
 }
 
-// build reads what MailRules did for the user in [start, end).
-func build(ctx context.Context, st *store.Store, userID int64, start, end time.Time, dryRun bool) (Content, error) {
+// build reads what MailRules did in [start, end) in the mailboxes v sees.
+func build(ctx context.Context, st *store.Store, v store.Viewer, start, end time.Time, dryRun bool) (Content, error) {
 	c := Content{Start: start, End: end, DryRun: dryRun}
 	from, to := start.Unix(), end.Unix()
 	var err error
-	if c.Rules, err = st.SummaryRules(ctx, userID, from, to); err != nil {
+	if c.Rules, err = st.SummaryRules(ctx, v, from, to); err != nil {
 		return c, err
 	}
 	for _, r := range c.Rules {
 		c.Sorted += r.Emails
 	}
-	if c.Trashed, c.TrashedTotal, err = st.SummaryTrashed(ctx, userID, from, to, maxTrashed); err != nil {
+	if c.Trashed, c.TrashedTotal, err = st.SummaryTrashed(ctx, v, from, to, maxTrashed); err != nil {
 		return c, err
 	}
-	if c.Review, c.ReviewTotal, err = st.SummaryReview(ctx, userID, maxReview); err != nil {
+	if c.Review, c.ReviewTotal, err = st.SummaryReview(ctx, v, maxReview); err != nil {
 		return c, err
 	}
-	if c.CostUSD, c.ModelCalls, err = st.SummaryCost(ctx, userID, from, to); err != nil {
+	if c.CostUSD, c.ModelCalls, err = st.SummaryCost(ctx, v, from, to); err != nil {
 		return c, err
 	}
 	return c, nil

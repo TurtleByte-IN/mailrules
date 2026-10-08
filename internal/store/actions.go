@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
@@ -165,9 +166,23 @@ func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 	return a, nil
 }
 
-// Action returns one action, or ErrNotFound.
+// Action returns one action, or ErrNotFound. It does not look at who asks: a request
+// reads VisibleAction.
 func (s *Store) Action(ctx context.Context, id int64) (Action, error) {
 	a, err := scanAction(s.db.QueryRowContext(ctx, `SELECT `+actionCols+` FROM actions WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Action{}, ErrNotFound
+	}
+	if err != nil {
+		return Action{}, fmt.Errorf("get action: %w", err)
+	}
+	return a, nil
+}
+
+// VisibleAction returns one action on a mailbox the viewer sees, or ErrNotFound.
+func (s *Store) VisibleAction(ctx context.Context, v Viewer, id int64) (Action, error) {
+	a, err := scanAction(s.db.QueryRowContext(ctx,
+		`SELECT `+actionCols+` FROM actions WHERE id = ? AND `+inVisible("account_id", v), id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Action{}, ErrNotFound
 	}
@@ -207,14 +222,23 @@ func (s *Store) MessageActions(ctx context.Context, messageID int64) ([]Action, 
 	return s.listActions(ctx, actionsOfMessage, messageID)
 }
 
-// BatchActions lists a batch's actions, oldest first.
+// BatchActions lists a batch's actions, oldest first, whoever's mailbox they are on: for
+// internal work. A request reads VisibleBatchActions.
 func (s *Store) BatchActions(ctx context.Context, batchID int64) ([]Action, error) {
 	return s.listActions(ctx, actionsOfBatch, batchID)
+}
+
+// VisibleBatchActions lists a batch's actions on the mailboxes the viewer sees, oldest
+// first. A tenant's batch without a mailbox (the day's live batch, a correction or an undo)
+// can hold actions on mailboxes of several people; each sees only theirs and shared ones.
+func (s *Store) VisibleBatchActions(ctx context.Context, v Viewer, batchID int64) ([]Action, error) {
+	return s.listActions(ctx, `SELECT `+actionCols+` FROM actions WHERE batch_id = ? AND `+inVisible("account_id", v)+` ORDER BY id`, batchID)
 }
 
 // Batch is one row of batches: a group of actions that can be undone together.
 type Batch struct {
 	ID        int64
+	TenantID  int64
 	Kind      string // live | cleanup | review | correction | undo
 	Status    string // running | done | failed | undone
 	Total     int    // how many items the batch set out to handle; 0 = not counted (live)
@@ -244,12 +268,19 @@ type Batch struct {
 
 const batchCols = `id, kind, status, COALESCE(total, 0), done, created_at,
 	COALESCE(account_id, 0), COALESCE(folder, ''), COALESCE(since, 0), tokens, cost_usd, skipped,
-	COALESCE(scan_limit, 0), COALESCE(scan_matched, 0), COALESCE(run_id, 0)`
+	COALESCE(scan_limit, 0), COALESCE(scan_matched, 0), COALESCE(run_id, 0), tenant_id`
 
 func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
 	var b Batch
-	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped, &b.ScanLimit, &b.ScanMatched, &b.RunID)
+	err := row.Scan(&b.ID, &b.Kind, &b.Status, &b.Total, &b.Done, &b.CreatedAt, &b.AccountID, &b.Folder, &b.Since, &b.Tokens, &b.CostUSD, &b.Skipped, &b.ScanLimit, &b.ScanMatched, &b.RunID, &b.TenantID)
 	return b, err
+}
+
+// visibleBatch is the condition that the batches row (unaliased) is one the viewer sees: a
+// batch of a mailbox when they see the mailbox, a batch of no mailbox when it is their
+// tenant's.
+func visibleBatch(v Viewer) string {
+	return `(tenant_id = ` + strconv.FormatInt(v.TenantID, 10) + ` AND (account_id IS NULL OR ` + inVisible("account_id", v) + `))`
 }
 
 // CleanupBatch is what a cleanup batch is opened with.
@@ -271,11 +302,16 @@ func insertCleanupBatch(ctx context.Context, db interface {
 	if c.ScanLimit > 0 {
 		matched = c.ScanMatched
 	}
+	// The batch belongs to the tenant of the mailbox it sorts.
 	res, err := db.ExecContext(ctx,
-		`INSERT INTO batches (kind, status, total, account_id, folder, since, scan_limit, scan_matched, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		BatchCleanup, BatchRunning, c.Total, c.AccountID, c.Folder, null(c.Since), null(c.ScanLimit), matched, runID, now)
+		`INSERT INTO batches (tenant_id, kind, status, total, account_id, folder, since, scan_limit, scan_matched, run_id, created_at)
+		 SELECT tenant_id, ?, ?, ?, id, ?, ?, ?, ?, ?, ? FROM accounts WHERE id = ?`,
+		BatchCleanup, BatchRunning, c.Total, c.Folder, null(c.Since), null(c.ScanLimit), matched, runID, now, c.AccountID)
 	if err != nil {
 		return 0, fmt.Errorf("create cleanup batch: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, fmt.Errorf("create cleanup batch: account %d: %w", c.AccountID, ErrNotFound)
 	}
 	return res.LastInsertId()
 }
@@ -349,11 +385,12 @@ func (s *Store) FailRunningBatches(ctx context.Context) error {
 	return nil
 }
 
-// Batches lists batches, newest first: of one kind, or of every kind when kind is empty.
-// before is the cursor (only batches with a smaller id; 0 = from the newest).
-func (s *Store) Batches(ctx context.Context, kind string, before int64, limit int) ([]Batch, error) {
+// Batches lists the batches the viewer sees, newest first: of one kind, or of every kind
+// when kind is empty. before is the cursor (only batches with a smaller id; 0 = from the
+// newest).
+func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64, limit int) ([]Batch, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+batchCols+` FROM batches WHERE (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`, kind, before, limit)
+		`SELECT `+batchCols+` FROM batches WHERE `+visibleBatch(v)+` AND (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`, kind, before, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list batches: %w", err)
 	}
@@ -372,9 +409,10 @@ func (s *Store) Batches(ctx context.Context, kind string, before int64, limit in
 	return out, nil
 }
 
-// BatchActionCounts counts a batch's own actions by status.
-func (s *Store) BatchActionCounts(ctx context.Context, batchID int64) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM actions WHERE batch_id = ? GROUP BY status`, batchID)
+// BatchActionCounts counts a batch's own actions on the mailboxes the viewer sees, by status.
+func (s *Store) BatchActionCounts(ctx context.Context, v Viewer, batchID int64) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM actions WHERE batch_id = ? AND `+inVisible("account_id", v)+` GROUP BY status`, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("count batch actions: %w", err)
 	}
@@ -394,9 +432,9 @@ func (s *Store) BatchActionCounts(ctx context.Context, batchID int64) (map[strin
 	return out, nil
 }
 
-// CreateBatch opens a batch and returns its id.
-func (s *Store) CreateBatch(ctx context.Context, kind, status string, now int64) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO batches (kind, status, created_at) VALUES (?, ?, ?)`, kind, status, now)
+// CreateBatch opens a batch of the tenant, with no mailbox, and returns its id.
+func (s *Store) CreateBatch(ctx context.Context, tenantID int64, kind, status string, now int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO batches (tenant_id, kind, status, created_at) VALUES (?, ?, ?, ?)`, tenantID, kind, status, now)
 	if err != nil {
 		return 0, fmt.Errorf("create batch: %w", err)
 	}
@@ -404,9 +442,22 @@ func (s *Store) CreateBatch(ctx context.Context, kind, status string, now int64)
 	return id, nil
 }
 
-// Batch returns one batch, or ErrNotFound.
+// Batch returns one batch, or ErrNotFound. It does not look at who asks: a request reads
+// VisibleBatch.
 func (s *Store) Batch(ctx context.Context, id int64) (Batch, error) {
 	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Batch{}, ErrNotFound
+	}
+	if err != nil {
+		return Batch{}, fmt.Errorf("get batch: %w", err)
+	}
+	return b, nil
+}
+
+// VisibleBatch returns one batch the viewer sees, or ErrNotFound.
+func (s *Store) VisibleBatch(ctx context.Context, v Viewer, id int64) (Batch, error) {
+	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ? AND `+visibleBatch(v), id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Batch{}, ErrNotFound
 	}
@@ -424,26 +475,26 @@ func (s *Store) SetBatchStatus(ctx context.Context, id int64, status string) err
 	return nil
 }
 
-// LiveBatch returns the batch that collects the actions of live processing for now's day
-// (UTC), creating it on the day's first action, so "undo today" is one batch undo. Once a
-// day's batch has been undone, later mail that day starts a new one.
-func (s *Store) LiveBatch(ctx context.Context, now time.Time) (int64, error) {
+// LiveBatch returns the batch that collects the tenant's actions of live processing for
+// now's day (UTC), creating it on the day's first action, so "undo today" is one batch
+// undo. Once a day's batch has been undone, later mail that day starts a new one.
+func (s *Store) LiveBatch(ctx context.Context, tenantID int64, now time.Time) (int64, error) {
 	day := now.UTC().Truncate(24 * time.Hour).Unix()
-	const open = `kind = 'live' AND status <> 'undone' AND created_at >= ?`
+	const open = `tenant_id = ?1 AND kind = 'live' AND status <> 'undone' AND created_at >= ?2`
 	// One statement, so two accounts' first actions of the day cannot both create it.
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO batches (kind, status, created_at) SELECT 'live', 'done', ? WHERE NOT EXISTS (SELECT 1 FROM batches WHERE `+open+`)`,
-		now.Unix(), day); err != nil {
+		`INSERT INTO batches (tenant_id, kind, status, created_at) SELECT ?1, 'live', 'done', ?3 WHERE NOT EXISTS (SELECT 1 FROM batches WHERE `+open+`)`,
+		tenantID, day, now.Unix()); err != nil {
 		return 0, fmt.Errorf("open live batch: %w", err)
 	}
 	var id int64
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM batches WHERE `+open+` ORDER BY id DESC LIMIT 1`, day).Scan(&id); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM batches WHERE `+open+` ORDER BY id DESC LIMIT 1`, tenantID, day).Scan(&id); err != nil {
 		return 0, fmt.Errorf("open live batch: %w", err)
 	}
 	return id, nil
 }
 
-// settingDryRun is the settings key of the global dry-run switch.
+// settingDryRun is the settings key of a tenant's dry-run switch.
 const settingDryRun = "dry_run"
 
 // SettingTrashToFolder is the settings key of the switch that sends trashed mail to an
@@ -455,27 +506,27 @@ const (
 	DefaultTrashToFolder = true
 )
 
-// DryRun reports whether the global dry-run switch is on. def is used until the switch
+// DryRun reports whether the tenant's dry-run switch is on. def is used until the switch
 // has been set (MAILRULES_DRY_RUN).
-func (s *Store) DryRun(ctx context.Context, def bool) (bool, error) {
-	return s.boolSetting(ctx, settingDryRun, def)
+func (s *Store) DryRun(ctx context.Context, tenantID int64, def bool) (bool, error) {
+	return s.boolSetting(ctx, tenantID, settingDryRun, def)
 }
 
-// SetDryRun turns the global dry-run switch on or off. A running daemon reads it before
+// SetDryRun turns the tenant's dry-run switch on or off. A running daemon reads it before
 // every action, so it takes effect at once.
-func (s *Store) SetDryRun(ctx context.Context, on bool) error {
-	return s.SetSetting(ctx, settingDryRun, fmt.Sprint(on))
+func (s *Store) SetDryRun(ctx context.Context, tenantID int64, on bool) error {
+	return s.SetSetting(ctx, tenantID, settingDryRun, fmt.Sprint(on))
 }
 
-// TrashToFolder reports whether trashed mail goes to MailRules' own folder rather than the
-// server's Trash. The executor reads it before every trash action.
-func (s *Store) TrashToFolder(ctx context.Context) (bool, error) {
-	return s.boolSetting(ctx, SettingTrashToFolder, DefaultTrashToFolder)
+// TrashToFolder reports whether the tenant's trashed mail goes to MailRules' own folder
+// rather than the server's Trash. The executor reads it before every trash action.
+func (s *Store) TrashToFolder(ctx context.Context, tenantID int64) (bool, error) {
+	return s.boolSetting(ctx, tenantID, SettingTrashToFolder, DefaultTrashToFolder)
 }
 
-// SetTrashToFolder turns the trash_to_folder switch on or off.
-func (s *Store) SetTrashToFolder(ctx context.Context, on bool) error {
-	return s.SetSetting(ctx, SettingTrashToFolder, fmt.Sprint(on))
+// SetTrashToFolder turns the tenant's trash_to_folder switch on or off.
+func (s *Store) SetTrashToFolder(ctx context.Context, tenantID int64, on bool) error {
+	return s.SetSetting(ctx, tenantID, SettingTrashToFolder, fmt.Sprint(on))
 }
 
 // SettingLeaveOwnMail is the settings key of the switch that leaves mail sent from the
@@ -486,15 +537,15 @@ const (
 	DefaultLeaveOwnMail = true
 )
 
-// LeaveOwnMail reports whether mail from the mailbox's own address is left alone. The
-// pipeline reads it for every email.
-func (s *Store) LeaveOwnMail(ctx context.Context) (bool, error) {
-	return s.boolSetting(ctx, SettingLeaveOwnMail, DefaultLeaveOwnMail)
+// LeaveOwnMail reports whether, in the tenant, mail from the mailbox's own address is left
+// alone. The pipeline reads it for every email.
+func (s *Store) LeaveOwnMail(ctx context.Context, tenantID int64) (bool, error) {
+	return s.boolSetting(ctx, tenantID, SettingLeaveOwnMail, DefaultLeaveOwnMail)
 }
 
-// boolSetting reads a stored switch; def is used until it has been set.
-func (s *Store) boolSetting(ctx context.Context, key string, def bool) (bool, error) {
-	v, err := s.Setting(ctx, key)
+// boolSetting reads one of the tenant's stored switches; def is used until it has been set.
+func (s *Store) boolSetting(ctx context.Context, tenantID int64, key string, def bool) (bool, error) {
+	v, err := s.Setting(ctx, tenantID, key)
 	if errors.Is(err, ErrNotFound) {
 		return def, nil
 	}
@@ -516,13 +567,13 @@ func (s *Store) SetBatchProgress(ctx context.Context, id int64, total, done int)
 	return nil
 }
 
-// DoneActionsSince lists the actions made at or after since that are still in effect,
-// newest first: the ones "undo everything since" reverses. With ruleID, only those a
-// decision for that rule led to.
-func (s *Store) DoneActionsSince(ctx context.Context, ruleID, since int64) ([]Action, error) {
+// DoneActionsSince lists the actions on the mailboxes the viewer sees made at or after
+// since that are still in effect, newest first: the ones "undo everything since" reverses.
+// With ruleID, only those a decision for that rule led to.
+func (s *Store) DoneActionsSince(ctx context.Context, v Viewer, ruleID, since int64) ([]Action, error) {
 	return s.listActions(ctx,
 		`SELECT `+actionCols+` FROM actions
-		 WHERE status = 'done' AND created_at >= ?1
+		 WHERE status = 'done' AND created_at >= ?1 AND `+inVisible("account_id", v)+`
 		   AND (?2 = 0 OR decision_id IN (SELECT id FROM decisions WHERE rule_id = ?2))
 		 ORDER BY id DESC`, since, ruleID)
 }

@@ -263,7 +263,7 @@ func (e *env) deliver(from, subject string) {
 // decider answers like a decision model that reads the subject: it picks the candidate
 // whose name the subject mentions, at 0.95.
 func decider(st *store.Store) *models.Router {
-	return (&models.Router{Usage: st, Primary: &models.Fake{NameValue: "fake", DecideFunc: func(req models.DecideRequest) (models.Decision, models.Usage, error) {
+	return (&models.Router{Usage: store.Ledger{Store: st, TenantID: 1}, Primary: &models.Fake{NameValue: "fake", DecideFunc: func(req models.DecideRequest) (models.Decision, models.Usage, error) {
 		u := models.Usage{Provider: "fake", Model: "fake-1", TokensIn: 100, TokensOut: 5, CostUSD: 0.001}
 		for _, c := range req.Candidates {
 			if strings.Contains(strings.ToLower(req.Email.Subject), strings.ToLower(c.Name)) {
@@ -304,7 +304,7 @@ func TestFiveInstructionsBecomeFiveTestedDrafts(t *testing.T) {
 	}}
 	now := time.Unix(1_800_000_000, 0)
 	c := Composer{Store: e.st, Gen: gen, Now: func() time.Time { return now }, BodyChars: 2000}
-	req := Request{UserID: e.user.ID, Text: paragraph, Account: &e.acct, Mailbox: e.mb,
+	req := Request{Viewer: e.user.Viewer(), Text: paragraph, Account: &e.acct, Mailbox: e.mb,
 		Decider: pipeline.Decider{Router: decider(e.st), MinConfidence: 0.75, Now: now}}
 	out, err := c.Compose(ctx, req)
 	if err != nil {
@@ -381,7 +381,7 @@ func TestComposeFailures(t *testing.T) {
 		}
 		return models.Usage{Provider: "anthropic", Model: "m", TokensIn: 10}, json.Unmarshal([]byte(answer), out)
 	}}}
-	req := Request{UserID: e.user.ID, Text: "Put Swiggy in Food", Account: &e.acct}
+	req := Request{Viewer: e.user.Viewer(), Text: "Put Swiggy in Food", Account: &e.acct}
 
 	// The model answered with something that is not JSON at all: the adapters report that.
 	genErr = fmt.Errorf("anthropic: %w: answer is not the expected JSON", models.ErrBadOutput)
@@ -542,7 +542,7 @@ func TestTesterLogsNeverCarryMailOrKeys(t *testing.T) {
 	t.Cleanup(srv.Close)
 	caller := models.NewCaller(2)
 	caller.Sleep = func(context.Context, time.Duration) error { return nil }
-	router := (&models.Router{Usage: e.st, Primary: models.NewClef(srv.URL, "acct", key, "clef", models.Deps{Caller: caller, Prices: models.DefaultPrices()})}).For("test")
+	router := (&models.Router{Usage: store.Ledger{Store: e.st, TenantID: 1}, Primary: models.NewClef(srv.URL, "acct", key, "clef", models.Deps{Caller: caller, Prices: models.DefaultPrices()})}).For("test")
 
 	var out bytes.Buffer
 	old := slog.Default()

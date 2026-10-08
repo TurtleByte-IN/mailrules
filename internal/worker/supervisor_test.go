@@ -46,7 +46,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateRule(ctx, rules.Rule{UserID: u.ID, Name: "Reading", Enabled: true,
+	if _, err := st.CreateRule(ctx, 1, rules.Rule{UserID: u.ID, Name: "Reading", Enabled: true,
 		Conditions: rules.Cond{Field: "from_domain", Op: rules.OpEq, Value: "news.example"},
 		Actions:    []rules.Action{{Type: rules.ActKeep}}}, 1); err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func eventually(t *testing.T, what string, ok func() bool) {
 
 func (e *env) state(t *testing.T, ref mail.MsgRef) string {
 	t.Helper()
-	rows, err := e.st.Activity(t.Context(), store.ActivityFilter{})
+	rows, err := e.st.Activity(t.Context(), store.Viewer{UserID: 1, TenantID: 1}, store.ActivityFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestSupervisorDrainsQueuedMailOnShutdown(t *testing.T) {
 	refs := []mail.MsgRef{e.mb.Deliver("INBOX", eml("one")), e.mb.Deliver("INBOX", eml("two")), e.mb.Deliver("INBOX", eml("three"))}
 	<-g.started // the processor holds message one; two and three wait in the queue
 	eventually(t, "the watcher to queue the rest", func() bool {
-		f, _ := e.st.Activity(t.Context(), store.ActivityFilter{})
+		f, _ := e.st.Activity(t.Context(), store.Viewer{UserID: 1, TenantID: 1}, store.ActivityFilter{})
 		return len(f) == 1
 	})
 	time.Sleep(20 * time.Millisecond)

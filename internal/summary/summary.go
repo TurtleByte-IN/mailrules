@@ -72,9 +72,10 @@ type View struct {
 	NextAt     int64    // 0 = none: off, or no mail server
 }
 
-// View returns the settings in force for the user.
+// View returns the settings in force for the user: their tenant's summary settings, and
+// their own last summary.
 func (s *Service) View(ctx context.Context, u store.User) (View, error) {
-	cur, err := load(ctx, s.Store)
+	cur, err := load(ctx, s.Store, u.TenantID)
 	if err != nil {
 		return View{}, err
 	}
@@ -100,11 +101,12 @@ func (s *Service) View(ctx context.Context, u store.User) (View, error) {
 	return v, nil
 }
 
-// Prepare validates a change to the settings and returns what stores it. Nothing is
-// stored until commit runs, so the caller can check its other changes first. A problem the
-// user can fix is a *settings.Invalid; switching on without a mail server is a *NoSMTP.
-func (s *Service) Prepare(ctx context.Context, p Patch) (commit func(context.Context) error, err error) {
-	cur, err := load(ctx, s.Store)
+// Prepare validates a change to the tenant's summary settings and returns what stores it.
+// Nothing is stored until commit runs, so the caller can check its other changes first. A
+// problem the user can fix is a *settings.Invalid; switching on without a mail server is a
+// *NoSMTP.
+func (s *Service) Prepare(ctx context.Context, tenantID int64, p Patch) (commit func(context.Context) error, err error) {
+	cur, err := load(ctx, s.Store, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,13 +118,13 @@ func (s *Service) Prepare(ctx context.Context, p Patch) (commit func(context.Con
 	if err != nil {
 		return nil, err
 	}
-	return func(ctx context.Context) error { return save(ctx, s.Store, next) }, nil
+	return func(ctx context.Context) error { return save(ctx, s.Store, tenantID, next) }, nil
 }
 
 // Preview renders the summary the next scheduled one would be if it went now, and the
 // address it would go to.
 func (s *Service) Preview(ctx context.Context, u store.User) (Email, Content, string, error) {
-	cur, err := load(ctx, s.Store)
+	cur, err := load(ctx, s.Store, u.TenantID)
 	if err != nil {
 		return Email{}, Content{}, "", err
 	}
@@ -131,7 +133,7 @@ func (s *Service) Preview(ctx context.Context, u store.User) (Email, Content, st
 	if err != nil {
 		return Email{}, Content{}, "", err
 	}
-	email, c, err := s.render(ctx, u.ID, cur, start, now)
+	email, c, err := s.render(ctx, u, cur, start, now)
 	return email, c, recipient(cur, u), err
 }
 
@@ -141,12 +143,12 @@ func (s *Service) SendTest(ctx context.Context, u store.User) (Email, string, er
 	if !s.Ready() {
 		return Email{}, "", &NoSMTP{Missing: s.missing()}
 	}
-	cur, err := load(ctx, s.Store)
+	cur, err := load(ctx, s.Store, u.TenantID)
 	if err != nil {
 		return Email{}, "", err
 	}
 	now := s.now()
-	email, c, err := s.render(ctx, u.ID, cur, now.Add(-24*time.Hour), now)
+	email, c, err := s.render(ctx, u, cur, now.Add(-24*time.Hour), now)
 	if err != nil {
 		return Email{}, "", err
 	}
@@ -190,17 +192,18 @@ func (s *Service) start(ctx context.Context, userID int64, cur Settings, now tim
 	return start, nil
 }
 
-// render builds and renders the summary of [start, end) in the user's zone.
-func (s *Service) render(ctx context.Context, userID int64, cur Settings, start, end time.Time) (Email, Content, error) {
+// render builds and renders the user's summary of [start, end) in the summary's zone: the
+// mailboxes the user sees, with their tenant's dry-run switch.
+func (s *Service) render(ctx context.Context, u store.User, cur Settings, start, end time.Time) (Email, Content, error) {
 	loc, err := zone(cur.TimeZone)
 	if err != nil {
 		loc = time.UTC
 	}
-	dryRun, err := s.Store.DryRun(ctx, s.DryRunDefault)
+	dryRun, err := s.Store.DryRun(ctx, u.TenantID, s.DryRunDefault)
 	if err != nil {
 		return Email{}, Content{}, err
 	}
-	c, err := build(ctx, s.Store, userID, start.In(loc), end.In(loc), dryRun)
+	c, err := build(ctx, s.Store, u.Viewer(), start.In(loc), end.In(loc), dryRun)
 	if err != nil {
 		return Email{}, Content{}, err
 	}
@@ -224,20 +227,32 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// Tick sends the admin's summary when one is due and has not gone out. It is safe to call
-// from two places at once: store.ClaimSummary lets only one of them send.
+// Tick sends every user's summary that is due and has not gone out, each by their tenant's
+// summary settings. It is safe to call from two places at once: store.ClaimSummary lets
+// only one of them send. One user's failure does not keep the others' from going out.
 func (s *Service) Tick(ctx context.Context) error {
 	if !s.Ready() {
 		return nil
 	}
-	u, err := s.Store.FirstUser(ctx)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil // no admin account yet
-	}
+	users, err := s.Store.Users(ctx)
 	if err != nil {
 		return err
 	}
-	cur, err := load(ctx, s.Store)
+	var errs []error
+	for _, u := range users {
+		if err := s.tick(ctx, u); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			errs = append(errs, fmt.Errorf("summary of user %d: %w", u.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// tick sends one user's summary when it is due and has not gone out.
+func (s *Service) tick(ctx context.Context, u store.User) error {
+	cur, err := load(ctx, s.Store, u.TenantID)
 	if err != nil || !cur.Enabled {
 		return err
 	}
@@ -274,7 +289,7 @@ func (s *Service) send(ctx context.Context, cur Settings, u store.User, id int64
 	failed := func() error {
 		return s.Store.FinishSummary(context.WithoutCancel(ctx), id, false, 0, 0, s.now().Unix())
 	}
-	email, c, err := s.render(ctx, u.ID, cur, start, end)
+	email, c, err := s.render(ctx, u, cur, start, end)
 	if err != nil {
 		slog.ErrorContext(ctx, "summary email not built", "attempt", attempt, "max_attempts", maxAttempts, "error", err.Error())
 		return failed()

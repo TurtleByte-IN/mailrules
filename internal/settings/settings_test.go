@@ -19,7 +19,7 @@ func TestOwnSwitches(t *testing.T) {
 		key   string
 		patch func(*bool) Patch
 		view  func(View) bool
-		read  func(*store.Store, context.Context) (bool, error)
+		read  func(*store.Store, context.Context, int64) (bool, error)
 	}{
 		{store.SettingTrashToFolder, func(b *bool) Patch { return Patch{TrashToFolder: b} }, func(v View) bool { return v.TrashToFolder }, (*store.Store).TrashToFolder},
 		{store.SettingLeaveOwnMail, func(b *bool) Patch { return Patch{LeaveOwnMail: b} }, func(v View) bool { return v.LeaveOwnMail }, (*store.Store).LeaveOwnMail},
@@ -59,7 +59,7 @@ func TestOwnSwitches(t *testing.T) {
 					rows[sw.key] = fmt.Sprint(*tt.stored)
 				}
 				for k, v := range rows {
-					if err := st.SetSetting(ctx, k, v); err != nil {
+					if err := st.SetSetting(ctx, 1, k, v); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -72,14 +72,14 @@ func TestOwnSwitches(t *testing.T) {
 				if tt.reset {
 					p.Reset = []string{sw.key}
 				}
-				if err := s.Apply(ctx, p); err != nil {
+				if err := s.Apply(ctx, 1, p); err != nil {
 					t.Fatal(err)
 				}
-				v, err := s.View(ctx)
+				v, err := s.View(ctx, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
-				acting, err := sw.read(st, ctx)
+				acting, err := sw.read(st, ctx, 1)
 				if err != nil || sw.view(v) != tt.want || acting != tt.want {
 					t.Errorf("the screen reads %v, the step that acts on it %v (%v); want %v", sw.view(v), acting, err, tt.want)
 				}

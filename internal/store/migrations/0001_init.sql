@@ -1,5 +1,6 @@
 -- +goose Up
--- SQLite; cloud adds tenant_id to every table and moves to Postgres.
+-- SQLite. Tenants arrive in 0011 (tenant_id on users, accounts, rules, sender_rules,
+-- settings, usage_daily and batches); Postgres with row-level security is MAI-150.
 -- Timestamps are unix seconds everywhere.
 CREATE TABLE users (
   id            INTEGER PRIMARY KEY,

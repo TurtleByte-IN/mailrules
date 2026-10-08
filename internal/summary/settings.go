@@ -101,10 +101,10 @@ func zone(name string) (*time.Location, error) {
 	return time.LoadLocation(name)
 }
 
-// load returns the stored settings, the defaults where nothing is stored.
-func load(ctx context.Context, st *store.Store) (Settings, error) {
+// load returns the tenant's stored summary settings, the defaults where nothing is stored.
+func load(ctx context.Context, st *store.Store, tenantID int64) (Settings, error) {
 	v := defaults()
-	raw, err := st.Setting(ctx, store.SettingSummary)
+	raw, err := st.Setting(ctx, tenantID, store.SettingSummary)
 	if errors.Is(err, store.ErrNotFound) {
 		return v, nil
 	}
@@ -168,13 +168,13 @@ func apply(cur Settings, p Patch, missing []string, now time.Time) (Settings, er
 	return next, nil
 }
 
-// save stores s.
-func save(ctx context.Context, st *store.Store, s Settings) error {
+// save stores s as the tenant's summary settings.
+func save(ctx context.Context, st *store.Store, tenantID int64, s Settings) error {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("encode the summary setting: %w", err)
 	}
-	return st.SetSetting(ctx, store.SettingSummary, string(b))
+	return st.SetSetting(ctx, tenantID, store.SettingSummary, string(b))
 }
 
 // period is how long one summary covers when there is no last one to start from.

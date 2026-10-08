@@ -32,13 +32,15 @@ const (
 // Observe runs after a model decided for mail from sender. When the sender's recent
 // decisions qualify, it creates a learned sender rule that routes the address to that rule
 // without a model call, and reports true. bulk says the email just decided was bulk mail
-// that passed DMARC. Corrections delete the rule again (store.AddCorrection).
-func Observe(ctx context.Context, st *store.Store, userID int64, sender string, bulk bool, now int64) (bool, error) {
+// that passed DMARC. Corrections delete the rule again (store.AddCorrection). v is who the
+// email's mailbox belongs to: the decisions read are of the mailboxes they see, and the
+// sender rule goes to their tenant.
+func Observe(ctx context.Context, st *store.Store, v store.Viewer, sender string, bulk bool, now int64) (bool, error) {
 	need := After
 	if bulk {
 		need = AfterBulk
 	}
-	recent, err := st.RecentSenderDecisions(ctx, userID, sender, After)
+	recent, err := st.RecentSenderDecisions(ctx, v, sender, After)
 	if err != nil || len(recent) < need {
 		return false, err
 	}
@@ -48,7 +50,7 @@ func Observe(ctx context.Context, st *store.Store, userID int64, sender string, 
 			return false, nil
 		}
 	}
-	return st.AddLearnedSenderRule(ctx, userID, sender, recent[0].RuleID, now)
+	return st.AddLearnedSenderRule(ctx, v.TenantID, v.UserID, sender, recent[0].RuleID, now)
 }
 
 // MaxExamples is how many corrections the fallback model is shown for one email.
@@ -96,9 +98,10 @@ func Rank(email message.Summary, past []Past, candidates []int64) []Example {
 	return out
 }
 
-// Examples retrieves the few-shot examples for an email from the user's corrections.
-func Examples(ctx context.Context, st *store.Store, userID int64, email message.Summary, candidates []int64) ([]Example, error) {
-	rows, err := st.Corrections(ctx, userID, recent)
+// Examples retrieves the few-shot examples for an email from the corrections made to mail
+// of the mailboxes v sees.
+func Examples(ctx context.Context, st *store.Store, v store.Viewer, email message.Summary, candidates []int64) ([]Example, error) {
+	rows, err := st.Corrections(ctx, v, recent)
 	if err != nil {
 		return nil, err
 	}

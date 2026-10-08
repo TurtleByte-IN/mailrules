@@ -49,7 +49,7 @@ func TestMessagesAndDecisions(t *testing.T) {
 	}
 
 	u, _ := s.FirstUser(ctx)
-	rule, err := s.CreateRule(ctx, rules.Rule{UserID: u.ID, Name: "Food", Intent: "food", Actions: []rules.Action{{Type: rules.ActKeep}}, Enabled: true}, 1)
+	rule, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: "Food", Intent: "food", Actions: []rules.Action{{Type: rules.ActKeep}}, Enabled: true}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,24 +57,24 @@ func TestMessagesAndDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := s.ActivityFor(ctx, m.ID)
+	row, err := s.ActivityFor(ctx, u.Viewer(), m.ID)
 	if err != nil || row.Decision == nil || row.Decision.ID != id || row.Decision.RuleID != rule.ID || row.Message.State != StateDecided || row.Message.NextAttemptAt != 0 {
 		t.Fatalf("activity row = %+v / %+v, %v", row.Message, row.Decision, err)
 	}
-	if _, err := s.ActivityFor(ctx, 999); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ActivityFor(ctx, u.Viewer(), 999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing activity row: %v", err)
 	}
 	for name, f := range map[string]ActivityFilter{
 		"account": {AccountID: a.ID}, "rule": {RuleID: rule.ID}, "stage": {Stage: "decider"}, "state": {State: StateDecided}, "cursor": {After: FeedCursor{300, m.ID + 1}},
 	} {
-		if rows, err := s.Activity(ctx, f); err != nil || len(rows) != 1 {
+		if rows, err := s.Activity(ctx, u.Viewer(), f); err != nil || len(rows) != 1 {
 			t.Errorf("filter by %s: %d rows, %v", name, len(rows), err)
 		}
 	}
 	for name, f := range map[string]ActivityFilter{
 		"account": {AccountID: a.ID + 1}, "rule": {RuleID: rule.ID + 1}, "stage": {Stage: "sender"}, "state": {State: StateReview}, "cursor": {After: FeedCursor{300, m.ID}},
 	} {
-		if rows, err := s.Activity(ctx, f); err != nil || len(rows) != 0 {
+		if rows, err := s.Activity(ctx, u.Viewer(), f); err != nil || len(rows) != 0 {
 			t.Errorf("filter by another %s: %d rows, %v", name, len(rows), err)
 		}
 	}
@@ -90,26 +90,26 @@ func TestMessagesAndDecisions(t *testing.T) {
 	}
 
 	// History outlives its rule; nothing outlives its account.
-	if _, err := s.AddCorrection(ctx, u.ID, Correction{MessageID: m.ID, WrongRuleID: rule.ID, Example: "{}", CreatedAt: 400}, ""); err != nil {
+	if _, err := s.AddCorrection(ctx, u.TenantID, u.ID, Correction{MessageID: m.ID, WrongRuleID: rule.ID, Example: "{}", CreatedAt: 400}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddCorrection(ctx, u.ID, Correction{MessageID: 999, Example: "{}"}, ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AddCorrection(ctx, u.TenantID, u.ID, Correction{MessageID: 999, Example: "{}"}, ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("correcting a missing message: %v", err)
 	}
-	if err := s.DeleteRule(ctx, u.ID, rule.ID); err != nil {
+	if err := s.DeleteRule(ctx, u.TenantID, rule.ID); err != nil {
 		t.Fatalf("deleting a rule that has decisions and corrections: %v", err)
 	}
-	if row, _ := s.ActivityFor(ctx, m.ID); row.Decision == nil || row.Decision.RuleID != 0 || row.Decision.RuleVersion != 1 {
+	if row, _ := s.ActivityFor(ctx, u.Viewer(), m.ID); row.Decision == nil || row.Decision.RuleID != 0 || row.Decision.RuleVersion != 1 {
 		t.Errorf("decision after its rule was deleted = %+v", row.Decision)
 	}
-	scoped, err := s.CreateRule(ctx, rules.Rule{UserID: u.ID, AccountID: a.ID, Name: "Scoped", Intent: "x", Actions: []rules.Action{{Type: rules.ActKeep}}}, 1)
+	scoped, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, AccountID: a.ID, Name: "Scoped", Intent: "x", Actions: []rules.Action{{Type: rules.ActKeep}}}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DeleteAccount(ctx, a.ID, 500); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.Rule(ctx, u.ID, scoped.ID); err != nil || got.AccountID != 0 || !got.MailboxRemoved {
+	if got, err := s.Rule(ctx, u.TenantID, scoped.ID); err != nil || got.AccountID != 0 || !got.MailboxRemoved {
 		t.Errorf("a rule scoped to a deleted account = %+v, %v; want it kept, marked, with no mailbox", got, err)
 	}
 	var left int
@@ -148,7 +148,7 @@ func TestActivityOrder(t *testing.T) {
 	decide(old, 900) // decided again today, by a cleanup: it comes first again
 	want := []int64{same.ID, old.ID, undecided.ID, mid.ID}
 
-	all, err := s.Activity(ctx, ActivityFilter{})
+	all, err := s.Activity(ctx, a.Owner(), ActivityFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestActivityOrder(t *testing.T) {
 
 	got = nil
 	for after := (FeedCursor{}); ; {
-		page, err := s.Activity(ctx, ActivityFilter{After: after, Limit: 1})
+		page, err := s.Activity(ctx, a.Owner(), ActivityFilter{After: after, Limit: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +186,7 @@ func TestMigrationActedAt(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 5)
 	s := New(db)
-	a := newAccount(t, s, "me@icloud.com", "pw")
+	a := Account{ID: legacyAccount(t, db, legacyUser(t, db))}
 	exec := func(q string, args ...any) int64 {
 		res, err := db.ExecContext(ctx, q, args...)
 		if err != nil {
@@ -252,7 +252,7 @@ func TestRebind(t *testing.T) {
 			return err
 		}},
 		"a row that has a correction": {history: func(s *Store, m Message) error {
-			_, err := s.AddCorrection(ctx, 1, Correction{MessageID: m.ID, Example: "{}", CreatedAt: 1}, "")
+			_, err := s.AddCorrection(ctx, SelfHostTenant, 1, Correction{MessageID: m.ID, Example: "{}", CreatedAt: 1}, "")
 			return err
 		}},
 	} {
@@ -312,7 +312,7 @@ func TestMigrationOneReviewRowPerEmail(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 4)
 	s := New(db)
-	a := newAccount(t, s, "me@icloud.com", "pw")
+	a := Account{ID: legacyAccount(t, db, legacyUser(t, db))}
 	rows := []struct {
 		messageID, state, want string
 	}{

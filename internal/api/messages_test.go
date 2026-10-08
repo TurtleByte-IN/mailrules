@@ -462,10 +462,10 @@ func TestContractGaps(t *testing.T) {
 	}
 
 	// Usage by day says what each model was used for.
-	if err := e.st.AddUsage(t.Context(), e.ck.now().UTC().Format(time.DateOnly), "anthropic", "claude-haiku-4-5", "escalate", 1, 100, 10, 0.01); err != nil {
+	if err := e.st.AddUsage(t.Context(), 1, false, e.ck.now().UTC().Format(time.DateOnly), "anthropic", "claude-haiku-4-5", "escalate", 1, 100, 10, 0.01); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.AddUsage(t.Context(), e.ck.now().UTC().Format(time.DateOnly), "anthropic", "claude-haiku-4-5", "compose", 2, 100, 10, 0.02); err != nil {
+	if err := e.st.AddUsage(t.Context(), 1, false, e.ck.now().UTC().Format(time.DateOnly), "anthropic", "claude-haiku-4-5", "compose", 2, 100, 10, 0.02); err != nil {
 		t.Fatal(err)
 	}
 	usage := e.call(http.MethodGet, "/api/stats/usage", "", http.StatusOK)

@@ -174,7 +174,7 @@ func TestStatsMath(t *testing.T) {
 	}
 	usage := func(at time.Time, provider, model, purpose string, calls int, cost float64) {
 		t.Helper()
-		if err := e.st.AddUsage(ctx, at.UTC().Format(time.DateOnly), provider, model, purpose, calls, calls*100, calls*10, cost); err != nil {
+		if err := e.st.AddUsage(ctx, 1, false, at.UTC().Format(time.DateOnly), provider, model, purpose, calls, calls*100, calls*10, cost); err != nil {
 			t.Fatal(err)
 		}
 	}

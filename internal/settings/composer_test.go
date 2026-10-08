@@ -49,7 +49,7 @@ func TestComposerModelIsCheckedOnSave(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.value, func(t *testing.T) {
 			s := newSettings(t, nil)
-			err := s.Apply(t.Context(), Patch{ComposerModel: &tt.value})
+			err := s.Apply(t.Context(), 1, Patch{ComposerModel: &tt.value})
 			var inv *Invalid
 			switch {
 			case tt.refusal == "" && err != nil:
@@ -57,7 +57,7 @@ func TestComposerModelIsCheckedOnSave(t *testing.T) {
 			case tt.refusal != "" && (!errors.As(err, &inv) || inv.Path != "composer_model" || inv.Message != tt.refusal):
 				t.Fatalf("Apply = %v, want composer_model: %s", err, tt.refusal)
 			}
-			v, err := s.View(t.Context())
+			v, err := s.View(t.Context(), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +94,7 @@ func TestComposerPerProvider(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gen, err := newSettings(t, tt.env).Composer(t.Context())
+			gen, err := newSettings(t, tt.env).Composer(t.Context(), 1)
 			if tt.wantType != "" {
 				if err != nil || fmt.Sprintf("%T", gen) != tt.wantType {
 					t.Fatalf("Composer() = %T, %v; want %s", gen, err, tt.wantType)

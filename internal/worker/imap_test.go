@@ -58,7 +58,7 @@ func newIMAPWorld(t *testing.T) *imapWorld {
 			Actions: []rules.Action{{Type: rules.ActMove, Folder: "Food"}}},
 		{UserID: u.ID, Name: "Later", Enabled: true, Priority: 2, Intent: "Things to read later", Actions: []rules.Action{{Type: rules.ActMove, Folder: "Later"}}},
 	} {
-		if _, err := st.CreateRule(ctx, r, 1); err != nil {
+		if _, err := st.CreateRule(ctx, 1, r, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -111,7 +111,7 @@ func (w *imapWorld) arrived(uid uint32) mail.MsgRef {
 // rows lists MailRules' rows for the email with this Message-ID.
 func (w *imapWorld) rows(messageID string) []store.Message {
 	w.t.Helper()
-	all, err := w.st.Activity(w.t.Context(), store.ActivityFilter{})
+	all, err := w.st.Activity(w.t.Context(), store.Viewer{UserID: 1, TenantID: 1}, store.ActivityFilter{})
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestEmailBackUnderANewUID(t *testing.T) {
 			if _, err := w.user.Flags(ctx, now); err != nil {
 				t.Errorf("the email is no longer at %+v: %v", now, err)
 			}
-			if n, _ := w.st.CountMessages(ctx, store.StateReview); tc.state == store.StateReview && n != tc.rows {
+			if n, _ := w.st.CountMessages(ctx, store.Viewer{UserID: 1, TenantID: 1}, store.StateReview); tc.state == store.StateReview && n != tc.rows {
 				t.Errorf("Needs review holds %d, want %d", n, tc.rows)
 			}
 		})
