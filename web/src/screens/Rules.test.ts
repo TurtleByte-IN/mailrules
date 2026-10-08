@@ -119,3 +119,38 @@ it('states how rules are checked, and links the guide', async () => {
   const link = screen.getByRole('link', { name: 'How rules are checked' });
   expect(link.getAttribute('href')).toBe('https://github.com/TurtleByte-IN/mailrules/blob/main/docs/guide/rules.md#how-an-email-is-decided');
 });
+
+const withModel = (model: string) => Object.assign(rules, { list: [{ ...rule(1, 'Food'), model }], loaded: true, error: '' });
+
+it('shows a rule whose model is not in the list as that model, not as Default', () => {
+  withModel('ollama:llama3.2');
+  render(Rules);
+  expect((screen.getByLabelText('Model') as HTMLSelectElement).selectedOptions[0].textContent).toBe('Ollama…');
+  expect((screen.getByLabelText('Model as name:model') as HTMLInputElement).value).toBe('ollama:llama3.2');
+});
+
+it('saves openai:<model> from the editor, and shows the daemon refusal beside the field', async () => {
+  withModel('');
+  const f = respond(400, { error: { code: 'invalid_input', message: 'The ollama decider has no default model. Write it as ollama:<model>.', path: 'model' } });
+  render(Rules);
+  await fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'ollama' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Set model' }));
+  expect(f).toHaveBeenCalledOnce();
+  expect(f.mock.calls[0][0]).toBe('/api/rules/1');
+  expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ model: 'ollama:' });
+  expect((await screen.findByRole('alert')).textContent).toContain('Write it as ollama:<model>.');
+  expect(rules.list[0].model).toBe('');
+});
+
+it('saves openai:<model> typed in the editor and keeps showing it', async () => {
+  withModel('');
+  const f = respond(200, { rule: { ...rule(1, 'Food'), model: 'openai:gpt-4o-mini' } });
+  render(Rules);
+  await fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'openai' } });
+  await fireEvent.input(screen.getByLabelText('Model as name:model'), { target: { value: 'openai:gpt-4o-mini' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Set model' }));
+  await vi.waitFor(() => expect(rules.list[0].model).toBe('openai:gpt-4o-mini'));
+  expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ model: 'openai:gpt-4o-mini' });
+  expect((screen.getByLabelText('Model') as HTMLSelectElement).selectedOptions[0].textContent).toBe('OpenAI-compatible…');
+  expect((screen.getByLabelText('Model as name:model') as HTMLInputElement).value).toBe('openai:gpt-4o-mini');
+});

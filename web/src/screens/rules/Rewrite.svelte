@@ -9,7 +9,7 @@
   import { flash } from '../../lib/state/toast.svelte';
   import RuleLines from '../compose/RuleLines.svelte';
   import TextBox from '../compose/TextBox.svelte';
-  import { kind } from './text';
+  import { kind, modelLabel } from './text';
 
   /** The saved rule to rewrite. The parent re-creates this when another rule is selected. */
   let { rule, onclose }: { rule: Rule; onclose: () => void } = $props();
@@ -26,7 +26,6 @@
   // The daemon's sentence when it refused to save the draft.
   let refused = $state('');
 
-  const models: Record<string, string> = { '': 'Default', jev: 'Jev', clef: 'Clef', anthropic: 'Claude Haiku 4.5' };
   const sorted = (_: string, v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v);
   /** What the daemon would store for a draft: the same fields PATCH takes, so a draft and a rule compare directly. */
   const fieldsOf = (r: Pick<Rule, 'name' | 'intent' | 'conditions' | 'exceptions' | 'actions' | 'account_id' | 'stack' | 'model' | 'min_confidence'> | Draft) => ({
@@ -84,7 +83,7 @@
     {/if}
     <RuleLines rule={r} />
     <div class="text-[13px] text-secondary">
-      Model: {models[r.model] ?? r.model}{r.intent ? ' · Act when sure above ' + (r.min_confidence === null ? 'your default' : confidence(r.min_confidence)) : ''}
+      Model: {modelLabel(r.model)}{r.intent ? ' · Act when sure above ' + (r.min_confidence === null ? 'your default' : confidence(r.min_confidence)) : ''}
     </div>
   </section>
 {/snippet}

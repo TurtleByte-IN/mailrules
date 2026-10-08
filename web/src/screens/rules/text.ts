@@ -71,3 +71,12 @@ export function summary(r: Pick<Rule, 'intent' | 'conditions' | 'exceptions'>) {
   const unless = treeWords(r.exceptions);
   return conds + (conds && r.intent ? ', about: ' : '') + r.intent + (unless ? ', unless ' + unless : '');
 }
+
+/** The decision models every install can pick by name; any other value is `name:model`, as the daemon's CheckModel accepts it. */
+export const modelNames: Record<string, string> = { '': 'Default', jev: 'Jev', clef: 'Clef', anthropic: 'Claude Haiku 4.5' };
+
+/** What a rule's model reads as on screen: the listed name, or the stored value as it is. */
+export const modelLabel = (model: string) => modelNames[model] ?? model;
+
+/** Which choice in the Model list a stored value is: a listed model, or one of the three that take a model name. */
+export const modelChoice = (model: string): string => (model in modelNames ? model : model.startsWith('openai:') ? 'openai' : model.startsWith('ollama:') ? 'ollama' : 'other');

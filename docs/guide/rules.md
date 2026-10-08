@@ -130,7 +130,7 @@ The **Rules** screen lists every rule in the order it is checked, with what it d
   - **Name**, and the plain-English description under **When the email is about**.
   - **Applies to**: **All mailboxes**, or one mailbox.
   - **Stacks: also applies after another rule matched** (condition-only rules).
-  - **Model**: **Default**, or a specific decision model for this rule (Jev, Clef or Claude Haiku 4.5). When several candidate rules name a model, the highest one in the list decides which model is asked.
+  - **Model**: **Default**, or a specific decision model for this rule: Jev, Clef, Claude Haiku 4.5, **OpenAI-compatible…** (`openai:<model>`), **Ollama…** (`ollama:<model>`) or **Other (name:model)…**. The last three ask for the model name and save it when you click **Set model**; MailRules shows its own message if the value is not accepted. A model set another way, such as in an imported YAML file, is shown as it is and is not changed unless you set another. The key or URL for that model must be set too. When several candidate rules name a model, the highest one in the list decides which model is asked.
   - **Act when sure above**: this rule's threshold, from 50% to 99%. It applies only to rules with a description.
   - **Edit conditions** opens the rule in the builder.
   - **Rewrite with AI**: say what should change ("also skip anything from my bank"), compare **Current rule** and **New draft**, then **Update rule** or **Discard**.
