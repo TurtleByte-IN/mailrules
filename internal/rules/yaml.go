@@ -44,8 +44,8 @@ type yamlFile struct {
 	Rules    []yamlRule `yaml:"rules"`
 }
 
-// yamlRule is one rule as written in the file. id is the rule's name; template, stack
-// and enabled are additions to the PRD shape so an export loses nothing.
+// yamlRule is one rule as written in the file. id is the rule's name; template, stack,
+// enabled and mailbox_removed are additions to the PRD shape so an export loses nothing.
 type yamlRule struct {
 	ID            string   `yaml:"id"`
 	Said          string   `yaml:"said,omitempty"`
@@ -59,6 +59,9 @@ type yamlRule struct {
 	AppliesTo     string   `yaml:"applies_to,omitempty"` // a mailbox address or "all"; omitted = every mailbox
 	Stack         bool     `yaml:"stack,omitempty"`
 	Enabled       *bool    `yaml:"enabled,omitempty"` // omitted = true
+	// MailboxRemoved marks a rule whose mailbox was removed: it is off, and stays off
+	// until it is given a mailbox or a new condition (Rule.MailboxRemoved).
+	MailboxRemoved bool `yaml:"mailbox_removed,omitempty"`
 }
 
 // RuleError is a problem with one rule of a rules file: which rule, and what is wrong.
@@ -122,7 +125,8 @@ func ParseYAML(data []byte) (File, error) {
 
 func (yr yamlRule) rule() (Rule, *ValidationError) {
 	r := Rule{Name: yr.ID, Said: yr.Said, Template: yr.Template, Intent: yr.When, MinConfidence: yr.MinConfidence,
-		Model: yr.Model, Stack: yr.Stack, Enabled: yr.Enabled == nil || *yr.Enabled}
+		Model: yr.Model, Stack: yr.Stack, Enabled: (yr.Enabled == nil || *yr.Enabled) && !yr.MailboxRemoved,
+		MailboxRemoved: yr.MailboxRemoved}
 	var err error
 	if r.Conditions, err = condFromYAML(yr.Match); err != nil {
 		return r, &ValidationError{"conditions", "The conditions cannot be read: " + err.Error() + "."}
@@ -242,9 +246,10 @@ func MarshalYAML(f File) ([]byte, error) {
 			// Dropping it would write a file that widens the rule to every mailbox.
 			return nil, fmt.Errorf("rule %q applies to mailbox %d, which the file has no address for", r.Name, r.AccountID)
 		}
-		if !r.Enabled {
+		if !r.Enabled || r.MailboxRemoved {
 			yr.Enabled = new(bool)
 		}
+		yr.MailboxRemoved = r.MailboxRemoved
 		var err error
 		for _, c := range []Cond{r.Conditions, r.Exceptions} {
 			c.MapAccounts(func(v any) any {

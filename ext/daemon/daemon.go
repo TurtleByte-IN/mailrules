@@ -123,6 +123,15 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		return err
 	}
 	st := store.New(db)
+	// Rules that still name a mailbox removed before MAI-132 are fixed once, as removing it
+	// now would have.
+	fixed, err := st.ReconcileRemovedMailboxes(ctx, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	for _, r := range fixed {
+		slog.Info("a rule naming a removed mailbox was changed", "rule_id", r.ID, "rule", r.Name, "switched_off", r.MailboxRemoved)
+	}
 	master, err := openMasterKey(ctx, cfg, st)
 	if err != nil {
 		return err

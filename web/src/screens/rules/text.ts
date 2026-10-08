@@ -1,8 +1,11 @@
 // How a rule reads on screen: wording from the prototype over the rule shape in lib/api/rules.ts.
 import { leaves, type Action, type Condition, type Rule } from '../../lib/api/rules';
 
-/** The "more options" of a rule. */
-export type Extras = Pick<Rule, 'account_id' | 'stack'>;
+/** The "more options" of a rule. `mailbox_removed` is set on a saved rule whose mailbox was removed. */
+export type Extras = Pick<Rule, 'account_id' | 'stack'> & { mailbox_removed?: boolean };
+
+/** Why a rule whose mailbox was removed cannot be switched on: the daemon's own words for it. */
+export const MAILBOX_REMOVED = 'Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on.';
 
 export interface FieldDef {
   label: string;

@@ -10,7 +10,11 @@
 
 <div class="flex flex-wrap items-center gap-2">
   <label for="{id}-acct" class="w-[110px] text-[13px] font-semibold">Applies to</label>
-  <select id="{id}-acct" class="field flex-[1_1_180px] px-2.5" {...bad('account_id')} value={String(value.account_id ?? '')} onchange={(e) => onchange({ account_id: e.currentTarget.value ? Number(e.currentTarget.value) : null })}>
+  <!-- A rule whose mailbox was removed has none chosen yet, so picking All mailboxes is a change too. -->
+  <select id="{id}-acct" class="field flex-[1_1_180px] px-2.5" {...bad('account_id')} value={value.mailbox_removed ? 'removed' : String(value.account_id ?? '')} onchange={(e) => onchange({ account_id: e.currentTarget.value ? Number(e.currentTarget.value) : null })}>
+    {#if value.mailbox_removed}
+      <option value="removed" disabled>Choose a mailbox</option>
+    {/if}
     <option value="">All mailboxes</option>
     {#each accounts.list as a (a.id)}
       <option value={String(a.id)}>{a.label}</option>

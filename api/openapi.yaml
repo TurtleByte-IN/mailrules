@@ -278,7 +278,7 @@ paths:
       tags: [Accounts]
       operationId: deleteAccount
       summary: Disconnect a mailbox and wipe everything stored about it
-      description: Stops watching, then deletes the account with its password, folders, contacts, messages, decisions, actions and the rules scoped to it. Nothing in the mailbox is touched.
+      description: Stops watching, then deletes the account with its password, folders, contacts, messages, decisions and actions. Nothing in the mailbox is touched. Every user's rules are kept, in the same transaction - a rule for this mailbox only is switched off, set to no mailbox and marked `mailbox_removed`; an `account` condition naming it is rewritten so the rule does what it did on the other mailboxes, and a rule that could then never act is switched off and marked instead, with this mailbox taken out of its conditions. Each such edit raises the rule's `version`.
       responses:
         '204': { description: Deleted }
         '401': { $ref: '#/components/responses/Unauthenticated' }
@@ -566,7 +566,7 @@ paths:
       tags: [Rules]
       operationId: exportRules
       summary: Download every rule as a YAML file
-      description: 'The PRD rule-file shape (`id` is the rule''s name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox''s address (its username); a rule for every mailbox has none. An `account` condition names its mailboxes by address too (`account: work@example.com`, or a list for `in`), never by id; a rule with a condition on a mailbox that no longer exists stops the export. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.'
+      description: 'The PRD rule-file shape (`id` is the rule''s name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox''s address (its username); a rule for every mailbox has none. An `account` condition names its mailboxes by address too (`account: work@example.com`, or a list for `in`), never by id. A rule whose mailbox was removed is written `enabled: false` and `mailbox_removed: true`, with no `applies_to`. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.'
       responses:
         '200':
           description: The rules file
@@ -595,6 +595,11 @@ paths:
         another mailbox on another install. `defaults.decision_model` and
         `defaults.fallback_model` are never applied: a file that names other models than the
         ones in force is refused, since the models are settings of this install.
+
+        A rule with `mailbox_removed: true` is stored switched off, marked and with no
+        mailbox, whatever `enabled` says; with `applies_to` as well it is refused. A rule here
+        that is marked keeps its mark when the file names it without `mailbox_removed`,
+        without `applies_to`, and with the same `match` and `unless`.
       requestBody:
         required: true
         content:
@@ -606,7 +611,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ImportResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op; a mailbox number in an account condition is one, at its value). Also for a mailbox that is not connected or is connected twice (path rules[N].applies_to, or rules[N].match / rules[N].unless for an account condition, N from 0) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op; a mailbox number in an account condition is one, at its value). Also for a mailbox that is not connected or is connected twice (path rules[N].applies_to, or rules[N].match / rules[N].unless for an account condition, N from 0), for applies_to together with mailbox_removed (path rules[N].mailbox_removed) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '413': { $ref: '#/components/responses/TooLarge' }
@@ -629,7 +634,7 @@ paths:
       tags: [Rules]
       operationId: updateRule
       summary: Edit a rule; fields left out stay as they are
-      description: The result is validated as a whole, by the same check a batch save and an import run (`model` included), and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`.
+      description: The result is validated as a whole, by the same check a batch save and an import run (`model` included), and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`. A rule marked `mailbox_removed` cannot be switched on until its mark is cleared, which sending `account_id` (a mailbox, or null for every mailbox), `conditions` or `exceptions` does, in this request or an earlier one.
       requestBody:
         required: true
         content:
@@ -641,7 +646,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuleEnvelope' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path e.g. conditions.all[0].op, or model), invalid_input (path: a field of the wrong type, or account_id), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path e.g. conditions.all[0].op, or model), invalid_input (path: a field of the wrong type, or account_id; or enabled, for a rule marked mailbox_removed: "Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on."), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1721,7 +1726,7 @@ components:
         folder: { type: string, description: 'For move only: 1 to 200 characters, no wildcards' }
     Rule:
       type: object
-      required: [id, account_id, name, said, template, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, version, created_at, updated_at, hits_week, last_match_at]
+      required: [id, account_id, name, said, template, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, mailbox_removed, version, created_at, updated_at, hits_week, last_match_at]
       properties:
         id: { type: integer, format: int64 }
         account_id: { type: [integer, 'null'], format: int64, description: null = every account }
@@ -1737,6 +1742,7 @@ components:
         model: { type: string, description: 'Per-rule decider override: a decider name (jev, clef, anthropic) or name:model (clef:clef-flash, ollama:llama3.2; openai and ollama always need the model); empty = the default. An email is decided by the model of its highest-priority candidate rule that names one. A model that cannot be used (its key is not set) falls back to the default' }
         min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1, description: null = the default threshold }
         enabled: { type: boolean }
+        mailbox_removed: { type: boolean, readOnly: true, description: 'The rule''s mailbox was removed: it is off and cannot be switched on until it is given a mailbox (account_id, or null for every mailbox) or new conditions or exceptions, which clears this' }
         version: { type: integer, description: Goes up by one with every edit }
         created_at: { type: integer, format: int64 }
         updated_at: { type: integer, format: int64 }

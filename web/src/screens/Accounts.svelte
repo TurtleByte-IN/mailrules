@@ -118,7 +118,7 @@
           <span class="text-[12.5px] font-semibold">{statuses[a.status].label}</span>
           {#if removing === a.id}
             <div role="alert" class="flex flex-[1_1_100%] flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-3 py-2 text-trash">
-              <span>Remove {a.label}? MailRules deletes its password, folder list, contacts, activity, undo history and the rules that apply only to this mailbox. Nothing in the mailbox changes.</span>
+              <span>Remove {a.label}? MailRules deletes its password, folder list, contacts, activity and undo history. Rules that apply only to this mailbox are kept but switched off, marked so you can give them another mailbox. Nothing in the mailbox changes.</span>
               <span class="flex gap-2">
                 <button type="button" class="btn" onclick={() => (removing = undefined)}>Cancel</button>
                 <button type="button" class="btn-primary" onclick={() => remove(a.id)}>Remove mailbox</button>

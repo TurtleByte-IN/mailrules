@@ -52,10 +52,10 @@ func createRule(ctx context.Context, q execer, r rules.Rule, now int64) (rules.R
 	}
 	res, err := q.ExecContext(ctx,
 		`INSERT INTO rules (user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
-		                    priority, stack, model, min_confidence, enabled, version, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		                    priority, stack, model, min_confidence, enabled, mailbox_removed, version, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		r.UserID, null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, now, now)
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, now, now)
 	if err != nil {
 		return rules.Rule{}, fmt.Errorf("create rule: %w", err)
 	}
@@ -77,11 +77,11 @@ func updateRule(ctx context.Context, q execer, r rules.Rule, now int64) error {
 	}
 	res, err := q.ExecContext(ctx,
 		`UPDATE rules SET account_id = ?, name = ?, said = ?, template = ?, intent = ?, conditions = ?, exceptions = ?, actions = ?,
-		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?,
+		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?, mailbox_removed = ?,
 		                  version = version + 1, updated_at = ?
 		 WHERE id = ? AND user_id = ?`,
 		null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, now, r.ID, r.UserID)
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, now, r.ID, r.UserID)
 	if err != nil {
 		return fmt.Errorf("update rule: %w", err)
 	}
@@ -92,7 +92,7 @@ func updateRule(ctx context.Context, q execer, r rules.Rule, now int64) error {
 }
 
 const ruleColumns = `id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
-	priority, stack, model, min_confidence, enabled, version, created_at, updated_at`
+	priority, stack, model, min_confidence, enabled, mailbox_removed, version, created_at, updated_at`
 
 func scanRule(row interface{ Scan(...any) error }) (rules.Rule, error) {
 	var r rules.Rule
@@ -101,7 +101,7 @@ func scanRule(row interface{ Scan(...any) error }) (rules.Rule, error) {
 	var minConfidence sql.NullFloat64
 	var conditions, exceptions, actions string
 	if err := row.Scan(&r.ID, &r.UserID, &accountID, &r.Name, &said, &template, &intent, &conditions, &exceptions, &actions,
-		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.MailboxRemoved, &r.Version, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return rules.Rule{}, err
 	}
 	r.AccountID, r.Said, r.Template, r.Intent, r.Model = accountID.Int64, said.String, template.String, intent.String, model.String
@@ -162,6 +162,102 @@ func (s *Store) DeleteRule(ctx context.Context, userID, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// rulesNamingMailboxes returns, for every user, the rules that may name a mailbox: those
+// limited to one and those with an account condition. It reads q, a transaction.
+func rulesNamingMailboxes(ctx context.Context, q *sql.Tx) ([]rules.Rule, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+ruleColumns+` FROM rules
+		WHERE account_id IS NOT NULL OR conditions LIKE '%"field":"account"%' OR exceptions LIKE '%"field":"account"%'
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list rules naming mailboxes: %w", err)
+	}
+	defer rows.Close()
+	var out []rules.Rule
+	for rows.Next() {
+		r, err := scanRule(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list rules naming mailboxes: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list rules naming mailboxes: %w", err)
+	}
+	return out, nil
+}
+
+// dropMailboxes rewrites, in tx, every rule naming one of the mailboxes gone reports as
+// gone, as rules.Rule.DropAccount has it, as an edit (the version goes up). It returns the
+// rules it changed, as saved.
+func dropMailboxes(ctx context.Context, tx *sql.Tx, gone func(id int64) bool, now int64) ([]rules.Rule, error) {
+	rs, err := rulesNamingMailboxes(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	var changed []rules.Rule
+	for _, r := range rs {
+		edited := false
+		for _, id := range r.AccountIDs() {
+			if gone(id) {
+				var ch bool
+				r, ch = r.DropAccount(id)
+				edited = edited || ch
+			}
+		}
+		if !edited {
+			continue
+		}
+		if err := updateRule(ctx, tx, r, now); err != nil {
+			return nil, err
+		}
+		r.Version, r.UpdatedAt = r.Version+1, now
+		changed = append(changed, r)
+	}
+	return changed, nil
+}
+
+// ReconcileRemovedMailboxes fixes the rules that still name a mailbox removed before
+// DeleteAccount kept them (MAI-132): every mailbox a rule names that has no account any
+// more is dropped from it as DeleteAccount would have, for every user, in one
+// transaction. It returns the rules it changed; a second run changes nothing.
+func (s *Store) ReconcileRemovedMailboxes(ctx context.Context, now int64) ([]rules.Rule, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile removed mailboxes: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	have, err := accountIDs(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile removed mailboxes: %w", err)
+	}
+	changed, err := dropMailboxes(ctx, tx, func(id int64) bool { return !have[id] }, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("reconcile removed mailboxes: %w", err)
+	}
+	return changed, nil
+}
+
+// accountIDs is the set of every account's id, read in tx.
+func accountIDs(ctx context.Context, tx *sql.Tx) (map[int64]bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	have := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		have[id] = true
+	}
+	return have, rows.Err()
 }
 
 // PutSenderRule stores the verdict for a sender address or domain, replacing

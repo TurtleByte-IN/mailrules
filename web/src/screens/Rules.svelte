@@ -17,7 +17,7 @@
   import MoreOptions from './rules/MoreOptions.svelte';
   import Rewrite from './rules/Rewrite.svelte';
   import Threshold from './rules/Threshold.svelte';
-  import { actionsText, condText, extrasText, kind, summary, treeWords } from './rules/text';
+  import { MAILBOX_REMOVED, actionsText, condText, extrasText, kind, summary, treeWords } from './rules/text';
 
   // Add rules sends people back here with the rule they just saved selected.
   let selectedId = $state(Number(new URLSearchParams(router.querystring).get('id')));
@@ -241,18 +241,25 @@
               <span class="flex flex-wrap items-center gap-2"><span class="font-semibold">{r.name}</span><span class={k.chip}>{k.label}</span></span>
               <span class="text-[12.5px] text-secondary">{summary(r)}</span>
               <span class="text-[12.5px] text-muted">Then: {actionsText(r.actions, trashTo)}{extrasText(r, only(r))} · {r.hits_week} this week{r.last_match_at ? ' · last match ' + day(r.last_match_at) : ''}</span>
+              {#if r.mailbox_removed}
+                <span id="removed-{r.id}" class="text-[12.5px] font-semibold text-warn">Its mailbox was removed</span>
+              {/if}
             </button>
-            <label class="flex items-center gap-2 text-[12.5px] text-secondary max-md:min-h-11">
-              <input type="checkbox" checked={r.enabled} onchange={(e) => toggle(r, e.currentTarget)} />On
+            <label class="flex items-center gap-2 text-[12.5px] text-secondary max-md:min-h-11" title={r.mailbox_removed ? MAILBOX_REMOVED : undefined}>
+              <input type="checkbox" checked={r.enabled} disabled={r.mailbox_removed} aria-describedby={r.mailbox_removed ? `removed-${r.id} removed-why` : undefined} onchange={(e) => toggle(r, e.currentTarget)} />On
             </label>
           </li>
         {/each}
       </ul>
+      <span id="removed-why" hidden>{MAILBOX_REMOVED}</span>
     </section>
 
     {#if sel}
       <aside bind:this={editor} aria-label="Edit rule" class="card flex min-w-0 flex-[2_1_360px] flex-col gap-3.5 p-[18px] max-md:scroll-mt-20">
         <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">Edit rule</div>
+        {#if sel.mailbox_removed}
+          <div role="note" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{MAILBOX_REMOVED}</div>
+        {/if}
         <div class="flex flex-col gap-1.5">
           <label for="rule-name" class="text-[13px] font-semibold">Name</label>
           <input id="rule-name" class="field" value={sel.name} onchange={rename} />

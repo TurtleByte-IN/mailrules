@@ -54,7 +54,7 @@ Switch dry-run off in Settings [`PATCH /api/settings {"dry_run": false}`, or `ma
 ## 4. Afterwards
 
 - [ ] The log, run at `LOG_LEVEL=debug`, contains no password, no API key and no email body, subject or sender (search it for the app password and for a phrase and the address of a test mail).
-- [ ] Deleting the account removes it and its history [`DELETE /api/accounts/{id}`].
+- [ ] Deleting the account removes it and its history, and keeps the rules that applied only to it, switched off and marked "Its mailbox was removed" [`DELETE /api/accounts/{id}`].
 - [ ] Revoke the test app passwords.
 
 ## 5. After tagging

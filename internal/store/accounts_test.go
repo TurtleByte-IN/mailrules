@@ -73,7 +73,7 @@ func TestAccountsCRUD(t *testing.T) {
 		t.Errorf("error not cleared: %+v", got)
 	}
 
-	if err := s.DeleteAccount(ctx, a.ID); err != nil {
+	if _, err := s.DeleteAccount(ctx, a.ID, 400); err != nil {
 		t.Fatal(err)
 	}
 	for name, err := range map[string]error{
@@ -81,7 +81,7 @@ func TestAccountsCRUD(t *testing.T) {
 		"secret": func() error { _, err := s.AccountSecret(ctx, testMaster, a.ID); return err }(),
 		"status": s.SetAccountStatus(ctx, a.ID, "live", "", 1),
 		"caps":   s.SetAccountCapabilities(ctx, a.ID, nil),
-		"delete": s.DeleteAccount(ctx, a.ID),
+		"delete": func() error { _, err := s.DeleteAccount(ctx, a.ID, 401); return err }(),
 	} {
 		if !errors.Is(err, ErrNotFound) {
 			t.Errorf("%s on a deleted account: %v, want ErrNotFound", name, err)
@@ -264,7 +264,7 @@ func TestContacts(t *testing.T) {
 	if err := s.SaveFolders(ctx, a.ID, []Folder{{Name: "INBOX"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteAccount(ctx, a.ID); err != nil {
+	if _, err := s.DeleteAccount(ctx, a.ID, 1); err != nil {
 		t.Fatal(err)
 	}
 	var n int

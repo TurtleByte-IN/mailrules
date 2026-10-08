@@ -1,7 +1,9 @@
 package settings
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -40,7 +42,11 @@ func (s *Settings) models(ctx context.Context) (config.Config, error) {
 // the account's number, which means nothing on another install), and the models in force as
 // the defaults the rules were written against. min_confidence is not a default here: a rule
 // without its own threshold takes the setting at the time, so the file writes none and an
-// import does not pin the current one onto it.
+// import does not pin the current one onto it. A rule whose mailbox was removed has none and
+// is written marked (rules.Rule.MailboxRemoved). Removing a mailbox takes it out of every
+// rule (store.DeleteAccount, ReconcileRemovedMailboxes at start), so a rule naming a mailbox
+// that no longer exists is a broken invariant, and stops the export rather than write a file
+// that names a number.
 func (s *Settings) ExportRules(ctx context.Context, userID int64) (rules.File, error) {
 	rs, err := s.Store.Rules(ctx, userID)
 	if err != nil {
@@ -123,6 +129,10 @@ func connected(accounts []store.Account, addr string) []store.Account {
 //     none if it is new.
 //   - An account condition, in match or unless at any depth, names mailboxes the same way
 //     and is refused the same way, as is one that names a mailbox by number.
+//   - A rule marked mailbox_removed is stored off, marked and with no mailbox, whatever
+//     enabled says; one that also has applies_to contradicts itself and is refused. A
+//     marked rule here that the file names unmarked, with the same match and unless and no
+//     applies_to, keeps its mark: the file chose neither a mailbox nor new conditions.
 func (s *Settings) PrepareImport(ctx context.Context, userID int64, f rules.File) ([]rules.Rule, error) {
 	cfg, err := s.models(ctx)
 	if err != nil {
@@ -152,8 +162,15 @@ func (s *Settings) PrepareImport(ctx context.Context, userID int64, f rules.File
 	for i := range out {
 		r := &out[i]
 		to, said := f.Mailboxes[r.Name]
+		said = said && to != ""
+		if r.MailboxRemoved && said {
+			problems = append(problems, &ImportProblem{fmt.Sprintf("rules[%d].mailbox_removed", i), fmt.Sprintf(
+				"Rule %d (%q): mailbox_removed says the rule's mailbox was removed, but applies_to names a mailbox for it. Delete one of the two, then import again.", i+1, r.Name)})
+		}
 		switch {
-		case !said || to == "":
+		case r.MailboxRemoved:
+			r.AccountID = 0
+		case !said:
 			if existing == nil {
 				old, err := s.Store.Rules(ctx, userID)
 				if err != nil {
@@ -206,9 +223,20 @@ func (s *Settings) PrepareImport(ctx context.Context, userID int64, f rules.File
 				return v
 			})
 		}
+		if old, ok := existing[r.Name]; ok && !said && old.MailboxRemoved && !r.MailboxRemoved &&
+			sameTree(old.Conditions, r.Conditions) && sameTree(old.Exceptions, r.Exceptions) {
+			r.MailboxRemoved, r.Enabled = true, false
+		}
 	}
 	if len(problems) > 0 {
 		return nil, errors.Join(problems...)
 	}
 	return out, nil
+}
+
+// sameTree reports whether two condition trees are written the same.
+func sameTree(a, b rules.Cond) bool {
+	ja, errA := json.Marshal(a)
+	jb, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(ja, jb)
 }
