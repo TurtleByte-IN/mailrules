@@ -123,6 +123,17 @@ type Check struct {
 	rows       []composer.CheckRow
 	exclude    []int // the user's unticked selectable row indices, ascending; nil = every selectable row ticked
 	cancel     context.CancelFunc
+	begun      CheckState // the check as it began; written once, before its run starts
+}
+
+// Started returns the check as it was when it began: running, with no progress. The answer
+// to the request that started it uses this, so it never depends on how far the run in the
+// background got in the meantime.
+func (c *Check) Started() CheckState {
+	if c.begun.ID == "" { // a Check not made by StartCheck
+		return c.State()
+	}
+	return c.begun
 }
 
 // CheckState is a check read back: a copy safe to hand around and render. Rows are present
@@ -241,6 +252,7 @@ func (m *Manager) StartCheck(c Cleanup, fingerprint string, run CheckFunc) (*Che
 	if !c.Since.IsZero() {
 		chk.Since = c.Since.Unix()
 	}
+	chk.begun = chk.State()
 	checks.put(chk)
 	hub := r.sup.Hub
 	began := time.Now()

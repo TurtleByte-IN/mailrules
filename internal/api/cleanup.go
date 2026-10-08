@@ -295,7 +295,7 @@ func (s *server) handleCleanupCheckStart(w http.ResponseWriter, r *http.Request)
 			fail(w, r, err, "account")
 			return
 		}
-		started[i] = s.checkJSON(chk.State())
+		started[i] = s.checkJSON(chk.Started())
 	}
 	resp := map[string]any{"checks": started}
 	if in.AccountIDs == nil {

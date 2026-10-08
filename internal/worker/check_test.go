@@ -137,6 +137,11 @@ func TestStartCheckRunsInBackground(t *testing.T) {
 	if got := chk.State(); len(got.Rows) != 1 || got.Rows[0].Subject != "kept" || got.Done != 1 {
 		t.Errorf("finished check = %+v", got)
 	}
+	// The answer to the request that started the check stays the check as it began, however
+	// far the run got: running, nothing counted, no rows.
+	if s := chk.Started(); s.ID != chk.ID || s.Status != CheckRunning || s.Total != 0 || s.Done != 0 || s.Rows != nil {
+		t.Errorf("Started after the check finished = %+v", s)
+	}
 	cancel()
 	m.Wait()
 }
