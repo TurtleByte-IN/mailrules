@@ -25,6 +25,7 @@ const rule = (id: number, name: string): Rule => ({
   created_at: 1791276732,
   updated_at: 1791276732,
   hits_week: 3,
+  mailbox_removed: false,
   last_match_at: null,
 });
 
@@ -153,4 +154,29 @@ it('saves openai:<model> typed in the editor and keeps showing it', async () => 
   expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ model: 'openai:gpt-4o-mini' });
   expect((screen.getByLabelText('Model') as HTMLSelectElement).selectedOptions[0].textContent).toBe('OpenAI-compatible…');
   expect((screen.getByLabelText('Model as name:model') as HTMLInputElement).value).toBe('openai:gpt-4o-mini');
+});
+
+it('marks a rule whose mailbox was removed and keeps its switch off until All mailboxes or a mailbox is chosen', async () => {
+  const why = 'Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on.';
+  Object.assign(rules, { list: [{ ...rule(1, 'Work'), enabled: false, mailbox_removed: true }, rule(2, 'Food')], loaded: true, error: '' });
+  render(Rules);
+  const rows = screen.getByRole('region', { name: 'Rule list' }).querySelectorAll('li');
+  expect(rows[0].textContent).toContain('Its mailbox was removed');
+  expect(rows[1].textContent).not.toContain('Its mailbox was removed');
+  const [off, on] = screen.getAllByRole('checkbox', { name: 'On' }) as HTMLInputElement[];
+  expect([off.disabled, on.disabled]).toEqual([true, false]);
+  const describedBy = (off.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent);
+  expect(describedBy).toEqual(['Its mailbox was removed', why]);
+  expect(screen.getByRole('note').textContent).toBe(why);
+
+  // The mailbox picker stays usable: All mailboxes is a choice too, and the daemon's answer clears the mark.
+  const picker = screen.getByLabelText('Applies to') as HTMLSelectElement;
+  expect(picker.selectedOptions[0].textContent).toBe('Choose a mailbox');
+  const f = respond(200, { rule: { ...rule(1, 'Work'), enabled: false } });
+  await fireEvent.change(picker, { target: { value: '' } });
+  expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ account_id: null });
+  await vi.waitFor(() => expect(rules.list[0].mailbox_removed).toBe(false));
+  expect((screen.getAllByRole('checkbox', { name: 'On' })[0] as HTMLInputElement).disabled).toBe(false);
+  expect(screen.queryByRole('note')).toBeNull();
+  expect(screen.getByRole('region', { name: 'Rule list' }).querySelector('li')!.textContent).not.toContain('Its mailbox was removed');
 });

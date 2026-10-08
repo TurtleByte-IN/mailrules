@@ -28,6 +28,7 @@ const food: Rule = {
   created_at: 1791276732,
   updated_at: 1791276732,
   hits_week: 3,
+  mailbox_removed: false,
   last_match_at: null,
 };
 const other: Rule = { ...food, id: 8, name: 'Bills', priority: 2 };

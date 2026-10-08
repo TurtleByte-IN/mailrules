@@ -287,3 +287,27 @@ func TestYAMLMailboxes(t *testing.T) {
 		}
 	})
 }
+
+// A rule whose mailbox was removed is written off and marked, and read back off and marked
+// whatever the file says about enabled; the mark is not written for any other rule.
+func TestYAMLMailboxRemoved(t *testing.T) {
+	marked := Rule{Name: "a", Priority: 1, Intent: "x", MailboxRemoved: true, Actions: []Action{{Type: ActKeep}}}
+	out, err := MarshalYAML(File{Rules: []Rule{marked, {Name: "b", Priority: 2, Enabled: true, Intent: "y", Actions: []Action{{Type: ActKeep}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out); strings.Count(got, "mailbox_removed: true") != 1 || strings.Count(got, "enabled: false") != 1 || strings.Contains(got, "applies_to") {
+		t.Errorf("export:\n%s", got)
+	}
+	f, err := ParseYAML(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := f.Rules[0], f.Rules[1]; !a.MailboxRemoved || a.Enabled || b.MailboxRemoved || !b.Enabled {
+		t.Errorf("read back: a %+v, b %+v", a, b)
+	}
+	f, err = ParseYAML([]byte("rules:\n  - {id: a, when: x, actions: [keep], enabled: true, mailbox_removed: true}\n"))
+	if err != nil || !f.Rules[0].MailboxRemoved || f.Rules[0].Enabled {
+		t.Errorf("enabled: true with mailbox_removed: %+v, %v", f.Rules, err)
+	}
+}

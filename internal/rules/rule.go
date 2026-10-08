@@ -63,9 +63,13 @@ type Rule struct {
 	Model         string   // per-rule decider override
 	MinConfidence *float64 // nil = the configured default
 	Enabled       bool
-	Version       int
-	CreatedAt     int64
-	UpdatedAt     int64
+	// MailboxRemoved marks a rule whose mailbox was removed (DropAccount): it is off and
+	// may not be switched on until it is given a mailbox, or All mailboxes, or new
+	// conditions, which clears the mark.
+	MailboxRemoved bool
+	Version        int
+	CreatedAt      int64
+	UpdatedAt      int64
 }
 
 // ValidationError is a rule problem. Path is the offending key as the API reports it,

@@ -30,7 +30,7 @@ const draft = (name: string, over: Partial<ApiDraft> = {}): ApiDraft => ({
 
 // A rule as the daemon returns it once saved.
 const saved = (id: number, name: string) =>
-  ({ id, name, account_id: null, said: '', template: '', intent: '', conditions: {}, exceptions: {}, actions: [{ type: 'archive' }], priority: id, stack: false, model: '', min_confidence: null, enabled: true, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null }) satisfies Rule;
+  ({ id, name, account_id: null, said: '', template: '', intent: '', conditions: {}, exceptions: {}, actions: [{ type: 'archive' }], priority: id, stack: false, model: '', min_confidence: null, enabled: true, mailbox_removed: false, version: 1, created_at: 1791276732, updated_at: 1791276732, hits_week: 0, last_match_at: null }) satisfies Rule;
 
 const template = (name: string): Template => ({ id: name.toLowerCase(), name, description: name + ' you rarely open', rule: { name, template: name, intent: name, actions: [{ type: 'move', folder: name }], new_folders: [name], stack: false, enabled: true } });
 

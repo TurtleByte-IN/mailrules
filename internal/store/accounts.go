@@ -11,6 +11,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
+	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
 
 // Account is one mailbox the daemon watches. Its password is never part of this struct:
@@ -210,17 +211,34 @@ func (s *Store) SetAccountCapabilities(ctx context.Context, id int64, capabiliti
 }
 
 // DeleteAccount wipes an account with its secret, folders, contacts, messages, decisions,
-// actions, corrections and the rules scoped to it. Every one of those references the
-// account with ON DELETE CASCADE, so the one statement is the whole transaction.
-func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
+// actions and corrections: each references the account with ON DELETE CASCADE. The rules
+// are kept: first, in the same transaction, every user's rules that name the mailbox are
+// rewritten as rules.Rule.DropAccount has it, so a rule limited to it is switched off and
+// marked, with no mailbox, before the cascade could reach it. It returns those rules.
+func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("delete account: %w", err)
+		return nil, fmt.Errorf("delete account: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ?`, id).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("delete account: %w", err)
 	}
-	return nil
+	if exists == 0 {
+		return nil, ErrNotFound
+	}
+	changed, err := dropMailboxes(ctx, tx, func(named int64) bool { return named == id }, now)
+	if err != nil {
+		return nil, fmt.Errorf("delete account: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id); err != nil {
+		return nil, fmt.Errorf("delete account: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("delete account: %w", err)
+	}
+	return changed, nil
 }
 
 // Folder is one folder of an account, with the watch position when it is watched.

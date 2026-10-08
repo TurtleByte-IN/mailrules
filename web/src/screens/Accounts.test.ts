@@ -202,3 +202,12 @@ it('says when the last email arrived only once one has', async () => {
   expect(rows[0]).not.toContain('last email');
   expect(rows[1]).toMatch(/· since \S.*, \S.*· last email \S.*, \S+/);
 });
+
+it('says, before removing a mailbox, that its rules are kept but switched off, and removes nothing until confirmed', async () => {
+  await show(acct());
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove me@icloud.com' }));
+  const text = screen.getByRole('alert').textContent ?? '';
+  expect(text).toContain('Rules that apply only to this mailbox are kept but switched off, marked so you can give them another mailbox.');
+  expect(text).not.toContain('deletes its password, folder list, contacts, activity, undo history and the rules');
+  expect(fetchMock.mock.calls.filter((c) => c[1].method === 'DELETE')).toHaveLength(0);
+});

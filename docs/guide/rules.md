@@ -145,6 +145,18 @@ A test changes nothing: it reads mail without marking it read, and dry-run does 
 
 To see what your rules (all of them, or only some) would do to mail that is already in a folder, on one mailbox or several, and then do it, use **Cleanup** (see [Undo and activity](./undo-and-activity.md#cleanup-sorting-mail-you-already-have)).
 
+## When a mailbox is removed
+
+Removing a mailbox on the **Accounts** screen never deletes a rule. In the same step:
+
+- A rule that applies only to that mailbox is kept, switched off, set to no mailbox, and marked **Its mailbox was removed**.
+- An `account` condition that names the mailbox is rewritten, so the rule does on your other mailboxes exactly what it did before. "Account is that mailbox" can no longer match and drops out of an **any** group; "account is not that mailbox" now always holds and drops out of an **all** group; the mailbox is taken out of an "is one of" list. Exceptions that can no longer apply are removed.
+- A rule that could then never act, because its conditions could only match that mailbox or an exception now always applies, is switched off and marked instead. Its conditions keep everything except the removed mailbox, so you can see what it was for.
+
+A marked rule cannot be switched on until you choose a mailbox for it under **Applies to** (a mailbox, or **All mailboxes**), or save new conditions with **Edit conditions**. Either clears the mark, and you can then turn it on.
+
+Rules that still named a mailbox removed with an older version of MailRules are fixed the same way when the daemon starts.
+
 ## Sender rules
 
 A sender rule says what to do with all mail from one address, or one domain, before any other rule is looked at. It never asks a model.
@@ -215,6 +227,7 @@ Each rule has:
 | `applies_to` | The address (login) of the mailbox the rule is limited to, as shown under **Applies to** in the rule's options. Left out, the rule applies to every mailbox. See below. |
 | `stack` | `true` for a stacking rule. Stacking rules must be condition-only. |
 | `enabled` | `false` to import the rule switched off. |
+| `mailbox_removed` | `true` on a rule whose mailbox was removed (see [When a mailbox is removed](#when-a-mailbox-is-removed)). Such a rule is imported switched off and marked, whatever `enabled` says, and cannot have `applies_to`. Left out for every other rule. |
 | `said` | Your original wording, shown under "You said". |
 | `template` | The template the rule came from. |
 
@@ -234,12 +247,13 @@ An `account` condition, in `match` or `unless` and at any depth, names mailboxes
 How an import works:
 
 - It is all or nothing. If any rule is invalid, nothing is saved, and every problem is listed.
-- A rule whose name already exists is replaced. It keeps its place in the list; whether it is on comes from the file. It keeps its mailbox unless the file has `applies_to`.
+- A rule whose name already exists is replaced. It keeps its place in the list; whether it is on comes from the file. It keeps its mailbox unless the file has `applies_to`. A rule here that is marked **Its mailbox was removed** stays switched off and marked when the file has neither `applies_to` nor different `match` or `unless` for it, since the file chose no mailbox and no new conditions for it.
 - Rules with new names are added at the bottom, for the mailbox in `applies_to` or, without it, all mailboxes.
 - Rules that are not in the file are left alone. An import never deletes a rule.
 - A file can be at most 1 MB.
+- A rule with `mailbox_removed: true` and `applies_to` is refused: the file says both that the rule has no mailbox and which mailbox it has. Delete one of the two.
 
-An export writes `applies_to` for every rule that is limited to a mailbox, the addresses of the mailboxes in `account` conditions, and the models in force under `defaults`. A rule whose `account` condition names a mailbox that has since been removed stops the export, with the rule's name; change that rule first.
+An export writes `applies_to` for every rule that is limited to a mailbox, the addresses of the mailboxes in `account` conditions, and the models in force under `defaults`. A rule whose mailbox was removed is written with `enabled: false` and `mailbox_removed: true`, and no `applies_to`. Removing a mailbox takes it out of every rule, so no rule names a mailbox that no longer exists and the export always works.
 
 ### From the command line
 

@@ -81,7 +81,7 @@ The last step of the guide, **You're set**, suggests the next move: watch **Acti
 - **Pause** stops sorting that mailbox until you click **Resume**.
 - **Edit** changes its **Name**, the **Watched folder**, or the app password (**New app password**; leave it empty to keep the current one).
 - **Reconnect** appears when a mailbox is not live, and starts it again.
-- **Remove** deletes the mailbox from MailRules: its password, folder list, contacts, activity, undo history and the rules that apply only to it. Nothing in the mailbox itself changes.
+- **Remove** deletes the mailbox from MailRules: its password, folder list, contacts, activity and undo history. Rules that apply only to it are kept but switched off, marked so you can give them another mailbox, and rules whose conditions name it are adjusted (see [When a mailbox is removed](./rules.md#when-a-mailbox-is-removed)). Nothing in the mailbox itself changes.
 
 ## Without the web UI
 

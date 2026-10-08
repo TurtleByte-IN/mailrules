@@ -361,9 +361,17 @@ func (s *server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.StopAccount(a.ID)
-	if err := s.store.DeleteAccount(r.Context(), a.ID); err != nil {
+	changed, err := s.store.DeleteAccount(r.Context(), a.ID, s.now().Unix())
+	if err != nil {
 		fail(w, r, err, "account")
 		return
+	}
+	for _, rule := range changed {
+		slog.InfoContext(r.Context(), "a rule was changed as its mailbox was removed",
+			"rule_id", rule.ID, "rule", rule.Name, "switched_off", rule.MailboxRemoved)
+	}
+	if len(changed) > 0 {
+		s.Hub.Publish(events.RulesChanged, nil)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

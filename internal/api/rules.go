@@ -33,17 +33,19 @@ type ruleJSON struct {
 	Model         string         `json:"model"`
 	MinConfidence *float64       `json:"min_confidence"`
 	Enabled       bool           `json:"enabled"`
-	Version       int            `json:"version"`
-	CreatedAt     int64          `json:"created_at"`
-	UpdatedAt     int64          `json:"updated_at"`
-	HitsWeek      int            `json:"hits_week"`
-	LastMatchAt   *int64         `json:"last_match_at"`
+	// MailboxRemoved is read-only: the rule's mailbox was removed (rules.Rule.MailboxRemoved).
+	MailboxRemoved bool   `json:"mailbox_removed"`
+	Version        int    `json:"version"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
+	HitsWeek       int    `json:"hits_week"`
+	LastMatchAt    *int64 `json:"last_match_at"`
 }
 
 func toRuleJSON(r rules.Rule, st store.RuleStat) ruleJSON {
 	return ruleJSON{ID: r.ID, AccountID: ts(r.AccountID), Name: r.Name, Said: r.Said, Template: r.Template, Intent: r.Intent,
 		Conditions: r.Conditions, Exceptions: r.Exceptions, Actions: r.Actions, Priority: r.Priority, Stack: r.Stack,
-		Model: r.Model, MinConfidence: r.MinConfidence, Enabled: r.Enabled, Version: r.Version,
+		Model: r.Model, MinConfidence: r.MinConfidence, Enabled: r.Enabled, MailboxRemoved: r.MailboxRemoved, Version: r.Version,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, HitsWeek: st.Hits, LastMatchAt: ts(st.LastMatchAt)}
 }
 
@@ -157,6 +159,12 @@ func importInvalid(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, http.StatusBadRequest, "rule_invalid", strings.Join(lines, "\n"), path)
 }
 
+// mailboxRemovedOn is why a rule whose mailbox was removed may not be switched on yet.
+const mailboxRemovedOn = "Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on."
+
+// handleRulePatch edits a rule. A rule marked as having lost its mailbox stays off until
+// the user gives it a mailbox (one, or All mailboxes) or new conditions or exceptions,
+// which clears the mark; that may be the same request that switches it on.
 func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 	rule, ok := s.rule(w, r)
 	if !ok {
@@ -181,6 +189,13 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rule.Name, rule.Model = strings.TrimSpace(rule.Name), strings.TrimSpace(rule.Model)
+	if sent["account_id"] || sent["conditions"] || sent["exceptions"] {
+		rule.MailboxRemoved = false
+	}
+	if rule.MailboxRemoved && rule.Enabled {
+		invalid(w, "enabled", mailboxRemovedOn)
+		return
+	}
 	if path, msg := ruleProblem(rule); msg != "" {
 		writeError(w, http.StatusBadRequest, "rule_invalid", msg, path)
 		return

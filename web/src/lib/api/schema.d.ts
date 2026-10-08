@@ -167,7 +167,7 @@ export interface paths {
         post?: never;
         /**
          * Disconnect a mailbox and wipe everything stored about it
-         * @description Stops watching, then deletes the account with its password, folders, contacts, messages, decisions, actions and the rules scoped to it. Nothing in the mailbox is touched.
+         * @description Stops watching, then deletes the account with its password, folders, contacts, messages, decisions and actions. Nothing in the mailbox is touched. Every user's rules are kept, in the same transaction - a rule for this mailbox only is switched off, set to no mailbox and marked `mailbox_removed`; an `account` condition naming it is rewritten so the rule does what it did on the other mailboxes, and a rule that could then never act is switched off and marked instead, with this mailbox taken out of its conditions. Each such edit raises the rule's `version`.
          */
         delete: operations["deleteAccount"];
         options?: never;
@@ -446,7 +446,7 @@ export interface paths {
         };
         /**
          * Download every rule as a YAML file
-         * @description The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox's address (its username); a rule for every mailbox has none. An `account` condition names its mailboxes by address too (`account: work@example.com`, or a list for `in`), never by id; a rule with a condition on a mailbox that no longer exists stops the export. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.
+         * @description The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox's address (its username); a rule for every mailbox has none. An `account` condition names its mailboxes by address too (`account: work@example.com`, or a list for `in`), never by id. A rule whose mailbox was removed is written `enabled: false` and `mailbox_removed: true`, with no `applies_to`. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.
          */
         get: operations["exportRules"];
         put?: never;
@@ -483,6 +483,11 @@ export interface paths {
          *     another mailbox on another install. `defaults.decision_model` and
          *     `defaults.fallback_model` are never applied: a file that names other models than the
          *     ones in force is refused, since the models are settings of this install.
+         *
+         *     A rule with `mailbox_removed: true` is stored switched off, marked and with no
+         *     mailbox, whatever `enabled` says; with `applies_to` as well it is refused. A rule here
+         *     that is marked keeps its mark when the file names it without `mailbox_removed`,
+         *     without `applies_to`, and with the same `match` and `unless`.
          */
         post: operations["importRules"];
         delete?: never;
@@ -513,7 +518,7 @@ export interface paths {
         head?: never;
         /**
          * Edit a rule; fields left out stay as they are
-         * @description The result is validated as a whole, by the same check a batch save and an import run (`model` included), and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`.
+         * @description The result is validated as a whole, by the same check a batch save and an import run (`model` included), and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`. A rule marked `mailbox_removed` cannot be switched on until its mark is cleared, which sending `account_id` (a mailbox, or null for every mailbox), `conditions` or `exceptions` does, in this request or an earlier one.
          */
         patch: operations["updateRule"];
         trace?: never;
@@ -1491,6 +1496,8 @@ export interface components {
             /** @description null = the default threshold */
             min_confidence: number | null;
             enabled: boolean;
+            /** @description The rule's mailbox was removed: it is off and cannot be switched on until it is given a mailbox (account_id, or null for every mailbox) or new conditions or exceptions, which clears this */
+            readonly mailbox_removed: boolean;
             /** @description Goes up by one with every edit */
             version: number;
             /** Format: int64 */

@@ -106,11 +106,11 @@ func TestMessagesAndDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteAccount(ctx, a.ID); err != nil {
+	if _, err := s.DeleteAccount(ctx, a.ID, 500); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Rule(ctx, u.ID, scoped.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("a rule scoped to a deleted account is still there: %v", err)
+	if got, err := s.Rule(ctx, u.ID, scoped.ID); err != nil || got.AccountID != 0 || !got.MailboxRemoved {
+		t.Errorf("a rule scoped to a deleted account = %+v, %v; want it kept, marked, with no mailbox", got, err)
 	}
 	var left int
 	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM messages) + (SELECT COUNT(*) FROM decisions) + (SELECT COUNT(*) FROM corrections)`).Scan(&left); err != nil || left != 0 {
