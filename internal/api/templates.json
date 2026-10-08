@@ -11,6 +11,7 @@
             "actions": [{"type": "keep"}, {"type": "flag"}]}},
   {"id": "cold-sales", "name": "Cold sales", "description": "Pitches from people you never emailed",
    "rule": {"name": "Cold sales", "template": "Cold sales", "intent": "Cold sales pitches and unsolicited demo requests",
+            "exceptions": {"field": "replied_before", "op": "eq", "value": true},
             "actions": [{"type": "trash"}], "min_confidence": 0.9}},
   {"id": "recruiters", "name": "Recruiters", "description": "Recruiter outreach to Jobs, unless you've replied",
    "rule": {"name": "Recruiters", "template": "Recruiters", "intent": "Recruiter outreach about job openings",

@@ -59,6 +59,8 @@ Ready-made rules: Newsletters, Receipts, Login codes, Cold sales, Recruiters, Tr
 
 The mailbox wizard offers five of these as starter rules.
 
+Cold sales trashes pitches at 90% confidence or above, but not from a sender you have replied to before, as with Recruiters.
+
 ## Conditions
 
 The builder offers these fields:
