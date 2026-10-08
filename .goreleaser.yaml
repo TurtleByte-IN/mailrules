@@ -38,7 +38,9 @@ release:
 
 # The cask goes to TurtleByte-IN/homebrew-tap. Publishing to it needs a token that can push to
 # it, given to the release job as HOMEBREW_TAP_TOKEN; without one the cask is still
-# generated in dist/ but not pushed, and the release goes ahead.
+# generated in dist/ but not pushed, and the release goes ahead. GoReleaser accepts a token
+# only as a bare {{ .Env.NAME }}, with no functions; skip_upload is decided before the token
+# is read, so an unset secret never reaches it.
 homebrew_casks:
   - name: mailrules
     binaries: [mailrules]
@@ -48,7 +50,7 @@ homebrew_casks:
     repository:
       owner: TurtleByte-IN
       name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     hooks:
       post:
         # The binaries are not signed or notarized, so macOS would quarantine them.
