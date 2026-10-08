@@ -22,7 +22,10 @@ type Config struct {
 	Mode          string
 	MasterKey     string
 	MasterKeyFile string
-	DryRun        bool
+	// NewMasterKey lets the daemon start although the master key cannot open any stored
+	// mailbox password or model key; see ext/daemon's openMasterKey.
+	NewMasterKey bool
+	DryRun       bool
 
 	Decider          string
 	DeciderModel     string
@@ -122,8 +125,9 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 	str(&c.DataDir, "MAILRULES_DATA_DIR", "./data", "Directory for the database (`mailrules.db`) and the generated `master.key`. A relative path is relative to the directory MailRules starts in.")
 	str(&c.Listen, "MAILRULES_LISTEN", "127.0.0.1:8080", "Address (`host:port`) the web UI and API listen on. Any address other than a loopback one makes MailRules log a warning: put a reverse proxy with TLS in front.")
 	str(&c.Mode, "MAILRULES_MODE", "selfhost", "`selfhost` or `cloud`. `cloud` is for the hosted service and only hides the Self-hosting card in Settings; leave it as `selfhost`.")
-	str(&c.MasterKey, "MAILRULES_MASTER_KEY", "", "The master key itself: 32 bytes, base64-encoded. It encrypts the stored mailbox passwords and provider keys. Set this or `MAILRULES_MASTER_KEY_FILE`, not both; with neither, `master.key` in the data directory is used, and generated on first run.")
+	str(&c.MasterKey, "MAILRULES_MASTER_KEY", "", "The master key itself: 32 bytes, base64-encoded. It encrypts the stored mailbox passwords and provider keys. Set this or `MAILRULES_MASTER_KEY_FILE`, not both; with neither, `master.key` in the data directory is used, and generated on first run. It is never generated while the database holds passwords or keys sealed under an earlier key; see `MAILRULES_NEW_MASTER_KEY`.")
 	str(&c.MasterKeyFile, "MAILRULES_MASTER_KEY_FILE", "", "A file holding the master key, to keep it outside the data directory. MailRules does not start if the file is missing.")
+	boolean(&c.NewMasterKey, "MAILRULES_NEW_MASTER_KEY", false, "Start even though the master key is missing or cannot open any stored mailbox password or model key. Without it MailRules stops with a message instead. A missing `master.key` is then generated, and the stored passwords and keys stay unreadable until you enter them again. Set it for one start only.")
 	boolean(&c.DryRun, "MAILRULES_DRY_RUN", true, "Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on|off`, that choice wins.")
 	str(&c.LogLevel, "LOG_LEVEL", "info", "`debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email.")
 

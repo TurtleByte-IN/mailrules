@@ -819,8 +819,10 @@ func TestSettings(t *testing.T) {
 	if _, err := e.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('key.anthropic_api_key', ?)`, stored["key.openrouter_api_key"]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.sett.Effective(ctx); err == nil {
-		t.Error("a key moved to another row still decrypts")
+	// It reads as not set (a key that cannot be opened must not take the other settings down),
+	// and never as the key it holds.
+	if cfg, err := e.sett.Effective(ctx); err != nil || cfg.AnthropicAPIKey != "" {
+		t.Errorf("a key moved to another row: effective Anthropic key %q, err %v; want it not set", cfg.AnthropicAPIKey, err)
 	}
 	if _, err := e.db.ExecContext(ctx, `DELETE FROM settings WHERE key = 'key.anthropic_api_key'`); err != nil {
 		t.Fatal(err)

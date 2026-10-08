@@ -25,7 +25,7 @@ When adding a mailbox, the same problem reads: "The mail server refused the sign
 
 - **Error** means the secure connection could not be set up, or the watched folder no longer exists. Check the host, port and encryption (for **Other IMAP server**), or choose another **Watched folder** under **Edit**, then click **Reconnect**.
 - **Reconnecting** means the connection dropped. MailRules retries by itself, waiting longer each time, up to 5 minutes between tries, and catches up on mail that arrived in the meantime. **Reconnect now** on Overview tries at once.
-- **Reconnecting** with the error `decrypt failed` means the master key is not the one the passwords were stored with. See [If the master key is lost](./backup.md#if-the-master-key-is-lost).
+- **Reconnecting** with the error `decrypt failed` means the master key is not the one the passwords were stored with. See [If the master key is lost](./backup.md#if-the-master-key-is-lost). A start with no `master.key` at all, after a restore or a move, no longer gets this far: MailRules stops and says the master key is missing, as described in [Restoring](./backup.md#restoring).
 
 ## Nothing is being sorted
 
@@ -97,6 +97,7 @@ Run these with the same data directory and master key settings as the daemon. Wi
 ## Other problems
 
 - **The page keeps asking me to sign in.** The cookie is HTTPS-only but you opened MailRules over plain HTTP. Set `MAILRULES_COOKIE_SECURE=false` when you use `http://127.0.0.1`, or `true` and open it over HTTPS behind a proxy. See [Signing in](./security.md#signing-in).
+- **MailRules does not start and says "the master key is missing", or that the master key opens none of the stored passwords.** The database holds mailbox passwords or model keys sealed under a key that MailRules cannot find or does not have. Restore `master.key` from your backup into the data directory, or see [If the master key is lost](./backup.md#if-the-master-key-is-lost) to go on without it.
 - **MailRules does not start and lists settings.** It checks every setting at startup and prints one line per problem, naming the variable. The [settings reference](./settings.md) lists the allowed values.
 - **I forgot the admin password.** Run `mailrules users reset-password` on the machine MailRules runs on, with the same `MAILRULES_DATA_DIR`. With Docker: `docker exec -it mailrules /mailrules users reset-password`. See [Changing or resetting the password](./security.md#changing-or-resetting-the-password).
 - **Port 8080 is in use.** Set `MAILRULES_LISTEN=127.0.0.1:8090`, or with Compose, `MAILRULES_PORT=8090` in `deploy/.env`.

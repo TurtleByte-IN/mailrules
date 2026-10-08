@@ -22,31 +22,39 @@ const keyLen = 32
 // ErrDecrypt means a ciphertext was tampered with, moved between rows, or sealed under another key.
 var ErrDecrypt = errors.New("decrypt failed")
 
+// ErrNoMasterKey means no key was given, in the environment or a named file, and the data
+// directory has no master.key yet. LoadMasterKey never makes one: whether a new key is safe
+// depends on what the database holds, so the caller decides and calls GenerateMasterKey.
+var ErrNoMasterKey = errors.New("no master key")
+
+// MasterKeyFile is where the key lives when neither the environment nor a named file gives it.
+func MasterKeyFile(dataDir string) string { return filepath.Join(dataDir, "master.key") }
+
+// MasterKeySource names where LoadMasterKey reads the key from, for a message to a person.
+func MasterKeySource(value, keyFile, dataDir string) string {
+	switch {
+	case value != "":
+		return "MAILRULES_MASTER_KEY"
+	case keyFile != "":
+		return "the file MAILRULES_MASTER_KEY_FILE names (" + keyFile + ")"
+	}
+	return MasterKeyFile(dataDir)
+}
+
 // LoadMasterKey returns the key-encryption key: from the base64 value, else from keyFile,
-// else from <dataDir>/master.key, which is generated (mode 0600) on first run.
+// else from <dataDir>/master.key. It returns ErrNoMasterKey when that file does not exist.
 func LoadMasterKey(value, keyFile, dataDir string) ([]byte, error) {
 	if value == "" {
-		generated := keyFile == ""
-		if generated {
-			keyFile = filepath.Join(dataDir, "master.key")
+		fromDataDir := keyFile == ""
+		if fromDataDir {
+			keyFile = MasterKeyFile(dataDir)
 		}
 		b, err := os.ReadFile(keyFile) // #nosec G304 -- operator-chosen path
 		switch {
 		case err == nil:
 			value = strings.TrimSpace(string(b))
-		case generated && errors.Is(err, os.ErrNotExist):
-			key := make([]byte, keyLen)
-			if _, err := rand.Read(key); err != nil {
-				return nil, fmt.Errorf("generate master key: %w", err)
-			}
-			if err := os.MkdirAll(dataDir, 0o700); err != nil {
-				return nil, fmt.Errorf("create data dir: %w", err)
-			}
-			enc := base64.StdEncoding.EncodeToString(key) + "\n"
-			if err := os.WriteFile(keyFile, []byte(enc), 0o600); err != nil {
-				return nil, fmt.Errorf("write master key: %w", err)
-			}
-			return key, nil
+		case fromDataDir && errors.Is(err, os.ErrNotExist):
+			return nil, fmt.Errorf("%w: %s does not exist", ErrNoMasterKey, keyFile)
 		default:
 			return nil, fmt.Errorf("read master key file: %w", err)
 		}
@@ -54,6 +62,30 @@ func LoadMasterKey(value, keyFile, dataDir string) ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(value)
 	if err != nil || len(key) != keyLen {
 		return nil, errors.New("master key must be 32 bytes, base64-encoded")
+	}
+	return key, nil
+}
+
+// GenerateMasterKey makes a new random key and stores it, readable only by the user, as
+// <dataDir>/master.key. It never replaces a file that is already there.
+func GenerateMasterKey(dataDir string) ([]byte, error) {
+	key := make([]byte, keyLen)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate master key: %w", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	f, err := os.OpenFile(MasterKeyFile(dataDir), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- under the data directory
+	if err != nil {
+		return nil, fmt.Errorf("write master key: %w", err)
+	}
+	if _, err := f.WriteString(base64.StdEncoding.EncodeToString(key) + "\n"); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("write master key: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("write master key: %w", err)
 	}
 	return key, nil
 }
