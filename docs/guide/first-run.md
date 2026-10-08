@@ -95,4 +95,4 @@ mailrules accounts add --preset icloud --username you@example.com
 
 `mailrules accounts list` shows every mailbox, and `mailrules accounts test <id>` logs in to one (see [Troubleshooting](./troubleshooting.md#checking-a-mailbox-from-the-command-line)).
 
-A running daemon starts watching mailboxes added this way only when it is restarted.
+A running daemon notices a mailbox added this way within a few seconds and starts watching it; no restart is needed.

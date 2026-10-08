@@ -263,6 +263,7 @@ func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, ac
 		fmt.Fprintln(a.stdout, "warning: no Sent folder found, so the contacts index is empty")
 	}
 	a.warnCaps(mb.Capabilities())
+	fmt.Fprintln(a.stdout, "a running mailrules serve starts watching it within a few seconds; no restart is needed")
 	return nil
 }
 

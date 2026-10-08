@@ -1,8 +1,13 @@
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version without the leading v (0.1.1, not v0.1.1), like release archives and image tags.
+VERSION  ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
 # Pinned here so local runs and CI lint with the same version.
 GOLANGCI := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
-.PHONY: check fmt vet lint test vuln settings-doc settings-doc-check web web-check build dev
+.PHONY: version check fmt vet lint test vuln settings-doc settings-doc-check web web-check build dev
+
+# Prints the version a build from this checkout reports; used for the compose build arg.
+version:
+	@echo $(VERSION)
 
 check: fmt vet lint test settings-doc-check web-check
 
