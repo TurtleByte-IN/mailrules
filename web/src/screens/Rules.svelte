@@ -13,6 +13,7 @@
   import { settings } from '../lib/state/settings.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import { UNDO_IGNORES_DRY_RUN } from '../lib/undo';
+  import ModelPicker from './rules/ModelPicker.svelte';
   import MoreOptions from './rules/MoreOptions.svelte';
   import Rewrite from './rules/Rewrite.svelte';
   import Threshold from './rules/Threshold.svelte';
@@ -291,13 +292,9 @@
         </div>
         <div class="flex flex-wrap gap-3.5">
           <div class="flex flex-[1_1_160px] flex-col gap-1.5">
-            <label for="rule-model" class="text-[13px] font-semibold">Model</label>
-            <select id="rule-model" class="field px-2.5" value={sel.model} onchange={(e) => save({ model: e.currentTarget.value })}>
-              <option value="">Default</option>
-              <option value="jev">Jev</option>
-              <option value="clef">Clef</option>
-              <option value="anthropic">Claude Haiku 4.5</option>
-            </select>
+            {#key sel.id}
+              <ModelPicker id="rule-model" value={sel.model} invalid={refused?.path === 'model' ? { 'aria-invalid': true } : {}} onchange={(model) => save({ model })} />
+            {/key}
             {@render problem('model')}
           </div>
           <div class="flex flex-[1_1_160px] flex-col gap-1.5">
