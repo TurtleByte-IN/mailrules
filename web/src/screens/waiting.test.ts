@@ -163,6 +163,10 @@ it('Rules: undoing what a rule did today is busy until the daemon is through', a
   vi.spyOn(Date.prototype, 'setHours').mockReturnValue(1000);
   render(Rules);
   await fireEvent.click(screen.getByRole('button', { name: 'Undo what it did today' }));
+  // It moves real mail, dry-run or not, so it asks first and sends nothing until confirmed.
+  expect(screen.getByRole('alertdialog', { name: new RegExp(`every email ${food.name} moved today`) }).textContent).toContain('Dry-run does not stop an undo');
+  expect(d.calls.some((c) => c.url.includes('/undo'))).toBe(false);
+  await fireEvent.click(screen.getByRole('button', { name: 'Yes, undo today' }));
   expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Undoing…' }).disabled).toBe(true);
   expect(screen.getByText('Putting the emails back where they were…')).toBeTruthy();
   d.release('POST /api/rules/7/undo?since=1', [200, { batch: {}, undone: 2, failed: 0 }]);

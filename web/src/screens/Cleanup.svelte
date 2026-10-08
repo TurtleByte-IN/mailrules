@@ -1,10 +1,12 @@
 <script lang="ts">
   import type { Batch, CleanupCheckRow } from '../lib/api/cleanup';
   import { TRASH_FOLDER } from '../lib/api/settings';
+  import ConfirmBox from '../lib/components/ConfirmBox.svelte';
   import ScopePicker from '../lib/components/ScopePicker.svelte';
   import Waiting from '../lib/components/Waiting.svelte';
   import { clock, day, money } from '../lib/format';
   import { archiveFolder, scopeProblem } from '../lib/scope';
+  import { UNDO_IGNORES_DRY_RUN } from '../lib/undo';
   import { accounts } from '../lib/state/accounts.svelte';
   import {
     acted,
@@ -26,6 +28,7 @@
     toggleRow,
     undo,
     UNDO_DAYS,
+    undoQuestion,
   } from '../lib/state/cleanup.svelte';
   import { settings } from '../lib/state/settings.svelte';
   import { actionsText } from './rules/text';
@@ -54,9 +57,12 @@
   // A check on show has its own folder and range; Discard it to choose another. Another mailbox can still be picked.
   const locked = $derived(busy || showTable);
 
-  // The batch being undone; an undo moves every email of the run back, one by one, on the mail server.
+  // The batch being undone; an undo moves every email of the run back, one by one, on the mail server,
+  // dry-run or not, so it is asked first (`asking`, the batch's id).
+  let asking = $state(0);
   let undoing = $state<Record<number, boolean>>({});
   async function undoBatch(b: Batch) {
+    asking = 0;
     undoing[b.id] = true;
     try {
       await undo(b);
@@ -322,7 +328,10 @@
             {#if why}
               <span class="text-[12.5px] text-muted">{why}</span>
             {:else}
-              <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" disabled={undoing[b.id]} onclick={() => undoBatch(b)}>{undoing[b.id] ? 'Undoing…' : 'Undo batch'}</button>
+              <button type="button" class="btn min-h-9 px-3" aria-label="Undo batch {label(b)}" aria-expanded={asking === b.id} disabled={undoing[b.id]} onclick={() => (asking = b.id)}>{undoing[b.id] ? 'Undoing…' : 'Undo batch'}</button>
+              {#if asking === b.id}
+                <ConfirmBox question={undoQuestion(b)} note={UNDO_IGNORES_DRY_RUN} confirm="Yes, undo this batch" onconfirm={() => undoBatch(b)} oncancel={() => (asking = 0)} />
+              {/if}
               {#if undoing[b.id]}
                 <div class="w-full"><Waiting text="Putting the emails back where they were" /></div>
               {/if}

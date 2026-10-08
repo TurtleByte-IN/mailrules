@@ -4,6 +4,7 @@
   import { ApiError } from '../lib/api/client';
   import { TRASH_FOLDER } from '../lib/api/settings';
   import * as rulesApi from '../lib/api/rules';
+  import ConfirmBox from '../lib/components/ConfirmBox.svelte';
   import TestRunner from '../lib/components/TestRunner.svelte';
   import Waiting from '../lib/components/Waiting.svelte';
   import { day } from '../lib/format';
@@ -11,6 +12,7 @@
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
   import { settings } from '../lib/state/settings.svelte';
   import { flash } from '../lib/state/toast.svelte';
+  import { UNDO_IGNORES_DRY_RUN } from '../lib/undo';
   import MoreOptions from './rules/MoreOptions.svelte';
   import Rewrite from './rules/Rewrite.svelte';
   import Threshold from './rules/Threshold.svelte';
@@ -33,6 +35,8 @@
   let importing = $state(false);
   let exporting = $state(false);
   let undoing = $state(false);
+  // The rule whose "Undo what it did today" is waiting to be confirmed: it moves real mail, dry-run or not.
+  let askingUndo = $state(0);
 
   const fail = (e: unknown) => flash((e as Error).message);
   // Where a trash rule's mail goes, the same words Cleanup uses for it.
@@ -102,6 +106,7 @@
 
   async function undo() {
     const { id, name } = sel;
+    askingUndo = 0;
     undoing = true;
     try {
       const u = await undoToday(id);
@@ -304,9 +309,18 @@
           <a href="#/compose?edit={sel.id}" class="btn-primary">Edit conditions</a>
           <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
           <TestRunner run={test} />
-          <button type="button" class="btn" disabled={undoing} onclick={undo}>{undoing ? 'Undoing…' : 'Undo what it did today'}</button>
+          <button type="button" class="btn" disabled={undoing} aria-expanded={askingUndo === sel.id} onclick={() => (askingUndo = sel.id)}>{undoing ? 'Undoing…' : 'Undo what it did today'}</button>
           <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash max-md:min-h-11" onclick={del}>Delete rule</button>
         </div>
+        {#if askingUndo === sel.id}
+          <ConfirmBox
+            question="Put every email {sel.name} moved today back where it was?"
+            note={UNDO_IGNORES_DRY_RUN}
+            confirm="Yes, undo today"
+            onconfirm={undo}
+            oncancel={() => (askingUndo = 0)}
+          />
+        {/if}
         {#if undoing}
           <Waiting text="Putting the emails back where they were" />
         {/if}

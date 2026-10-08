@@ -245,3 +245,44 @@ describe('Always do this', () => {
     await waitFor(() => expect(why.queryByRole('alert')).toBeNull());
   });
 });
+
+describe('Undo the last hour', () => {
+  const undoCalls = (calls: { call: string }[]) => calls.filter((c) => c.call.startsWith('POST /api/actions/undo'));
+
+  it('asks first, saying dry-run does not stop it; Cancel and Escape move nothing and give focus back', async () => {
+    const calls = daemon();
+    render(Activity);
+    const open = screen.getByRole('button', { name: 'Undo the last hour' });
+
+    for (const close of [() => fireEvent.click(screen.getByRole('button', { name: 'Cancel' })), () => fireEvent.keyDown(document.activeElement!, { key: 'Escape' })]) {
+      open.focus();
+      await fireEvent.click(open);
+      const ask = screen.getByRole('alertdialog', { name: /every email MailRules moved in the last hour/ });
+      expect(ask.getAttribute('aria-describedby')).toBeTruthy();
+      expect(ask.textContent).toContain('Dry-run does not stop an undo');
+      expect(ask.contains(document.activeElement)).toBe(true);
+
+      await close();
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(document.activeElement).toBe(open);
+    }
+    expect(undoCalls(calls)).toEqual([]);
+  });
+
+  it('undoes once confirmed', async () => {
+    const calls = daemon();
+    render(Activity);
+    await fireEvent.click(screen.getByRole('button', { name: 'Undo the last hour' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Yes, undo the last hour' }));
+    await waitFor(() => expect(undoCalls(calls)).toHaveLength(1));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it("one row's Undo stays one click", async () => {
+    const calls = daemon();
+    render(Activity);
+    await fireEvent.click(await within(screen.getByRole('region', { name: 'Activity feed' })).findByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(calls.some((c) => c.call === 'POST /api/messages/1/undo')).toBe(true));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});

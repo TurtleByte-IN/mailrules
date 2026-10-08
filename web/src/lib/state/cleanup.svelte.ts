@@ -509,6 +509,17 @@ export const noUndo = (b: cleanupApi.Batch, now = Date.now()) =>
       ? 'Dry run: nothing to undo'
       : '';
 
+/**
+ * The question asked before a batch undo. The emails are counted only when the batch has actions in
+ * effect and every one is real (none dry-run, failed or already undone); otherwise how many move back is
+ * known only once the daemon has done it, so the question names no number.
+ */
+export function undoQuestion(b: cleanupApi.Batch) {
+  const n = acted(b);
+  if (!n || !b.actions.done || b.actions.dry_run || b.actions.failed || b.actions.undone) return 'Put every email this batch moved back where it was?';
+  return n === 1 ? 'Move 1 email back to where it was?' : 'Move ' + n.toLocaleString() + ' emails back to where they were?';
+}
+
 export async function undo(b: cleanupApi.Batch) {
   try {
     const r = await cleanupApi.undo(b.id);

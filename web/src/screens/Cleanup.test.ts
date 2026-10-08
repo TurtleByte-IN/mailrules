@@ -448,10 +448,47 @@ it('a batch the daemon finds too old says so in a toast and keeps its row', asyn
   routes['POST /api/batches/3/undo'] = [409, { error: { code: 'too_old', message, path: '' } }];
   render(Cleanup);
   await fireEvent.click(await screen.findByRole('button', { name: /^Undo batch/ }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Yes, undo this batch' }));
 
   await vi.waitFor(() => expect(toast.text).toBe(message));
   expect(screen.getByText('Done')).toBeTruthy();
   expect(screen.getByRole('button', { name: /^Undo batch/ })).toBeTruthy();
+});
+
+// Undo moves real mail even with dry-run on, so a batch asks first, with the count when it is known.
+it.each([
+  ['every action real and in effect: the count', { done: 14, skipped: 0, actions: { done: 18, dry_run: 0, failed: 0, undone: 0 } }, 'Move 14 emails back to where they were?'],
+  ['some actions failed: no count', { actions: { done: 310, dry_run: 0, failed: 2, undone: 0 } }, 'Put every email this batch moved back where it was?'],
+])('Undo batch asks first (%s); Cancel moves nothing and gives focus back', async (_name, over, question) => {
+  routes[PAST] = page([batch(over)]);
+  render(Cleanup);
+  const open = await screen.findByRole('button', { name: /^Undo batch/ });
+  open.focus();
+  await fireEvent.click(open);
+
+  const ask = screen.getByRole('alertdialog', { name: question });
+  expect(ask.textContent).toContain('Dry-run does not stop an undo');
+  expect(document.activeElement).toBe(within(ask).getByRole('button', { name: 'Cancel' }));
+  await fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(document.activeElement).toBe(open);
+  expect(fetchMock.mock.calls.map((c) => c[1].method)).not.toContain('POST');
+});
+
+it('Escape cancels a batch undo; confirming undoes it', async () => {
+  routes[PAST] = page([batch()]);
+  routes['POST /api/batches/3/undo'] = [200, { batch: batch({ status: 'undone' }), undone: 310, emails: 300, failed: 0 }];
+  render(Cleanup);
+  const open = await screen.findByRole('button', { name: /^Undo batch/ });
+  await fireEvent.click(open);
+  await fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+
+  await fireEvent.click(open);
+  await fireEvent.click(screen.getByRole('button', { name: 'Yes, undo this batch' }));
+  await vi.waitFor(() => expect(toast.text).toBe('300 emails moved back where they were'));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
 });
 
 const startBody = () => {

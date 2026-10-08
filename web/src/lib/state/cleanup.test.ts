@@ -563,6 +563,17 @@ it.each([
   ['failed with skipped', batch({ status: 'failed', done: 90, skipped: 4 }), 'Cleanup was cut short after 86 emails, 4 skipped (no longer in the folder). What it did can be undone as one batch below.'],
 ])('outcome: %s', (_name, b, text) => expect(m.outcome(b)).toBe(text));
 
+// Asked before a batch undo: a number only when every action of the batch is real and still in effect.
+const every = 'Put every email this batch moved back where it was?';
+it.each([
+  ['all real, skipped left out', batch({ done: 16, skipped: 2, actions: { done: 18, dry_run: 0, failed: 0, undone: 0 } }), 'Move 14 emails back to where they were?'],
+  ['one email', batch({ done: 1, actions: { done: 2, dry_run: 0, failed: 0, undone: 0 } }), 'Move 1 email back to where it was?'],
+  ['some dry-run', batch({ done: 9, actions: { done: 4, dry_run: 5, failed: 0, undone: 0 } }), every],
+  ['some failed', batch({ done: 9, actions: { done: 8, dry_run: 0, failed: 1, undone: 0 } }), every],
+  ['partly undone already', batch({ done: 9, actions: { done: 3, dry_run: 0, failed: 0, undone: 6 } }), every],
+  ['no actions recorded', batch({ done: 14 }), every],
+])('undoQuestion: %s', (_name, b, text) => expect(m.undoQuestion(b)).toBe(text));
+
 it('done → idle when the batch is undone', async () => {
   await toReady();
   await m.sort();

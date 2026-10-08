@@ -1,11 +1,13 @@
 <script lang="ts">
   import { link, router } from 'svelte-spa-router';
   import type { ActivityItem } from '../lib/api/activity';
+  import ConfirmBox from '../lib/components/ConfirmBox.svelte';
   import { clock, confidence, dayHeading, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type Outcome } from '../lib/state/activity.svelte';
   import { load as loadReview, review } from '../lib/state/review.svelte';
   import { rules } from '../lib/state/rules.svelte';
+  import { UNDO_IGNORES_DRY_RUN } from '../lib/undo';
   import Detail from './activity/Detail.svelte';
   import LoadError from './activity/LoadError.svelte';
 
@@ -25,6 +27,8 @@
   loadReview();
 
   let selected = $state<number | null>(linked);
+  // "Undo the last hour" moves real mail even in dry-run, so it asks first. One row's Undo does not.
+  let askingLastHour = $state(false);
   const rows = $derived(activity.list);
   // The feed comes in the order MailRules acted, newest first, and runs past today: one group
   // per day, each row showing when it was acted on. An old email decided today is today's.
@@ -92,12 +96,24 @@
       <p class="mt-1 text-secondary">Every decision, live. Click a row to see why; undo anything for 30 days.</p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
-      <button type="button" class="btn min-h-9 px-3 text-[13px]" onclick={undoLastHour}>Undo the last hour</button>
+      <button type="button" class="btn min-h-9 px-3 text-[13px]" aria-expanded={askingLastHour} onclick={() => (askingLastHour = true)}>Undo the last hour</button>
       <span class="inline-flex h-9 items-center gap-2 rounded bg-selected px-3 text-[13px] font-semibold">
         <span class="size-2 rounded-sm {live ? 'bg-live' : 'bg-idle'}"></span>{liveLabel}
       </span>
     </div>
   </header>
+  {#if askingLastHour}
+    <ConfirmBox
+      question="Put every email MailRules moved in the last hour back where it was?"
+      note={UNDO_IGNORES_DRY_RUN}
+      confirm="Yes, undo the last hour"
+      onconfirm={() => {
+        askingLastHour = false;
+        undoLastHour();
+      }}
+      oncancel={() => (askingLastHour = false)}
+    />
+  {/if}
 
   {#if activity.statsError}<LoadError message={activity.statsError} retry={loadStats} />{/if}
   <section aria-label="Today at a glance" class="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
