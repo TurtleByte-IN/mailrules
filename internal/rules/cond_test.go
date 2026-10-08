@@ -182,6 +182,35 @@ func TestCondJSON(t *testing.T) {
 	}
 }
 
+// MapAccounts reaches every account condition, at any depth and in every item of a list,
+// leaves the rest alone, and does not change the tree it was given.
+func TestMapAccounts(t *testing.T) {
+	addr := map[float64]string{1: "work@acme.example", 2: "me@icloud.com"}
+	toAddr := func(v any) any { return addr[v.(float64)] }
+	tests := []struct {
+		name     string
+		in, want Cond
+	}{
+		{"empty", Cond{}, Cond{}},
+		{"a leaf", leaf("account", OpEq, 1.0), leaf("account", OpEq, "work@acme.example")},
+		{"a list", leaf("account", OpIn, []any{2.0, 1.0}), leaf("account", OpIn, []any{"me@icloud.com", "work@acme.example"})},
+		{"other fields", leaf("size_kb", OpEq, 1.0), leaf("size_kb", OpEq, 1.0)},
+		{"nested", Cond{All: []Cond{leaf("is_bulk", OpEq, true), {Any: []Cond{leaf("subject", OpEq, "x"), leaf("account", OpNe, 2.0)}}}},
+			Cond{All: []Cond{leaf("is_bulk", OpEq, true), {Any: []Cond{leaf("subject", OpEq, "x"), leaf("account", OpNe, "me@icloud.com")}}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := mustJSON(t, tt.in)
+			if got, want := mustJSON(t, tt.in.MapAccounts(toAddr)), mustJSON(t, tt.want); got != want {
+				t.Errorf("got %s, want %s", got, want)
+			}
+			if after := mustJSON(t, tt.in); after != before {
+				t.Errorf("the tree given changed: %s became %s", before, after)
+			}
+		})
+	}
+}
+
 func TestCondText(t *testing.T) {
 	tests := []struct{ json, want string }{
 		{`{}`, ""},

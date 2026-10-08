@@ -76,7 +76,8 @@ rules:
             - {field: size_kb, op: gt, value: 100}
             - {field: subject, op: matches, value: '^re:'}
             - {field: body, op: not_contains, value: [unsubscribe]}
-    unless: {is_contact: true, from_domain: [bank.example], account: 3}
+            - {field: account, op: in, value: [work@acme.example, me@icloud.com]}
+    unless: {is_contact: true, from_domain: [bank.example], account: work@acme.example}
     actions: [{type: move, folder: "Money: 2026"}, flag]
     model: clef
   - id: flag lists
@@ -118,7 +119,8 @@ rules:
 	f, _ := ParseYAML([]byte(full))
 	f.Rules[1].Priority, f.Rules[2].Priority = 3, 2 // export follows priority, not slice order
 	out, _ := MarshalYAML(f)
-	for _, want := range []string{"is_contact: true", "- 'move:Money: 2026'", "- flag", "op: not_contains", "stack: true", "enabled: false", "model: clef", "template: Cold sales"} {
+	for _, want := range []string{"is_contact: true", "- 'move:Money: 2026'", "- flag", "op: not_contains", "stack: true", "enabled: false", "model: clef", "template: Cold sales",
+		"account: work@acme.example", "- me@icloud.com"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("export lacks %q:\n%s", want, out)
 		}
@@ -148,8 +150,15 @@ func TestParseYAMLErrors(t *testing.T) {
 		{"move without folder", "rules:\n  - {id: a, match: {is_bulk: true}, actions: [move]}", "actions[0].folder", ""},
 		{"action is a number", "rules:\n  - {id: a, match: {is_bulk: true}, actions: [3]}", "actions[0]", ""},
 		{"action map with unknown key", "rules:\n  - {id: a, match: {is_bulk: true}, actions: [{type: move, dir: x}]}", "actions[0]", ""},
-		{"duplicate id", "rules:\n  - {id: a, match: {is_bulk: true}, actions: [keep]}\n  - {id: a, match: {is_bulk: true}, actions: [keep]}", "id", "rule 2"},
 		{"default threshold too low for intent trash", "defaults: {min_confidence: 0.75}\nrules:\n  - {id: a, when: scams, actions: [trash]}", "min_confidence", ""},
+		{"a mailbox number in the shorthand", "rules:\n  - {id: a, match: {account: 3}, actions: [keep]}", "conditions.all[0].value", "by its email address"},
+		{"a mailbox number in a list", "rules:\n  - {id: a, match: {account: [me@icloud.com, 3]}, actions: [keep]}", "conditions.all[0].value", "by its email address"},
+		{"a mailbox number deep in unless", "rules:\n  - {id: a, match: {is_bulk: true}, unless: {all: [{any: [{field: account, op: ne, value: 3}]}]}, actions: [keep]}",
+			"exceptions.all[0].any[0].value", "not by its number"},
+		{"a list for eq", "rules:\n  - {id: a, match: {field: account, op: eq, value: [me@icloud.com]}, actions: [keep]}", "conditions.value", "one mailbox address"},
+		{"one address for in", "rules:\n  - {id: a, match: {field: account, op: in, value: me@icloud.com}, actions: [keep]}", "conditions.value", "a list of mailbox addresses"},
+		{"a blank address", "rules:\n  - {id: a, match: {account: \"\"}, actions: [keep]}", "conditions.all[0].value", "one mailbox address"},
+		{"duplicate id", "rules:\n  - {id: a, match: {is_bulk: true}, actions: [keep]}\n  - {id: a, match: {is_bulk: true}, actions: [keep]}", "id", "rule 2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -253,6 +262,22 @@ func TestYAMLMailboxes(t *testing.T) {
 		_, err := MarshalYAML(File{Rules: []Rule{{Name: "a", Enabled: true, AccountID: 3, Actions: []Action{{Type: ActKeep}}}}})
 		if err == nil || !strings.Contains(err.Error(), `rule "a" applies to mailbox 3`) {
 			t.Errorf("err = %v", err)
+		}
+	})
+	// A mailbox number in a file means another mailbox, or none, on the install that reads it.
+	t.Run("an account condition without addresses is not exported", func(t *testing.T) {
+		for name, c := range map[string]Cond{
+			"in match":         {All: []Cond{leaf("account", OpEq, 3.0)}},
+			"in a nested list": {Any: []Cond{leaf("is_bulk", OpEq, true), {All: []Cond{leaf("account", OpIn, []any{"me@icloud.com", 3.0})}}}},
+		} {
+			_, err := MarshalYAML(File{Rules: []Rule{{Name: "a", Enabled: true, Conditions: c, Actions: []Action{{Type: ActKeep}}}}})
+			if err == nil || !strings.Contains(err.Error(), `rule "a" has a condition on mailbox 3`) {
+				t.Errorf("%s: err = %v", name, err)
+			}
+			_, err = MarshalYAML(File{Rules: []Rule{{Name: "a", Enabled: true, Intent: "x", Exceptions: c, Actions: []Action{{Type: ActKeep}}}}})
+			if err == nil {
+				t.Errorf("%s in unless: exported", name)
+			}
 		}
 	})
 	t.Run("an older file has no applies_to and no defaults", func(t *testing.T) {

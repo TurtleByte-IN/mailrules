@@ -366,9 +366,45 @@ func nums(v any) ([]float64, bool) {
 	return out, len(out) > 0
 }
 
+// AccountByAddress is what is wrong with a mailbox number in a rules file's account condition.
+const AccountByAddress = "In a rules file, an account condition names a mailbox by its email address, such as work@example.com, not by its number: the numbers differ from one install to the next."
+
+// MapAccounts returns the tree with fn applied to every mailbox an account condition names
+// (each item of an "in" list on its own) and everything else as it was; c is not changed.
+// The app names a mailbox by its id and a rules file by its address: whoever has the
+// accounts turns one into the other with this.
+func (c Cond) MapAccounts(fn func(any) any) Cond {
+	if c.Field == "account" {
+		if l, ok := list(c.Value); ok {
+			out := make([]any, len(l))
+			for i, v := range l {
+				out[i] = fn(v)
+			}
+			c.Value = out
+		} else {
+			c.Value = fn(c.Value)
+		}
+		return c
+	}
+	c.All, c.Any = mapAccounts(c.All, fn), mapAccounts(c.Any, fn)
+	return c
+}
+
+func mapAccounts(cs []Cond, fn func(any) any) []Cond {
+	if len(cs) == 0 {
+		return cs
+	}
+	out := make([]Cond, len(cs))
+	for i, ch := range cs {
+		out[i] = ch.MapAccounts(fn)
+	}
+	return out
+}
+
 // validate checks the tree and returns a *ValidationError whose path points
-// at the offending key, e.g. "conditions.all[0].op".
-func (c Cond) validate(path string) error {
+// at the offending key, e.g. "conditions.all[0].op". In a rules file (file set), an
+// account condition names mailboxes by address instead of by id.
+func (c Cond) validate(path string, file bool) error {
 	leaf := c.Field != "" || c.Op != "" || c.Value != nil
 	parts := 0
 	for _, set := range []bool{leaf, len(c.All) > 0, len(c.Any) > 0} {
@@ -380,12 +416,12 @@ func (c Cond) validate(path string) error {
 		return &ValidationError{path, "A condition is either a group (all or any) or one field with an operator and a value."}
 	}
 	for i, ch := range c.All {
-		if err := ch.validate(fmt.Sprintf("%s.all[%d]", path, i)); err != nil {
+		if err := ch.validate(fmt.Sprintf("%s.all[%d]", path, i), file); err != nil {
 			return err
 		}
 	}
 	for i, ch := range c.Any {
-		if err := ch.validate(fmt.Sprintf("%s.any[%d]", path, i)); err != nil {
+		if err := ch.validate(fmt.Sprintf("%s.any[%d]", path, i), file); err != nil {
 			return err
 		}
 	}
@@ -404,14 +440,14 @@ func (c Cond) validate(path string) error {
 		}
 		return &ValidationError{path + ".op", msg}
 	}
-	if msg := c.valueProblem(k); msg != "" {
+	if msg := c.valueProblem(k, file); msg != "" {
 		return &ValidationError{path + ".value", msg}
 	}
 	return nil
 }
 
 // valueProblem says, in a sentence, what is wrong with a leaf's value, or "" when it fits.
-func (c Cond) valueProblem(k kind) string {
+func (c Cond) valueProblem(k kind, file bool) string {
 	switch {
 	case c.Op == OpExists:
 		if _, ok := c.Value.(bool); !ok && c.Value != nil {
@@ -424,6 +460,20 @@ func (c Cond) valueProblem(k kind) string {
 	case k == kindBool:
 		if _, ok := c.Value.(bool); !ok {
 			return "This field needs true or false."
+		}
+	case k == kindID && file:
+		vs, isList := list(c.Value)
+		if !isList {
+			vs = []any{c.Value}
+		}
+		if slices.ContainsFunc(vs, func(v any) bool { _, ok := num(v); return ok }) {
+			return AccountByAddress
+		}
+		if _, ok := strs(c.Value); !ok || isList != (c.Op == OpIn) {
+			if c.Op == OpIn {
+				return "This field needs a list of mailbox addresses."
+			}
+			return "This field needs one mailbox address."
 		}
 	case k == kindNum || k == kindID:
 		if c.Op == OpIn {

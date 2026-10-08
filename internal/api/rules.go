@@ -257,12 +257,6 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 		importInvalid(w, r, err)
 		return
 	}
-	for i, rule := range f.Rules {
-		if path, msg := ruleProblem(rule); msg != "" {
-			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("Rule %d (%q): %s", i+1, rule.Name, msg), path)
-			return
-		}
-	}
 	toStore, err := s.Settings.PrepareImport(r.Context(), user(r).ID, f)
 	var problem *settings.ImportProblem
 	if errors.As(err, &problem) {
@@ -279,6 +273,12 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		internalError(w, r, err)
 		return
+	}
+	for i, rule := range toStore { // as it will be stored, with mailbox ids for addresses
+		if path, msg := ruleProblem(rule); msg != "" {
+			writeError(w, http.StatusBadRequest, "rule_invalid", fmt.Sprintf("Rule %d (%q): %s", i+1, rule.Name, msg), path)
+			return
+		}
 	}
 	created, updated, err := s.store.ImportRules(r.Context(), user(r).ID, toStore, s.now().Unix())
 	if err != nil {

@@ -566,7 +566,7 @@ paths:
       tags: [Rules]
       operationId: exportRules
       summary: Download every rule as a YAML file
-      description: 'The PRD rule-file shape (`id` is the rule''s name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox''s address (its username); a rule for every mailbox has none. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.'
+      description: 'The PRD rule-file shape (`id` is the rule''s name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox''s address (its username); a rule for every mailbox has none. An `account` condition names its mailboxes by address too (`account: work@example.com`, or a list for `in`), never by id; a rule with a condition on a mailbox that no longer exists stops the export. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.'
       responses:
         '200':
           description: The rules file
@@ -588,9 +588,13 @@ paths:
         A rule's mailbox is its `applies_to`, the address (username, matched ignoring case) of
         a connected account. A rule with no `applies_to` keeps the mailbox it has (a new one
         applies to every mailbox); `applies_to: all` widens it to every mailbox. An address no
-        account has is refused. `defaults.decision_model` and `defaults.fallback_model` are
-        never applied: a file that names other models than the ones in force is refused,
-        since the models are settings of this install.
+        account has, or that more than one account has, is refused. An `account` condition in
+        `match` or `unless`, at any depth, names mailboxes the same way (`account:
+        work@example.com`, a list for `in`), and is stored with their ids; an address no
+        account has or more than one has is refused, and so is a number, which would mean
+        another mailbox on another install. `defaults.decision_model` and
+        `defaults.fallback_model` are never applied: a file that names other models than the
+        ones in force is refused, since the models are settings of this install.
       requestBody:
         required: true
         content:
@@ -602,7 +606,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ImportResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op). Also for a mailbox that is not connected (path rules[N].applies_to, N from 0) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op; a mailbox number in an account condition is one, at its value). Also for a mailbox that is not connected or is connected twice (path rules[N].applies_to, or rules[N].match / rules[N].unless for an account condition, N from 0) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '413': { $ref: '#/components/responses/TooLarge' }
@@ -1701,7 +1705,7 @@ components:
         from, to, cc, delivered_to, from_domain, subject, body, list_id, attachment_ext,
         `header:<Name>` (strings); has_attachment, is_contact, replied_before, is_bulk,
         is_noreply (booleans); size_kb, age_days (numbers); dmarc (pass | fail | none);
-        account (an account id).
+        account (an account id here; a rules YAML file names the mailbox by its address instead).
       properties:
         all: { type: array, items: { $ref: '#/components/schemas/Condition' } }
         any: { type: array, items: { $ref: '#/components/schemas/Condition' } }
