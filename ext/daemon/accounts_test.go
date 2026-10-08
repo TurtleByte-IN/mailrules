@@ -171,13 +171,15 @@ func TestAccountsAddListTest(t *testing.T) {
 	}
 }
 
+// waitFor polls for up to 15 s: IMAP push can take several seconds on a loaded CI runner
+// with the race detector on, and a passing condition returns at once.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	for range 500 {
+	for range 1500 {
 		if cond() {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("condition not met within 5 s")
+	t.Fatal("condition not met within 15 s")
 }

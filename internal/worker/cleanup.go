@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
@@ -145,8 +146,11 @@ func (m *Manager) SortAll(ctx context.Context, runs []SortRun) ([]store.Batch, e
 		})
 		slog.InfoContext(ctx, "cleanup sort started", "account", p.sr.AccountID, "batch", batches[i].ID, "folder", p.sr.Folder, "messages", len(rows), "run_size", len(runs))
 		m.wg.Go(func() {
-			defer release(p.sr.AccountID)
-			p.sort.sort(p.r.ctx, p.mb, batches[i].ID, rows)
+			// The mailbox is let go before the run is marked finished, so anyone who sees
+			// it finished can start the next one at once.
+			free := sync.OnceFunc(func() { release(p.sr.AccountID) })
+			defer free()
+			p.sort.sort(p.r.ctx, p.mb, batches[i].ID, rows, free)
 		})
 	}
 	return batches, nil
@@ -155,8 +159,9 @@ func (m *Manager) SortAll(ctx context.Context, runs []SortRun) ([]store.Batch, e
 // sort applies the kept rows, oldest first. Between two emails it lets go of the account,
 // so new mail, an undo or a correction is never kept waiting for the whole run. It asks no
 // model: the decisions were settled by the check. An email that is no longer where the
-// check found it is passed over and counted as skipped.
-func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, rows []composer.CheckRow) {
+// check found it is passed over and counted as skipped. finish is called once the last
+// email is handled and before the run is recorded as finished.
+func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, rows []composer.CheckRow, finish func()) {
 	acct := s.account() // the supervisor may change its status fields while this runs
 	p := s.Pipeline
 	p.Mailbox, p.Account, p.Batch = mb, acct, batchID
@@ -174,6 +179,7 @@ func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, r
 		err := s.Store.AddBatchProgress(recCtx, batchID, handled, skipped, 0, 0)
 		handled, skipped = 0, 0
 		if status != "" {
+			finish()
 			err = errors.Join(err, s.Store.SetBatchStatus(recCtx, batchID, status))
 		}
 		b, berr := s.Store.Batch(recCtx, batchID)
