@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { modelChoice, modelLabel, modelNames } from './text';
+  import { modelChoice, modelNames } from './text';
 
   // The model that decides a rule's plain-English part. A listed model is saved as soon as it is
   // picked. OpenAI, Ollama and "Other" ask for a `name:model` first, and the daemon's own refusal
@@ -54,7 +54,4 @@
     />
     <button type="button" class="btn font-semibold" disabled={!typed.trim() || typed.trim() === value} onclick={() => set(typed.trim())}>Set model</button>
   </div>
-  {#if value && choosing === null}
-    <div class="text-xs text-muted">Now: {modelLabel(value)}</div>
-  {/if}
 {/if}
