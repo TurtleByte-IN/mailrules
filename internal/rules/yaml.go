@@ -16,11 +16,21 @@ import (
 type File struct {
 	Defaults Defaults
 	Rules    []Rule
+	// Mailboxes says which mailbox each rule applies to, by the rule's name: the mailbox's
+	// address (its login), or AllMailboxes. A rule with no entry says nothing about it. A
+	// file cannot hold numeric account ids, which differ from one install to the next, so
+	// whoever has the accounts maps the address to Rule.AccountID and back.
+	Mailboxes map[string]string
 }
 
-// Defaults is the optional "defaults" block. The models are daemon settings,
-// so the importer decides what to do with them; MinConfidence is copied onto
-// every rule that sets none.
+// AllMailboxes is the applies_to value of a rule that is not limited to one mailbox. An
+// export never writes it (no applies_to means the rule applies everywhere); an import
+// accepts it to widen a rule that is limited to one.
+const AllMailboxes = "all"
+
+// Defaults is the optional "defaults" block. The models are daemon settings, so the
+// importer checks them against the install's (an import never changes a model);
+// MinConfidence is copied onto every rule that sets none.
 type Defaults struct {
 	DecisionModel string   `yaml:"decision_model,omitempty"`
 	FallbackModel string   `yaml:"fallback_model,omitempty"`
@@ -44,6 +54,7 @@ type yamlRule struct {
 	Actions       []any    `yaml:"actions"`            // "move:Food" or {type, folder}
 	MinConfidence *float64 `yaml:"min_confidence,omitempty"`
 	Model         string   `yaml:"model,omitempty"`
+	AppliesTo     string   `yaml:"applies_to,omitempty"` // a mailbox address or "all"; omitted = every mailbox
 	Stack         bool     `yaml:"stack,omitempty"`
 	Enabled       *bool    `yaml:"enabled,omitempty"` // omitted = true
 }
@@ -75,7 +86,7 @@ func ParseYAML(data []byte) (File, error) {
 	if err := dec.Decode(&yf); err != nil {
 		return File{}, fmt.Errorf("parse rules yaml: %w", err)
 	}
-	f := File{Defaults: yf.Defaults}
+	f := File{Defaults: yf.Defaults, Mailboxes: map[string]string{}}
 	var errs []error
 	seen := map[string]bool{}
 	for i, yr := range yf.Rules {
@@ -93,6 +104,9 @@ func ParseYAML(data []byte) (File, error) {
 			ve = &ValidationError{"id", "This name is used by more than one rule."}
 		}
 		seen[r.Name] = true
+		if to := strings.TrimSpace(yr.AppliesTo); to != "" && ve == nil {
+			f.Mailboxes[r.Name] = to
+		}
 		if ve != nil {
 			errs = append(errs, &RuleError{N: i + 1, ID: yr.ID, Err: ve})
 		}
@@ -212,13 +226,19 @@ func condToYAML(c Cond) (any, error) {
 	return out, nil
 }
 
-// MarshalYAML writes a rules file in priority order, using the shorthands.
+// MarshalYAML writes a rules file in priority order, using the shorthands. A rule limited to
+// a mailbox (AccountID set) needs its address in f.Mailboxes, or the file would not say so.
 func MarshalYAML(f File) ([]byte, error) {
 	rs := slices.Clone(f.Rules)
 	slices.SortStableFunc(rs, func(a, b Rule) int { return a.Priority - b.Priority })
 	yf := yamlFile{Defaults: f.Defaults, Rules: make([]yamlRule, 0, len(rs))}
 	for _, r := range rs {
-		yr := yamlRule{ID: r.Name, Said: r.Said, Template: r.Template, When: r.Intent, MinConfidence: r.MinConfidence, Model: r.Model, Stack: r.Stack}
+		yr := yamlRule{ID: r.Name, Said: r.Said, Template: r.Template, When: r.Intent, MinConfidence: r.MinConfidence, Model: r.Model, Stack: r.Stack,
+			AppliesTo: f.Mailboxes[r.Name]}
+		if yr.AppliesTo == "" && r.AccountID != 0 {
+			// Dropping it would write a file that widens the rule to every mailbox.
+			return nil, fmt.Errorf("rule %q applies to mailbox %d, which the file has no address for", r.Name, r.AccountID)
+		}
 		if !r.Enabled {
 			yr.Enabled = new(bool)
 		}

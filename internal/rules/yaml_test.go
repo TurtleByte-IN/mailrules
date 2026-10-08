@@ -176,3 +176,89 @@ func TestParseYAMLErrors(t *testing.T) {
 		t.Errorf("want both rules reported, got %v", err)
 	}
 }
+
+// A file keeps the defaults block and the mailbox each rule applies to, so that an export
+// read back is the same file: two rules limited to different mailboxes stay limited, the
+// rule that applies everywhere stays so, and the models in the defaults are still there.
+func TestYAMLKeepsDefaultsAndMailboxes(t *testing.T) {
+	in := File{
+		Defaults: Defaults{DecisionModel: "clef:clef-flash", FallbackModel: "claude-haiku-4-5"},
+		Rules: []Rule{
+			{Name: "Work invoices", Priority: 1, Enabled: true, AccountID: 7, Conditions: Cond{All: []Cond{leaf("from_domain", OpIn, []any{"acme.example"})}},
+				Actions: []Action{{Type: ActMove, Folder: "Money"}}},
+			{Name: "Everywhere", Priority: 2, Enabled: true, Intent: "Newsletters", Actions: []Action{{Type: ActArchive}}},
+			{Name: "Home bills", Priority: 3, Enabled: true, AccountID: 8, Conditions: Cond{All: []Cond{leaf("subject", OpContains, "bill")}},
+				Actions: []Action{{Type: ActMove, Folder: "Bills"}}},
+		},
+		Mailboxes: map[string]string{"Work invoices": "work@acme.example", "Home bills": "me@icloud.com"},
+	}
+	out, err := MarshalYAML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"defaults:", "decision_model: clef:clef-flash", "fallback_model: claude-haiku-4-5", "applies_to: work@acme.example", "applies_to: me@icloud.com"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("export lacks %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(string(out), "applies_to:"); n != 2 {
+		t.Errorf("%d applies_to lines, want 2 (the rule for every mailbox says nothing):\n%s", n, out)
+	}
+	back, err := ParseYAML(out)
+	if err != nil {
+		t.Fatalf("re-import: %v\n%s", err, out)
+	}
+	if back.Defaults != in.Defaults {
+		t.Errorf("defaults = %+v, want %+v", back.Defaults, in.Defaults)
+	}
+	if got := back.Mailboxes; len(got) != 2 || got["Work invoices"] != "work@acme.example" || got["Home bills"] != "me@icloud.com" {
+		t.Errorf("mailboxes = %v", got)
+	}
+	// The account ids are the importer's to fill in from the addresses.
+	for i := range back.Rules {
+		back.Rules[i].AccountID = in.Rules[i].AccountID
+	}
+	if a, b := mustJSON(t, in.Rules), mustJSON(t, back.Rules); a != b {
+		t.Errorf("rules changed:\n%s\nbecame\n%s", a, b)
+	}
+}
+
+func TestYAMLMailboxes(t *testing.T) {
+	const rule = "rules:\n  - {id: a, match: {from_domain: x.example}, actions: [keep]%s}\n"
+	t.Run("what applies_to may say", func(t *testing.T) {
+		tests := []struct {
+			name, extra string
+			want        map[string]string
+		}{
+			{"nothing", "", map[string]string{}},
+			{"a mailbox", ", applies_to: me@icloud.com", map[string]string{"a": "me@icloud.com"}},
+			{"spaces are dropped", `, applies_to: "  me@icloud.com "`, map[string]string{"a": "me@icloud.com"}},
+			{"all", ", applies_to: all", map[string]string{"a": "all"}},
+			{"blank says nothing", `, applies_to: ""`, map[string]string{}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				f, err := ParseYAML([]byte(strings.Replace(rule, "%s", tt.extra, 1)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(f.Mailboxes) != len(tt.want) || f.Mailboxes["a"] != tt.want["a"] {
+					t.Errorf("mailboxes = %v, want %v", f.Mailboxes, tt.want)
+				}
+			})
+		}
+	})
+	// An export that dropped the scope would turn the rule into one for every mailbox.
+	t.Run("a scoped rule without an address is not exported", func(t *testing.T) {
+		_, err := MarshalYAML(File{Rules: []Rule{{Name: "a", Enabled: true, AccountID: 3, Actions: []Action{{Type: ActKeep}}}}})
+		if err == nil || !strings.Contains(err.Error(), `rule "a" applies to mailbox 3`) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("an older file has no applies_to and no defaults", func(t *testing.T) {
+		f, err := ParseYAML([]byte("rules:\n  - {id: a, match: {from_domain: x.example}, actions: [keep]}\n"))
+		if err != nil || f.Defaults != (Defaults{}) || len(f.Mailboxes) != 0 {
+			t.Errorf("file = %+v, err %v", f, err)
+		}
+	})
+}

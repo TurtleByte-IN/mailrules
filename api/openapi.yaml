@@ -532,7 +532,7 @@ paths:
       tags: [Rules]
       operationId: exportRules
       summary: Download every rule as a YAML file
-      description: The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). The database stays the source of truth.
+      description: 'The PRD rule-file shape (`id` is the rule''s name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox''s address (its username); a rule for every mailbox has none. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.'
       responses:
         '200':
           description: The rules file
@@ -548,8 +548,15 @@ paths:
       description: |
         The request body is the file itself (at most 1 MB). Nothing is stored unless every
         rule in it is valid. A rule whose name (`id` in the file) is already in use replaces
-        that rule's wording and keeps its place, account and id; the others are added after
-        the existing rules, in file order. Rules the file does not name are left alone.
+        that rule and keeps its place and id; the others are added after the existing rules,
+        in file order. Rules the file does not name are left alone.
+
+        A rule's mailbox is its `applies_to`, the address (username, matched ignoring case) of
+        a connected account. A rule with no `applies_to` keeps the mailbox it has (a new one
+        applies to every mailbox); `applies_to: all` widens it to every mailbox. An address no
+        account has is refused. `defaults.decision_model` and `defaults.fallback_model` are
+        never applied: a file that names other models than the ones in force is refused,
+        since the models are settings of this install.
       requestBody:
         required: true
         content:
@@ -561,7 +568,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ImportResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op)
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op). Also for a mailbox that is not connected (path rules[N].applies_to, N from 0) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '413': { $ref: '#/components/responses/TooLarge' }

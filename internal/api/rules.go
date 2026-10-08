@@ -125,6 +125,14 @@ func ruleProblem(rule rules.Rule) (path, msg string) {
 	return "model", settings.CheckModel(rule.Model)
 }
 
+// joined is the errors an errors.Join holds, or err itself.
+func joined(err error) []error {
+	if j, ok := err.(interface{ Unwrap() []error }); ok { //nolint:errorlint // the join itself
+		return j.Unwrap()
+	}
+	return []error{err}
+}
+
 // importInvalid answers for a rules file that cannot be imported. Every rule with a
 // problem gets one sentence that names it ("Rule 3 ("Scams"): ..."), one per line; path is
 // where the first problem is, inside its rule.
@@ -221,12 +229,12 @@ func (s *server) handleRulesReorder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleRulesExport(w http.ResponseWriter, r *http.Request) {
-	rs, err := s.store.Rules(r.Context(), user(r).ID)
+	f, err := s.Settings.ExportRules(r.Context(), user(r).ID)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	out, err := rules.MarshalYAML(rules.File{Rules: rs})
+	out, err := rules.MarshalYAML(f)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -255,7 +263,24 @@ func (s *server) handleRulesImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	created, updated, err := s.store.ImportRules(r.Context(), user(r).ID, f.Rules, s.now().Unix())
+	toStore, err := s.Settings.PrepareImport(r.Context(), user(r).ID, f)
+	var problem *settings.ImportProblem
+	if errors.As(err, &problem) {
+		var lines []string
+		for _, e := range joined(err) {
+			var p *settings.ImportProblem
+			if errors.As(e, &p) {
+				lines = append(lines, p.Message)
+			}
+		}
+		writeError(w, http.StatusBadRequest, "rule_invalid", strings.Join(lines, "\n"), problem.Path)
+		return
+	}
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	created, updated, err := s.store.ImportRules(r.Context(), user(r).ID, toStore, s.now().Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
