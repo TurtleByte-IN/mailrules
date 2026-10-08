@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +250,113 @@ func TestLoginRateLimit(t *testing.T) {
 	ck.t = ck.t.Add(61 * time.Second)
 	if r := c.do(http.MethodPost, "/api/auth/login", goodBody); r.status != http.StatusOK {
 		t.Fatalf("login after the window = %d %q", r.status, r.body.Error.Code)
+	}
+}
+
+func passwordBody(current, next string) string {
+	b, _ := json.Marshal(map[string]string{"current_password": current, "new_password": next})
+	return string(b)
+}
+
+const newPassword = "a different long password"
+
+func TestChangePassword(t *testing.T) {
+	c, _ := newClient(t)
+	c.do(http.MethodGet, "/api/auth/me", "")
+
+	// No session: no change, and the answer says which screen to show.
+	expect(t, c.do(http.MethodPost, "/api/auth/password", passwordBody("correct horse battery", newPassword)), http.StatusUnauthorized, "setup_required")
+
+	c.do(http.MethodPost, "/api/auth/setup", goodBody)
+	// A second browser holds its own session.
+	other := &client{t: t, h: c.h, cookies: map[string]string{}}
+	other.do(http.MethodGet, "/api/auth/me", "")
+	if r := other.do(http.MethodPost, "/api/auth/login", goodBody); r.status != http.StatusOK {
+		t.Fatalf("second browser login = %d", r.status)
+	}
+	before := c.cookies[sessionCookie]
+
+	// A request without the CSRF token is refused before anything else.
+	c.noCSRF = true
+	expect(t, c.do(http.MethodPost, "/api/auth/password", passwordBody("correct horse battery", newPassword)), http.StatusForbidden, "csrf_failed")
+	c.noCSRF = false
+
+	bad := []struct {
+		name, body, code, path string
+	}{
+		{"wrong current password", passwordBody("not my password", newPassword), "invalid_input", "current_password"},
+		{"empty current password", passwordBody("", newPassword), "invalid_input", "current_password"},
+		{"new password too short", passwordBody("correct horse battery", "short"), "invalid_input", "new_password"},
+		{"new password missing", `{"current_password":"correct horse battery"}`, "invalid_input", "new_password"},
+		{"unknown field", `{"current_password":"correct horse battery","new_password":"` + newPassword + `","email":"x@y.z"}`, "invalid_json", ""},
+		{"not JSON", `{"current_password":`, "invalid_json", ""},
+	}
+	for _, tt := range bad {
+		t.Run(tt.name, func(t *testing.T) {
+			r := c.do(http.MethodPost, "/api/auth/password", tt.body)
+			expect(t, r, http.StatusBadRequest, tt.code)
+			if r.body.Error.Path != tt.path {
+				t.Errorf("error path = %q, want %q", r.body.Error.Path, tt.path)
+			}
+			if _, replaced := r.setCookies[sessionCookie]; replaced {
+				t.Error("a refused change replaced the session")
+			}
+		})
+	}
+	// Nothing changed: both browsers are still in, and the old password still works.
+	if r := other.do(http.MethodGet, "/api/auth/me", ""); r.status != http.StatusOK {
+		t.Fatalf("other browser after refused changes = %d", r.status)
+	}
+
+	r := c.do(http.MethodPost, "/api/auth/password", passwordBody("correct horse battery", newPassword))
+	if r.status != http.StatusOK || r.body.User.Email != "me@icloud.com" {
+		t.Fatalf("change = %d %+v", r.status, r.body)
+	}
+	sc := r.setCookies[sessionCookie]
+	if sc == nil || !sc.HttpOnly || sc.SameSite != http.SameSiteStrictMode || sc.Value == before {
+		t.Fatalf("session cookie after a change = %+v, want a fresh HttpOnly one", sc)
+	}
+	if strings.Contains(string(r.raw), newPassword) || strings.Contains(string(r.raw), "correct horse") {
+		t.Fatalf("response echoes a password: %s", r.raw)
+	}
+	// This browser stays signed in on the new session; the other one, and the old token, do not.
+	if r := c.do(http.MethodGet, "/api/auth/me", ""); r.status != http.StatusOK {
+		t.Fatalf("me after change = %d", r.status)
+	}
+	expect(t, other.do(http.MethodGet, "/api/auth/me", ""), http.StatusUnauthorized, "unauthenticated")
+	stale := &client{t: t, h: c.h, cookies: map[string]string{sessionCookie: before}}
+	expect(t, stale.do(http.MethodGet, "/api/auth/me", ""), http.StatusUnauthorized, "unauthenticated")
+
+	// The old password no longer signs in; the new one does.
+	c.do(http.MethodPost, "/api/auth/logout", "")
+	expect(t, c.do(http.MethodPost, "/api/auth/login", goodBody), http.StatusUnauthorized, "invalid_credentials")
+	if r := c.do(http.MethodPost, "/api/auth/login", `{"email":"me@icloud.com","password":"`+newPassword+`"}`); r.status != http.StatusOK {
+		t.Fatalf("login with the new password = %d %q", r.status, r.body.Error.Code)
+	}
+}
+
+// Guessing the current password from a stolen session is limited like signing in.
+func TestChangePasswordRateLimit(t *testing.T) {
+	c, ck := newClient(t)
+	c.do(http.MethodGet, "/api/auth/me", "")
+	c.do(http.MethodPost, "/api/auth/setup", goodBody)
+
+	for i := range 5 {
+		expect(t, c.do(http.MethodPost, "/api/auth/password", passwordBody("guess "+strconv.Itoa(i)+" guess", newPassword)), http.StatusBadRequest, "invalid_input")
+	}
+	// The sixth is refused even with the right password.
+	r := c.do(http.MethodPost, "/api/auth/password", passwordBody("correct horse battery", newPassword))
+	expect(t, r, http.StatusTooManyRequests, "rate_limited")
+	if r.header.Get("Retry-After") == "" {
+		t.Error("no Retry-After header")
+	}
+	// It does not lock sign-in, which has its own count.
+	c.do(http.MethodPost, "/api/auth/logout", "")
+	if r := c.do(http.MethodPost, "/api/auth/login", goodBody); r.status != http.StatusOK {
+		t.Fatalf("login while password changes are limited = %d", r.status)
+	}
+	ck.t = ck.t.Add(61 * time.Second)
+	if r := c.do(http.MethodPost, "/api/auth/password", passwordBody("correct horse battery", newPassword)); r.status != http.StatusOK {
+		t.Fatalf("change after the window = %d %q", r.status, r.body.Error.Code)
 	}
 }

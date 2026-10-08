@@ -24,7 +24,7 @@ const (
 	csrfCookie    = "mailrules_csrf"
 	csrfHeader    = "X-CSRF-Token"
 	sessionTTL    = 30 * 24 * time.Hour
-	minPassword   = 12
+	minPassword   = crypto.MinPasswordLen
 )
 
 type userKey struct{}
@@ -195,6 +195,11 @@ func (s *server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
 }
 
+func (s *server) tooManyLogins(w http.ResponseWriter, wait time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many failed sign-ins. Wait a minute and try again.", "")
+}
+
 func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -202,8 +207,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	if wait := s.logins.blockedFor(ip, now); wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many failed sign-ins. Wait a minute and try again.", "")
+		s.tooManyLogins(w, wait)
 		return
 	}
 	var in credentials
@@ -223,6 +227,53 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !crypto.VerifyPassword(hash, in.Password) || u.ID == 0 {
 		s.logins.fail(ip, now)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Wrong email or password.", "")
+		return
+	}
+	if err := s.startSession(w, r, u.ID); err != nil {
+		internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
+}
+
+type passwordChange struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// handlePasswordChange replaces the signed-in admin's password. It needs the current
+// password, so a stolen session alone cannot take the account over, and it ends every
+// session, this browser's too: this browser then gets a fresh one so the owner stays in.
+func (s *server) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
+	u, _ := r.Context().Value(userKey{}).(store.User)
+	// Wrong guesses at the current password are counted per user, in the sign-in limiter
+	// under a key no IP address can equal, so a stolen session cannot brute-force it.
+	key := "password:" + strconv.FormatInt(u.ID, 10)
+	now := s.now()
+	if wait := s.logins.blockedFor(key, now); wait > 0 {
+		s.tooManyLogins(w, wait)
+		return
+	}
+	var in passwordChange
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if !crypto.VerifyPassword(u.PasswordHash, in.CurrentPassword) {
+		s.logins.fail(key, now)
+		writeError(w, http.StatusBadRequest, "invalid_input", "The current password is wrong.", "current_password")
+		return
+	}
+	if len(in.NewPassword) < minPassword {
+		writeError(w, http.StatusBadRequest, "invalid_input", "Password must be at least 12 characters.", "new_password")
+		return
+	}
+	hash, err := crypto.HashPassword(in.NewPassword)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	if err := s.store.SetPassword(r.Context(), u.ID, hash); err != nil {
+		internalError(w, r, err)
 		return
 	}
 	if err := s.startSession(w, r, u.ID); err != nil {

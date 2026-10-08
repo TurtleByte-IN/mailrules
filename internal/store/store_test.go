@@ -127,6 +127,32 @@ func TestSessions(t *testing.T) {
 	}
 }
 
+func TestSetPasswordEndsSessions(t *testing.T) {
+	s, _ := open(t)
+	ctx := t.Context()
+	u, _ := s.CreateFirstUser(ctx, "me@icloud.com", "old-hash", 100)
+	for _, h := range []string{"h1", "h2"} {
+		if err := s.CreateSession(ctx, h, u.ID, 100, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetPassword(ctx, u.ID, "new-hash"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.UserByEmail(ctx, "me@icloud.com")
+	if err != nil || got.PasswordHash != "new-hash" {
+		t.Fatalf("user after change = %+v, %v", got, err)
+	}
+	for _, h := range []string{"h1", "h2"} {
+		if _, _, err := s.SessionUser(ctx, h, 150); !errors.Is(err, ErrNotFound) {
+			t.Errorf("session %s after the change: got %v, want ErrNotFound", h, err)
+		}
+	}
+	if err := s.SetPassword(ctx, u.ID+1, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown user: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestSettings(t *testing.T) {
 	s, _ := open(t)
 	ctx := t.Context()

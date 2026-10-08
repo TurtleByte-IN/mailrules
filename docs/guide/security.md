@@ -20,7 +20,22 @@ MailRules has one admin account, created on first run. It protects the web UI an
 - After 5 failed sign-ins within a minute from the same address, sign-in is refused for a minute ("Too many failed sign-ins. Wait a minute and try again."). There is no permanent lockout.
 - Signing in sets a session cookie, `mailrules_session`, that lasts 30 days and is renewed as you use MailRules. It is `HttpOnly` and `SameSite=Strict`. **Sign out**, at the bottom of the sidebar, ends the session on the server too.
 - Every request that changes something must carry a CSRF token (the `X-CSRF-Token` header), which the web UI sends for you.
-- There is no way to change or reset the admin password in this release.
+- To change the password while signed in, or to reset it when you have lost it, see [Changing or resetting the password](#changing-or-resetting-the-password).
+
+### Changing or resetting the password
+
+**Change it while signed in.** Send the current and the new password to the HTTP API (the web UI has no screen for this yet). The new password must be at least 12 characters. A wrong current password is refused, and five wrong ones in a minute lock the change for a minute. A change ends every session, including one that someone else may have stolen; the browser that made it gets a new session and stays signed in. See `POST /api/auth/password` in the [HTTP API](https://github.com/TurtleByte-IN/mailrules/blob/main/docs/api.md).
+
+**Reset it when you have lost it.** Run this on the machine that holds the data directory, with the same `MAILRULES_DATA_DIR` as the daemon:
+
+```bash
+mailrules users reset-password
+```
+
+It asks for the new password twice, without showing it, and ends every session; sign in again with the new one. There is no email reset: whoever can run the command on the host can already read the data directory, so the command asks for nothing more. It works while MailRules is running. It does not need the master key and never prints or logs the password.
+
+- To script it, give the password in a file (`--password-file PATH`) or in the environment variable `MAILRULES_USER_PASSWORD`, or pipe one line to it. It is never a flag, where other users of the machine could see it in the process list.
+- With Docker, run it inside the container, with a terminal: `docker exec -it mailrules /mailrules users reset-password`.
 
 Whether the cookie is marked `Secure` (sent over HTTPS only) is set by `MAILRULES_COOKIE_SECURE`:
 
@@ -86,7 +101,7 @@ Behind a proxy, every request reaches MailRules from the proxy's address, so the
 - Mailbox passwords and model keys entered in the browser are encrypted with AES-256-GCM under the master key before they are stored. See [Backup and the master key](./backup.md).
 - They are write-only: no API response contains them. Settings only says whether a key is set, and where from.
 - Logs never contain passwords, keys, tokens or the text of an email, at any `LOG_LEVEL`.
-- `mailrules accounts add` never takes a password as a flag, where other users of the machine could see it in the process list.
+- `mailrules accounts add` and `mailrules users reset-password` never take a password as a flag, where other users of the machine could see it in the process list.
 - Mail that a model needs to read is sent to the provider of that model. [What is sent to a model](./models.md#what-is-sent-to-a-model) lists exactly what, and Ollama keeps it on your own server.
 
 ## Reporting a vulnerability

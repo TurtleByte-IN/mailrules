@@ -90,6 +90,7 @@ func (s *server) routes() []route {
 		{post, "/api/auth/login", s.handleLogin, true},
 		{post, "/api/auth/logout", s.handleLogout, true},
 		{get, "/api/auth/me", s.handleMe, true},
+		on(post, "/api/auth/password", s.handlePasswordChange),
 
 		on(get, "/api/presets", s.handlePresets),
 		on(post, "/api/accounts/test", s.handleAccountTest),
