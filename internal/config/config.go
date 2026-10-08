@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/mail"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 )
@@ -46,6 +49,21 @@ type Config struct {
 
 	// CookieSecure is auto, true or false; see SecureCookies.
 	CookieSecure string
+
+	// The outgoing mail server the summary email is sent through. SMTPPort 0 means the
+	// usual port for SMTPTLS; SMTPPasswordFile names a file holding the password, like
+	// MasterKeyFile. Never logged.
+	SMTPHost         string
+	SMTPPort         int
+	SMTPUser         string
+	SMTPPassword     string
+	SMTPPasswordFile string
+	SMTPFrom         string
+	SMTPTLS          string // starttls | implicit | none (none: localhost only)
+
+	// PublicURL is where the web app is reached from the user's mail program: links in the
+	// summary email start with it.
+	PublicURL string
 }
 
 // flagName turns MAILRULES_DATA_DIR into data-dir and OPENROUTER_API_KEY into openrouter-api-key.
@@ -92,6 +110,15 @@ func Load(args []string, getenv func(string) string) (*Config, error) {
 	str(&c.PricesFile, "MAILRULES_PRICES_FILE", "", "per-model prices for the cost ledger")
 	str(&c.LogLevel, "LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.CookieSecure, "MAILRULES_COOKIE_SECURE", "auto", "send login cookies over HTTPS only: auto, true or false")
+	str(&c.SMTPHost, "MAILRULES_SMTP_HOST", "", "outgoing mail server for the summary email")
+	fs.IntVar(&c.SMTPPort, flagName("MAILRULES_SMTP_PORT"), 0, "its port; 0 = 587 for starttls, 465 for implicit, 25 for none (env MAILRULES_SMTP_PORT)")
+	envs = append(envs, "MAILRULES_SMTP_PORT")
+	str(&c.SMTPUser, "MAILRULES_SMTP_USER", "", "user name to sign in to the mail server; empty = no sign-in")
+	str(&c.SMTPPassword, "MAILRULES_SMTP_PASSWORD", "", "its password")
+	str(&c.SMTPPasswordFile, "MAILRULES_SMTP_PASSWORD_FILE", "", "file holding the password")
+	str(&c.SMTPFrom, "MAILRULES_SMTP_FROM", "", "From address of the summary email, e.g. MailRules <mailrules@example.com>")
+	str(&c.SMTPTLS, "MAILRULES_SMTP_TLS", "starttls", "starttls, implicit, or none (only for a server on this machine)")
+	str(&c.PublicURL, "MAILRULES_PUBLIC_URL", "http://127.0.0.1:8080", "where the web app is reached; links in the summary email start with it")
 
 	var errs []error
 	for _, env := range envs {
@@ -162,7 +189,101 @@ func (c *Config) Validate() error {
 	default:
 		bad("LOG_LEVEL=%q must be debug, info, warn or error", c.LogLevel)
 	}
+	errs = append(errs, c.validateSMTP()...)
 	return errors.Join(errs...)
+}
+
+// SMTP TLS modes, as MAILRULES_SMTP_TLS takes them.
+const (
+	SMTPStartTLS = "starttls" // plain connection upgraded with STARTTLS, which the server must offer
+	SMTPImplicit = "implicit" // TLS from the first byte (SMTPS)
+	SMTPNoTLS    = "none"     // no encryption: only for a mail server on this machine
+)
+
+// validateSMTP checks the summary email's settings that are set. What is missing is not an
+// error here: the daemon runs without a mail server, and SMTPMissing says what to add.
+func (c *Config) validateSMTP() []error {
+	var errs []error
+	bad := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+	if c.SMTPHost != "" && (strings.ContainsAny(c.SMTPHost, "/:@ \t\r\n") && net.ParseIP(c.SMTPHost) == nil) {
+		bad("MAILRULES_SMTP_HOST=%q must be a host name or IP address, without a scheme or port (the port is MAILRULES_SMTP_PORT)", c.SMTPHost)
+	}
+	if c.SMTPPort < 0 || c.SMTPPort > 65535 {
+		bad("MAILRULES_SMTP_PORT=%d must be between 1 and 65535, or 0 for the usual port", c.SMTPPort)
+	}
+	switch c.SMTPTLS {
+	case SMTPStartTLS, SMTPImplicit:
+	case SMTPNoTLS:
+		if c.SMTPHost != "" && !isLocalHost(c.SMTPHost) {
+			bad("MAILRULES_SMTP_TLS=none sends the password and the summary unencrypted, so it is allowed only for a mail server on this machine (localhost), not %q", c.SMTPHost)
+		}
+	default:
+		bad("MAILRULES_SMTP_TLS=%q must be starttls, implicit or none", c.SMTPTLS)
+	}
+	if c.SMTPPassword != "" && c.SMTPPasswordFile != "" {
+		bad("set only one of MAILRULES_SMTP_PASSWORD and MAILRULES_SMTP_PASSWORD_FILE")
+	}
+	if c.SMTPFrom != "" {
+		if _, err := mail.ParseAddress(c.SMTPFrom); err != nil || strings.ContainsAny(c.SMTPFrom, "\r\n") {
+			bad("MAILRULES_SMTP_FROM=%q must be one email address, such as mailrules@example.com or MailRules <mailrules@example.com>", c.SMTPFrom)
+		}
+	}
+	if u, err := url.Parse(c.PublicURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		bad("MAILRULES_PUBLIC_URL=%q must be an http or https URL with no query or #, such as https://mail.example.com", c.PublicURL)
+	}
+	return errs
+}
+
+// isLocalHost reports whether host names this machine.
+func isLocalHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// SMTPMissing lists the environment variables still to set before the summary email can be
+// sent, in the order to set them; empty when it can be. A user name needs a password and a
+// password a user name.
+func (c *Config) SMTPMissing() []string {
+	missing := []string{}
+	if c.SMTPHost == "" {
+		missing = append(missing, "MAILRULES_SMTP_HOST")
+	}
+	if c.SMTPFrom == "" {
+		missing = append(missing, "MAILRULES_SMTP_FROM")
+	}
+	hasPassword := c.SMTPPassword != "" || c.SMTPPasswordFile != ""
+	switch {
+	case c.SMTPUser != "" && !hasPassword:
+		missing = append(missing, "MAILRULES_SMTP_PASSWORD")
+	case c.SMTPUser == "" && hasPassword:
+		missing = append(missing, "MAILRULES_SMTP_USER")
+	}
+	return missing
+}
+
+// SMTPAddr is the mail server's host:port, with the usual port for the TLS mode when none is set.
+func (c *Config) SMTPAddr() string {
+	port := c.SMTPPort
+	if port == 0 {
+		port = map[string]int{SMTPStartTLS: 587, SMTPImplicit: 465, SMTPNoTLS: 25}[c.SMTPTLS]
+	}
+	return net.JoinHostPort(c.SMTPHost, fmt.Sprint(port))
+}
+
+// SMTPSecret returns the mail server's password: MAILRULES_SMTP_PASSWORD, or the contents of
+// MAILRULES_SMTP_PASSWORD_FILE without its line ending.
+func (c *Config) SMTPSecret() (string, error) {
+	if c.SMTPPasswordFile == "" {
+		return c.SMTPPassword, nil
+	}
+	b, err := os.ReadFile(c.SMTPPasswordFile) // #nosec G304 -- operator-chosen path
+	if err != nil {
+		return "", fmt.Errorf("read MAILRULES_SMTP_PASSWORD_FILE: %w", err)
+	}
+	return strings.TrimRight(string(b), "\r\n"), nil
 }
 
 // DeciderSpec is the decider as models.NewRouter takes it: "name" or "name:model".
@@ -281,12 +402,5 @@ func (c *Config) SecureCookies() bool {
 // ListensLocally reports whether the HTTP address is loopback-only.
 func (c *Config) ListensLocally() bool {
 	host, _, err := net.SplitHostPort(c.Listen)
-	if err != nil {
-		return false
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return err == nil && isLocalHost(host)
 }

@@ -1219,6 +1219,13 @@ paths:
         that need a model are passed over, and composing and suggesting rules answer 409
         `no_composer_model`. A `composer_model` that names a provider with no model
         (`openai:`) or an unknown provider (`gemini:pro`) is refused with 400.
+
+        **The summary email.** `summary` is changed as one object whose fields left out stay
+        as they are (`null` is not taken for the object). It is validated before anything is
+        stored, and switching it on while the daemon has no outgoing mail server
+        (`summary.smtp.configured` false) is refused with 409 `smtp_not_configured`, saving
+        nothing. Its `time` is in `time_zone`; the web app sends the browser's zone with
+        every change.
       requestBody:
         required: true
         content:
@@ -1230,9 +1237,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Settings' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | trash_to_folder | leave_own_mail | openai_base_url | ollama_url | anthropic_workspace_id | keys.<name>), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | trash_to_folder | leave_own_mail | openai_base_url | ollama_url | anthropic_workspace_id | keys.<name> | summary.frequency | summary.weekday | summary.time | summary.time_zone | summary.to), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # smtp_not_configured (path summary.enabled): turning the summary email on while the daemon has no outgoing mail server; nothing was saved
   /api/settings/anthropic-workspaces:
     get:
       tags: [Settings]
@@ -1257,6 +1265,62 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AnthropicWorkspaces' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/summary/preview:
+    get:
+      tags: [Settings]
+      operationId: previewSummary
+      summary: The summary email as the next one would be if it went now, without sending it
+      description: |
+        Built from what MailRules recorded since the last summary that went out (or, with
+        none yet, the last day or week, as `summary.frequency` says), up to now. It works
+        while no outgoing mail server is set. `html` is a whole HTML document with inline
+        styles. Neither part holds email bodies: senders, subjects, rule names, counts, the
+        model cost and links into the app. To show the HTML, frame
+        `GET /api/summary/preview.html`: a frame fed `html` through `srcdoc` takes on the
+        app's Content-Security-Policy, which blocks the inline styles.
+      responses:
+        '200':
+          description: The rendered summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SummaryPreview' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/summary/preview.html:
+    get:
+      tags: [Settings]
+      operationId: previewSummaryPage
+      summary: The same preview's HTML part as a page of its own, to show in a frame
+      description: |
+        The one endpoint under /api/ that answers HTML. Its Content-Security-Policy allows
+        the inline styles and nothing else (no script, no image but `data:`, no request
+        out), sandboxes the page with popups allowed, and lets only the app frame it. Its
+        links open in a new tab.
+      responses:
+        '200':
+          description: The summary's HTML part
+          content:
+            text/html:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/summary/test:
+    post:
+      tags: [Settings]
+      operationId: sendTestSummary
+      summary: Send a summary of the last day now, to the summary's address
+      description: |
+        Sends a real summary of the last 24 hours to `summary.to`, whether the summary
+        email is switched on or not. It does not count as a scheduled summary: the next one
+        still covers everything since the last scheduled one. No body.
+      responses:
+        '200':
+          description: The mail server accepted it
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SummaryTestResult' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # smtp_not_configured (path summary.enabled)
+        '502': { $ref: '#/components/responses/Upstream' } # send_failed: the mail server could not be reached or refused it; the message says why
   /api/events:
     get:
       tags: [Live]
@@ -2257,7 +2321,7 @@ components:
         workspaces: { type: array, items: { $ref: '#/components/schemas/AnthropicWorkspace' }, description: 'For `one` and `several`, the organisation''s workspaces, the Default Workspace included; otherwise empty' }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, server, limits, features]
+      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, summary, server, limits, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged, no mailbox is changed and no sender rule is learned from them }
         decider: { $ref: '#/components/schemas/Decider' }
@@ -2294,13 +2358,13 @@ components:
             test_default: { type: integer, description: 'A rule test (TestRequest) with no `limit` reads this many; composer drafts are tested on as many' }
             test_max: { type: integer, description: The largest `limit` a rule test takes }
             check_max: { type: integer, description: 'The largest `limit` a cleanup check or a rule suggestion scan takes, and what one with no `limit` covers' }
+        summary: { $ref: '#/components/schemas/SummarySettings' }
         features:
           type: object
           readOnly: true
           description: Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module
-          required: [digest, notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest]
+          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest]
           properties:
-            digest: { type: boolean }
             notifications: { type: boolean }
             timed_actions: { type: boolean }
             draft_replies: { type: boolean }
@@ -2340,6 +2404,60 @@ components:
             cloudflare_api_token: { type: [string, 'null'] }
             anthropic_api_key: { type: [string, 'null'] }
             openai_api_key: { type: [string, 'null'] }
+        summary: { $ref: '#/components/schemas/SummaryPatch' }
+    Weekday:
+      type: string
+      enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+    SummarySettings:
+      type: object
+      description: 'The summary email: a daily or weekly email of what MailRules sorted per rule, what it trashed and what waits in Needs review, with links into the app. Off until switched on'
+      required: [enabled, frequency, weekday, time, time_zone, to, to_default, smtp, last_sent_at, next_at]
+      properties:
+        enabled: { type: boolean, description: 'Switched on. It is sent only while `smtp.configured` is true as well' }
+        frequency: { type: string, enum: [daily, weekly], description: 'Every day, or once a week on `weekday`' }
+        weekday: { $ref: '#/components/schemas/Weekday', description: 'The day a weekly summary goes out; kept, and unused, while `frequency` is daily. Default monday' }
+        time: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: 'When it goes out, HH:MM on a 24-hour clock in `time_zone`. Default 08:00' }
+        time_zone: { type: string, description: 'The IANA time zone `time` is in, such as Europe/Berlin: the one the browser reported when the summary was last saved. UTC until then' }
+        to: { type: string, description: 'The address it goes to: the one saved, or `to_default` when none is' }
+        to_default: { type: string, readOnly: true, description: 'The admin account''s email, used while no address is saved' }
+        smtp:
+          type: object
+          readOnly: true
+          description: 'The outgoing mail server, as the daemon''s environment sets it. Never the password'
+          required: [configured, missing]
+          properties:
+            configured: { type: boolean, description: 'The daemon can send mail: every setting in `missing` is set' }
+            missing: { type: array, items: { type: string }, description: 'The environment variables still to set before it can send, such as MAILRULES_SMTP_HOST and MAILRULES_SMTP_FROM, or MAILRULES_SMTP_PASSWORD when MAILRULES_SMTP_USER is set. They take effect when the daemon restarts' }
+        last_sent_at: { type: [integer, 'null'], readOnly: true, description: 'When the last scheduled summary went out; null = none yet. A test does not count' }
+        next_at: { type: [integer, 'null'], readOnly: true, description: 'When the next one is due; null while it is off or no mail server is set' }
+    SummaryPatch:
+      type: object
+      additionalProperties: false
+      description: 'Fields left out stay as they are. Send `time_zone` (the browser''s IANA zone) with every change, so `time` means the user''s local time'
+      properties:
+        enabled: { type: boolean, description: 'Turning it on while `smtp.configured` is false is refused with 409 `smtp_not_configured`' }
+        frequency: { type: string, enum: [daily, weekly] }
+        weekday: { $ref: '#/components/schemas/Weekday' }
+        time: { type: string, description: 'HH:MM on a 24-hour clock' }
+        time_zone: { type: string, description: 'An IANA time zone name, such as America/New_York' }
+        to: { type: [string, 'null'], description: 'One email address. Empty or `null` = the admin account''s email' }
+    SummaryPreview:
+      type: object
+      required: [to, subject, text, html, period_start, period_end, dry_run]
+      properties:
+        to: { type: string, description: The address it would go to }
+        subject: { type: string, description: 'Such as "MailRules: 43 sorted, 3 to review"' }
+        text: { type: string, description: The plain-text part }
+        html: { type: string, description: 'The HTML part: a whole document with inline styles' }
+        period_start: { type: integer, description: 'The start of the time it covers' }
+        period_end: { type: integer, description: 'Its end: now' }
+        dry_run: { type: boolean, description: 'Dry-run is on: the summary says that what it lists was recorded, not done' }
+    SummaryTestResult:
+      type: object
+      required: [to, subject]
+      properties:
+        to: { type: string, description: The address it went to }
+        subject: { type: string }
 
     EventMessageProcessed:
       description: Data of `message.processed`

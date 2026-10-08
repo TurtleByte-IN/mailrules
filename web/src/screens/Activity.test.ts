@@ -164,6 +164,31 @@ it('an unknown outcome in the URL is ignored', async () => {
   expect(feedCalls(calls)).toEqual(['GET /api/activity']);
 });
 
+it('#/activity?id= opens that email even when its row is not on the first page, and picking a row still works', async () => {
+  go('#/activity?id=77');
+  const calls = serve((call) =>
+    call.includes('/messages/77')
+      ? [200, { message: detail({ id: 77, subject: 'Linked from the summary' }) }]
+      : call.includes('/messages/')
+        ? [200, { message: detail() }]
+        : call.includes('/stats/summary')
+          ? [200, stats]
+          : call.includes('/review')
+            ? [200, { items: [], next_cursor: null, total: 0 }]
+            : [200, { items: [item()], next_cursor: 'more' }],
+  );
+  render(Activity);
+  const panel = within(await screen.findByRole('complementary', { name: 'Decision details' }));
+  expect(await panel.findByText('Linked from the summary')).toBeTruthy();
+  expect(calls.map((c) => c.call)).toContain('GET /api/messages/77');
+  expect(calls.map((c) => c.call)).not.toContain('GET /api/messages/1');
+
+  const rows = await within(screen.getByRole('region', { name: 'Activity feed' })).findAllByRole('listitem');
+  await fireEvent.click(within(rows[0]).getAllByRole('button')[0]);
+  await waitFor(() => expect(calls.map((c) => c.call)).toContain('GET /api/messages/1'));
+  expect(await within(await screen.findByRole('complementary', { name: 'Decision details' })).findByText('Senior backend role')).toBeTruthy();
+});
+
 it('a row the user had the last word on says whether it was a correction or a review answer', async () => {
   const word = (kind: 'correction' | 'review') => ({ kind, rule_id: 3, rule_name: 'Recruiters', created_at: 2000 });
   daemon([item({ correction: word('correction') }), item({ id: 2, correction: word('review') })]);

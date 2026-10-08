@@ -19,10 +19,12 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
+	"github.com/TurtleByte-IN/mailrules/internal/mailer/mailertest"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/summary"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
@@ -45,6 +47,8 @@ type env struct {
 	realGen    bool                    // the composer's model is the one the settings build, gen is not used
 	connectErr error                   // makes the next logins fail
 	doc        map[string]any
+	summary    *summary.Service   // the summary email, sending to mail
+	mail       *mailertest.Sender // what the summary email sent
 }
 
 // Live, RouterFor and Composer make env the daemon's source of models (ModelSource), with
@@ -97,6 +101,8 @@ func newEnv(t *testing.T, modules ...ext.Module) *env {
 	master := make([]byte, 32)
 	e.sett = &settings.Settings{Store: e.st, Master: master, Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
 	exec := &actions.Exec{Store: e.st, Accounts: e.mgr, Hub: e.hub, DryRunDefault: cfg.DryRun, Now: e.ck.now}
+	e.mail = &mailertest.Sender{}
+	e.summary = &summary.Service{Store: e.st, Sender: e.mail, PublicURL: cfg.PublicURL, DryRunDefault: cfg.DryRun, Now: e.ck.now}
 
 	runCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	t.Cleanup(func() { stop(); e.mgr.Wait() }) // runs before the database closes
@@ -117,7 +123,7 @@ func newEnv(t *testing.T, modules ...ext.Module) *env {
 			}
 			return e.mb, acct.Username, nil
 		},
-		StartAccount: start, StopAccount: e.mgr.Stop, Modules: modules,
+		StartAccount: start, StopAccount: e.mgr.Stop, Modules: modules, Summary: e.summary,
 	})}
 	return e
 }

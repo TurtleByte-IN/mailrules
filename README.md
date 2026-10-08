@@ -92,6 +92,12 @@ Mail a rule trashes goes to a folder named `MailRules Trash`, made the first tim
 
 An email you move back into the inbox yourself, from a folder a rule put it in or from `MailRules Trash`, stays there: MailRules knows it by its Message-ID and does not sort it again. An email waiting in Needs review that you move out and back is still listed there once.
 
+## Summary email
+
+MailRules can email you a summary every day, or once a week: how many emails each rule sorted, what was trashed and where it went, what waits in Needs review, and what the models cost. Each trashed email has a link to its row in Activity, where you can restore it; the other links open Needs review, the rule, or Settings. The links open the app as usual, so you sign in if you are not already. The summary holds senders and subjects only, never the text of an email. In dry-run it says that nothing was changed and lists what would have been done.
+
+It is off until you switch it on in Settings → Summary email, where you also choose the day and time (in your browser's time zone), the address it goes to (your admin account's email unless you change it), send a test, and preview it. It is sent through your own outgoing mail server, so set `MAILRULES_SMTP_HOST`, `MAILRULES_SMTP_FROM` and, for a server that needs a sign-in, `MAILRULES_SMTP_USER` and `MAILRULES_SMTP_PASSWORD`, then restart MailRules; until then the card says which are missing. Set `MAILRULES_PUBLIC_URL` too when you reach MailRules at another address than `http://127.0.0.1:8080`. A summary that cannot be sent is tried again a few times over the next quarter of an hour; the reason is in the log.
+
 ## Your data and the master key
 
 Everything lives in the data directory (`./data`, the `mailrules-data` volume, or `/var/lib/mailrules`):
@@ -128,6 +134,13 @@ Every setting is an environment variable that also works as a `--flag` (the vari
 | `MAILRULES_PRICES_FILE` | built-in table | JSON file of per-model prices in USD per million tokens, laid over the built-in table, for the cost estimate |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; logs are JSON lines on stderr and never contain mail text or keys |
 | `MAILRULES_COOKIE_SECURE` | `auto` | Mark login cookies HTTPS-only: `auto` (yes unless listening on localhost), `true` or `false` |
+| `MAILRULES_SMTP_HOST` |  | Outgoing mail server for the summary email, such as `smtp.fastmail.com` |
+| `MAILRULES_SMTP_PORT` | `587` for `starttls`, `465` for `implicit`, `25` for `none` | Its port |
+| `MAILRULES_SMTP_USER` |  | User name to sign in with; leave empty for a server that takes mail without one |
+| `MAILRULES_SMTP_PASSWORD` / `MAILRULES_SMTP_PASSWORD_FILE` |  | Its password (an app-specific one where the provider has them), or a file holding it |
+| `MAILRULES_SMTP_FROM` |  | The summary's From address, such as `MailRules <me@fastmail.com>`; most servers want one of your own addresses |
+| `MAILRULES_SMTP_TLS` | `starttls` | `starttls` (the server must offer it), `implicit` (TLS from the start), or `none`, which is allowed only for a server on this machine |
+| `MAILRULES_PUBLIC_URL` | `http://127.0.0.1:8080` | Where you open MailRules; links in the summary email start with it. Set it to your proxy's address, such as `https://mail.example.com` |
 
 ## Security
 

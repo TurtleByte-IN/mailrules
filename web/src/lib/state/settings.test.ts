@@ -26,7 +26,8 @@ const fresh = (): Settings => ({
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   limits: { test_default: 200, test_max: 2000, check_max: 2000 },
-  features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false },
+  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false },
+  summary: { enabled: false, frequency: 'daily', weekday: 'monday', time: '08:00', time_zone: 'UTC', to: '', to_default: '', smtp: { configured: false, missing: [] }, last_sent_at: null, next_at: null },
 });
 
 let stored: Settings;

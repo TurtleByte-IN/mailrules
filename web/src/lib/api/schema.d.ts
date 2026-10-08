@@ -1042,6 +1042,13 @@ export interface paths {
          *     that need a model are passed over, and composing and suggesting rules answer 409
          *     `no_composer_model`. A `composer_model` that names a provider with no model
          *     (`openai:`) or an unknown provider (`gemini:pro`) is refused with 400.
+         *
+         *     **The summary email.** `summary` is changed as one object whose fields left out stay
+         *     as they are (`null` is not taken for the object). It is validated before anything is
+         *     stored, and switching it on while the daemon has no outgoing mail server
+         *     (`summary.smtp.configured` false) is refused with 409 `smtp_not_configured`, saving
+         *     nothing. Its `time` is in `time_zone`; the web app sends the browser's zone with
+         *     every change.
          */
         patch: operations["updateSettings"];
         trace?: never;
@@ -1070,6 +1077,77 @@ export interface paths {
         get: operations["getAnthropicWorkspaces"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/summary/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The summary email as the next one would be if it went now, without sending it
+         * @description Built from what MailRules recorded since the last summary that went out (or, with
+         *     none yet, the last day or week, as `summary.frequency` says), up to now. It works
+         *     while no outgoing mail server is set. `html` is a whole HTML document with inline
+         *     styles. Neither part holds email bodies: senders, subjects, rule names, counts, the
+         *     model cost and links into the app. To show the HTML, frame
+         *     `GET /api/summary/preview.html`: a frame fed `html` through `srcdoc` takes on the
+         *     app's Content-Security-Policy, which blocks the inline styles.
+         */
+        get: operations["previewSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/summary/preview.html": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The same preview's HTML part as a page of its own, to show in a frame
+         * @description The one endpoint under /api/ that answers HTML. Its Content-Security-Policy allows
+         *     the inline styles and nothing else (no script, no image but `data:`, no request
+         *     out), sandboxes the page with popups allowed, and lets only the app frame it. Its
+         *     links open in a new tab.
+         */
+        get: operations["previewSummaryPage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/summary/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a summary of the last day now, to the summary's address
+         * @description Sends a real summary of the last 24 hours to `summary.to`, whether the summary
+         *     email is switched on or not. It does not count as a scheduled summary: the next one
+         *     still covers everything since the last scheduled one. No body.
+         */
+        post: operations["sendTestSummary"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2236,9 +2314,9 @@ export interface components {
                 /** @description The largest `limit` a cleanup check or a rule suggestion scan takes, and what one with no `limit` covers */
                 check_max: number;
             };
+            summary: components["schemas"]["SummarySettings"];
             /** @description Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module */
             readonly features: {
-                digest: boolean;
                 notifications: boolean;
                 timed_actions: boolean;
                 draft_replies: boolean;
@@ -2280,6 +2358,75 @@ export interface components {
                 anthropic_api_key?: string | null;
                 openai_api_key?: string | null;
             };
+            summary?: components["schemas"]["SummaryPatch"];
+        };
+        /** @enum {string} */
+        Weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+        /** @description The summary email: a daily or weekly email of what MailRules sorted per rule, what it trashed and what waits in Needs review, with links into the app. Off until switched on */
+        SummarySettings: {
+            /** @description Switched on. It is sent only while `smtp.configured` is true as well */
+            enabled: boolean;
+            /**
+             * @description Every day, or once a week on `weekday`
+             * @enum {string}
+             */
+            frequency: "daily" | "weekly";
+            /** @description The day a weekly summary goes out; kept, and unused, while `frequency` is daily. Default monday */
+            weekday: components["schemas"]["Weekday"];
+            /** @description When it goes out, HH:MM on a 24-hour clock in `time_zone`. Default 08:00 */
+            time: string;
+            /** @description The IANA time zone `time` is in, such as Europe/Berlin: the one the browser reported when the summary was last saved. UTC until then */
+            time_zone: string;
+            /** @description The address it goes to: the one saved, or `to_default` when none is */
+            to: string;
+            /** @description The admin account's email, used while no address is saved */
+            readonly to_default: string;
+            /** @description The outgoing mail server, as the daemon's environment sets it. Never the password */
+            readonly smtp: {
+                /** @description The daemon can send mail: every setting in `missing` is set */
+                configured: boolean;
+                /** @description The environment variables still to set before it can send, such as MAILRULES_SMTP_HOST and MAILRULES_SMTP_FROM, or MAILRULES_SMTP_PASSWORD when MAILRULES_SMTP_USER is set. They take effect when the daemon restarts */
+                missing: string[];
+            };
+            /** @description When the last scheduled summary went out; null = none yet. A test does not count */
+            readonly last_sent_at: number | null;
+            /** @description When the next one is due; null while it is off or no mail server is set */
+            readonly next_at: number | null;
+        };
+        /** @description Fields left out stay as they are. Send `time_zone` (the browser's IANA zone) with every change, so `time` means the user's local time */
+        SummaryPatch: {
+            /** @description Turning it on while `smtp.configured` is false is refused with 409 `smtp_not_configured` */
+            enabled?: boolean;
+            /** @enum {string} */
+            frequency?: "daily" | "weekly";
+            weekday?: components["schemas"]["Weekday"];
+            /** @description HH:MM on a 24-hour clock */
+            time?: string;
+            /** @description An IANA time zone name, such as America/New_York */
+            time_zone?: string;
+            /** @description One email address. Empty or `null` = the admin account's email */
+            to?: string | null;
+        };
+        SummaryPreview: {
+            /** @description The address it would go to */
+            to: string;
+            /** @description Such as "MailRules: 43 sorted, 3 to review" */
+            subject: string;
+            /** @description The plain-text part */
+            text: string;
+            /** @description The HTML part: a whole document with inline styles */
+            html: string;
+            /** @description The start of the time it covers */
+            period_start: number;
+            /** @description Its end: now */
+            period_end: number;
+            /** @description Dry-run is on: the summary says that what it lists was recorded, not done */
+            dry_run: boolean;
+        };
+        SummaryTestResult: {
+            /** @description The address it went to */
+            to: string;
+            subject: string;
         };
         /** @description Data of `message.processed` */
         EventMessageProcessed: components["schemas"]["ActivityItem"];
@@ -3814,6 +3961,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
         };
     };
     getAnthropicWorkspaces: {
@@ -3835,6 +3983,72 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+        };
+    };
+    previewSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rendered summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryPreview"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    previewSummaryPage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The summary's HTML part */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    sendTestSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The mail server accepted it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryTestResult"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
         };
     };
     streamEvents: {

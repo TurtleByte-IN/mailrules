@@ -27,10 +27,12 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
+	"github.com/TurtleByte-IN/mailrules/internal/mailer"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/summary"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
@@ -170,6 +172,18 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 	if err != nil {
 		return err
 	}
+	sum, err := newSummary(st, cfg)
+	if err != nil {
+		return err
+	}
+	// The summary email's loop checks every minute whether one is due. The defer stops it
+	// before waiting for it, like the other defers.
+	summaries := make(chan struct{})
+	defer func() { stopAll(); <-summaries }()
+	go func() {
+		defer close(summaries)
+		sum.Run(ctx)
+	}()
 
 	handler := api.NewHandler(api.Options{
 		Store: st, SecureCookies: cfg.SecureCookies(), Hub: hub, Exec: exec, Settings: sett, Master: master,
@@ -181,7 +195,7 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 			}
 			return mb, username, nil
 		},
-		StartAccount: start, StopAccount: supervisors.Stop,
+		StartAccount: start, StopAccount: supervisors.Stop, Summary: sum,
 		StartCheck: supervisors.StartCheck, Checks: supervisors.Checks(), Sort: supervisors.Sort,
 		Modules: modules,
 	})
@@ -201,6 +215,20 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		return fmt.Errorf("shut down http server: %w", err)
 	}
 	return nil
+}
+
+// newSummary returns the summary email's service, sending through the mail server the
+// environment sets, or through none while MAILRULES_SMTP_* lack something.
+func newSummary(st *store.Store, cfg *config.Config) (*summary.Service, error) {
+	if missing := cfg.SMTPMissing(); len(missing) > 0 {
+		slog.Info("summary email cannot be sent until these are set", "missing", strings.Join(missing, ", "))
+		return summary.New(st, cfg, nil), nil
+	}
+	password, err := cfg.SMTPSecret()
+	if err != nil {
+		return nil, err
+	}
+	return summary.New(st, cfg, &mailer.SMTP{Addr: cfg.SMTPAddr(), TLS: cfg.SMTPTLS, Username: cfg.SMTPUser, Password: password, From: cfg.SMTPFrom}), nil
 }
 
 // dryRunCmd shows or sets the global dry-run switch. It lives in the database, so a

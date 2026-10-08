@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Settings as Saved } from '../lib/api/settings';
 import { load, settings } from '../lib/state/settings.svelte';
@@ -13,7 +13,8 @@ const fresh = (over: Partial<Saved> = {}): Saved => ({
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   limits: { test_default: 200, test_max: 2000, check_max: 2000 },
-  features: { digest: false, notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false },
+  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false },
+  summary: { enabled: false, frequency: 'daily', weekday: 'monday', time: '08:00', time_zone: 'UTC', to: '', to_default: '', smtp: { configured: false, missing: [] }, last_sent_at: null, next_at: null },
   ...over,
 });
 
@@ -327,5 +328,92 @@ describe('the Anthropic workspace', () => {
     await fireEvent.submit(screen.getByLabelText(/^Anthropic API key/).closest('form')!);
     expect(await screen.findByLabelText('Choose a workspace')).toBeTruthy();
     expect(lookups()).toBe(2);
+  });
+});
+
+describe('Summary email', () => {
+  const summary = (over: Partial<Saved['summary']> = {}): Saved['summary'] => ({
+    ...fresh().summary, to: 'me@example.test', to_default: 'me@example.test', smtp: { configured: true, missing: [] }, ...over,
+  });
+  const card = () => within(screen.getByRole('region', { name: 'Summary email' }));
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  it('is switched off, with the settings to set, while no mail server is configured; the preview still works', async () => {
+    await show(fresh({ summary: summary({ smtp: { configured: false, missing: ['MAILRULES_SMTP_HOST', 'MAILRULES_SMTP_FROM'] } }) }));
+    expect((card().getByRole('checkbox', { name: /^Send me a summary/ }) as HTMLInputElement).disabled).toBe(true);
+    expect(card().getByText('To send it, set MAILRULES_SMTP_HOST and MAILRULES_SMTP_FROM, then restart MailRules.')).toBeTruthy();
+    expect((card().getByRole('button', { name: 'Send a test email' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((card().getByRole('button', { name: 'Show preview' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('switching on saves enabled with the browser time zone, and a refusal snaps the switch back', async () => {
+    await show(fresh({ summary: summary() }));
+    const box = card().getByRole('checkbox', { name: /^Send me a summary/ }) as HTMLInputElement;
+    routes['PATCH /api/settings'] = [200, fresh({ summary: summary({ enabled: true, next_at: 1_800_000_000 }) })];
+    await fireEvent.click(box);
+    await waitFor(() => expect(patches()).toEqual([{ summary: { enabled: true, time_zone: zone } }]));
+    await card().findByText(/^Next one: /);
+
+    routes['PATCH /api/settings'] = [409, { error: { code: 'smtp_not_configured', message: 'Set MAILRULES_SMTP_HOST first.', path: 'summary.enabled' } }];
+    await fireEvent.click(box);
+    await fireEvent.click(box);
+    await waitFor(() => expect(patches()).toHaveLength(3));
+    await waitFor(() => expect(box.checked).toBe(true));
+  });
+
+  it('a refused switch-on unticks the box again', async () => {
+    await show(fresh({ summary: summary() }));
+    routes['PATCH /api/settings'] = [409, { error: { code: 'smtp_not_configured', message: 'No mail server.', path: 'summary.enabled' } }];
+    const box = card().getByRole('checkbox', { name: /^Send me a summary/ }) as HTMLInputElement;
+    await fireEvent.click(box);
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    await waitFor(() => expect(box.checked).toBe(false));
+  });
+
+  it('weekly shows the day, and frequency, day, time and address each save', async () => {
+    await show(fresh({ summary: summary() }));
+    expect(card().queryByLabelText('On')).toBeNull();
+    routes['PATCH /api/settings'] = [200, fresh({ summary: summary({ frequency: 'weekly' }) })];
+    await fireEvent.change(card().getByLabelText('How often'), { target: { value: 'weekly' } });
+    const day = await card().findByLabelText('On');
+    await fireEvent.change(day, { target: { value: 'friday' } });
+    await fireEvent.change(card().getByLabelText('At'), { target: { value: '18:30' } });
+    const to = card().getByLabelText('Send to') as HTMLInputElement;
+    expect(to.placeholder).toBe('me@example.test');
+    await fireEvent.change(to, { target: { value: 'other@example.test' } });
+    await fireEvent.change(to, { target: { value: '' } });
+    await waitFor(() => expect(patches()).toHaveLength(5));
+    expect(patches()).toEqual([
+      { summary: { frequency: 'weekly', time_zone: zone } },
+      { summary: { weekday: 'friday', time_zone: zone } },
+      { summary: { time: '18:30', time_zone: zone } },
+      { summary: { to: 'other@example.test', time_zone: zone } },
+      { summary: { to: null, time_zone: zone } },
+    ]);
+  });
+
+  it('sends a test email and says where, or shows why it failed', async () => {
+    await show(fresh({ summary: summary() }));
+    routes['POST /api/summary/test'] = [200, { to: 'me@example.test', subject: 'x' }];
+    await fireEvent.click(card().getByRole('button', { name: 'Send a test email' }));
+    expect((await card().findByRole('status')).textContent).toBe('Sent to me@example.test.');
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/summary/test' && c[1].method === 'POST')).toBe(true);
+
+    routes['POST /api/summary/test'] = [502, { error: { code: 'send_failed', message: 'The mail server refused the login.' } }];
+    await fireEvent.click(card().getByRole('button', { name: 'Send a test email' }));
+    expect((await card().findByRole('alert')).textContent).toBe('The mail server refused the login.');
+  });
+
+  it('shows the preview with its subject in a sandboxed frame', async () => {
+    await show(fresh({ summary: summary() }));
+    routes['GET /api/summary/preview'] = [200, { to: 'me@example.test', subject: '142 sorted, 3 need you', text: '', html: '<html><body>Hi</body></html>', period_start: 0, period_end: 1, dry_run: true }];
+    await fireEvent.click(card().getByRole('button', { name: 'Show preview' }));
+    const frame = (await card().findByTitle('Summary email preview')) as HTMLIFrameElement;
+    expect(frame.getAttribute('src')).toMatch(/^\/api\/summary\/preview\.html\?at=\d+$/);
+    expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox');
+    expect(card().getByText('142 sorted, 3 need you')).toBeTruthy();
+    expect(card().getByText(/^Dry-run is on/)).toBeTruthy();
+    await fireEvent.click(card().getByRole('button', { name: 'Hide preview' }));
+    expect(card().queryByTitle('Summary email preview')).toBeNull();
   });
 });

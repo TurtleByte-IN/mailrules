@@ -49,6 +49,15 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-}
+      # The summary email's outgoing mail server; see the README's Summary email section.
+      MAILRULES_SMTP_HOST: ${MAILRULES_SMTP_HOST:-}
+      MAILRULES_SMTP_PORT: ${MAILRULES_SMTP_PORT:-}
+      MAILRULES_SMTP_USER: ${MAILRULES_SMTP_USER:-}
+      MAILRULES_SMTP_PASSWORD: ${MAILRULES_SMTP_PASSWORD:-}
+      MAILRULES_SMTP_FROM: ${MAILRULES_SMTP_FROM:-}
+      MAILRULES_SMTP_TLS: ${MAILRULES_SMTP_TLS:-}
+      # Where links in the summary email lead: the published port, or your proxy's address.
+      MAILRULES_PUBLIC_URL: ${MAILRULES_PUBLIC_URL:-http://127.0.0.1:${MAILRULES_PORT:-8080}}
       # This file publishes the port to 127.0.0.1 over plain HTTP, so login cookies
       # must not be HTTPS-only. Set to "true" in .env once a TLS reverse proxy is in front.
       MAILRULES_COOKIE_SECURE: ${MAILRULES_COOKIE_SECURE:-false}
