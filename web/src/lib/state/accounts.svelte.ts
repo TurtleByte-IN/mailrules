@@ -64,7 +64,7 @@ export function testSummary(r: accountsApi.TestResult) {
 export async function connect(c: accountsApi.AccountInput) {
   const a = await accountsApi.create(c);
   accounts.list.push(a);
-  flash(a.label + ' is live');
+  flash(a.label + ' is connected');
   return a;
 }
 

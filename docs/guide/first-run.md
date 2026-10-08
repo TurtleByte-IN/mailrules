@@ -39,9 +39,9 @@ MailRules works with any IMAP mailbox. Connecting one takes four steps: **Provid
 1. **Where is your email?** Pick your provider: iCloud Mail, Fastmail, Yahoo Mail, Zoho Mail, or Other IMAP server.
 2. **Sign in.** Enter your email address and an app password. Click **Test connection** to check it, or **Test and continue**. MailRules logs in and lists your folders; nothing is saved if the test fails. The result says how many folders it found, which special folders (Archive, Junk, Trash, Sent) it recognised, and whether the server supports push (IDLE).
 3. **Start with a few rules.** Tick any starter rules you want. Newsletters, Receipts and Login codes are ticked by default; Cold sales and Travel are not. You can edit them or remove them later.
-4. **Preview** lists the starter rules you picked. Click **Go live** to save the mailbox and the rules.
+4. **Preview** lists the starter rules you picked. Click **Connect** to save the mailbox and the rules.
 
-**Go live** here does not switch dry-run off. It starts watching the mailbox; with dry-run on, which is the default, MailRules only records what it would do. See [Dry-run and going live](./dry-run.md).
+**Connect** does not switch dry-run off. It starts watching the mailbox; with dry-run on, which is the default, MailRules only records what it would do. See [Dry-run and going live](./dry-run.md).
 
 ### App passwords
 
@@ -52,10 +52,10 @@ Use an app password (a password made for one program), not the password you sign
 | iCloud Mail | `imap.mail.me.com`, port 993, TLS | Needs an [app-specific password](https://support.apple.com/en-us/102654). Create it at [account.apple.com](https://account.apple.com): Sign-In and Security, then App-Specific Passwords. MailRules tries your full address as the user name, then the part before the `@`. |
 | Fastmail | `imap.fastmail.com`, port 993, TLS | Needs an [app password](https://www.fastmail.help/hc/en-us/articles/360058752854). |
 | Yahoo Mail | `imap.mail.yahoo.com`, port 993, TLS | Needs an [app password](https://help.yahoo.com/kb/SLN15241.html). The user name is your full address. |
-| Zoho Mail | `imap.zoho.com`, port 993, TLS | Switch on [IMAP access](https://www.zoho.com/mail/help/imap-access.html) in Zoho's webmail first. The wizard asks for an app password. |
+| Zoho Mail | `imap.zoho.com` (or your region's host), port 993, TLS | Switch on [IMAP access](https://www.zoho.com/mail/help/imap-access.html) in Zoho's webmail first. The wizard asks which Zoho region your account is in, and for an app password. |
 | Other IMAP server | You enter it | Choose **TLS (port 993)** or **STARTTLS (port 143)**, and the port if it differs. |
 
-Zoho accounts outside the `.com` data centre, and paid Zoho organisations, use a different server (for example `imap.zoho.eu` or `imappro.zoho.com`). The Zoho Mail choice in the wizard always uses `imap.zoho.com`, so pick **Other IMAP server** and enter your server instead, or add the mailbox from the command line with `--preset zoho --host <server>`.
+The Zoho Mail choice in the wizard asks where your account is: United States (`imap.zoho.com`), Europe (`imap.zoho.eu`), India (`imap.zoho.in`), Australia (`imap.zoho.com.au`), Japan (`imap.zoho.jp`) or China (`imap.zoho.com.cn`). Use the one you see in the address bar when you sign in to Zoho Mail. Paid Zoho organisations use `imappro.zoho.com`: pick **Other IMAP server** and enter it, or add the mailbox from the command line with `--preset zoho --host imappro.zoho.com`.
 
 ### What the server needs to support
 

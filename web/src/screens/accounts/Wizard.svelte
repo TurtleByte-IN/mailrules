@@ -1,7 +1,7 @@
 <script lang="ts">
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
-  import { secretLabel, stepNames, Wizard } from './connect.svelte';
+  import { secretLabel, stepNames, Wizard, zohoRegions } from './connect.svelte';
 
   /**
    * `onclose` runs when the first step's `cancelLabel` button is pressed, and once the mailbox
@@ -84,6 +84,18 @@
           <input class="field h-11" type={w.preset?.host ? 'email' : 'text'} autocomplete="off" placeholder={apple ? 'you@icloud.com' : 'you@example.com'} aria-invalid={w.errorField === 'username'} bind:value={w.email} oninput={() => w.edited()} />
           {@render fieldError('username')}
         </label>
+        {#if w.presetId === 'zoho'}
+          <label class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-semibold">Where is your Zoho account?</span>
+            <select class="field h-11 px-2.5" aria-invalid={w.errorField === 'host'} bind:value={w.region} onchange={() => w.edited()}>
+              {#each zohoRegions as r (r.id)}
+                <option value={r.id}>{r.label}</option>
+              {/each}
+            </select>
+            <span class="text-[12.5px] text-secondary">Use the address you see when you sign in to Zoho Mail. Paid organisations may need Other IMAP server with imappro.zoho.com.</span>
+            {@render fieldError('host')}
+          </label>
+        {/if}
         {#if w.preset && !w.preset.host}
           <div class="flex flex-wrap gap-3">
             <label class="flex flex-[3_1_180px] flex-col gap-1.5">
@@ -143,7 +155,7 @@
       {:else}
         <p class="text-secondary">No starter rules chosen. You can add rules any time.</p>
       {/each}
-      <p class="text-[13px] text-secondary">Nothing has moved yet. Go live to start sorting new mail; existing mail stays put until you run Cleanup.</p>
+      <p class="text-[13px] text-secondary">Nothing has moved yet. Connect saves the mailbox and starts watching it, but dry-run stays on: new mail is previewed in Activity, and nothing moves until you turn dry-run off. Existing mail stays put until you run Cleanup.</p>
     </div>
   {/if}
 

@@ -13,6 +13,7 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 // GET /api/presets, first and last entry.
 const presets: Preset[] = [
   { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.apple.com/en-us/102654', local_part_login: true, secret_label: 'App-specific password' },
+  { name: 'zoho', label: 'Zoho Mail', host: 'imap.zoho.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password' },
   { name: 'generic', label: 'Other IMAP server', host: '', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'Password' },
 ];
 const found = { username: 'new', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Junk', delimiter: '/', special_use: '\\Junk' }], can_move: true, idle: true };
@@ -88,6 +89,32 @@ it('sends host, port and encryption only for a preset that has no host of its ow
   ]);
 });
 
+it.each([
+  ['com', 'imap.zoho.com'],
+  ['eu', 'imap.zoho.eu'],
+  ['in', 'imap.zoho.in'],
+  ['com.au', 'imap.zoho.com.au'],
+  ['jp', 'imap.zoho.jp'],
+  ['com.cn', 'imap.zoho.com.cn'],
+])('sends the host of the chosen Zoho region %s: %s', async (region, host) => {
+  const w = atSignIn({ presetId: 'zoho', email: 'a@zoho.eu', password: SECRET });
+  w.region = region;
+  await w.runTest();
+  w.step = 3;
+  await w.next();
+  const sent = { preset: 'zoho', username: 'a@zoho.eu', password: SECRET, host };
+  expect(bodies('/api/accounts/test')).toEqual([sent]);
+  expect(bodies('/api/accounts')).toEqual([sent]);
+});
+
+it('shows a Zoho host failure beside the region, not beside a host field that is not there', async () => {
+  routes['POST /api/accounts/test'] = [422, refusal('connection_failed', 'Could not reach imap.zoho.in:993. Check the host and port.', 'host')];
+  const w = atSignIn({ presetId: 'zoho', email: 'a@zoho.in', password: SECRET });
+  w.region = 'in';
+  await w.runTest();
+  expect(w.errorField).toBe('host');
+});
+
 it.each<[string, Wizard['presetId'], Reply, string]>([
   ['wrong password', 'icloud', [422, refusal('auth_failed', 'The mail server refused the sign-in.', 'password')], 'password'],
   ['missing username', 'icloud', [400, refusal('invalid_input', 'Enter the email address or username you sign in with.', 'username')], 'username'],
@@ -149,23 +176,23 @@ it('tests first, then walks to the end and saves the mailbox', async () => {
   await press();
   expect(await press()).toBe(true);
 
-  expect(labels).toEqual(['Continue', 'Test and continue', 'Continue', 'Preview with 1 rule', 'Go live']);
+  expect(labels).toEqual(['Continue', 'Test and continue', 'Continue', 'Preview with 1 rule', 'Connect']);
   expect(bodies('/api/accounts')).toEqual([{ preset: 'icloud', username: 'new@icloud.com', password: SECRET }]);
   expect(accounts.list).toEqual([created]);
   expect(addTemplatesByName).toHaveBeenCalledExactlyOnceWith(['Login codes']);
-  expect(toast.text).toBe('new@icloud.com is live');
+  expect(toast.text).toBe('new@icloud.com is connected');
 });
 
-it('says it is going live while the mailbox is being saved', async () => {
+it('says it is connecting while the mailbox is being saved', async () => {
   const w = await atGoLive();
   let answer!: () => void;
   fetchMock.mockImplementationOnce(() => new Promise((resolve) => (answer = () => resolve(new Response(JSON.stringify({ account: created }), { status: 201 })))));
   const saved = w.next();
   expect(w.busy).toBe(true);
-  expect(w.nextLabel).toBe('Going live…');
+  expect(w.nextLabel).toBe('Connecting…');
   answer();
   expect(await saved).toBe(true);
-  expect(w.nextLabel).toBe('Go live');
+  expect(w.nextLabel).toBe('Connect');
 });
 
 it('does not ask for starter rules when none is chosen', async () => {
@@ -176,9 +203,9 @@ it('does not ask for starter rules when none is chosen', async () => {
 });
 
 it.each<[number, string]>([
-  [3, 'new@icloud.com is live with 3 new rules'],
-  [1, 'new@icloud.com is live with 1 new rule'],
-  [0, 'new@icloud.com is live'],
+  [3, 'new@icloud.com is connected with 3 new rules'],
+  [1, 'new@icloud.com is connected with 1 new rule'],
+  [0, 'new@icloud.com is connected'],
 ])('says how many starter rules were added: %i', async (added, said) => {
   vi.mocked(addTemplatesByName).mockResolvedValue(added);
   const w = await atGoLive();

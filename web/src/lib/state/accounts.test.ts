@@ -71,7 +71,7 @@ it('creates a mailbox, sending the password once and keeping none of it', async 
   expect(JSON.parse(f.mock.calls[0][1].body as string)).toEqual({ preset: 'icloud', username: 'new@icloud.com', password: 'abcd-efgh-ijkl-mnop' });
   expect(a.id).toBe(3);
   expect(accounts.list.map((x) => x.id)).toEqual([1, 2, 3]);
-  expect(toast.text).toBe('new@icloud.com is live');
+  expect(toast.text).toBe('new@icloud.com is connected');
   expect(JSON.stringify([accounts, { ...localStorage }, { ...sessionStorage }])).not.toContain('abcd-efgh-ijkl-mnop');
 });
 
