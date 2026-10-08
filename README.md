@@ -2,6 +2,10 @@
 
 MailRules is a small daemon that sorts incoming email over IMAP, in real time, using rules you write in plain English or as structured conditions. It works with any IMAP provider (iCloud, Fastmail, Yahoo, Zoho, your own server), lets you choose the model that decides, and runs as one binary with the web UI built in.
 
+[![A rule written in plain English, and new emails being filed into Jobs, Reading, Food and Trash by it](docs/images/mailrules-demo.gif)](https://mailrules.app/?utm_source=github&utm_medium=readme&utm_content=demo)
+
+Website and hosted version: [mailrules.app](https://mailrules.app/?utm_source=github&utm_medium=readme&utm_content=intro)
+
 It starts safe: it listens on this machine only, and dry-run is on, so it records what it would do and changes no mailbox until you switch dry-run off.
 
 Releases are on the [GitHub Releases page](https://github.com/TurtleByte-IN/mailrules/releases): binaries for Linux and macOS (amd64 and arm64), a Docker image at `ghcr.io/turtlebyte-in/mailrules`, and a Homebrew cask.
