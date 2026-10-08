@@ -35,6 +35,7 @@ func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	env := s.Settings.Env
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dry_run": v.DryRun, "decider": v.Decider, "decider_model": v.DeciderModel, "fallback_model": v.FallbackModel,
+		"fallback_active": v.FallbackActive, "fallback_note": v.FallbackNote,
 		"composer_model": v.ComposerModel, "escalate_below": v.EscalateBelow, "min_confidence": v.MinConfidence,
 		"retention_days": v.RetentionDays, "trash_to_folder": v.TrashToFolder, "leave_own_mail": v.LeaveOwnMail,
 		"openai_base_url": v.OpenAIBaseURL, "ollama_url": v.OllamaURL,

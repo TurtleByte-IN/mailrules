@@ -41,7 +41,7 @@ Two thresholds in Settings control how careful MailRules is:
 
 The fallback model is set under **Fallback model** (`MAILRULES_FALLBACK_MODEL`, default `claude-haiku-4-5`). It is always a Claude model and uses the Anthropic API key. Leave the field empty to turn the fallback off.
 
-The fallback is used only when an Anthropic API key is set. Without one, MailRules does not ask a second opinion and does not warn about it, so unsure emails go straight to Needs review.
+The fallback is used only when an Anthropic API key is set. Without one, MailRules does not ask a second opinion, so unsure emails are acted on, or held in Needs review, on the decision model's answer alone. It says so in two places: the daemon logs one warning when it starts (and again whenever a setting changes it), `fallback model is not active, so low-confidence decisions are not double-checked`, and Settings shows `Not active: …` under **Fallback model**, with the reason. The model name stays in the field, so adding a key later turns the fallback on without retyping it. The same note appears when the decision model already is the fallback model (for example `anthropic` with `claude-haiku-4-5`), since there is no second opinion to ask for.
 
 The fallback model also sees up to five of your past corrections that look most like the email (same sender, same domain or same mailing list first). The decision model does not.
 

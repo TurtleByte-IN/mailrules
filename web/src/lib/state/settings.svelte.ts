@@ -11,6 +11,8 @@ export const settings = $state<{ value: settingsApi.Settings; loaded: boolean; e
     decider: 'jev',
     decider_model: '',
     fallback_model: '',
+    fallback_active: false,
+    fallback_note: '',
     composer_model: '',
     escalate_below: 0,
     min_confidence: 0,

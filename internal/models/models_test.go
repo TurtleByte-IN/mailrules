@@ -741,6 +741,33 @@ func TestNewRouterFromConfig(t *testing.T) {
 	}
 }
 
+// FallbackSkipped is the one decision of whether the configured fallback is asked, so it must
+// agree with what NewRouter builds.
+func TestFallbackSkipped(t *testing.T) {
+	tests := []struct {
+		name, spec, fallback, key string
+		want                      string
+	}{
+		{"asked", "jev", "claude-haiku-4-5", secret, FallbackNotSkipped},
+		{"no key", "jev", "claude-haiku-4-5", "", FallbackNeedsKey},
+		{"off by choice", "jev", "", "", FallbackNotSkipped},
+		{"off by choice with a key", "jev", "", secret, FallbackNotSkipped},
+		{"decider is the fallback", "anthropic", "claude-haiku-4-5", secret, FallbackIsPrimary},
+		{"named decider is the fallback", "anthropic:claude-haiku-4-5", "claude-haiku-4-5", secret, FallbackIsPrimary},
+		{"another Claude model decides", "anthropic:other", "claude-haiku-4-5", secret, FallbackNotSkipped},
+		{"same model, no key: it is the primary that matters", "anthropic", "claude-haiku-4-5", "", FallbackIsPrimary},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{Decider: "jev", FallbackModel: tt.fallback, AnthropicAPIKey: tt.key, EscalateBelow: 0.75,
+				OpenRouterAPIKey: secret, CloudflareAccountID: "a", CloudflareAPIToken: secret}
+			if got := FallbackSkipped(cfg, tt.spec); got != tt.want {
+				t.Fatalf("FallbackSkipped = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCost(t *testing.T) {
 	p := DefaultPrices()
 	tests := []struct {

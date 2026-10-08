@@ -2273,6 +2273,10 @@ export interface components {
             decider_model: string;
             /** @description Asked when the decider is unsure; empty = off */
             fallback_model: string;
+            /** @description True when `fallback_model` is set and the daemon can really ask it. False when it is empty, or when it is set but cannot be built: there is no Claude key (`keys.anthropic_api_key` is `none`), or the decision model already is that model. Read-only */
+            fallback_active: boolean;
+            /** @description The reason, as a sentence for a person ("Not active: ... needs a Claude (Anthropic) API key ..."), when `fallback_model` is set and `fallback_active` is false; empty otherwise. Show it under the field */
+            fallback_note: string;
             /** @description The rule composer model (Describe it, Rewrite with AI, Suggest from my mail). A bare name is a Claude model on Anthropic (`claude-haiku-4-5`); `anthropic:<model>` is the same; `openai:<model>` uses the OpenAI-compatible endpoint (`openai_base_url`, the OpenAI key); `ollama:<model>` uses `ollama_url` and needs no key */
             composer_model: string;
             /** @description Decider confidence below this asks the fallback */

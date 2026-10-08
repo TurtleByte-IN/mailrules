@@ -2321,12 +2321,14 @@ components:
         workspaces: { type: array, items: { $ref: '#/components/schemas/AnthropicWorkspace' }, description: 'For `one` and `several`, the organisation''s workspaces, the Default Workspace included; otherwise empty' }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, summary, server, limits, features]
+      required: [dry_run, decider, decider_model, fallback_model, fallback_active, fallback_note, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, summary, server, limits, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged, no mailbox is changed and no sender rule is learned from them }
         decider: { $ref: '#/components/schemas/Decider' }
         decider_model: { type: string, description: 'Empty = the provider''s default; openai and ollama have none' }
         fallback_model: { type: string, description: Asked when the decider is unsure; empty = off }
+        fallback_active: { type: boolean, description: 'True when `fallback_model` is set and the daemon can really ask it. False when it is empty, or when it is set but cannot be built: there is no Claude key (`keys.anthropic_api_key` is `none`), or the decision model already is that model. Read-only' }
+        fallback_note: { type: string, description: 'The reason, as a sentence for a person ("Not active: ... needs a Claude (Anthropic) API key ..."), when `fallback_model` is set and `fallback_active` is false; empty otherwise. Show it under the field' }
         composer_model: { type: string, description: 'The rule composer model (Describe it, Rewrite with AI, Suggest from my mail). A bare name is a Claude model on Anthropic (`claude-haiku-4-5`); `anthropic:<model>` is the same; `openai:<model>` uses the OpenAI-compatible endpoint (`openai_base_url`, the OpenAI key); `ollama:<model>` uses `ollama_url` and needs no key' }
         escalate_below: { type: number, minimum: 0, maximum: 1, description: Decider confidence below this asks the fallback }
         min_confidence: { type: number, minimum: 0, maximum: 1, description: Default act threshold; a rule may set its own }

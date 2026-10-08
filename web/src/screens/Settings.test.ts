@@ -6,7 +6,7 @@ import Settings from './Settings.svelte';
 
 // GET /api/settings from a fresh daemon.
 const fresh = (over: Partial<Saved> = {}): Saved => ({
-  dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', composer_model: 'claude-haiku-4-5',
+  dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', fallback_active: true, fallback_note: '', composer_model: 'claude-haiku-4-5',
   escalate_below: 0.75, min_confidence: 0.75, retention_days: 30, trash_to_folder: true, leave_own_mail: true, openai_base_url: '', ollama_url: '',
   anthropic_workspace_id: '', anthropic_workspace_name: '', anthropic_workspace_found: false,
   keys: { openrouter_api_key: 'environment', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'stored', openai_api_key: 'none' },
@@ -78,6 +78,19 @@ it.each<[Saved['decider'], string | undefined, string | undefined]>([
   await show(fresh({ decider, decider_model: 'm', openai_base_url: 'https://llm.example.test/v1', ollama_url: 'http://localhost:11434' }));
   const value = (label: string) => (screen.queryByLabelText(label) as HTMLInputElement | null)?.value;
   expect([value('Endpoint URL'), value('Ollama server URL')]).toEqual([endpoint, ollama]);
+});
+
+it('says under the fallback field when the fallback is set but not active, and nothing when it is', async () => {
+  const note = 'Not active: claude-haiku-4-5 needs a Claude (Anthropic) API key. Until one is set, an unsure decision is not double-checked.';
+  await show(fresh({ fallback_active: false, fallback_note: note }));
+  const field = screen.getByLabelText('Fallback model');
+  expect((field as HTMLInputElement).value).toBe('claude-haiku-4-5');
+  expect(screen.getByRole('status').textContent).toBe(note);
+  expect(field.getAttribute('aria-describedby')).toBe(screen.getByRole('status').id);
+  cleanup();
+  await show(fresh());
+  expect(screen.queryByText(/Not active/)).toBeNull();
+  expect(screen.getByLabelText('Fallback model').getAttribute('aria-describedby')).toBeNull();
 });
 
 it('shows the URL field as soon as its decider is picked', async () => {

@@ -16,6 +16,8 @@ const fresh = (): Settings => ({
   decider: 'jev',
   decider_model: '',
   fallback_model: 'claude-haiku-4-5',
+  fallback_active: true,
+  fallback_note: '',
   composer_model: 'claude-haiku-4-5',
   escalate_below: 0.75,
   min_confidence: 0.75,
