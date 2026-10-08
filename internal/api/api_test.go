@@ -719,10 +719,13 @@ func TestSettings(t *testing.T) {
 	conform(t, e.doc, "Settings", got)
 	for key, want := range map[string]any{"dry_run": true, "decider": "jev", "decider_model": "", "fallback_model": "claude-haiku-4-5",
 		"composer_model": "claude-haiku-4-5", "escalate_below": 0.75, "min_confidence": 0.75, "retention_days": float64(30), "trash_to_folder": true,
-		"leave_own_mail": true} {
+		"leave_own_mail": true, "fallback_active": false} {
 		if got[key] != want {
 			t.Errorf("default %s = %v, want %v", key, got[key], want)
 		}
+	}
+	if note, _ := got["fallback_note"].(string); !strings.Contains(note, "Anthropic") {
+		t.Errorf("a fallback model without a Claude key: fallback_note = %q, want the reason", note)
 	}
 	if srv := got["server"].(map[string]any); srv["version"] != "test" || srv["listen"] != "127.0.0.1:8080" || srv["mode"] != "selfhost" {
 		t.Errorf("server = %v", srv)

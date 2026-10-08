@@ -532,7 +532,7 @@ paths:
       tags: [Rules]
       operationId: exportRules
       summary: Download every rule as a YAML file
-      description: The PRD rule-file shape (`id` is the rule's name, `when` the intent, `match` the conditions, `unless` the exceptions). The database stays the source of truth.
+      description: 'The PRD rule-file shape (`id` is the rule''s name, `when` the intent, `match` the conditions, `unless` the exceptions). A rule limited to one mailbox has `applies_to`, that mailbox''s address (its username); a rule for every mailbox has none. `defaults` holds `decision_model` and `fallback_model`, the models in force (`fallback_model` is left out when the fallback is off). The database stays the source of truth.'
       responses:
         '200':
           description: The rules file
@@ -548,8 +548,15 @@ paths:
       description: |
         The request body is the file itself (at most 1 MB). Nothing is stored unless every
         rule in it is valid. A rule whose name (`id` in the file) is already in use replaces
-        that rule's wording and keeps its place, account and id; the others are added after
-        the existing rules, in file order. Rules the file does not name are left alone.
+        that rule and keeps its place and id; the others are added after the existing rules,
+        in file order. Rules the file does not name are left alone.
+
+        A rule's mailbox is its `applies_to`, the address (username, matched ignoring case) of
+        a connected account. A rule with no `applies_to` keeps the mailbox it has (a new one
+        applies to every mailbox); `applies_to: all` widens it to every mailbox. An address no
+        account has is refused. `defaults.decision_model` and `defaults.fallback_model` are
+        never applied: a file that names other models than the ones in force is refused,
+        since the models are settings of this install.
       requestBody:
         required: true
         content:
@@ -561,7 +568,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ImportResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op)
+        '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op). Also for a mailbox that is not connected (path rules[N].applies_to, N from 0) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '413': { $ref: '#/components/responses/TooLarge' }
@@ -2321,12 +2328,14 @@ components:
         workspaces: { type: array, items: { $ref: '#/components/schemas/AnthropicWorkspace' }, description: 'For `one` and `several`, the organisation''s workspaces, the Default Workspace included; otherwise empty' }
     Settings:
       type: object
-      required: [dry_run, decider, decider_model, fallback_model, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, summary, server, limits, features]
+      required: [dry_run, decider, decider_model, fallback_model, fallback_active, fallback_note, composer_model, escalate_below, min_confidence, retention_days, trash_to_folder, leave_own_mail, openai_base_url, ollama_url, anthropic_workspace_id, anthropic_workspace_name, anthropic_workspace_found, keys, warnings, summary, server, limits, features]
       properties:
         dry_run: { type: boolean, description: While true, decisions are logged, no mailbox is changed and no sender rule is learned from them }
         decider: { $ref: '#/components/schemas/Decider' }
         decider_model: { type: string, description: 'Empty = the provider''s default; openai and ollama have none' }
         fallback_model: { type: string, description: Asked when the decider is unsure; empty = off }
+        fallback_active: { type: boolean, description: 'True when `fallback_model` is set and the daemon can really ask it. False when it is empty, or when it is set but cannot be built: there is no Claude key (`keys.anthropic_api_key` is `none`), or the decision model already is that model. Read-only' }
+        fallback_note: { type: string, description: 'The reason, as a sentence for a person ("Not active: ... needs a Claude (Anthropic) API key ..."), when `fallback_model` is set and `fallback_active` is false; empty otherwise. Show it under the field' }
         composer_model: { type: string, description: 'The rule composer model (Describe it, Rewrite with AI, Suggest from my mail). A bare name is a Claude model on Anthropic (`claude-haiku-4-5`); `anthropic:<model>` is the same; `openai:<model>` uses the OpenAI-compatible endpoint (`openai_base_url`, the OpenAI key); `ollama:<model>` uses `ollama_url` and needs no key' }
         escalate_below: { type: number, minimum: 0, maximum: 1, description: Decider confidence below this asks the fallback }
         min_confidence: { type: number, minimum: 0, maximum: 1, description: Default act threshold; a rule may set its own }

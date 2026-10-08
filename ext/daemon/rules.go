@@ -16,6 +16,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
@@ -148,6 +149,7 @@ func rulesDB(ctx context.Context, args []string, getenv func(string) string, out
 		return err
 	}
 	st := store.New(db)
+	sett := &settings.Settings{Store: st, Env: cfg} // only for the models and mailboxes a rules file names; no keys are read
 	user, err := st.FirstUser(ctx)
 	if errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("rules %s: no admin user yet; run `mailrules serve` and finish first-run setup in the browser", args[0])
@@ -157,11 +159,11 @@ func rulesDB(ctx context.Context, args []string, getenv func(string) string, out
 	}
 
 	if args[0] == "export" {
-		rs, err := st.Rules(ctx, user.ID)
+		f, err := sett.ExportRules(ctx, user.ID)
 		if err != nil {
 			return err
 		}
-		data, err := rules.MarshalYAML(rules.File{Rules: rs})
+		data, err := rules.MarshalYAML(f)
 		if err != nil {
 			return err
 		}
@@ -179,7 +181,11 @@ func rulesDB(ctx context.Context, args []string, getenv func(string) string, out
 	if err != nil {
 		return fmt.Errorf("%s:\n%w", args[1], err)
 	}
-	created, updated, err := st.ImportRules(ctx, user.ID, f.Rules, time.Now().Unix())
+	toStore, err := sett.PrepareImport(ctx, user.ID, f)
+	if err != nil {
+		return fmt.Errorf("%s:\n%w", args[1], err)
+	}
+	created, updated, err := st.ImportRules(ctx, user.ID, toStore, time.Now().Unix())
 	if err != nil {
 		return err
 	}

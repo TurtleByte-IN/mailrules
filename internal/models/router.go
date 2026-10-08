@@ -238,21 +238,46 @@ func AnthropicAuthOf(cfg *config.Config) AnthropicAuth {
 	return AnthropicAuth{APIKey: cfg.AnthropicAPIKey, WorkspaceID: cfg.AnthropicWorkspaceID}
 }
 
+// Why a configured fallback model is not asked. FallbackNotSkipped ("") means it is, or none
+// is configured.
+const (
+	FallbackNotSkipped = ""
+	FallbackNeedsKey   = "needs_key"  // the fallback is a Claude model and there is no Anthropic key
+	FallbackIsPrimary  = "is_primary" // the decision model already is that Claude model
+)
+
+// FallbackSkipped says why NewRouter leaves out the configured fallback for a decider spec:
+// FallbackNeedsKey, FallbackIsPrimary, or FallbackNotSkipped when the fallback is built or
+// none is set (FallbackModel empty). It is the one place that decides, so the startup log
+// and the Settings screen cannot disagree with the router.
+func FallbackSkipped(cfg *config.Config, spec string) string {
+	if cfg.FallbackModel == "" {
+		return FallbackNotSkipped
+	}
+	name, model, _ := strings.Cut(spec, ":")
+	if model == "" {
+		model = DefaultAnthropicModel
+	}
+	switch {
+	case name == "anthropic" && model == cfg.FallbackModel:
+		return FallbackIsPrimary
+	case cfg.AnthropicAPIKey == "":
+		return FallbackNeedsKey
+	}
+	return FallbackNotSkipped
+}
+
 // NewRouter builds the Router for a decider spec. The fallback is Anthropic's
 // MAILRULES_FALLBACK_MODEL; it is left out when that model is empty, when
-// there is no Anthropic key, or when the primary already is that model.
+// there is no Anthropic key, or when the primary already is that model
+// (see FallbackSkipped).
 func NewRouter(cfg *config.Config, spec string, deps Deps, usage UsageStore) (*Router, error) {
 	primary, err := NewDecider(cfg, spec, deps)
 	if err != nil {
 		return nil, err
 	}
 	r := &Router{Primary: primary, EscalateBelow: cfg.EscalateBelow, Usage: usage}
-	name, model, _ := strings.Cut(spec, ":")
-	if model == "" {
-		model = DefaultAnthropicModel
-	}
-	samePrimary := name == "anthropic" && model == cfg.FallbackModel
-	if cfg.FallbackModel != "" && cfg.AnthropicAPIKey != "" && !samePrimary {
+	if cfg.FallbackModel != "" && FallbackSkipped(cfg, spec) == FallbackNotSkipped {
 		r.Fallback = NewLLMDecider("anthropic", NewAnthropic(AnthropicAuthOf(cfg), cfg.FallbackModel, deps))
 	}
 	return r, nil

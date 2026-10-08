@@ -135,3 +135,59 @@ func TestRulesImportExport(t *testing.T) {
 		}
 	}
 }
+
+// The command line keeps the same things the API does: export writes the defaults and each
+// rule's mailbox address, import reads them back and refuses a mailbox or model this install
+// does not have.
+func TestRulesImportExportKeepsMailboxes(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	getenv := func(k string) string { return map[string]string{"MAILRULES_DATA_DIR": dir}[k] }
+	db, err := store.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(db)
+	user, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: user.ID, Label: "Work", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "work@acme.example"}, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	write := func(body string) string {
+		p := filepath.Join(t.TempDir(), "r.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const rule = "  - {id: Work, match: {from_domain: acme.example}, actions: [keep], applies_to: %s}\n"
+	var out bytes.Buffer
+	if err := rulesCmd(ctx, []string{"import", write("defaults: {decision_model: jev}\nrules:\n" + strings.Replace(rule, "%s", "work@acme.example", 1))}, getenv, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := rulesCmd(ctx, []string{"export"}, getenv, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"decision_model: jev", "fallback_model: claude-haiku-4-5", "applies_to: work@acme.example"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("export lacks %q:\n%s", want, out.String())
+		}
+	}
+	for name, body := range map[string]string{
+		"a mailbox that is not connected": "rules:\n" + strings.Replace(rule, "%s", "ghost@nowhere.example", 1),
+		"another decision model":          "defaults: {decision_model: clef}\nrules:\n" + strings.Replace(rule, "%s", "work@acme.example", 1),
+	} {
+		err := rulesCmd(ctx, []string{"import", write(body)}, getenv, &out)
+		if err == nil || !strings.Contains(err.Error(), "r.yaml:") {
+			t.Errorf("%s: err = %v, want the file and the problem", name, err)
+		}
+	}
+}

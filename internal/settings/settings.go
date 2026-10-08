@@ -87,16 +87,21 @@ type View struct {
 	Decider       string
 	DeciderModel  string
 	FallbackModel string // empty = never escalate
-	ComposerModel string
-	EscalateBelow float64
-	MinConfidence float64
-	RetentionDays int
-	TrashToFolder bool              // trash goes to actions.TrashFolder, not the server's Trash
-	LeaveOwnMail  bool              // mail from the mailbox's own address is left alone (pipeline.OwnMail)
-	OpenAIBaseURL string            // an OpenAI-compatible endpoint; empty = api.openai.com
-	OllamaURL     string            // a local Ollama server
-	Keys          map[string]string // KeyStored | KeyEnvironment | KeyNone
-	Warnings      []Warning         // never nil
+	// FallbackActive says the fallback will really be asked: a model is set and the router
+	// can build it. FallbackNote is the reason when one is set and it is not, a sentence
+	// for a person; empty otherwise.
+	FallbackActive bool
+	FallbackNote   string
+	ComposerModel  string
+	EscalateBelow  float64
+	MinConfidence  float64
+	RetentionDays  int
+	TrashToFolder  bool              // trash goes to actions.TrashFolder, not the server's Trash
+	LeaveOwnMail   bool              // mail from the mailbox's own address is left alone (pipeline.OwnMail)
+	OpenAIBaseURL  string            // an OpenAI-compatible endpoint; empty = api.openai.com
+	OllamaURL      string            // a local Ollama server
+	Keys           map[string]string // KeyStored | KeyEnvironment | KeyNone
+	Warnings       []Warning         // never nil
 	// The Claude workspace every Claude request names; empty = none. Its name is known when
 	// a lookup listed it; Found says MailRules looked it up and stored it itself.
 	AnthropicWorkspaceID    string
@@ -270,7 +275,9 @@ func (s *Settings) Effective(ctx context.Context) (config.Config, error) {
 
 func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
+	reason := models.FallbackSkipped(&cfg, cfg.DeciderSpec())
 	v := View{DryRun: cfg.DryRun, Decider: cfg.Decider, DeciderModel: cfg.DeciderModel, FallbackModel: cfg.FallbackModel,
+		FallbackActive: cfg.FallbackModel != "" && reason == models.FallbackNotSkipped, FallbackNote: fallbackNote(cfg.FallbackModel, reason),
 		ComposerModel: cfg.ComposerModel, EscalateBelow: cfg.EscalateBelow, MinConfidence: cfg.MinConfidence,
 		RetentionDays: o.retention, TrashToFolder: o.trashToFolder, LeaveOwnMail: o.leaveOwnMail,
 		OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
@@ -292,6 +299,18 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 		}
 	}
 	return v
+}
+
+// fallbackNote is the sentence that says why a configured fallback model is not asked, or
+// "" when it is, or when none is set (the user turned it off).
+func fallbackNote(model, reason string) string {
+	switch reason {
+	case models.FallbackNeedsKey:
+		return fmt.Sprintf("Not active: %s needs a Claude (Anthropic) API key. Until one is set, an unsure decision is not double-checked.", model)
+	case models.FallbackIsPrimary:
+		return fmt.Sprintf("Not active: the decision model already is %s, so there is no second opinion to ask for.", model)
+	}
+	return ""
 }
 
 // providerNeeds is what each decider, and each provider the composer can use, cannot run
@@ -537,6 +556,12 @@ func (s *Settings) Live(ctx context.Context) (router *models.Router, minConfiden
 	} else if s.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(), s.Store); err != nil {
 		slog.WarnContext(ctx, "could not set up the decision model", "error", err.Error())
 		s.router = nil
+	}
+	if s.router != nil {
+		// One line each time the settings change, not per email: this runs only on a rebuild.
+		if note := fallbackNote(cfg.FallbackModel, models.FallbackSkipped(&cfg, cfg.DeciderSpec())); note != "" {
+			slog.WarnContext(ctx, "fallback model is not active, so low-confidence decisions are not double-checked", "fallback_model", cfg.FallbackModel, "reason", strings.TrimPrefix(note, "Not active: "))
+		}
 	}
 	s.print, s.built, s.minCon = b.String(), true, cfg.MinConfidence
 	return s.router, s.minCon

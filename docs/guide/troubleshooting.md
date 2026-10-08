@@ -50,7 +50,7 @@ Needs review holds emails the model was not sure about. To send fewer there:
 - Answer them. Each answer teaches the fallback model. Once dry-run is off, three confident decisions in a row for the same sender, none of them corrected, make a sender rule that needs no model at all.
 - Use **Always do this for …** when you answer, so that sender is handled at once from then on.
 - Make rules more specific: add conditions, or describe the emails more precisely in **When the email is about**.
-- Make sure the fallback model works: it needs an Anthropic API key. Without one, MailRules never asks for a second opinion. See [Thresholds and the fallback model](./models.md#thresholds-and-the-fallback-model).
+- Make sure the fallback model works: it needs an Anthropic API key. Without one, MailRules never asks for a second opinion; Settings says **Not active** under **Fallback model** and the log has a warning. See [Thresholds and the fallback model](./models.md#thresholds-and-the-fallback-model).
 - Lower a rule's **Act when sure above**, or **Act at … or above** in Settings. Lower thresholds mean more mistakes; you can undo them in Activity.
 
 If the reason on a card is "Gave up after … retries", the model could not be reached for about half an hour. Check the key and the provider's status, and the log.

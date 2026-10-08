@@ -166,6 +166,8 @@ Rules can be kept in a YAML file: to back them up, edit them in a text editor, o
 
 ```yaml
 defaults:
+  decision_model: jev
+  fallback_model: claude-haiku-4-5
   min_confidence: 0.75
 rules:
   - id: Food
@@ -208,6 +210,7 @@ Each rule has:
 | `actions` | Required. A list such as `["move:Food", read]`; a folder name with a colon must be quoted. `{type: move, folder: "Money: 2026"}` works too. |
 | `min_confidence` | The rule's threshold, from 0 to 1. |
 | `model` | The decision model for this rule, such as `jev`, `clef`, `anthropic`, or `ollama:<model>`. |
+| `applies_to` | The address (login) of the mailbox the rule is limited to, as shown under **Applies to** in the rule's options. Left out, the rule applies to every mailbox. See below. |
 | `stack` | `true` for a stacking rule. Stacking rules must be condition-only. |
 | `enabled` | `false` to import the rule switched off. |
 | `said` | Your original wording, shown under "You said". |
@@ -215,17 +218,24 @@ Each rule has:
 
 `match` and `unless` take either a short form, where each key is a field and every entry must hold (a single value means equals, a list means any of), or a full tree of `all` and `any` groups whose entries are `{field, op, value}`.
 
-The order of the rules in the file is the order they are checked. `defaults.min_confidence` applies to every rule in the file that sets none. Other keys under `defaults` are ignored; the decision models are set in Settings.
+The order of the rules in the file is the order they are checked.
+
+The `defaults` block holds three optional keys:
+
+- `min_confidence` applies to every rule in the file that sets none. An export does not write it: it writes each rule's own threshold, and leaves a rule without one to follow Settings.
+- `decision_model` and `fallback_model` say which models the rules were written for. An import never changes them, because the models are settings of the install, and a file passed around must not change which paid model someone uses. An export writes the models in force. An import accepts a file whose models are the ones in force here (`decision_model: jev` also matches `jev` with any model of its own), and refuses one that names other models, saying which, so nothing is saved until you change the model in Settings or delete that line from the file.
+
+`applies_to` names a mailbox by its address, not its number, so a file works on another install. The address is the account's username, matched ignoring case. An import refuses a file when a rule's mailbox is not connected here, so a rule never quietly starts acting on every mailbox: add the mailbox first. A file that says nothing leaves a rule's mailbox as it is, so files from before this key existed are still importable. To widen a rule from a file, write `applies_to: all`.
 
 How an import works:
 
 - It is all or nothing. If any rule is invalid, nothing is saved, and every problem is listed.
-- A rule whose name already exists is replaced. It keeps its place in the list and the mailbox it applies to; whether it is on comes from the file.
-- Rules with new names are added at the bottom, for all mailboxes.
+- A rule whose name already exists is replaced. It keeps its place in the list; whether it is on comes from the file. It keeps its mailbox unless the file has `applies_to`.
+- Rules with new names are added at the bottom, for the mailbox in `applies_to` or, without it, all mailboxes.
 - Rules that are not in the file are left alone. An import never deletes a rule.
 - A file can be at most 1 MB.
 
-An export does not record which mailbox a rule applies to.
+An export writes `applies_to` for every rule that is limited to a mailbox, and the models in force under `defaults`.
 
 ### From the command line
 

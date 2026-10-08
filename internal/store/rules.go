@@ -344,7 +344,8 @@ func (s *Store) CreateRules(ctx context.Context, userID int64, added []NewRule, 
 }
 
 // ImportRules stores the rules of a YAML file in one transaction. A rule whose name is
-// already in use replaces that rule's wording and keeps its place, account and id; the
+// already in use replaces that rule, including its mailbox (AccountID, which the caller
+// has set to the one to keep when the file says nothing), and keeps its place and id; the
 // others are added after the existing rules, in file order. Rules the file does not name
 // are left alone. The caller validates the rules first.
 func (s *Store) ImportRules(ctx context.Context, userID int64, imported []rules.Rule, now int64) (created, updated int, err error) {
@@ -366,7 +367,7 @@ func (s *Store) ImportRules(ctx context.Context, userID int64, imported []rules.
 	for _, r := range imported {
 		r.UserID = userID
 		if old, ok := byName[r.Name]; ok {
-			r.ID, r.AccountID, r.Priority = old.ID, old.AccountID, old.Priority
+			r.ID, r.Priority = old.ID, old.Priority
 			if err := updateRule(ctx, tx, r, now); err != nil {
 				return 0, 0, err
 			}

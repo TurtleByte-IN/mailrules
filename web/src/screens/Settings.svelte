@@ -58,8 +58,11 @@
       <DeciderFields />
       <div class="flex flex-col gap-1.5">
         <label for="set-fallback" class="text-[13px] font-semibold">Fallback model</label>
-        <input id="set-fallback" class="field h-11 max-w-[360px] font-mono text-[13px]" autocomplete="off" value={s.fallback_model} onchange={(e) => saveField(e, 'fallback_model')} />
+        <input id="set-fallback" aria-describedby={s.fallback_note ? 'set-fallback-note' : undefined} class="field h-11 max-w-[360px] font-mono text-[13px]" autocomplete="off" value={s.fallback_model} onchange={(e) => saveField(e, 'fallback_model')} />
         <div class="text-[12.5px] text-secondary">Second opinion when the decision model is unsure. Leave empty to turn the fallback off.</div>
+        {#if s.fallback_note}
+          <div id="set-fallback-note" role="status" class="text-[12.5px] text-warn">{s.fallback_note}</div>
+        {/if}
       </div>
       <div class="flex flex-col gap-1.5">
         <label for="set-composer" class="text-[13px] font-semibold">Rule composer model</label>

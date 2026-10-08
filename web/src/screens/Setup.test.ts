@@ -8,7 +8,7 @@ import Setup from './Setup.svelte';
 
 // GET /api/settings from a fresh daemon with no keys anywhere.
 const fresh = (over: Partial<Saved> = {}): Saved => ({
-  dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', composer_model: 'claude-haiku-4-5',
+  dry_run: true, decider: 'jev', decider_model: '', fallback_model: 'claude-haiku-4-5', fallback_active: true, fallback_note: '', composer_model: 'claude-haiku-4-5',
   escalate_below: 0.75, min_confidence: 0.75, retention_days: 30, trash_to_folder: true, leave_own_mail: true, openai_base_url: '', ollama_url: '',
   anthropic_workspace_id: '', anthropic_workspace_name: '', anthropic_workspace_found: false,
   keys: { openrouter_api_key: 'none', cloudflare_account_id: 'none', cloudflare_api_token: 'none', anthropic_api_key: 'none', openai_api_key: 'none' },
