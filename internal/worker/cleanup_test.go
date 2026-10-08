@@ -159,6 +159,9 @@ func TestManagerSortCutShort(t *testing.T) {
 	rows := checkRows(t, e.st, e.mb, id, e.sup.Account.UserID, "Old")
 
 	m := &Manager{}
+	// Stop below runs while the test holds the account, so the supervisor cannot drain mail
+	// it has queued; with the default 10 s grace the run would end after this test gives up.
+	e.sup.DrainTimeout = 50 * time.Millisecond
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m.Start(runCtx, e.sup)
