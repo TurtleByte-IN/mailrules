@@ -12,8 +12,8 @@
   --color-ink: light-dark(#16130f, #f2ede4);
   --color-nav: light-dark(#3a342c, #d9d1c4);
   --color-secondary: light-dark(#5a5247, #c4bbac);
-  --color-muted: light-dark(#776e61, #a9a091);
-  --color-line-input: light-dark(#cbc3b3, #6e6658);
+  --color-muted: light-dark(#6a6256, #a9a091);
+  --color-line-input: light-dark(#a29376, #6e6658);
   --color-line-card: light-dark(#dcd4c4, #3b352d);
   --color-line-divider: light-dark(#e9e3d6, #2d2822);
   --color-selected: light-dark(#e6dfcc, #3a332a);
@@ -28,14 +28,14 @@
   --color-live-bg: light-dark(#eaf3ec, #163020);
   --color-live-strong: light-dark(#1f5a2b, #94d6a0);
   --color-attention: light-dark(#c27a0e, #e3a03a);
-  --color-idle: light-dark(#a39a8c, #857c6d);
+  --color-idle: light-dark(#9d9384, #857c6d);
   --color-ink-soft: light-dark(#221e19, #e8e2d7);
   --color-neutral: light-dark(#ece6d9, #2f2a24);
   --color-both-bg: light-dark(#e3e6f2, #1e2442);
   --color-both: light-dark(#27346e, #b3bdf2);
   --color-warn-bg: light-dark(#fffbeb, #2a2110);
   --color-warn-line: light-dark(#fde68a, #6b5013);
-  --color-warn-strong: light-dark(#f59e0b, #e0960f);
+  --color-warn-strong: light-dark(#ce8408, #e0960f);
   --color-warn: light-dark(#78350f, #f6d891);
 
   --font-sans: 'Schibsted Grotesk Variable', system-ui, sans-serif;
