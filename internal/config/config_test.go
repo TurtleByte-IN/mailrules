@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -67,6 +70,21 @@ func TestValidate(t *testing.T) {
 		{"composer on an unknown provider", map[string]string{"MAILRULES_COMPOSER_MODEL": "gemini:pro"}, []string{`unknown composer provider "gemini"`}},
 		{"a Claude workspace", map[string]string{"ANTHROPIC_WORKSPACE_ID": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ"}, nil},
 		{"not a Claude workspace", map[string]string{"ANTHROPIC_WORKSPACE_ID": "default"}, []string{`ANTHROPIC_WORKSPACE_ID="default" must start with wrkspc_`}},
+		{"a full mail server", map[string]string{"MAILRULES_SMTP_HOST": "smtp.fastmail.com", "MAILRULES_SMTP_PORT": "465", "MAILRULES_SMTP_TLS": "implicit",
+			"MAILRULES_SMTP_USER": "me@fastmail.com", "MAILRULES_SMTP_PASSWORD": "secret", "MAILRULES_SMTP_FROM": "MailRules <me@fastmail.com>"}, nil},
+		{"no TLS on this machine", map[string]string{"MAILRULES_SMTP_HOST": "localhost", "MAILRULES_SMTP_TLS": "none"}, nil},
+		{"no TLS on loopback", map[string]string{"MAILRULES_SMTP_HOST": "::1", "MAILRULES_SMTP_TLS": "none"}, nil},
+		{"no TLS elsewhere", map[string]string{"MAILRULES_SMTP_HOST": "smtp.example.com", "MAILRULES_SMTP_TLS": "none"}, []string{"MAILRULES_SMTP_TLS=none", "only for a mail server on this machine"}},
+		{"unknown TLS mode", map[string]string{"MAILRULES_SMTP_TLS": "ssl"}, []string{`MAILRULES_SMTP_TLS="ssl" must be starttls, implicit or none`}},
+		{"host with a port", map[string]string{"MAILRULES_SMTP_HOST": "smtp.example.com:587"}, []string{"MAILRULES_SMTP_HOST", "without a scheme or port"}},
+		{"host as a URL", map[string]string{"MAILRULES_SMTP_HOST": "smtp://smtp.example.com"}, []string{"MAILRULES_SMTP_HOST"}},
+		{"port out of range", map[string]string{"MAILRULES_SMTP_PORT": "70000"}, []string{"MAILRULES_SMTP_PORT=70000"}},
+		{"both SMTP passwords", map[string]string{"MAILRULES_SMTP_PASSWORD": "a", "MAILRULES_SMTP_PASSWORD_FILE": "b"}, []string{"only one of MAILRULES_SMTP_PASSWORD"}},
+		{"bad From", map[string]string{"MAILRULES_SMTP_FROM": "not an address"}, []string{"MAILRULES_SMTP_FROM"}},
+		{"two From addresses", map[string]string{"MAILRULES_SMTP_FROM": "a@example.com, b@example.com"}, []string{"MAILRULES_SMTP_FROM"}},
+		{"public URL behind a proxy", map[string]string{"MAILRULES_PUBLIC_URL": "https://mail.example.com/mailrules/"}, nil},
+		{"public URL without a scheme", map[string]string{"MAILRULES_PUBLIC_URL": "mail.example.com"}, []string{"MAILRULES_PUBLIC_URL"}},
+		{"public URL with a hash", map[string]string{"MAILRULES_PUBLIC_URL": "https://mail.example.com/#/"}, []string{"MAILRULES_PUBLIC_URL"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,6 +108,60 @@ func TestValidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSMTPMissing(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{"nothing set", nil, []string{"MAILRULES_SMTP_HOST", "MAILRULES_SMTP_FROM"}},
+		{"no sign-in", map[string]string{"MAILRULES_SMTP_HOST": "localhost", "MAILRULES_SMTP_FROM": "m@example.com"}, []string{}},
+		{"user without password", map[string]string{"MAILRULES_SMTP_HOST": "h", "MAILRULES_SMTP_FROM": "m@example.com", "MAILRULES_SMTP_USER": "u"}, []string{"MAILRULES_SMTP_PASSWORD"}},
+		{"password file without user", map[string]string{"MAILRULES_SMTP_HOST": "h", "MAILRULES_SMTP_FROM": "m@example.com", "MAILRULES_SMTP_PASSWORD_FILE": "/run/secrets/smtp"}, []string{"MAILRULES_SMTP_USER"}},
+		{"everything", map[string]string{"MAILRULES_SMTP_HOST": "h", "MAILRULES_SMTP_FROM": "m@example.com", "MAILRULES_SMTP_USER": "u", "MAILRULES_SMTP_PASSWORD": "p"}, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Load(nil, env(tt.env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.SMTPMissing(); !slices.Equal(got, tt.want) {
+				t.Errorf("SMTPMissing() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSMTPAddr(t *testing.T) {
+	for _, tt := range []struct {
+		tls  string
+		port int
+		want string
+	}{{"starttls", 0, "h:587"}, {"implicit", 0, "h:465"}, {"none", 0, "h:25"}, {"starttls", 2525, "h:2525"}} {
+		c := Config{SMTPHost: "h", SMTPTLS: tt.tls, SMTPPort: tt.port}
+		if got := c.SMTPAddr(); got != tt.want {
+			t.Errorf("%s port %d: SMTPAddr() = %q, want %q", tt.tls, tt.port, got, tt.want)
+		}
+	}
+}
+
+func TestSMTPSecret(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "smtp")
+	if err := os.WriteFile(file, []byte("pass word\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (&Config{SMTPPasswordFile: file}).SMTPSecret(); err != nil || got != "pass word" {
+		t.Errorf("from the file: %q, %v; want the password without its line ending", got, err)
+	}
+	if got, err := (&Config{SMTPPassword: "direct"}).SMTPSecret(); err != nil || got != "direct" {
+		t.Errorf("from the variable: %q, %v", got, err)
+	}
+	if _, err := (&Config{SMTPPasswordFile: filepath.Join(t.TempDir(), "absent")}).SMTPSecret(); err == nil || !strings.Contains(err.Error(), "MAILRULES_SMTP_PASSWORD_FILE") {
+		t.Errorf("a missing file: %v, want an error naming the setting", err)
 	}
 }
 

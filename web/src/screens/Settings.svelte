@@ -4,13 +4,13 @@
   import DeciderFields from './settings/DeciderFields.svelte';
   import KeyFields from './settings/KeyFields.svelte';
   import { keyOrder, keysInUse } from './settings/keysInUse';
+  import SummaryCard from './settings/SummaryCard.svelte';
   import { confidence } from '../lib/format';
   import { rules } from '../lib/state/rules.svelte';
   import { findWorkspace, load, patch, settings, toggleDryRun } from '../lib/state/settings.svelte';
   import { choose, stored, type Choice } from '../lib/theme';
 
-  // Digest and Notification channels (P2) are added here with their backend, behind
-  // features.digest and features.notifications.
+  // Notification channels (P2) are added here with their backend, behind features.notifications.
 
   const s = $derived(settings.value);
   // Each follows the saved value; the control overrides it while it is being edited.
@@ -120,6 +120,8 @@
         <span><span class="font-semibold">Leave my own emails alone</span><span class="text-secondary">{' · '}mail sent from this mailbox's own address is never sorted, trashed or sent to the AI</span></span>
       </label>
     </section>
+
+    <SummaryCard />
 
     <section aria-label="Model API keys" class="card flex flex-col gap-3.5 p-5">
       <h2>Model API keys</h2>

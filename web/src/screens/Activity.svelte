@@ -13,15 +13,18 @@
   const outcomes: [Outcome, string][] = [['sorted', 'Sorted'], ['inbox', 'Left in Inbox'], ['review', 'Needs review'], ['trashed', 'Trashed']];
 
   // Other screens link to one group: #/activity?outcome=sorted. An unknown value is ignored.
-  const asked = new URLSearchParams(router.querystring).get('outcome');
-  const group = outcomes.find(([value]) => value === asked)?.[0];
+  const asked = new URLSearchParams(router.querystring);
+  const group = outcomes.find(([value]) => value === asked.get('outcome'))?.[0];
   if (group) activity.filter.outcome = group;
+  // The summary email links one email: #/activity?id=42 opens its details, even when its row
+  // is not on the page loaded.
+  const linked = Number(asked.get('id')) || null;
 
   load();
   loadStats();
   loadReview();
 
-  let selected = $state<number | null>(null);
+  let selected = $state<number | null>(linked);
   const rows = $derived(activity.list);
   // The feed comes in the order MailRules acted, newest first, and runs past today: one group
   // per day, each row showing when it was acted on. An old email decided today is today's.
@@ -37,7 +40,9 @@
   const filtered = $derived(Boolean(activity.filter.rule || activity.filter.account || activity.filter.outcome));
   // Wide screens always show one decision beside the feed, the first row until one is picked.
   // Narrow screens open it under the row that was tapped.
-  const shownId = $derived((rows.find((r) => r.id === selected) ?? rows[0])?.id);
+  const shownId = $derived(rows.find((r) => r.id === selected)?.id ?? (selected !== null && selected === linked ? linked : rows[0]?.id));
+  // A linked email whose row is not in the feed has nowhere to open under, so its details show on every width.
+  const offFeed = $derived(shownId !== undefined && !rows.some((r) => r.id === shownId));
   const detail = $derived(activity.detail?.id === shownId ? activity.detail : null);
   const stats = $derived(activity.stats);
   // The daemon lists a model once per purpose (decide, escalate, compose, test, cleanup, suggest); the tile shows one figure per model.
@@ -224,7 +229,7 @@
     </section>
 
     {#if detail || activity.detailError}
-      <aside aria-label="Decision details" class="card hidden min-w-0 flex-col gap-4 p-[18px] xl:flex">
+      <aside aria-label="Decision details" class="card min-w-0 flex-col gap-4 p-[18px] xl:flex {offFeed ? 'flex max-xl:order-first' : 'hidden'}">
         {@render panel('side')}
       </aside>
     {/if}

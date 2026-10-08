@@ -1,7 +1,6 @@
 // Later-phase features stay off until their backend exists.
 // This is the only place one is switched on.
 export const features = {
-  digest: false,
   notifications: false,
   timedActions: false,
   draftReplies: false,

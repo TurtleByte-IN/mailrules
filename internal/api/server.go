@@ -19,6 +19,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/summary"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 	"github.com/TurtleByte-IN/mailrules/internal/web"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
@@ -51,6 +52,8 @@ type Options struct {
 	// mail already queued is finished.
 	StartAccount func(acct store.Account)
 	StopAccount  func(accountID int64)
+	// Summary is the summary email; nil = one built from Settings.Env that cannot send.
+	Summary *summary.Service
 }
 
 type server struct {
@@ -135,6 +138,9 @@ func (s *server) routes() []route {
 		on(patch, "/api/settings", s.handleSettingsPatch),
 		on(get, "/api/settings/anthropic-workspaces", s.handleAnthropicWorkspaces),
 		on(get, "/api/events", s.handleEvents),
+		on(get, "/api/summary/preview", s.handleSummaryPreview),
+		on(get, "/api/summary/preview.html", s.handleSummaryPreviewPage),
+		on(post, "/api/summary/test", s.handleSummaryTest),
 	}
 }
 
@@ -149,6 +155,10 @@ func NewHandler(o Options) http.Handler {
 	}
 	if s.Metrics == nil {
 		s.Metrics = telemetry.NewMetrics(o.Version)
+	}
+	if s.Summary == nil {
+		s.Summary = summary.New(o.Store, o.Settings.Env, nil)
+		s.Summary.Now = s.now
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
