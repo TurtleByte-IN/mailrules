@@ -176,7 +176,10 @@
   <header class="flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1>Rules</h1>
-      <p class="mt-1 text-secondary">Checked top to bottom; the first confident match wins.</p>
+      <p class="mt-1 text-secondary">
+        Checked top to bottom. A rule with only conditions ends the check when it matches; the model picks among the plain-English rules above it.
+        <a href="https://github.com/TurtleByte-IN/mailrules/blob/main/docs/guide/rules.md#how-an-email-is-decided" target="_blank" rel="noopener noreferrer">How rules are checked</a>
+      </p>
     </div>
     <a href="#/compose" class="btn-primary">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
