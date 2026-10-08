@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,11 @@ const (
 	csrfHeader    = "X-CSRF-Token"
 	sessionTTL    = 30 * 24 * time.Hour
 	minPassword   = 12
+	// maxAccountFailures is how many failed sign-ins one email gets in a minute, from any
+	// address. It is above the per-address limit of 5 so that the owner mistyping a few
+	// times is not locked out by their own typos, and low enough that rotating addresses
+	// cannot brute-force a password.
+	maxAccountFailures = 10
 )
 
 type userKey struct{}
@@ -195,19 +201,74 @@ func (s *server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
 }
 
-func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientIP is the address a request counts against. It is the connection's peer, unless
+// the peer is a trusted proxy: then it is the right-most address in X-Forwarded-For that
+// is not itself a trusted proxy, which is the last one a proxy we trust vouched for. The
+// header is never read for any other peer, since anyone can write it.
+func (s *server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		ip = r.RemoteAddr
+		host = r.RemoteAddr
 	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil || !s.isTrustedProxy(peer) {
+		return host
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(hop)
+		if err != nil {
+			break // not an address a proxy would write: count the proxy itself
+		}
+		if !s.isTrustedProxy(addr) {
+			return addr.Unmap().WithZone("").String()
+		}
+	}
+	return host
+}
+
+func (s *server) isTrustedProxy(a netip.Addr) bool {
+	a = a.Unmap().WithZone("")
+	for _, p := range s.TrustedProxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// accountKey is what the per-account limit counts under: the email as people type it.
+func accountKey(email string) string {
+	k := strings.ToLower(strings.TrimSpace(email))
+	if len(k) > 254 {
+		k = k[:254]
+	}
+	return k
+}
+
+func (s *server) tooManyLogins(w http.ResponseWriter, wait time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many failed sign-ins. Wait a minute and try again.", "")
+}
+
+func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	ip := s.clientIP(r)
 	now := s.now()
 	if wait := s.logins.blockedFor(ip, now); wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many failed sign-ins. Wait a minute and try again.", "")
+		s.tooManyLogins(w, wait)
 		return
 	}
 	var in credentials
 	if !readJSON(w, r, &in) {
+		return
+	}
+	account := accountKey(in.Email)
+	if wait := s.accountLogins.blockedFor(account, now); wait > 0 {
+		s.tooManyLogins(w, wait)
 		return
 	}
 	u, err := s.store.UserByEmail(r.Context(), strings.TrimSpace(in.Email))
@@ -222,6 +283,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !crypto.VerifyPassword(hash, in.Password) || u.ID == 0 {
 		s.logins.fail(ip, now)
+		s.accountLogins.fail(account, now)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Wrong email or password.", "")
 		return
 	}
@@ -292,8 +354,17 @@ func (l *failureLimiter) blockedFor(key string, now time.Time) time.Duration {
 	return l.window - now.Sub(kept[0])
 }
 
+// maxTracked is how many keys a limiter holds before it forgets the ones whose failures
+// have all aged out; without it, a stream of made-up emails or addresses would grow it forever.
+const maxTracked = 4096
+
 func (l *failureLimiter) fail(key string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if len(l.fails) >= maxTracked {
+		for k := range l.fails {
+			l.recent(k, now)
+		}
+	}
 	l.fails[key] = append(l.recent(key, now), now)
 }

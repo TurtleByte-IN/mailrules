@@ -106,6 +106,11 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		slog.Warn("web UI is reachable from other machines; put it behind a reverse proxy with TLS", "listen", cfg.Listen)
 	}
 
+	proxies, err := cfg.TrustedProxyPrefixes()
+	if err != nil {
+		return err
+	}
+
 	db, err := store.Open(ctx, cfg.DataDir)
 	if err != nil {
 		return err
@@ -186,7 +191,7 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 	}()
 
 	handler := api.NewHandler(api.Options{
-		Store: st, SecureCookies: cfg.SecureCookies(), Hub: hub, Exec: exec, Settings: sett, Master: master,
+		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett, Master: master,
 		Metrics: telemetry.NewMetrics(version), Version: version,
 		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
 			mb, username, err := dial(ctx, acct, password, nil)

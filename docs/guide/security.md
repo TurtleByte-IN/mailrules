@@ -17,7 +17,7 @@ order: 90
 MailRules has one admin account, created on first run. It protects the web UI and the HTTP API.
 
 - The password must be at least 12 characters. It is stored only as an Argon2id hash.
-- After 5 failed sign-ins within a minute from the same address, sign-in is refused for a minute ("Too many failed sign-ins. Wait a minute and try again."). There is no permanent lockout.
+- After 5 failed sign-ins within a minute from the same address, sign-in is refused for a minute ("Too many failed sign-ins. Wait a minute and try again."). A second limit counts per email address, whatever address the tries come from: 10 failures in a minute refuse that email for a minute, even with the right password. It stops someone rotating addresses to guess the admin password, at the price that they can keep you out for a minute at a time. There is no permanent lockout.
 - Signing in sets a session cookie, `mailrules_session`, that lasts 30 days and is renewed as you use MailRules. It is `HttpOnly` and `SameSite=Strict`. **Sign out**, at the bottom of the sidebar, ends the session on the server too.
 - Every request that changes something must carry a CSRF token (the `X-CSRF-Token` header), which the web UI sends for you.
 - There is no way to change or reset the admin password in this release.
@@ -39,7 +39,8 @@ To use MailRules from other devices, put a reverse proxy that terminates TLS in 
 1. Keep MailRules on a private address. With the proxy on the same machine, leave `MAILRULES_LISTEN=127.0.0.1:8080` (the default, and what the Docker setups publish). If you make MailRules listen on another address, it logs a warning at startup: `web UI is reachable from other machines; put it behind a reverse proxy with TLS`.
 2. Set `MAILRULES_COOKIE_SECURE=true`. This is needed even with `auto`, because MailRules itself still listens on `127.0.0.1` and cannot see that the browser uses HTTPS.
 3. Set `MAILRULES_PUBLIC_URL` to the proxy's address, such as `https://mailrules.example.com`, so links in the [summary email](./summary-email.md) work.
-4. Restart MailRules.
+4. Set `MAILRULES_TRUSTED_PROXIES` to the proxy's address, such as `127.0.0.1` (see [Telling visitors apart](#telling-visitors-apart-behind-a-proxy)).
+5. Restart MailRules.
 
 The proxy must pass every path through to one port: the UI and the API are served together. Live updates use server-sent events on `/api/events`, which stay open; MailRules sends a keep-alive every 25 seconds and asks nginx not to buffer them, so a read timeout above 25 seconds is enough. There are no WebSockets.
 
@@ -70,12 +71,26 @@ server {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_read_timeout 1h;
     }
 }
 ```
 
-Behind a proxy, every request reaches MailRules from the proxy's address, so the limit of 5 failed sign-ins a minute is shared by everyone using that proxy.
+### Telling visitors apart behind a proxy
+
+The limit on failed sign-ins counts per address. Behind a proxy every request reaches MailRules from the proxy's own address, so by default one person mistyping a password would block sign-in for everyone. To count the real visitor instead, list your proxy in `MAILRULES_TRUSTED_PROXIES`, as IP addresses or CIDR ranges separated by commas:
+
+```text
+MAILRULES_TRUSTED_PROXIES=127.0.0.1
+MAILRULES_TRUSTED_PROXIES=172.18.0.0/16,10.0.0.5
+```
+
+- MailRules then reads `X-Forwarded-For` only on connections that come from one of those addresses, and takes the right-most address in it that is not itself a listed proxy. That is the address your proxy saw. Anything a visitor wrote into the header sits to its left and is ignored.
+- The header is never read on any other connection, and by default no proxy is trusted. Setting it too wide lets anyone who can reach MailRules directly forge their address and so get past the limit; list only your proxies, and a range such as `0.0.0.0/0` is refused.
+- Your proxy must add the header itself. Caddy and Traefik do by default; the nginx example above does.
+- If the proxy runs in Docker, list the address range of the Docker network it shares with MailRules, such as `172.18.0.0/16`.
+- Without the setting, the per-email limit above still applies, so a shared address cannot be used to guess the password.
 
 ### Endpoints without sign-in
 

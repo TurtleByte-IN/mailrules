@@ -100,6 +100,10 @@ func TestValidate(t *testing.T) {
 		{"both SMTP passwords", map[string]string{"MAILRULES_SMTP_PASSWORD": "a", "MAILRULES_SMTP_PASSWORD_FILE": "b"}, []string{"only one of MAILRULES_SMTP_PASSWORD"}},
 		{"bad From", map[string]string{"MAILRULES_SMTP_FROM": "not an address"}, []string{"MAILRULES_SMTP_FROM"}},
 		{"two From addresses", map[string]string{"MAILRULES_SMTP_FROM": "a@example.com, b@example.com"}, []string{"MAILRULES_SMTP_FROM"}},
+		{"trusted proxies", map[string]string{"MAILRULES_TRUSTED_PROXIES": "127.0.0.1, 172.18.0.0/16 ::1,fd00::/8"}, nil},
+		{"trusted proxy that is not an address", map[string]string{"MAILRULES_TRUSTED_PROXIES": "caddy"}, []string{"MAILRULES_TRUSTED_PROXIES", `"caddy"`}},
+		{"trusted proxy with a bad range", map[string]string{"MAILRULES_TRUSTED_PROXIES": "10.0.0.0/40"}, []string{`"10.0.0.0/40"`}},
+		{"trusting everyone", map[string]string{"MAILRULES_TRUSTED_PROXIES": "0.0.0.0/0"}, []string{"would trust every address"}},
 		{"public URL behind a proxy", map[string]string{"MAILRULES_PUBLIC_URL": "https://mail.example.com/mailrules/"}, nil},
 		{"public URL without a scheme", map[string]string{"MAILRULES_PUBLIC_URL": "mail.example.com"}, []string{"MAILRULES_PUBLIC_URL"}},
 		{"public URL with a hash", map[string]string{"MAILRULES_PUBLIC_URL": "https://mail.example.com/#/"}, []string{"MAILRULES_PUBLIC_URL"}},
@@ -338,5 +342,23 @@ func TestDeciderSpec(t *testing.T) {
 	}
 	if c, _ = Load(nil, env(nil)); c.DeciderSpec() != "jev" {
 		t.Errorf("default spec = %q", c.DeciderSpec())
+	}
+}
+
+func TestTrustedProxyPrefixes(t *testing.T) {
+	c := &Config{TrustedProxies: " 127.0.0.1,172.18.5.9/16\t::1 "}
+	got, err := c.TrustedProxyPrefixes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s []string
+	for _, p := range got {
+		s = append(s, p.String())
+	}
+	if want := "127.0.0.1/32 172.18.0.0/16 ::1/128"; strings.Join(s, " ") != want {
+		t.Errorf("prefixes = %v, want %s", s, want)
+	}
+	if got, err := (&Config{}).TrustedProxyPrefixes(); err != nil || len(got) != 0 {
+		t.Errorf("empty setting = %v, %v; want no proxies", got, err)
 	}
 }

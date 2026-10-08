@@ -2620,7 +2620,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Error"];
             403: components["responses"]["CsrfFailed"];
-            /** @description rate_limited; five failed sign-ins per minute per IP */
+            /** @description rate_limited; five failed sign-ins per minute from one client address, or ten for one email */
             429: {
                 headers: {
                     /** @description Seconds until sign-in is allowed again */

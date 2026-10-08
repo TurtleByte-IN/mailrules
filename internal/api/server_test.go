@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ type client struct {
 	h       http.Handler
 	cookies map[string]string
 	noCSRF  bool
+	remote  string // the peer address requests come from; empty = httptest's default
 }
 
 type reply struct {
@@ -49,6 +52,9 @@ func (c *client) do(method, path, body string) reply {
 func (c *client) send(ctx context.Context, method, path, body string, header http.Header) reply {
 	c.t.Helper()
 	req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
+	if c.remote != "" {
+		req.RemoteAddr = c.remote
+	}
 	for name, values := range header {
 		req.Header[name] = values
 	}
@@ -249,5 +255,162 @@ func TestLoginRateLimit(t *testing.T) {
 	ck.t = ck.t.Add(61 * time.Second)
 	if r := c.do(http.MethodPost, "/api/auth/login", goodBody); r.status != http.StatusOK {
 		t.Fatalf("login after the window = %d %q", r.status, r.body.Error.Code)
+	}
+}
+
+// failedLogin signs in with a wrong password as email from the client's current peer
+// address, with an X-Forwarded-For header when xff is not empty.
+func (c *client) failedLogin(email, xff string) reply {
+	c.t.Helper()
+	h := http.Header{}
+	if xff != "" {
+		h.Set("X-Forwarded-For", xff)
+	}
+	return c.send(c.t.Context(), http.MethodPost, "/api/auth/login", `{"email":"`+email+`","password":"wrong wrong wrong"}`, h)
+}
+
+func (c *client) loginFrom(email, xff string) reply {
+	c.t.Helper()
+	h := http.Header{}
+	if xff != "" {
+		h.Set("X-Forwarded-For", xff)
+	}
+	return c.send(c.t.Context(), http.MethodPost, "/api/auth/login", `{"email":"`+email+`","password":"correct horse battery"}`, h)
+}
+
+// Without trusted proxies X-Forwarded-For is never read, so a client cannot dodge the
+// limit by writing a new address in it on every try.
+func TestLoginRateLimitIgnoresForwardedForByDefault(t *testing.T) {
+	c, _ := newClient(t)
+	c.do(http.MethodGet, "/api/auth/me", "")
+	c.do(http.MethodPost, "/api/auth/setup", goodBody)
+	c.do(http.MethodPost, "/api/auth/logout", "")
+
+	for i := range 5 {
+		expect(t, c.failedLogin("a"+strconv.Itoa(i)+"@icloud.com", "203.0.113."+strconv.Itoa(i)), http.StatusUnauthorized, "invalid_credentials")
+	}
+	expect(t, c.failedLogin("a9@icloud.com", "203.0.113.99"), http.StatusTooManyRequests, "rate_limited")
+}
+
+func TestLoginRateLimitBehindTrustedProxy(t *testing.T) {
+	proxies := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.168.1.7/32")}
+	e := newEnvWith(t, func(o *Options) { o.TrustedProxies = proxies })
+	c := e.client
+	c.do(http.MethodGet, "/api/auth/me", "")
+	c.do(http.MethodPost, "/api/auth/setup", goodBody)
+	c.do(http.MethodPost, "/api/auth/logout", "")
+
+	// One visitor behind the proxy, trying other emails, is limited alone.
+	c.remote = "10.1.2.3:5555"
+	for i := range 5 {
+		expect(t, c.failedLogin("x"+strconv.Itoa(i)+"@icloud.com", "198.51.100.9"), http.StatusUnauthorized, "invalid_credentials")
+	}
+	expect(t, c.failedLogin("x9@icloud.com", "198.51.100.9"), http.StatusTooManyRequests, "rate_limited")
+	// Another visitor behind the same proxy is not.
+	expect(t, c.failedLogin("y@icloud.com", "198.51.100.10"), http.StatusUnauthorized, "invalid_credentials")
+	// And the owner signs in from the same proxy.
+	if r := c.loginFrom("me@icloud.com", "198.51.100.11"); r.status != http.StatusOK {
+		t.Fatalf("owner behind the proxy = %d %q", r.status, r.body.Error.Code)
+	}
+	c.do(http.MethodPost, "/api/auth/logout", "")
+
+	// A visitor's own forged entries sit left of the address the proxy appended, so they
+	// do not choose the bucket: every try below is the same visitor, 198.51.100.50.
+	c.remote = "192.168.1.7:1"
+	for i := range 5 {
+		expect(t, c.failedLogin("z"+strconv.Itoa(i)+"@icloud.com", "1.1.1."+strconv.Itoa(i)+", 198.51.100.50"), http.StatusUnauthorized, "invalid_credentials")
+	}
+	expect(t, c.failedLogin("z9@icloud.com", "9.9.9.9, 198.51.100.50"), http.StatusTooManyRequests, "rate_limited")
+	// Other proxies in the chain are skipped.
+	expect(t, c.failedLogin("z9@icloud.com", "198.51.100.50, 10.9.9.9"), http.StatusTooManyRequests, "rate_limited")
+
+	// A peer that is not a trusted proxy cannot pick its bucket: the header is ignored.
+	c.remote = "203.0.113.5:1"
+	for i := range 5 {
+		expect(t, c.failedLogin("w"+strconv.Itoa(i)+"@icloud.com", "198.51.100.77"+strconv.Itoa(i)), http.StatusUnauthorized, "invalid_credentials")
+	}
+	expect(t, c.failedLogin("w9@icloud.com", "198.51.100.88"), http.StatusTooManyRequests, "rate_limited")
+	// ...and cannot clear itself by claiming to be a visitor that was never blocked.
+	expect(t, c.failedLogin("w9@icloud.com", "10.0.0.1"), http.StatusTooManyRequests, "rate_limited")
+}
+
+func TestClientIP(t *testing.T) {
+	s := &server{Options: Options{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("fd00::/8")}}}
+	tests := []struct {
+		name, peer string
+		xff        []string
+		want       string
+	}{
+		{"direct peer", "203.0.113.5:1", nil, "203.0.113.5"},
+		{"forged header from an untrusted peer", "203.0.113.5:1", []string{"198.51.100.1"}, "203.0.113.5"},
+		{"trusted peer without the header", "10.0.0.2:1", nil, "10.0.0.2"},
+		{"trusted peer with the visitor", "10.0.0.2:1", []string{"198.51.100.1"}, "198.51.100.1"},
+		{"right-most untrusted wins", "10.0.0.2:1", []string{"1.2.3.4, 198.51.100.1, 10.0.0.9"}, "198.51.100.1"},
+		{"header split over two lines", "10.0.0.2:1", []string{"1.2.3.4", "198.51.100.1"}, "198.51.100.1"},
+		{"only proxies listed", "10.0.0.2:1", []string{"10.0.0.8, 10.0.0.9"}, "10.0.0.2"},
+		{"garbage from a trusted proxy", "10.0.0.2:1", []string{"198.51.100.1, unknown"}, "10.0.0.2"},
+		{"empty entries skipped", "10.0.0.2:1", []string{"198.51.100.1, ,"}, "198.51.100.1"},
+		{"ipv6 visitor", "10.0.0.2:1", []string{"2001:db8::7"}, "2001:db8::7"},
+		{"ipv6 proxy", "[fd00::1]:9", []string{"198.51.100.1"}, "198.51.100.1"},
+		{"mapped ipv4 proxy", "[::ffff:10.0.0.2]:9", []string{"198.51.100.1"}, "198.51.100.1"},
+		{"mapped ipv4 visitor", "10.0.0.2:1", []string{"::ffff:198.51.100.1"}, "198.51.100.1"},
+		{"no port", "10.0.0.2", []string{"198.51.100.1"}, "198.51.100.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+			r.RemoteAddr = tt.peer
+			for _, v := range tt.xff {
+				r.Header.Add("X-Forwarded-For", v)
+			}
+			if got := s.clientIP(r); got != tt.want {
+				t.Errorf("clientIP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// One email's limit is its own: locking out one account leaves the others, and the same
+// visitor's other addresses, signing in; and rotating addresses does not get past it.
+func TestLoginRateLimitPerAccount(t *testing.T) {
+	proxies := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	e := newEnvWith(t, func(o *Options) { o.TrustedProxies = proxies })
+	c, ck := e.client, e.ck
+	c.do(http.MethodGet, "/api/auth/me", "")
+	c.do(http.MethodPost, "/api/auth/setup", goodBody)
+	c.do(http.MethodPost, "/api/auth/logout", "")
+	c.remote = "10.0.0.1:1"
+
+	// Ten failed tries on the admin, each from a new address and so under the per-address limit.
+	for i := range maxAccountFailures {
+		expect(t, c.failedLogin("Me@iCloud.com ", "198.51.100."+strconv.Itoa(i+1)), http.StatusUnauthorized, "invalid_credentials")
+	}
+	// Even the right password is refused for that account now, from a clean address...
+	r := c.loginFrom("me@icloud.com", "198.51.100.200")
+	expect(t, r, http.StatusTooManyRequests, "rate_limited")
+	if r.header.Get("Retry-After") == "" {
+		t.Error("no Retry-After header")
+	}
+	// ...but a wrong guess at another email is only a wrong guess.
+	expect(t, c.failedLogin("other@icloud.com", "198.51.100.200"), http.StatusUnauthorized, "invalid_credentials")
+	// A refused try does not extend the lock: the minute counts from the failures.
+	ck.t = ck.t.Add(30 * time.Second)
+	expect(t, c.loginFrom("me@icloud.com", "198.51.100.200"), http.StatusTooManyRequests, "rate_limited")
+	ck.t = ck.t.Add(31 * time.Second)
+	if r := c.loginFrom("me@icloud.com", "198.51.100.200"); r.status != http.StatusOK {
+		t.Fatalf("login after the minute = %d %q", r.status, r.body.Error.Code)
+	}
+}
+
+// A stream of made-up emails does not grow the limiter without bound.
+func TestFailureLimiterForgetsAgedKeys(t *testing.T) {
+	l := newFailureLimiter(5, time.Minute)
+	now := time.Unix(1_800_000_000, 0)
+	for i := range maxTracked {
+		l.fail("user"+strconv.Itoa(i), now)
+	}
+	l.fail("late", now.Add(2*time.Minute))
+	if len(l.fails) != 1 {
+		t.Fatalf("limiter holds %d keys after everything aged out, want 1", len(l.fails))
 	}
 }

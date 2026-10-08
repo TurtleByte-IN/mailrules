@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"reflect"
 	"strconv"
 	"sync"
@@ -29,8 +30,11 @@ import (
 // Options configures the HTTP handler.
 type Options struct {
 	Store         *store.Store
-	SecureCookies bool             // set when the UI is not served from localhost
-	Now           func() time.Time // nil means time.Now
+	SecureCookies bool // set when the UI is not served from localhost
+	// TrustedProxies are the peers whose X-Forwarded-For header is believed when counting
+	// failed sign-ins (MAILRULES_TRUSTED_PROXIES). Empty: the header is never read.
+	TrustedProxies []netip.Prefix
+	Now            func() time.Time // nil means time.Now
 
 	Hub      *events.Hub        // the SSE stream's source; nil = a private hub nothing publishes to
 	Exec     *actions.Exec      // undo and corrections: the only way this package changes a mailbox
@@ -64,12 +68,15 @@ type Options struct {
 
 type server struct {
 	Options
-	store   *store.Store
-	secure  bool
-	now     func() time.Time
-	logins  *failureLimiter
-	dummy   string // hash verified when the email is unknown, so timing does not reveal accounts
-	dummyMu sync.Once
+	store  *store.Store
+	secure bool
+	now    func() time.Time
+	logins *failureLimiter // failed sign-ins per client address
+	// accountLogins counts failed sign-ins per email, so rotating addresses cannot
+	// brute-force the one admin.
+	accountLogins *failureLimiter
+	dummy         string // hash verified when the email is unknown, so timing does not reveal accounts
+	dummyMu       sync.Once
 }
 
 type route struct {
@@ -153,7 +160,7 @@ func (s *server) routes() []route {
 
 // NewHandler returns the daemon's HTTP routes.
 func NewHandler(o Options) http.Handler {
-	s := &server{Options: o, store: o.Store, secure: o.SecureCookies, now: o.Now, logins: newFailureLimiter(5, time.Minute)}
+	s := &server{Options: o, store: o.Store, secure: o.SecureCookies, now: o.Now, logins: newFailureLimiter(5, time.Minute), accountLogins: newFailureLimiter(maxAccountFailures, time.Minute)}
 	if s.now == nil {
 		s.now = time.Now
 	}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -49,6 +50,10 @@ type Config struct {
 
 	// CookieSecure is auto, true or false; see SecureCookies.
 	CookieSecure string
+
+	// TrustedProxies lists the reverse proxies whose X-Forwarded-For header is believed,
+	// as IP addresses or CIDR ranges separated by commas; see TrustedProxyPrefixes.
+	TrustedProxies string
 
 	// The outgoing mail server the summary email is sent through. SMTPPort 0 means the
 	// usual port for SMTPTLS; SMTPPasswordFile names a file holding the password, like
@@ -145,6 +150,7 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 
 	group = "Web UI"
 	str(&c.CookieSecure, "MAILRULES_COOKIE_SECURE", "auto", "Send the login cookie over HTTPS only: `auto` (yes unless MailRules listens on loopback only), `true` or `false`. Set `true` behind a TLS proxy; `false` only when the UI is opened over plain HTTP on this machine, as with Docker.")
+	str(&c.TrustedProxies, "MAILRULES_TRUSTED_PROXIES", "", "Reverse proxies whose `X-Forwarded-For` header MailRules believes, as IP addresses or CIDR ranges separated by commas, such as `127.0.0.1,172.18.0.0/16`. Sign-in limits then count the real visitor instead of the proxy. Empty trusts no one, which is right when nothing sits in front of MailRules; never list a range that visitors can reach directly.")
 	str(&c.PublicURL, "MAILRULES_PUBLIC_URL", "http://127.0.0.1:8080", "Where you open MailRules; links in the summary email start with it. Set it to your proxy's address, such as `https://mailrules.example.com`.")
 
 	group = "Summary email"
@@ -228,6 +234,9 @@ func (c *Config) Validate() error {
 	case "auto", "true", "false":
 	default:
 		bad("MAILRULES_COOKIE_SECURE=%q must be auto, true or false", c.CookieSecure)
+	}
+	if _, err := c.TrustedProxyPrefixes(); err != nil {
+		bad("%v", err)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
@@ -442,6 +451,33 @@ func (c *Config) SecureCookies() bool {
 		return false
 	}
 	return !c.ListensLocally()
+}
+
+// TrustedProxyPrefixes parses MAILRULES_TRUSTED_PROXIES: IP addresses and CIDR ranges
+// separated by commas or spaces. A bare address names just itself. A range that covers
+// every address (/0) is refused: it would let anyone forge X-Forwarded-For.
+func (c *Config) TrustedProxyPrefixes() ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.FieldsFunc(c.TrustedProxies, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
+		var p netip.Prefix
+		if strings.Contains(f, "/") {
+			var err error
+			if p, err = netip.ParsePrefix(f); err != nil {
+				return nil, fmt.Errorf("MAILRULES_TRUSTED_PROXIES: %q is not an IP address or a CIDR range such as 10.0.0.0/8", f)
+			}
+		} else {
+			a, err := netip.ParseAddr(f)
+			if err != nil {
+				return nil, fmt.Errorf("MAILRULES_TRUSTED_PROXIES: %q is not an IP address or a CIDR range such as 10.0.0.0/8", f)
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		if p.Bits() == 0 {
+			return nil, fmt.Errorf("MAILRULES_TRUSTED_PROXIES: %q would trust every address, which lets anyone forge X-Forwarded-For; list only your proxies", f)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 // ListensLocally reports whether the HTTP address is loopback-only.
