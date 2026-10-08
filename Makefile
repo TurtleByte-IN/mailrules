@@ -2,9 +2,9 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev
 # Pinned here so local runs and CI lint with the same version.
 GOLANGCI := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
-.PHONY: check fmt vet lint test vuln web web-check build dev
+.PHONY: check fmt vet lint test vuln settings-doc settings-doc-check web web-check build dev
 
-check: fmt vet lint test web-check
+check: fmt vet lint test settings-doc-check web-check
 
 fmt:
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
@@ -20,6 +20,14 @@ test:
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+# docs/guide/settings.md is generated from the settings internal/config registers.
+# settings-doc rewrites it; settings-doc-check fails when the committed page differs.
+settings-doc:
+	go run ./internal/config/docgen -o docs/guide/settings.md
+
+settings-doc-check:
+	go run ./internal/config/docgen -check docs/guide/settings.md
 
 # Type check and tests, then fail if the generated API types are stale against api/openapi.yaml.
 web-check:

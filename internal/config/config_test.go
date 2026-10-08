@@ -20,6 +20,24 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// The settings reference is generated from Settings, so every entry must say where it
+// belongs and what it does, and no two may share a name.
+func TestSettingsDescribed(t *testing.T) {
+	seen := map[string]bool{}
+	for _, s := range Settings() {
+		if s.Group == "" || s.Help == "" || s.Flag != flagName(s.Env) {
+			t.Errorf("%s is not fully described: %+v", s.Env, s)
+		}
+		if seen[s.Env] {
+			t.Errorf("%s is listed twice", s.Env)
+		}
+		seen[s.Env] = true
+	}
+	if len(seen) == 0 {
+		t.Fatal("no settings listed")
+	}
+}
+
 func TestLoadPrecedence(t *testing.T) {
 	c, err := Load([]string{"--listen", "127.0.0.1:9000"}, env(map[string]string{
 		"MAILRULES_LISTEN":  "127.0.0.1:7000",

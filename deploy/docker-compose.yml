@@ -49,7 +49,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-}
-      # The summary email's outgoing mail server; see the README's Summary email section.
+      # The summary email's outgoing mail server; see docs/guide/summary-email.md.
       MAILRULES_SMTP_HOST: ${MAILRULES_SMTP_HOST:-}
       MAILRULES_SMTP_PORT: ${MAILRULES_SMTP_PORT:-}
       MAILRULES_SMTP_USER: ${MAILRULES_SMTP_USER:-}

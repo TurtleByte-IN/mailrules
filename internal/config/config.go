@@ -71,6 +71,93 @@ func flagName(env string) string {
 	return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(env, "MAILRULES_")), "_", "-")
 }
 
+// Setting describes one setting as the settings reference (docs/guide/settings.md) lists it.
+type Setting struct {
+	Group   string // the heading it is listed under
+	Env     string // the environment variable
+	Flag    string // the command-line flag, without the leading --
+	Default string // the default as the flag package prints it; empty for none
+	Help    string // what it does, for a reader of the reference
+}
+
+// Settings lists every setting in the order the reference shows them.
+func Settings() []Setting {
+	return define(&Config{}, flag.NewFlagSet("mailrules", flag.ContinueOnError))
+}
+
+// define registers every setting on fs, bound to c's fields, and lists them. It is the one
+// place a setting's name, default and help are written.
+func define(c *Config, fs *flag.FlagSet) []Setting {
+	var list []Setting
+	group := ""
+	add := func(env string) {
+		f := fs.Lookup(flagName(env))
+		list = append(list, Setting{Group: group, Env: env, Flag: f.Name, Default: f.DefValue, Help: f.Usage})
+	}
+	str := func(p *string, env, def, help string) {
+		fs.StringVar(p, flagName(env), def, help)
+		add(env)
+	}
+	boolean := func(p *bool, env string, def bool, help string) {
+		fs.BoolVar(p, flagName(env), def, help)
+		add(env)
+	}
+	integer := func(p *int, env string, def int, help string) {
+		fs.IntVar(p, flagName(env), def, help)
+		add(env)
+	}
+	float := func(p *float64, env string, def float64, help string) {
+		fs.Float64Var(p, flagName(env), def, help)
+		add(env)
+	}
+
+	// The help strings are written for docs/guide/settings.md, which is Markdown: code in
+	// backticks. Run `make settings-doc` after changing any of them.
+	group = "Daemon"
+	str(&c.DataDir, "MAILRULES_DATA_DIR", "./data", "Directory for the database (`mailrules.db`) and the generated `master.key`. A relative path is relative to the directory MailRules starts in.")
+	str(&c.Listen, "MAILRULES_LISTEN", "127.0.0.1:8080", "Address (`host:port`) the web UI and API listen on. Any address other than a loopback one makes MailRules log a warning: put a reverse proxy with TLS in front.")
+	str(&c.Mode, "MAILRULES_MODE", "selfhost", "`selfhost` or `cloud`. `cloud` is for the hosted service and only hides the Self-hosting card in Settings; leave it as `selfhost`.")
+	str(&c.MasterKey, "MAILRULES_MASTER_KEY", "", "The master key itself: 32 bytes, base64-encoded. It encrypts the stored mailbox passwords and provider keys. Set this or `MAILRULES_MASTER_KEY_FILE`, not both; with neither, `master.key` in the data directory is used, and generated on first run.")
+	str(&c.MasterKeyFile, "MAILRULES_MASTER_KEY_FILE", "", "A file holding the master key, to keep it outside the data directory. MailRules does not start if the file is missing.")
+	boolean(&c.DryRun, "MAILRULES_DRY_RUN", true, "Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on|off`, that choice wins.")
+	str(&c.LogLevel, "LOG_LEVEL", "info", "`debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email.")
+
+	group = "Decision models"
+	str(&c.Decider, "MAILRULES_DECIDER", "jev", "The decision model, which picks the rule an email matches: `jev`, `clef`, `anthropic`, `openai` or `ollama`.")
+	str(&c.DeciderModel, "MAILRULES_DECIDER_MODEL", "", "The decision model's model name. Empty uses the provider's default; `openai` and `ollama` have none, so they need one.")
+	str(&c.FallbackModel, "MAILRULES_FALLBACK_MODEL", "claude-haiku-4-5", "The Claude model asked for a second opinion when the decision model is unsure. It needs `ANTHROPIC_API_KEY`. Empty turns the fallback off.")
+	str(&c.ComposerModel, "MAILRULES_COMPOSER_MODEL", "claude-haiku-4-5", "The model that writes rules from your words: a Claude model, or `openai:<model>` or `ollama:<model>`.")
+	float(&c.EscalateBelow, "MAILRULES_ESCALATE_BELOW", 0.75, "When the decision model's confidence is below this (0 to 1), the fallback model is asked too.")
+	float(&c.MinConfidence, "MAILRULES_MIN_CONFIDENCE", 0.75, "The confidence (0 to 1) a decision needs before a rule acts, unless the rule sets its own. Below it, the email waits in Needs review.")
+	integer(&c.BodyChars, "MAILRULES_BODY_CHARS", 2000, "How many characters of an email's plain text are sent to a model.")
+	integer(&c.ModelConcurrency, "MAILRULES_MODEL_CONCURRENCY", 8, "How many model calls may be in flight at once.")
+	str(&c.PricesFile, "MAILRULES_PRICES_FILE", "", "A JSON file of per-model prices, in USD per million tokens, laid over the built-in table the cost estimate uses.")
+
+	group = "Provider keys"
+	str(&c.OpenRouterAPIKey, "OPENROUTER_API_KEY", "", "OpenRouter API key, for Jev.")
+	str(&c.CloudflareAccountID, "CLOUDFLARE_ACCOUNT_ID", "", "Cloudflare account ID, for Clef.")
+	str(&c.CloudflareAPIToken, "CLOUDFLARE_API_TOKEN", "", "Cloudflare API token, for Clef.")
+	str(&c.AnthropicAPIKey, "ANTHROPIC_API_KEY", "", "Anthropic API key, for the fallback model, for the rule composer when its model is Claude, and for the `anthropic` decision model.")
+	str(&c.AnthropicWorkspaceID, "ANTHROPIC_WORKSPACE_ID", "", "The Claude workspace (`wrkspc_…`) requests run in. Only a key that covers a whole organisation needs it.")
+	str(&c.OpenAIBaseURL, "OPENAI_BASE_URL", "", "Base URL of an OpenAI-compatible endpoint. Empty means OpenAI itself.")
+	str(&c.OpenAIAPIKey, "OPENAI_API_KEY", "", "API key for the OpenAI-compatible endpoint.")
+	str(&c.OllamaURL, "OLLAMA_URL", "", "URL of an Ollama server, such as `http://localhost:11434`.")
+
+	group = "Web UI"
+	str(&c.CookieSecure, "MAILRULES_COOKIE_SECURE", "auto", "Send the login cookie over HTTPS only: `auto` (yes unless MailRules listens on loopback only), `true` or `false`. Set `true` behind a TLS proxy; `false` only when the UI is opened over plain HTTP on this machine, as with Docker.")
+	str(&c.PublicURL, "MAILRULES_PUBLIC_URL", "http://127.0.0.1:8080", "Where you open MailRules; links in the summary email start with it. Set it to your proxy's address, such as `https://mailrules.example.com`.")
+
+	group = "Summary email"
+	str(&c.SMTPHost, "MAILRULES_SMTP_HOST", "", "Outgoing mail server the summary email is sent through, such as `smtp.example.com`, without a scheme or port.")
+	integer(&c.SMTPPort, "MAILRULES_SMTP_PORT", 0, "Its port. `0` uses the usual one: 587 for `starttls`, 465 for `implicit`, 25 for `none`.")
+	str(&c.SMTPUser, "MAILRULES_SMTP_USER", "", "User name to sign in to the mail server with. Empty sends without signing in.")
+	str(&c.SMTPPassword, "MAILRULES_SMTP_PASSWORD", "", "Its password; an app password where the provider has them.")
+	str(&c.SMTPPasswordFile, "MAILRULES_SMTP_PASSWORD_FILE", "", "A file holding that password, instead of `MAILRULES_SMTP_PASSWORD`.")
+	str(&c.SMTPFrom, "MAILRULES_SMTP_FROM", "", "The summary's From address, such as `MailRules <me@example.com>`. Most servers want one of your own addresses.")
+	str(&c.SMTPTLS, "MAILRULES_SMTP_TLS", "starttls", "`starttls` (the server must offer it), `implicit` (TLS from the start), or `none`, which is allowed only for a mail server on this machine.")
+	return list
+}
+
 // Load reads settings from the environment, then lets flags in args override them.
 // It does not validate; call Validate before serving.
 func Load(args []string, getenv func(string) string) (*Config, error) {
@@ -78,53 +165,11 @@ func Load(args []string, getenv func(string) string) (*Config, error) {
 	fs := flag.NewFlagSet("mailrules", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var envs []string
-	str := func(p *string, env, def, usage string) {
-		fs.StringVar(p, flagName(env), def, usage+" (env "+env+")")
-		envs = append(envs, env)
-	}
-	str(&c.DataDir, "MAILRULES_DATA_DIR", "./data", "SQLite file, logs, generated keys")
-	str(&c.Listen, "MAILRULES_LISTEN", "127.0.0.1:8080", "HTTP address")
-	str(&c.Mode, "MAILRULES_MODE", "selfhost", "selfhost or cloud")
-	str(&c.MasterKey, "MAILRULES_MASTER_KEY", "", "32-byte base64 key-encryption key")
-	str(&c.MasterKeyFile, "MAILRULES_MASTER_KEY_FILE", "", "file holding the master key")
-	fs.BoolVar(&c.DryRun, flagName("MAILRULES_DRY_RUN"), true, "log decisions without changing mailboxes (env MAILRULES_DRY_RUN)")
-	envs = append(envs, "MAILRULES_DRY_RUN")
-	str(&c.Decider, "MAILRULES_DECIDER", "jev", "jev, clef, anthropic, openai or ollama")
-	str(&c.DeciderModel, "MAILRULES_DECIDER_MODEL", "", "the decider's model; empty = the provider's default (openai and ollama have none)")
-	str(&c.FallbackModel, "MAILRULES_FALLBACK_MODEL", "claude-haiku-4-5", "model used when the decider is unsure; empty disables escalation")
-	str(&c.ComposerModel, "MAILRULES_COMPOSER_MODEL", "claude-haiku-4-5", "generative model for the rule composer: a Claude model, or openai:<model> or ollama:<model>")
-	fs.Float64Var(&c.EscalateBelow, flagName("MAILRULES_ESCALATE_BELOW"), 0.75, "decider confidence below this escalates (env MAILRULES_ESCALATE_BELOW)")
-	fs.Float64Var(&c.MinConfidence, flagName("MAILRULES_MIN_CONFIDENCE"), 0.75, "default act threshold (env MAILRULES_MIN_CONFIDENCE)")
-	fs.IntVar(&c.BodyChars, flagName("MAILRULES_BODY_CHARS"), 2000, "plain-text characters sent to models (env MAILRULES_BODY_CHARS)")
-	fs.IntVar(&c.ModelConcurrency, flagName("MAILRULES_MODEL_CONCURRENCY"), 8, "cap on in-flight model calls (env MAILRULES_MODEL_CONCURRENCY)")
-	envs = append(envs, "MAILRULES_ESCALATE_BELOW", "MAILRULES_MIN_CONFIDENCE", "MAILRULES_BODY_CHARS", "MAILRULES_MODEL_CONCURRENCY")
-	str(&c.OpenRouterAPIKey, "OPENROUTER_API_KEY", "", "Jev via OpenRouter")
-	str(&c.CloudflareAccountID, "CLOUDFLARE_ACCOUNT_ID", "", "Clef")
-	str(&c.CloudflareAPIToken, "CLOUDFLARE_API_TOKEN", "", "Clef")
-	str(&c.AnthropicAPIKey, "ANTHROPIC_API_KEY", "", "Haiku fallback, and the composer when its model is Claude")
-	str(&c.AnthropicWorkspaceID, "ANTHROPIC_WORKSPACE_ID", "", "the Claude workspace (wrkspc_…) a key that covers a whole organisation runs in")
-	str(&c.OpenAIBaseURL, "OPENAI_BASE_URL", "", "any OpenAI-compatible endpoint")
-	str(&c.OpenAIAPIKey, "OPENAI_API_KEY", "", "any OpenAI-compatible endpoint")
-	str(&c.OllamaURL, "OLLAMA_URL", "", "local models")
-	str(&c.PricesFile, "MAILRULES_PRICES_FILE", "", "per-model prices for the cost ledger")
-	str(&c.LogLevel, "LOG_LEVEL", "info", "debug, info, warn or error")
-	str(&c.CookieSecure, "MAILRULES_COOKIE_SECURE", "auto", "send login cookies over HTTPS only: auto, true or false")
-	str(&c.SMTPHost, "MAILRULES_SMTP_HOST", "", "outgoing mail server for the summary email")
-	fs.IntVar(&c.SMTPPort, flagName("MAILRULES_SMTP_PORT"), 0, "its port; 0 = 587 for starttls, 465 for implicit, 25 for none (env MAILRULES_SMTP_PORT)")
-	envs = append(envs, "MAILRULES_SMTP_PORT")
-	str(&c.SMTPUser, "MAILRULES_SMTP_USER", "", "user name to sign in to the mail server; empty = no sign-in")
-	str(&c.SMTPPassword, "MAILRULES_SMTP_PASSWORD", "", "its password")
-	str(&c.SMTPPasswordFile, "MAILRULES_SMTP_PASSWORD_FILE", "", "file holding the password")
-	str(&c.SMTPFrom, "MAILRULES_SMTP_FROM", "", "From address of the summary email, e.g. MailRules <mailrules@example.com>")
-	str(&c.SMTPTLS, "MAILRULES_SMTP_TLS", "starttls", "starttls, implicit, or none (only for a server on this machine)")
-	str(&c.PublicURL, "MAILRULES_PUBLIC_URL", "http://127.0.0.1:8080", "where the web app is reached; links in the summary email start with it")
-
 	var errs []error
-	for _, env := range envs {
-		if v := getenv(env); v != "" {
-			if err := fs.Set(flagName(env), v); err != nil {
-				errs = append(errs, fmt.Errorf("%s=%q is not valid: %w", env, v, err))
+	for _, s := range define(c, fs) {
+		if v := getenv(s.Env); v != "" {
+			if err := fs.Set(s.Flag, v); err != nil {
+				errs = append(errs, fmt.Errorf("%s=%q is not valid: %w", s.Env, v, err))
 			}
 		}
 	}

@@ -7,8 +7,8 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now mailrules
 #
 # Optional settings go in /etc/mailrules/env as NAME=value lines (mode 0600, owned by
-# root); see Configuration in the README. The database and master.key live in
-# /var/lib/mailrules.
+# root); see https://github.com/TurtleByte-IN/mailrules/blob/main/docs/guide/settings.md.
+# The database and master.key live in /var/lib/mailrules.
 
 [Unit]
 Description=MailRules email sorting daemon
