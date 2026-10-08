@@ -1,6 +1,6 @@
 # Live smoke checklist
 
-A manual check against real mailboxes, run before each release. The automated tests use an in-memory IMAP server; this is the only place real iCloud and real Fastmail behaviour is checked.
+A manual check against real mailboxes, run before each release. The automated tests use an in-memory IMAP server, and the release workflow only checks that every published format installs and starts (`scripts/release-smoke.sh`, see the README's Releases); this is the only place real iCloud and real Fastmail behaviour is checked.
 
 Run the whole list twice: once with an iCloud account and once with a Fastmail account. Use test mailboxes, not ones you depend on. Each needs an app-specific password, and a second address to send test mail from.
 
