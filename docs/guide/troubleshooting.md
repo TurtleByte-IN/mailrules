@@ -98,6 +98,6 @@ Run these with the same data directory and master key settings as the daemon. Wi
 
 - **The page keeps asking me to sign in.** The cookie is HTTPS-only but you opened MailRules over plain HTTP. Set `MAILRULES_COOKIE_SECURE=false` when you use `http://127.0.0.1`, or `true` and open it over HTTPS behind a proxy. See [Signing in](./security.md#signing-in).
 - **MailRules does not start and lists settings.** It checks every setting at startup and prints one line per problem, naming the variable. The [settings reference](./settings.md) lists the allowed values.
-- **I forgot the admin password.** This release has no way to reset it.
+- **I forgot the admin password.** Run `mailrules users reset-password` on the machine MailRules runs on, with the same `MAILRULES_DATA_DIR`. With Docker: `docker exec -it mailrules /mailrules users reset-password`. See [Changing or resetting the password](./security.md#changing-or-resetting-the-password).
 - **Port 8080 is in use.** Set `MAILRULES_LISTEN=127.0.0.1:8090`, or with Compose, `MAILRULES_PORT=8090` in `deploy/.env`.
 - **Something else.** Open an issue on [GitHub](https://github.com/TurtleByte-IN/mailrules/issues) with what you did, what you expected and what happened. Never paste passwords, API keys or email contents into an issue.

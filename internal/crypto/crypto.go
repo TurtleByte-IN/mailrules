@@ -131,6 +131,10 @@ const (
 	argonSaltLen = 16
 )
 
+// MinPasswordLen is the shortest admin password, for first-run setup, a change in the
+// browser and the reset command.
+const MinPasswordLen = 12
+
 // HashPassword returns an argon2id hash in the standard encoded form.
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, argonSaltLen)

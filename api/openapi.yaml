@@ -115,6 +115,40 @@ paths:
       responses:
         '204': { description: Signed out }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+  /api/auth/password:
+    post:
+      tags: [Auth]
+      operationId: authChangePassword
+      summary: Change the admin password; ends every session, and signs this browser in again
+      description: >-
+        Needs the current password. On success the new password is stored, every session
+        of the account is ended (so a session someone else holds stops working) and this
+        browser gets a fresh session cookie in the response. Wrong current passwords are
+        counted: five in a minute are answered 429. The password can also be reset on the
+        host, without the old one, with `mailrules users reset-password`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChange' }
+      responses:
+        '200':
+          description: Password changed; other sessions ended; session cookie replaced
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: current_password | new_password), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '429':
+          description: rate_limited; five wrong current passwords per minute
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Seconds until a change is allowed again
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
   /api/auth/me:
     get:
       tags: [Auth]
@@ -1509,6 +1543,13 @@ components:
       properties:
         email: { type: string, format: email }
         password: { type: string, minLength: 12, description: Minimum applies to setup only }
+    PasswordChange:
+      type: object
+      required: [current_password, new_password]
+      additionalProperties: false
+      properties:
+        current_password: { type: string }
+        new_password: { type: string, minLength: 12 }
     User:
       type: object
       required: [id, email]

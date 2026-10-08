@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change the admin password; ends every session, and signs this browser in again
+         * @description Needs the current password. On success the new password is stored, every session of the account is ended (so a session someone else holds stops working) and this browser gets a fresh session cookie in the response. Wrong current passwords are counted: five in a minute are answered 429. The password can also be reset on the host, without the old one, with `mailrules users reset-password`.
+         */
+        post: operations["authChangePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/me": {
         parameters: {
             query?: never;
@@ -1262,6 +1282,10 @@ export interface components {
             email: string;
             /** @description Minimum applies to setup only */
             password: string;
+        };
+        PasswordChange: {
+            current_password: string;
+            new_password: string;
         };
         User: {
             /** Format: int64 */
@@ -2661,6 +2685,44 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["CsrfFailed"];
+        };
+    };
+    authChangePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChange"];
+            };
+        };
+        responses: {
+            /** @description Password changed; other sessions ended; session cookie replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            /** @description rate_limited; five wrong current passwords per minute */
+            429: {
+                headers: {
+                    /** @description Seconds until a change is allowed again */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     authMe: {

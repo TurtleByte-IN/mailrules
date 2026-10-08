@@ -10,7 +10,7 @@ Start MailRules (see [Install](./install.md)) and open <http://127.0.0.1:8080> i
 
 The first visit shows **Set up MailRules**. Enter an email address and a password of at least 12 characters, then click **Create account**.
 
-This is the only account. It protects the web UI and the HTTP API, and it stays on this machine. Later visits show **Sign in** instead. There is no way to reset or change the password from the UI in this release, so keep it in a password manager.
+This is the only account. It protects the web UI and the HTTP API, and it stays on this machine. Later visits show **Sign in** instead. There is no screen for changing the password yet: keep it in a password manager. If you lose it, `mailrules users reset-password` sets a new one from the machine MailRules runs on, and you can change it while signed in through the HTTP API; see [Security](./security.md#changing-or-resetting-the-password).
 
 Right after the account is created, a short setup guide, **Welcome to MailRules**, walks you through the next two steps. You can leave it at any point with **Skip setup**, or skip a single step with **Skip for now**; everything it does can be done later from Settings and Mailboxes. The guide shows only once, in the browser that created the account, and only while no mailbox is connected.
 

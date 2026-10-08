@@ -1,5 +1,5 @@
 // Package daemon runs the MailRules command line: the daemon and web UI (serve), and the
-// migrate, accounts, eval, rules, dry-run and version commands. cmd/mailrules, the free
+// migrate, accounts, users, eval, rules, dry-run and version commands. cmd/mailrules, the free
 // self-host build, runs it with no modules; a build that adds modules (ext.Module) calls
 // Run from its own main with them.
 package daemon
@@ -42,6 +42,8 @@ const usage = `usage: mailrules <command> [flags]
   serve     run the daemon and web UI
   migrate   apply database migrations
   accounts  add, list or test mail accounts
+  users     reset-password: set a new admin password from the host, when the
+            old one is lost; it ends every session
   eval      measure decider accuracy on labeled mail:
             eval --labels testdata/labeled.jsonl --decider jev,clef:clef-flash
   rules     import or export the rules as YAML; validate a rules file, or
@@ -79,6 +81,8 @@ func Run(args []string, version string, modules ...ext.Module) error {
 		return store.Migrate(ctx, db)
 	case "accounts":
 		return accountsCLI{stdin: os.Stdin, stdout: os.Stdout, getenv: os.Getenv}.run(ctx, args[1:])
+	case "users":
+		return usersCLI{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv}.run(ctx, args[1:])
 	case "eval":
 		return eval(ctx, args[1:], os.Stdout)
 	case "rules":

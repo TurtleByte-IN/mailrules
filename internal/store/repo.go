@@ -113,6 +113,31 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 	return nil
 }
 
+// SetPassword replaces a user's password hash and, in the same transaction, ends every
+// session the user has: a session someone else holds does not outlive the password that
+// opened it. A missing user is ErrNotFound.
+func (s *Store) SetPassword(ctx context.Context, userID int64, passwordHash string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set password: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID)
+	if err != nil {
+		return fmt.Errorf("set password: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("end sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set password: %w", err)
+	}
+	return nil
+}
+
 // Setting returns a stored JSON value, or ErrNotFound.
 func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 	var v string
