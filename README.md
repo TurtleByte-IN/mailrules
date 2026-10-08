@@ -71,7 +71,7 @@ The macOS binaries are not signed; see [Install](docs/guide/install.md#single-bi
 
 ## Developing
 
-- `make check`: gofmt, go vet, golangci-lint, `go test -race ./...`, the settings reference check and the web app's checks
+- `make check`: gofmt, go vet, golangci-lint, `go test -race ./...` with a coverage floor of 80% in `internal/rules`, `internal/pipeline` and `internal/actions`, the settings reference check and the web app's checks
 - `make dev`: the daemon, plus the Vite dev server when `web/` exists
 - `make build`: builds the web app when `web/` exists, then the single binary
 - `make settings-doc`: regenerates [`docs/guide/settings.md`](docs/guide/settings.md) from `internal/config`; edit the help text there, not the page

@@ -20,8 +20,22 @@ vet:
 lint:
 	$(GOLANGCI) run
 
+# The core packages must keep at least COVER_MIN% statement coverage (CLAUDE.md). The test
+# output is kept so the floor is read from the same run; a failing test fails first.
+COVER_MIN  ?= 80
+COVER_PKGS := internal/rules internal/pipeline internal/actions
+
 test:
-	go test -race ./...
+	@out=$$(mktemp); go test -race -cover ./... > $$out 2>&1; status=$$?; cat $$out; \
+	if [ $$status -ne 0 ]; then rm -f $$out; exit $$status; fi; \
+	awk -v min=$(COVER_MIN) -v pkgs="$(COVER_PKGS)" ' \
+		BEGIN { n = split(pkgs, want, " ") } \
+		$$1 == "ok" { for (i = 3; i < NF; i++) if ($$i == "coverage:") { c = $$(i + 1); sub("%", "", c); got[$$2] = c } } \
+		END { bad = 0; for (k = 1; k <= n; k++) { p = ""; for (g in got) if (g ~ ("/" want[k] "$$")) p = g; \
+			if (p == "") { printf "coverage: no figure for %s\n", want[k]; bad = 1 } \
+			else if (got[p] + 0 < min) { printf "coverage: %s is at %s%%, below the %s%% floor\n", want[k], got[p], min; bad = 1 } \
+			else printf "coverage: %s %s%% (floor %s%%)\n", want[k], got[p], min } \
+		exit bad }' $$out; status=$$?; rm -f $$out; exit $$status
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
