@@ -9,7 +9,7 @@ const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
   if (!r) throw new Error(`unexpected ${init.method} ${url}`);
   return new Response(r[1] === undefined ? null : JSON.stringify(r[1]), { status: r[0] });
 });
-const session = { user: { id: 1, email: 'me@example.com' } };
+const session = { user: { id: 1, email: 'me@example.com' }, members: 1 };
 const creds = { email: 'me@example.com', password: 'a long enough password' };
 
 /** Waits for the router to land on `at`. */

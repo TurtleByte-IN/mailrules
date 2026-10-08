@@ -1340,6 +1340,10 @@ export interface components {
         };
         Session: {
             user: components["schemas"]["User"];
+            /** @description How many users the signed-in user's team has; the web app offers sharing a mailbox only when there is more than one */
+            members: number;
+            /** @description Set when a sign-in module is present: the path the browser goes to after `POST /api/auth/logout`, so the sign-in service ends its own session */
+            sign_out?: string;
         };
         ErrorBody: {
             error: {
@@ -1349,6 +1353,8 @@ export interface components {
                 message: string;
                 /** @description Where the problem is, when there is a place: a field (`limit`), or a path into a rule (`rules[0].conditions.all[0].op`) */
                 path?: string;
+                /** @description Only on the 401 from `GET /api/auth/me` when a sign-in module is present: the path the browser goes to to sign in. There is no password sign-in or first-run setup then */
+                sign_in?: string;
             };
         };
         Preset: {
@@ -1427,6 +1433,10 @@ export interface components {
             folder_count: number;
             /** Format: int64 */
             created_at: number;
+            /** @description Everyone in the team can see this mailbox and act on its mail; false means only the person who added it */
+            shared: boolean;
+            /** @description The signed-in user added this mailbox; only they can edit */
+            mine: boolean;
         };
         AccountEnvelope: {
             account: components["schemas"]["Account"];
@@ -1438,6 +1448,8 @@ export interface components {
             password?: string;
             /** @description true stops watching; false resumes */
             paused?: boolean;
+            /** @description true lets everyone in the team see this mailbox; false makes it private again. Owner only */
+            shared?: boolean;
         };
         Folder: {
             /** @description The server's own name */

@@ -4,19 +4,35 @@ import { forget, offer } from './firstrun.svelte';
 
 type Status = 'loading' | 'setup' | 'login' | 'in';
 
-export const auth = $state<{ status: Status; user: authApi.Session['user'] | null }>({
+export const auth = $state<{
+  status: Status;
+  user: authApi.Session['user'] | null;
+  /** Users in the signed-in user's team; sharing a mailbox is offered when it is more than one. */
+  members: number;
+  /** Set when a sign-in module is present: the page that signs someone in. No password form then. */
+  signIn: string | null;
+  /** Set when a sign-in module is present: the page to go to after signing out. */
+  signOut: string | null;
+}>({
   status: 'loading',
   user: null,
+  members: 1,
+  signIn: null,
+  signOut: null,
 });
 
 function signedIn(s: authApi.Session) {
   auth.user = s.user;
+  auth.members = s.members;
+  auth.signOut = s.sign_out || null;
   auth.status = 'in';
 }
 
-setUnauthorizedHandler((code) => {
+setUnauthorizedHandler((code, signIn) => {
   auth.user = null;
-  auth.status = code === 'setup_required' ? 'setup' : 'login';
+  // Only GET /api/auth/me carries the sign-in path; a later 401 elsewhere keeps the one already known.
+  if (signIn) auth.signIn = signIn;
+  auth.status = code === 'setup_required' && !auth.signIn ? 'setup' : 'login';
   forget();
 });
 
@@ -36,9 +52,14 @@ export async function setup(c: authApi.Credentials) {
 }
 export const login = async (c: authApi.Credentials) => signedIn(await authApi.login(c));
 
+/** Full-page navigation, behind an object so tests can watch it. */
+export const navigate = { to: (url: string) => window.location.assign(url) };
+
 export async function logout() {
   await authApi.logout();
+  const to = auth.signOut;
   auth.user = null;
   auth.status = 'login';
   forget();
+  if (to) navigate.to(to);
 }

@@ -19,7 +19,7 @@ const presets: Preset[] = [
 const found = { username: 'new', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Junk', delimiter: '/', special_use: '\\Junk' }], can_move: true, idle: true };
 const created: Account = {
   id: 3, label: 'new@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'new', watch_folder: 'INBOX',
-  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000,
+  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true,
 };
 
 type Reply = [status: number, body?: unknown];

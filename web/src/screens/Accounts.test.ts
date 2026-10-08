@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Account } from '../lib/api/accounts';
 import { accounts, load } from '../lib/state/accounts.svelte';
+import { auth } from '../lib/state/auth.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Accounts from './Accounts.svelte';
 
@@ -10,7 +11,7 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 // GET /api/accounts, one item.
 const acct = (over: Partial<Account> = {}): Account => ({
   id: 1, label: 'me@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'me', watch_folder: 'INBOX',
-  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000,
+  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000, shared: false, mine: true,
   ...over,
 });
 const failed = acct({ status: 'auth_failed', last_error: 'The mail server refused the sign-in.' });
@@ -48,6 +49,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   Object.assign(accounts, { list: [], loaded: false, error: '' });
   toast.text = '';
+  auth.members = 1;
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -210,4 +212,34 @@ it('says, before removing a mailbox, that its rules are kept but switched off, a
   expect(text).toContain('Rules that apply only to this mailbox are kept but switched off, marked so you can give them another mailbox.');
   expect(text).not.toContain('deletes its password, folder list, contacts, activity, undo history and the rules');
   expect(fetchMock.mock.calls.filter((c) => c[1].method === 'DELETE')).toHaveLength(0);
+});
+
+it('does not offer sharing in a team of one', async () => {
+  await show(acct());
+  const form = await openEdit();
+  expect(form.queryByRole('button', { name: 'Shared with team' })).toBeNull();
+});
+
+it.each([acct({ mine: false, shared: true }), acct({ mine: false, shared: true, status: 'paused' }), acct({ mine: false, shared: true, status: 'auth_failed' })])(
+  'offers no way to manage a mailbox a teammate added and shared ($status)',
+  async (a) => {
+    auth.members = 2;
+    await show(a);
+    expect(screen.getByText('me@icloud.com')).toBeTruthy();
+    expect(screen.queryAllByRole('button', { name: /me@icloud\.com/ })).toEqual([]);
+  },
+);
+
+it('shares the mailbox with the team from Edit when the team has more than one person', async () => {
+  auth.members = 2;
+  await show(acct());
+  routes['PATCH /api/accounts/1'] = [200, { account: acct({ shared: true }) }];
+  const form = await openEdit();
+  const sharing = form.getByRole('button', { name: 'Shared with team' });
+  expect(sharing.getAttribute('aria-pressed')).toBe('false');
+  await fireEvent.click(sharing);
+  await fireEvent.click(form.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('form')).toBeNull());
+  expect(patches()).toEqual([{ shared: true }]);
+  expect(accounts.list[0].shared).toBe(true);
 });

@@ -4,7 +4,7 @@ import { callsLine, health, healthLine, split } from './overview.svelte';
 
 const account = (over: Partial<Account> = {}): Account => ({
   id: 1, label: 'me@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'me@icloud.com', watch_folder: 'INBOX',
-  status: 'live', last_error: '', last_event_at: 1000, last_mail_at: null, capabilities: ['IDLE'], can_move: true, folder_count: 14, created_at: 900, ...over,
+  status: 'live', last_error: '', last_event_at: 1000, last_mail_at: null, capabilities: ['IDLE'], can_move: true, folder_count: 14, created_at: 900, shared: false, mine: true, ...over,
 });
 
 describe('split', () => {

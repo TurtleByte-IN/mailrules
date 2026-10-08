@@ -50,7 +50,7 @@ describe('api', () => {
     const handler = vi.fn();
     setUnauthorizedHandler(handler);
     await expect(api('GET', '/auth/me')).rejects.toMatchObject({ status: 401 });
-    expect(handler).toHaveBeenCalledExactlyOnceWith('unauthorized');
+    expect(handler).toHaveBeenCalledExactlyOnceWith('unauthorized', undefined);
   });
 });
 
