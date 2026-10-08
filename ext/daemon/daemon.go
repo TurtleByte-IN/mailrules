@@ -22,7 +22,6 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/api"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
-	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap"
@@ -115,7 +114,7 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		return err
 	}
 	st := store.New(db)
-	master, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir)
+	master, err := openMasterKey(ctx, cfg, st)
 	if err != nil {
 		return err
 	}

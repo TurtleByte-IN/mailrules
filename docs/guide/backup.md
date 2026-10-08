@@ -60,11 +60,23 @@ docker run --rm -v mailrules-data:/data -v "$PWD":/backup alpine \
 docker start mailrules
 ```
 
-**Restore the key before you start MailRules.** If `master.key` is missing from the data directory and neither `MAILRULES_MASTER_KEY` nor `MAILRULES_MASTER_KEY_FILE` is set, MailRules generates a new key without warning, and the passwords and keys stored under the old one can no longer be read.
+**Restore the key before you start MailRules.** If `master.key` is missing from the data directory, neither `MAILRULES_MASTER_KEY` nor `MAILRULES_MASTER_KEY_FILE` is set, and the database holds stored mailbox passwords or model keys, MailRules does not start. It does not make a new key, because the passwords and keys stored under the old one could then never be read. It stops with a message that names the data directory:
+
+```text
+mailrules: the master key is missing: there is no master.key in /var/lib/mailrules, and neither
+MAILRULES_MASTER_KEY nor MAILRULES_MASTER_KEY_FILE is set. The database there holds 2 stored
+mailbox passwords and model keys sealed under it, and MailRules will not make a new key: …
+```
+
+Put the `master.key` from your backup into the data directory, or point `MAILRULES_MASTER_KEY_FILE` at it, and start again. If the key is gone for good, see below. A fresh install, whose database holds no passwords or keys yet, generates its key on first start as before.
+
+MailRules makes the same check when the key is there but is the wrong one: it stops if the key opens none of the stored passwords and keys, for example because `master.key` came from another install. A key that opens only some of them is not stopped; the mailboxes it cannot open say `decrypt failed`.
 
 ## If the master key is lost
 
 The stored mailbox passwords and model keys cannot be recovered without it. Nothing else is lost: rules, settings, activity and undo history are not encrypted.
+
+MailRules refuses to start without the key while it holds stored passwords or keys (see [Restoring](#restoring)). To go on without the old key, start it once with `MAILRULES_NEW_MASTER_KEY=true`, or `mailrules serve --new-master-key`. It then generates a new `master.key` (or, if a key is given in the environment or a file, goes on with that one), and logs a warning. Everything stored under the old key stays unreadable. With Docker, add `-e MAILRULES_NEW_MASTER_KEY=true` to the `docker run` command; with Compose, add `MAILRULES_NEW_MASTER_KEY: "true"` to the `environment:` list in `deploy/docker-compose.yml` for that start. Set it for one start only: once the new key holds a password or key, MailRules stops asking for it, and leaving it on would let a later lost key go unnoticed.
 
 You will see mailboxes stuck in **Reconnecting** with the error `decrypt failed`, and model keys that do not work. To recover:
 
@@ -77,7 +89,7 @@ There is no command to change the master key of an existing install, so treat a 
 
 To keep the key apart from the database, for example on a different disk or in a secrets store:
 
-- `MAILRULES_MASTER_KEY_FILE` names a file holding the key. If that file is missing, MailRules refuses to start instead of making a new key.
+- `MAILRULES_MASTER_KEY_FILE` names a file holding the key. If that file is missing, MailRules refuses to start instead of making a new key, whatever the database holds.
 - `MAILRULES_MASTER_KEY` holds the key itself.
 
 Set only one of them. The key is 32 random bytes, base64-encoded, the same format as `master.key`. To move an existing install, copy the contents of `master.key` into the new file, set `MAILRULES_MASTER_KEY_FILE`, restart, and then remove `master.key` from the data directory. For a new install you can make a key with `openssl rand -base64 32`.

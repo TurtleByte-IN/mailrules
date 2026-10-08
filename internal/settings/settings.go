@@ -242,6 +242,12 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 	for name, field := range keyFields {
 		if v, ok := rows[keyPrefix+name]; ok {
 			plain, err := s.open(name, v)
+			if errors.Is(err, crypto.ErrDecrypt) {
+				// Sealed under a master key this install no longer has: as good as not set,
+				// and it must not take every other setting down with it. Entering the key
+				// again replaces it.
+				continue
+			}
 			if err != nil {
 				return cfg, own{}, err
 			}
@@ -282,8 +288,14 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 		}
 	}
 	for name, field := range keyFields {
-		switch _, stored := rows[keyPrefix+name]; {
-		case stored:
+		stored, hasRow := rows[keyPrefix+name]
+		if hasRow {
+			// A stored key the master key cannot open is not set, as far as the screen goes.
+			_, err := s.open(name, stored)
+			hasRow = !errors.Is(err, crypto.ErrDecrypt)
+		}
+		switch {
+		case hasRow:
 			v.Keys[name] = KeyStored
 		case *field(s.Env) != "":
 			v.Keys[name] = KeyEnvironment
