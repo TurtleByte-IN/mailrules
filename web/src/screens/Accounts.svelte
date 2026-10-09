@@ -93,7 +93,7 @@
   <header class="flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1>Mailboxes</h1>
-      <p class="mt-1 text-secondary">Any IMAP mailbox. MailRules sorts on the server, so every app you use sees the result.</p>
+      <p class="mt-1 text-secondary">Any IMAP mailbox that signs in with a password or app password. MailRules sorts on the server, so every app you use sees the result.</p>
     </div>
     {#if !connecting}
       <button type="button" class="btn-primary" onclick={() => (connecting = true)}>Add mailbox</button>

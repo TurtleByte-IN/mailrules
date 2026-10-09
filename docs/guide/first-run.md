@@ -34,7 +34,7 @@ You can skip this step: mail that only a plain-English rule could sort then wait
 
 ## Connect your first mailbox
 
-MailRules works with any IMAP mailbox. Connecting one takes four steps: **Provider**, **Sign in**, **Rules** and **Preview**. The same wizard opens later from **Mailboxes** → **Add mailbox**.
+MailRules works with any IMAP mailbox that signs in with a password or app password. Connecting one takes four steps: **Provider**, **Sign in**, **Rules** and **Preview**. The same wizard opens later from **Mailboxes** → **Add mailbox**.
 
 1. **Where is your email?** Pick your provider: iCloud Mail, Fastmail, Yahoo Mail, Zoho Mail, or Other IMAP server.
 2. **Sign in.** Enter your email address and an app password. Click **Test connection** to check it, or **Test and continue**. MailRules logs in and lists your folders; nothing is saved if the test fails. The result says how many folders it found, which special folders (Archive, Junk, Trash, Sent) it recognised, and whether the server supports push (IDLE).
@@ -54,6 +54,8 @@ Use an app password (a password made for one program), not the password you sign
 | Yahoo Mail | `imap.mail.yahoo.com`, port 993, TLS | Needs an [app password](https://help.yahoo.com/kb/SLN15241.html). The user name is your full address. |
 | Zoho Mail | `imap.zoho.com` (or your region's host), port 993, TLS | Switch on [IMAP access](https://www.zoho.com/mail/help/imap-access.html) in Zoho's webmail first. The wizard asks which Zoho region your account is in, and for an app password. |
 | Other IMAP server | You enter it | Choose **TLS (port 993)** or **STARTTLS (port 143)**, and the port if it differs. |
+| Gmail, Google Workspace | `imap.gmail.com`, port 993, TLS, through **Other IMAP server** | Needs an [app password](https://support.google.com/accounts/answer/185833), which needs 2-Step Verification. A Workspace admin can switch app passwords off. Not yet tested with MailRules. |
+| Outlook.com, Hotmail, Microsoft 365 | — | Can't connect. Microsoft no longer accepts passwords or app passwords over IMAP, only its own sign-in, which this build does not include. |
 
 The Zoho Mail choice in the wizard asks where your account is: United States (`imap.zoho.com`), Europe (`imap.zoho.eu`), India (`imap.zoho.in`), Australia (`imap.zoho.com.au`), Japan (`imap.zoho.jp`) or China (`imap.zoho.com.cn`). Use the one you see in the address bar when you sign in to Zoho Mail. Paid Zoho organisations use `imappro.zoho.com`: pick **Other IMAP server** and enter it, or add the mailbox from the command line with `--preset zoho --host imappro.zoho.com`.
 
