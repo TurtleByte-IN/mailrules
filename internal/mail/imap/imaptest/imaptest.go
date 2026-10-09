@@ -11,8 +11,10 @@ import (
 	"crypto/x509/pkix"
 	"io"
 	"log"
+	"maps"
 	"math/big"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,6 +41,52 @@ type Server struct {
 	mu       sync.Mutex
 	conns    []net.Conn
 	noCreate atomic.Bool
+	// special holds the folders made with CreateSpecial; once there is one, LIST is
+	// answered here (see session.List).
+	special map[string][]imap.MailboxAttr
+}
+
+// CreateSpecial makes a folder that LIST reports with the given SPECIAL-USE attributes
+// (RFC 6154), always, as Gmail does. The in-memory server cannot store them, so once any
+// folder is made this way LIST shows only INBOX and folders made with CreateSpecial.
+func (s *Server) CreateSpecial(t testing.TB, name string, attrs ...imap.MailboxAttr) {
+	t.Helper()
+	if err := s.User.Create(name, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.special == nil {
+		s.special = map[string][]imap.MailboxAttr{"INBOX": nil}
+	}
+	s.special[name] = attrs
+}
+
+// List answers from CreateSpecial's folders when there are any, adding their attributes.
+func (x session) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
+	x.s.mu.Lock()
+	special := maps.Clone(x.s.special)
+	x.s.mu.Unlock()
+	if special == nil || len(patterns) == 0 {
+		return x.SessionIMAP4rev2.List(w, ref, patterns, options)
+	}
+	for _, name := range slices.Sorted(maps.Keys(special)) {
+		if !slices.ContainsFunc(patterns, func(p string) bool { return imapserver.MatchList(name, '/', ref, p) }) {
+			continue
+		}
+		data := &imap.ListData{Mailbox: name, Delim: '/', Attrs: special[name]}
+		if options.ReturnStatus != nil {
+			st, err := x.s.User.Status(name, options.ReturnStatus)
+			if err != nil {
+				return err
+			}
+			data.Status = st
+		}
+		if err := w.WriteList(data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RefuseCreate makes the server answer CREATE with NO, as a server that does not let a

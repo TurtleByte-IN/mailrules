@@ -301,9 +301,12 @@ var roles = map[imap.MailboxAttr]string{
 }
 
 // toFolders keeps selectable folders, takes roles from the server's attributes and
-// fills the rest from the preset's folder names.
+// fills the rest from the preset's folder names. A server with no \Archive folder but a
+// folder holding all mail (\All, Gmail's All Mail) archives there: on Gmail, archiving is
+// taking the INBOX label off, which moving a message from INBOX to All Mail does.
 func toFolders(list []*imap.ListData, preset presets.Preset) []mail.Folder {
 	var out []mail.Folder
+	all, hasArchive := -1, false
 	for _, l := range list {
 		if slices.Contains(l.Attrs, imap.MailboxAttrNoSelect) || slices.Contains(l.Attrs, imap.MailboxAttrNonExistent) {
 			continue
@@ -318,7 +321,14 @@ func toFolders(list []*imap.ListData, preset presets.Preset) []mail.Folder {
 				break
 			}
 		}
+		hasArchive = hasArchive || f.SpecialUse == mail.RoleArchive
+		if all < 0 && f.SpecialUse == "" && slices.Contains(l.Attrs, imap.MailboxAttrAll) {
+			all = len(out)
+		}
 		out = append(out, f)
+	}
+	if !hasArchive && all >= 0 {
+		out[all].SpecialUse = mail.RoleArchive
 	}
 	preset.FillRoles(out)
 	return out

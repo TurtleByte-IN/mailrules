@@ -63,7 +63,7 @@ var generic = Preset{
 }
 
 // All returns every preset, generic last.
-func All() []Preset { return []Preset{icloud, fastmail, yahoo, zoho, generic} }
+func All() []Preset { return []Preset{icloud, gmail, fastmail, yahoo, zoho, generic} }
 
 // Get looks a preset up by name.
 func Get(name string) (Preset, bool) {

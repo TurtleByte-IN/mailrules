@@ -1369,11 +1369,11 @@ export interface components {
             help_url: string;
             /** @description The server may want the part before "@" as the username; the daemon tries both */
             local_part_login: boolean;
-            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Fastmail, Yahoo, Zoho) or "Password" (generic) */
+            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho) or "Password" (generic) */
             secret_label: string;
         };
         /** @enum {string} */
-        PresetName: "icloud" | "fastmail" | "yahoo" | "zoho" | "generic";
+        PresetName: "icloud" | "gmail" | "fastmail" | "yahoo" | "zoho" | "generic";
         /** @enum {string} */
         TLSMode: "implicit" | "starttls";
         /**
@@ -2286,7 +2286,7 @@ export interface components {
                 /** Format: int64 */
                 account_id: number;
                 label: string;
-                /** @description icloud | fastmail | yahoo | zoho | generic */
+                /** @description icloud | gmail | fastmail | yahoo | zoho | generic */
                 preset: string;
                 username: string;
                 folder_count: number;

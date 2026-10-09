@@ -36,7 +36,7 @@ You can skip this step: mail that only a plain-English rule could sort then wait
 
 MailRules works with any IMAP mailbox that signs in with a password or app password. Connecting one takes four steps: **Provider**, **Sign in**, **Rules** and **Preview**. The same wizard opens later from **Mailboxes** → **Add mailbox**.
 
-1. **Where is your email?** Pick your provider: iCloud Mail, Fastmail, Yahoo Mail, Zoho Mail, or Other IMAP server.
+1. **Where is your email?** Pick your provider: iCloud Mail, Gmail, Fastmail, Yahoo Mail, Zoho Mail, or Other IMAP server.
 2. **Sign in.** Enter your email address and an app password. Click **Test connection** to check it, or **Test and continue**. MailRules logs in and lists your folders; nothing is saved if the test fails. The result says how many folders it found, which special folders (Archive, Junk, Trash, Sent) it recognised, and whether the server supports push (IDLE).
 3. **Start with a few rules.** Tick any starter rules you want. Newsletters, Receipts and Login codes are ticked by default; Cold sales and Travel are not. You can edit them or remove them later.
 4. **Preview** lists the starter rules you picked. Click **Connect** to save the mailbox and the rules.
@@ -50,11 +50,11 @@ Use an app password (a password made for one program), not the password you sign
 | Provider | Server | Notes |
 | --- | --- | --- |
 | iCloud Mail | `imap.mail.me.com`, port 993, TLS | Needs an [app-specific password](https://support.apple.com/en-us/102654). Create it at [account.apple.com](https://account.apple.com): Sign-In and Security, then App-Specific Passwords. MailRules tries your full address as the user name, then the part before the `@`. |
+| Gmail, Google Workspace | `imap.gmail.com`, port 993, TLS | Pick **Gmail** for both. Needs an [app password](https://support.google.com/accounts/answer/185833), which needs 2-Step Verification. A Workspace admin can switch app passwords off. The user name is your full address. Gmail has no Archive folder, so **Archive** moves mail to All Mail, which takes it out of the inbox as Gmail's own Archive button does. Not yet tested with MailRules. |
 | Fastmail | `imap.fastmail.com`, port 993, TLS | Needs an [app password](https://www.fastmail.help/hc/en-us/articles/360058752854). |
 | Yahoo Mail | `imap.mail.yahoo.com`, port 993, TLS | Needs an [app password](https://help.yahoo.com/kb/SLN15241.html). The user name is your full address. |
 | Zoho Mail | `imap.zoho.com` (or your region's host), port 993, TLS | Switch on [IMAP access](https://www.zoho.com/mail/help/imap-access.html) in Zoho's webmail first. The wizard asks which Zoho region your account is in, and for an app password. |
 | Other IMAP server | You enter it | Choose **TLS (port 993)** or **STARTTLS (port 143)**, and the port if it differs. |
-| Gmail, Google Workspace | `imap.gmail.com`, port 993, TLS, through **Other IMAP server** | Needs an [app password](https://support.google.com/accounts/answer/185833), which needs 2-Step Verification. A Workspace admin can switch app passwords off. Not yet tested with MailRules. |
 | Outlook.com, Hotmail, Microsoft 365 | — | Can't connect. Microsoft no longer accepts passwords or app passwords over IMAP, only its own sign-in, which this build does not include. |
 
 The Zoho Mail choice in the wizard asks where your account is: United States (`imap.zoho.com`), Europe (`imap.zoho.eu`), India (`imap.zoho.in`), Australia (`imap.zoho.com.au`), Japan (`imap.zoho.jp`) or China (`imap.zoho.com.cn`). Use the one you see in the address bar when you sign in to Zoho Mail. Paid Zoho organisations use `imappro.zoho.com`: pick **Other IMAP server** and enter it, or add the mailbox from the command line with `--preset zoho --host imappro.zoho.com`.
@@ -93,7 +93,7 @@ The admin account can only be created in the browser, or with `POST /api/auth/se
 mailrules accounts add --preset icloud --username you@example.com
 ```
 
-`--preset` is `icloud`, `fastmail`, `yahoo`, `zoho` or `generic`; `generic` also needs `--host`, and optionally `--port` and `--tls implicit|starttls`. Other flags: `--label`, `--watch-folder` (default `INBOX`) and `--data-dir`. The app password is never a flag: it is read from `--password-file`, else from the environment variable `MAILRULES_ACCOUNT_PASSWORD`, else from one line typed on standard input (which is not hidden).
+`--preset` is `icloud`, `gmail`, `fastmail`, `yahoo`, `zoho` or `generic`; `generic` also needs `--host`, and optionally `--port` and `--tls implicit|starttls`. Other flags: `--label`, `--watch-folder` (default `INBOX`) and `--data-dir`. The app password is never a flag: it is read from `--password-file`, else from the environment variable `MAILRULES_ACCOUNT_PASSWORD`, else from one line typed on standard input (which is not hidden).
 
 `mailrules accounts list` shows every mailbox, and `mailrules accounts test <id>` logs in to one (see [Troubleshooting](./troubleshooting.md#checking-a-mailbox-from-the-command-line)).
 

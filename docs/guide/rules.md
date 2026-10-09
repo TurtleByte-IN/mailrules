@@ -105,7 +105,7 @@ Editing such a rule with **Edit conditions** in the builder can lose what the bu
 | In the builder | YAML | What it does |
 | --- | --- | --- |
 | Move to folder | `move:<folder>` | Moves the email to that folder, creating it if needed. |
-| Archive | `archive` | Moves it to the folder your server marks as Archive. |
+| Archive | `archive` | Moves it to the folder your server marks as Archive. On a server with no Archive folder but a folder of all mail, such as Gmail's All Mail, it moves it there. |
 | Move to Trash | `trash` | Moves it to `MailRules Trash`, or to your real Trash (see below). |
 | Keep in Inbox | `keep` | Leaves it where it is, and records that a rule took it. |
 | Keep in Inbox and flag | `keep`, `flag` | Leaves it and flags it. |
@@ -115,7 +115,7 @@ Editing such a rule with **Edit conditions** in the builder can lose what the bu
 
 Actions run in the order listed. If one fails, the rest are not tried, and the failure shows in Activity.
 
-- **Archive** and **junk** use only the folder your server marks with that role. MailRules never guesses or creates one; if your server has none, the action fails. Use a move to a named folder instead.
+- **Archive** and **junk** use only the folder your server marks with that role. MailRules never creates one; if your server has none, the action fails. The exception is a server that has a folder of all mail instead, such as Gmail: Archive moves mail there, which on Gmail takes it out of the inbox. Use a move to a named folder instead.
 - **Trash** goes to a folder named `MailRules Trash` by default, created the first time it is needed, not to your mailbox's Trash. Providers empty Trash on their own (iCloud after 30 days), and a wrongly trashed email could be gone before you notice. MailRules never empties `MailRules Trash`; empty it yourself when you like. To use the real Trash, untick **Send trashed mail to MailRules Trash** in Settings.
 - A rule that trashes based on its plain-English description needs a threshold of at least 85%. When you add one in the UI without a threshold, it gets 90%.
 - Nothing is ever deleted permanently. Moves use IMAP MOVE where the server has it; otherwise MailRules copies the email and removes only that one message from the old folder.
