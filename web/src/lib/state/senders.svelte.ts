@@ -70,17 +70,22 @@ export async function more() {
 // The mailboxes whose folders were asked for last, so a late answer for an older set is dropped.
 let foldersFor = '';
 
+// Folders mail is not filed in: Always trash covers the trash, and sent mail and drafts are yours.
+const NOT_OFFERED: Record<string, true> = { '\\Trash': true, '\\Sent': true, '\\Drafts': true };
+
 /**
  * Lists the folders of these mailboxes. A sender's folder is a name used on every mailbox,
  * as a rule's move is, so the names are merged; a mailbox that lacks one gets it on the first
- * live move. A mailbox whose list cannot be read adds nothing.
+ * live move. Inbox, and a name any mailbox uses for its trash, sent mail or drafts, are left
+ * out. A mailbox whose list cannot be read adds nothing.
  */
 export async function loadFolders(accountIds: number[]) {
   const mine = (foldersFor = accountIds.join(','));
   const lists = await Promise.all(accountIds.map((id) => listFolders(id).catch(() => [])));
   if (mine !== foldersFor) return;
-  const names = new Set(lists.flat().map((f) => f.name));
-  senders.folders = [...names].filter((n) => n.toUpperCase() !== 'INBOX').sort((a, b) => a.localeCompare(b));
+  const all = lists.flat();
+  const skip = new Set(all.filter((f) => NOT_OFFERED[f.special_use] || f.name.toUpperCase() === 'INBOX').map((f) => f.name));
+  senders.folders = [...new Set(all.map((f) => f.name))].filter((n) => !skip.has(n)).sort((a, b) => a.localeCompare(b));
 }
 
 export const nameOf = (s: Sender) => s.name || s.value;
