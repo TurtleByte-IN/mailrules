@@ -621,7 +621,7 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, source, hits, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, 'user', 0, ?)
-			 ON CONFLICT (tenant_id, match_type, value) DO UPDATE SET rule_id = excluded.rule_id, verdict = excluded.verdict, source = 'user', hits = 0`,
+			 ON CONFLICT (tenant_id, match_type, value) DO UPDATE SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = NULL, source = 'user', hits = 0`,
 			tenantID, userID, always, value, null(c.RightRuleID), verdict, c.CreatedAt); err != nil {
 			return 0, fmt.Errorf("add correction: %w", err)
 		}

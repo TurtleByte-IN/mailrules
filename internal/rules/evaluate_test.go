@@ -42,6 +42,23 @@ func TestEvaluate(t *testing.T) {
 		{name: "sender route applies that rule without a model", rules: []Rule{food, receipts, promos},
 			senders: []SenderRule{{MatchType: MatchDomain, Value: "mail.zomato.com", Verdict: VerdictRoute, RuleID: 2}},
 			want:    Result{Stage: StageSender, RuleID: 2, Confidence: 1, Actions: moveTo("Promos")}},
+		// MAI-162: a sender's own folder wins over the rules, as keep and block do, stacking included.
+		{name: "sender move files into its folder ahead of a matching rule", rules: []Rule{food, flagBulk},
+			senders: []SenderRule{{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictMove, Folder: "Takeaway"}},
+			want:    Result{Stage: StageSender, Confidence: 1, Actions: moveTo("Takeaway")}},
+		{name: "address move beats domain block", rules: []Rule{food},
+			senders: []SenderRule{
+				{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictBlock},
+				{MatchType: MatchAddress, Value: "noreply@mail.zomato.com", Verdict: VerdictMove, Folder: "Takeaway"}},
+			want: Result{Stage: StageSender, Confidence: 1, Actions: moveTo("Takeaway")}},
+		{name: "address keep beats domain move", rules: []Rule{food},
+			senders: []SenderRule{
+				{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictMove, Folder: "Takeaway"},
+				{MatchType: MatchAddress, Value: "noreply@mail.zomato.com", Verdict: VerdictKeep}},
+			want: Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActKeep}}}},
+		{name: "a move for another sender is ignored", rules: []Rule{food},
+			senders: []SenderRule{{MatchType: MatchDomain, Value: "swiggy.in", Verdict: VerdictMove, Folder: "Takeaway"}},
+			want:    Result{Stage: StageCondition, RuleID: 3, RuleVersion: 2, Confidence: 1, Actions: moveTo("Food")}},
 		{name: "address rule beats domain rule", rules: []Rule{food},
 			senders: []SenderRule{
 				{MatchType: MatchDomain, Value: "zomato.com", Verdict: VerdictBlock},

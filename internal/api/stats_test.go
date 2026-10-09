@@ -111,14 +111,17 @@ func TestSenders(t *testing.T) {
 		e.refuse(http.MethodGet, "/api/senders?"+query, "", http.StatusBadRequest, "invalid_input", path)
 	}
 	for target, want := range map[string][2]string{
-		"/api/senders/name/x@y.example|{\"verdict\":\"keep\"}":                    {"invalid_input", "type"},
-		"/api/senders/address/nope|{\"verdict\":\"keep\"}":                        {"invalid_input", "value"},
-		"/api/senders/domain/x@y.example|{\"verdict\":\"keep\"}":                  {"invalid_input", "value"},
-		"/api/senders/domain/localhost|{\"verdict\":\"keep\"}":                    {"invalid_input", "value"},
-		"/api/senders/address/x@y.example|{\"verdict\":\"trash\"}":                {"invalid_input", "verdict"},
-		"/api/senders/address/x@y.example|{\"verdict\":\"route\"}":                {"invalid_input", "rule_id"},
-		"/api/senders/address/x@y.example|{\"verdict\":\"route\",\"rule_id\":99}": {"invalid_input", "rule_id"},
-		"/api/senders/address/x@y.example|{\"verdict\":\"keep\",\"hits\":3}":      {"invalid_json", ""},
+		"/api/senders/name/x@y.example|{\"verdict\":\"keep\"}":                         {"invalid_input", "type"},
+		"/api/senders/address/nope|{\"verdict\":\"keep\"}":                             {"invalid_input", "value"},
+		"/api/senders/domain/x@y.example|{\"verdict\":\"keep\"}":                       {"invalid_input", "value"},
+		"/api/senders/domain/localhost|{\"verdict\":\"keep\"}":                         {"invalid_input", "value"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"trash\"}":                     {"invalid_input", "verdict"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"route\"}":                     {"invalid_input", "rule_id"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"route\",\"rule_id\":99}":      {"invalid_input", "rule_id"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"move\"}":                      {"invalid_input", "folder"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"move\",\"folder\":\"a*\"}":    {"invalid_input", "folder"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"move\",\"folder\":\"a\\nb\"}": {"invalid_input", "folder"},
+		"/api/senders/address/x@y.example|{\"verdict\":\"keep\",\"hits\":3}":           {"invalid_json", ""},
 	} {
 		path, body, _ := strings.Cut(target, "|")
 		e.refuse(http.MethodPut, path, body, http.StatusBadRequest, want[0], want[1])
@@ -134,6 +137,58 @@ func TestSenders(t *testing.T) {
 	}
 	if n := e.count(`SELECT COUNT(*) FROM sender_rules`); n != 2 {
 		t.Errorf("%d sender rules left, want the two the user set", n)
+	}
+}
+
+// MAI-162: a sender can have a folder of its own. It wins over the rules (Food takes
+// swiggy.in by its condition), goes through the action executor like any move (in dry-run
+// it is only recorded and no folder is made), and is undone like one.
+func TestSenderMove(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		dry        bool
+		wantFolder string // where the email is after it was processed
+		wantStatus string // of its move action
+	}{
+		{"live: filed in the sender's folder, which is made on first use", false, "Swiggy offers", "done"},
+		{"dry-run: recorded as a would-move, nothing moved or made", true, "INBOX", "dry_run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.connect()
+			e.call(http.MethodPost, "/api/rules/import", rulesYAML, http.StatusOK)
+			if tc.dry {
+				e.call(http.MethodPatch, "/api/settings", `{"dry_run":true}`, http.StatusOK)
+			}
+			moved := e.call(http.MethodPut, "/api/senders/address/offers%40swiggy.in", `{"verdict":"move","folder":"Swiggy offers","rule_id":1}`, http.StatusOK)["sender"].(map[string]any)
+			conform(t, e.doc, "Sender", moved)
+			if moved["verdict"] != "move" || moved["folder"] != "Swiggy offers" || moved["rule_id"] != nil || moved["source"] != "user" {
+				t.Fatalf("after a move PUT = %v", moved)
+			}
+
+			e.deliver("Swiggy <offers@swiggy.in>", "half price")
+			it := e.item("half price", "acted")
+			act, dec := it["actions"].([]any)[0].(map[string]any), it["decision"].(map[string]any)
+			if dec["stage"] != "sender" || dec["reason"] != `Sender rule: move to "Swiggy offers"` ||
+				act["kind"] != "move" || act["status"] != tc.wantStatus || e.folderOf("half price") != tc.wantFolder {
+				t.Fatalf("the sender's mail: %v, action %v, in %q", it, act, e.folderOf("half price"))
+			}
+			if made := e.hasFolder("Swiggy offers"); made == tc.dry {
+				t.Errorf("folder made = %v in dry-run %v", made, tc.dry)
+			}
+			if !tc.dry {
+				e.call(http.MethodPost, fmt.Sprintf("/api/messages/%d/undo", id(it["id"])), "", http.StatusOK)
+				if f := e.folderOf("half price"); f != "INBOX" {
+					t.Errorf("after undo the email is in %q", f)
+				}
+			}
+
+			// Any other verdict clears the folder.
+			kept := e.call(http.MethodPut, "/api/senders/address/offers%40swiggy.in", `{"verdict":"keep","folder":"Ignored"}`, http.StatusOK)["sender"].(map[string]any)
+			if kept["verdict"] != "keep" || kept["folder"] != nil {
+				t.Errorf("a kept sender = %v", kept)
+			}
+		})
 	}
 }
 

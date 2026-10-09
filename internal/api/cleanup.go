@@ -132,8 +132,8 @@ func rulesFingerprint(set ruleSet, senders []rules.SenderRule) string {
 		Account    int64
 	}
 	type senderFP struct {
-		Type, Value, Verdict string
-		RuleID               int64
+		Type, Value, Verdict, Folder string
+		RuleID                       int64
 	}
 	fps := func(rs []rules.Rule) []ruleFP {
 		var out []ruleFP
@@ -146,7 +146,7 @@ func rulesFingerprint(set ruleSet, senders []rules.SenderRule) string {
 	}
 	sfp := make([]senderFP, len(senders))
 	for i, x := range senders {
-		sfp[i] = senderFP{x.MatchType, x.Value, x.Verdict, x.RuleID}
+		sfp[i] = senderFP{x.MatchType, x.Value, x.Verdict, x.Folder, x.RuleID}
 	}
 	slices.SortFunc(sfp, func(a, b senderFP) int {
 		if a.Type != b.Type {
@@ -623,7 +623,7 @@ func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 			j.RuleID = &id
 		}
 		if j.RuleName == "" && o.Stage == rules.StageSender {
-			j.RuleName = o.Reason // "Sender rule: keep" / "Sender rule: trash"
+			j.RuleName = o.Reason // "Sender rule: keep" / "Sender rule: trash" / `Sender rule: move to "Receipts"`
 		}
 		if o.Asked {
 			c := o.Confidence

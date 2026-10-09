@@ -26,6 +26,7 @@ type senderJSON struct {
 	HasListUnsubscribe bool    `json:"has_list_unsubscribe"`
 	Verdict            *string `json:"verdict"` // null = no sender rule; the rules decide
 	RuleID             *int64  `json:"rule_id"`
+	Folder             *string `json:"folder"` // for move: where the sender's mail goes
 	Source             *string `json:"source"`
 	Hits               int     `json:"hits"`
 }
@@ -68,6 +69,9 @@ func (s *server) senders(ctx context.Context, v store.Viewer) ([]senderJSON, err
 			out = append(out, row)
 		}
 		out[i].Verdict, out[i].RuleID, out[i].Source, out[i].Hits = &sr.Verdict, ts(sr.RuleID), &sr.Source, sr.Hits
+		if sr.Verdict == rules.VerdictMove {
+			out[i].Folder = &sr.Folder
+		}
 	}
 	return out, nil
 }
@@ -142,8 +146,8 @@ func senderPath(w http.ResponseWriter, r *http.Request) (matchType, value string
 	return "", "", false
 }
 
-// handleSenderPut sets how a sender is routed: to a rule, always kept in the inbox, or
-// blocked. It replaces whatever the sender had, a learned rule included.
+// handleSenderPut sets how a sender is routed: to a rule, to a folder, always kept in the
+// inbox, or blocked. It replaces whatever the sender had, a learned rule included.
 func (s *server) handleSenderPut(w http.ResponseWriter, r *http.Request) {
 	matchType, value, ok := senderPath(w, r)
 	if !ok {
@@ -152,6 +156,7 @@ func (s *server) handleSenderPut(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Verdict string `json:"verdict"`
 		RuleID  *int64 `json:"rule_id"`
+		Folder  string `json:"folder"`
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -169,8 +174,20 @@ func (s *server) handleSenderPut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sr.RuleID = *in.RuleID
+	case rules.VerdictMove:
+		// The name is used on every mailbox, as a rule's move is: one that lacks the folder
+		// gets it on the first live move.
+		if in.Folder == "" {
+			invalid(w, "folder", "Say which folder the sender's mail goes to.")
+			return
+		}
+		if msg := rules.FolderProblem(in.Folder); msg != "" {
+			invalid(w, "folder", msg)
+			return
+		}
+		sr.Folder = in.Folder
 	default:
-		invalid(w, "verdict", "The verdict is route, keep or block.")
+		invalid(w, "verdict", "The verdict is route, move, keep or block.")
 		return
 	}
 	if _, err := s.store.PutSenderRule(r.Context(), viewer(r).TenantID, sr, s.now().Unix()); err != nil {
