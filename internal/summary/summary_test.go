@@ -3,6 +3,7 @@ package summary
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -671,5 +672,41 @@ func TestPrepareStoresNothingUntilCommit(t *testing.T) {
 	}
 	if s, _ := load(context.Background(), f.st, 1); !s.Enabled || s.EnabledAt != tuesday8.Unix() {
 		t.Fatalf("after commit: %+v", s)
+	}
+}
+
+// The saved address is the tenant's, but a summary covers the user's own private mailboxes,
+// so it goes there only while the tenant has one member; once a teammate joins, each
+// member's summary goes to their own email.
+func TestRecipientFollowsTenantSize(t *testing.T) {
+	tests := []struct {
+		name  string
+		saved string
+		mates int
+		want  string
+	}{
+		{"no address saved", "", 0, "admin@example.com"},
+		{"one member, address saved", "neha@example.com", 0, "neha@example.com"},
+		{"two members, address saved", "neha@example.com", 1, "admin@example.com"},
+		{"two members, none saved", "", 1, "admin@example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.switchOn(t, Settings{Frequency: Daily, Weekday: "monday", Time: "08:00", TimeZone: "UTC", To: tt.saved})
+			for i := range tt.mates {
+				if _, err := f.st.CreateUser(t.Context(), f.user.TenantID, fmt.Sprintf("mate%d@example.com", i), "hash", 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fake := &mailertest.Sender{}
+			svc := newService(f, fake, &clockAt{tuesday8})
+			if _, to, err := svc.SendTest(t.Context(), f.user); err != nil || to != tt.want {
+				t.Errorf("test summary went to %q, %v; want %q", to, err, tt.want)
+			}
+			if _, _, to, err := svc.Preview(t.Context(), f.user); err != nil || to != tt.want {
+				t.Errorf("preview addressed to %q, %v; want %q", to, err, tt.want)
+			}
+		})
 	}
 }

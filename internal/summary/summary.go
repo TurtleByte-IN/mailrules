@@ -134,7 +134,11 @@ func (s *Service) Preview(ctx context.Context, u store.User) (Email, Content, st
 		return Email{}, Content{}, "", err
 	}
 	email, c, err := s.render(ctx, u, cur, start, now)
-	return email, c, recipient(cur, u), err
+	if err != nil {
+		return Email{}, Content{}, "", err
+	}
+	to, err := s.recipient(ctx, cur, u)
+	return email, c, to, err
 }
 
 // SendTest sends a summary of the last day now, to the summary's address, whether the
@@ -152,7 +156,10 @@ func (s *Service) SendTest(ctx context.Context, u store.User) (Email, string, er
 	if err != nil {
 		return Email{}, "", err
 	}
-	to := recipient(cur, u)
+	to, err := s.recipient(ctx, cur, u)
+	if err != nil {
+		return Email{}, "", err
+	}
 	if err := s.Sender.Send(ctx, mailer.Message{To: to, Subject: email.Subject, Text: email.Text, HTML: email.HTML}); err != nil {
 		slog.WarnContext(ctx, "test summary email not sent", "error", err.Error())
 		return Email{}, "", &SendError{Err: err}
@@ -168,11 +175,21 @@ type SendError struct{ Err error }
 func (e *SendError) Error() string { return "summary email not sent: " + e.Err.Error() }
 func (e *SendError) Unwrap() error { return e.Err }
 
-func recipient(cur Settings, u store.User) string {
-	if cur.To != "" {
-		return cur.To
+// recipient is where the user's summary goes. The saved address is the tenant's, while a
+// summary covers the user's own private mailboxes too, so it is used only while the tenant
+// has one member; with more, each member's summary goes to their own email.
+func (s *Service) recipient(ctx context.Context, cur Settings, u store.User) (string, error) {
+	if cur.To == "" {
+		return u.Email, nil
 	}
-	return u.Email
+	n, err := s.Store.TenantMembers(ctx, u.TenantID)
+	if err != nil {
+		return "", err
+	}
+	if n > 1 {
+		return u.Email, nil
+	}
+	return cur.To, nil
 }
 
 // start is where the next scheduled summary begins: where the last one sent ended, while
@@ -294,7 +311,12 @@ func (s *Service) send(ctx context.Context, cur Settings, u store.User, id int64
 		slog.ErrorContext(ctx, "summary email not built", "attempt", attempt, "max_attempts", maxAttempts, "error", err.Error())
 		return failed()
 	}
-	if err := s.Sender.Send(ctx, mailer.Message{To: recipient(cur, u), Subject: email.Subject, Text: email.Text, HTML: email.HTML}); err != nil {
+	to, err := s.recipient(ctx, cur, u)
+	if err != nil {
+		slog.ErrorContext(ctx, "summary email not addressed", "attempt", attempt, "max_attempts", maxAttempts, "error", err.Error())
+		return failed()
+	}
+	if err := s.Sender.Send(ctx, mailer.Message{To: to, Subject: email.Subject, Text: email.Text, HTML: email.HTML}); err != nil {
 		slog.WarnContext(ctx, "summary email not sent", "attempt", attempt, "max_attempts", maxAttempts, "error", err.Error())
 		return failed()
 	}

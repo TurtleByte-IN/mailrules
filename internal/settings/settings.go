@@ -331,6 +331,16 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 	if l := readLookup(rows); l.Found != "" && cfg.AnthropicWorkspaceID == l.Found && l.Key != s.fingerprint(cfg.AnthropicAPIKey) {
 		cfg.AnthropicWorkspaceID = s.Env.AnthropicWorkspaceID
 	}
+	// While an operator's key is in force (cloud mode, the tenant has none of its own), the
+	// settings that say where that key is sent are the operator's too: a tenant's own base
+	// URL would receive the operator's key in its Authorization header. The tenant's stored
+	// values stay stored and take effect once it stores a key of its own.
+	if s.operatorKey(rows, "openai_api_key") {
+		cfg.OpenAIBaseURL = s.Env.OpenAIBaseURL
+	}
+	if s.operatorKey(rows, "anthropic_api_key") {
+		cfg.AnthropicWorkspaceID = s.Env.AnthropicWorkspaceID
+	}
 	return cfg, o, nil
 }
 
@@ -359,8 +369,14 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 		OpenAIBaseURL: cfg.OpenAIBaseURL, OllamaURL: cfg.OllamaURL,
 		Keys: map[string]string{}, Warnings: append(warnings(cfg), workspaceWarning(cfg, l)...),
 		AnthropicWorkspaceID: cfg.AnthropicWorkspaceID, AnthropicWorkspaceFound: l.Found != "" && l.Found == cfg.AnthropicWorkspaceID}
-	if s.operatorKey(rows, "anthropic_api_key") && cfg.AnthropicWorkspaceID == s.Env.AnthropicWorkspaceID {
-		v.AnthropicWorkspaceID = "" // the operator's workspace, set in the environment
+	// Under an operator's key the effective endpoint and workspace are the operator's; the
+	// screen shows the tenant's own stored values instead (empty when none), never the
+	// operator's.
+	if s.operatorKey(rows, "anthropic_api_key") {
+		v.AnthropicWorkspaceID = storedString(rows, settingWorkspace)
+	}
+	if s.operatorKey(rows, "openai_api_key") {
+		v.OpenAIBaseURL = storedString(rows, "openai_base_url")
 	}
 	for _, w := range l.Workspaces {
 		if w.ID == cfg.AnthropicWorkspaceID {
@@ -383,6 +399,13 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 			v.Keys[name] = KeyNone
 		}
 	}
+	return v
+}
+
+// storedString is a string setting as the tenant stored it, "" when it stored none.
+func storedString(rows map[string]string, key string) string {
+	var v string
+	_ = json.Unmarshal([]byte(rows[key]), &v) // no row, or not a string: ""
 	return v
 }
 
