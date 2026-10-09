@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
@@ -30,7 +33,7 @@ func (s *server) moduleRoutes() []route {
 			continue
 		}
 		for _, r := range m.Routes(host{s}) {
-			out = append(out, route{method: r.Method, path: r.Path, handler: r.Handler})
+			out = append(out, route{method: r.Method, path: r.Path, handler: r.Handler, public: r.Public, webhook: r.Webhook})
 			served[r.Method+" "+r.Path] = true
 		}
 	}
@@ -138,9 +141,95 @@ func (h host) RecordUsage(ctx context.Context, purpose string, u ext.Usage) {
 	}
 }
 
-// UsageChanged nudges every open stream to read its usage again. It is not told whose
-// usage changed, so the nudge carries no tenant and no data (events.Event).
-func (h host) UsageChanged() { h.s.Hub.Publish(0, 0, events.UsageUpdated, nil) }
+// UsageChanged nudges the open streams of the signed-in user's tenant to read their usage
+// again; ctx must be the request's. The nudge carries no data (events.Event).
+func (h host) UsageChanged(ctx context.Context) {
+	who, ok := ctxUser(ctx)
+	if !ok {
+		slog.WarnContext(ctx, "could not announce a usage change", "error", errNoUser.Error())
+		return
+	}
+	h.s.Hub.Publish(who.TenantID, 0, events.UsageUpdated, nil)
+}
+
+// errIdentity is an Identity a module passed with a field missing.
+var errIdentity = errors.New("sign in: identity needs a provider, subject, email and tenant")
+
+// SignIn finds or makes the identity's user and starts the browser's session (ext.Host).
+func (h host) SignIn(w http.ResponseWriter, r *http.Request, id ext.Identity) (int64, error) {
+	in := store.Identity{Provider: id.Provider, Subject: id.Subject, Email: strings.TrimSpace(id.Email), Tenant: id.Tenant}
+	if in.Provider == "" || in.Subject == "" || in.Email == "" || in.Tenant == "" {
+		return 0, errIdentity
+	}
+	u, err := h.s.store.SignInIdentity(r.Context(), in, h.s.now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	if err := h.s.startSession(w, r, u.ID); err != nil {
+		return 0, fmt.Errorf("sign in: start session: %w", err)
+	}
+	return u.ID, nil
+}
+
+// EndSessions ends every session of the identity's user (ext.Host).
+func (h host) EndSessions(ctx context.Context, provider, subject string) error {
+	return h.s.store.EndIdentitySessions(ctx, provider, subject)
+}
+
+// SignInFailed sends the browser to the sign-in screen with code (ext.Host).
+func (h host) SignInFailed(w http.ResponseWriter, r *http.Request, code string) {
+	http.Redirect(w, r, "/?signin_error="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
+// signIn is the module that signs people in, or nil in a build with password sign-in.
+func (s *server) signIn() *ext.Module {
+	for i := range s.Modules {
+		if s.Modules[i].SignIn != "" {
+			return &s.Modules[i]
+		}
+	}
+	return nil
+}
+
+// CheckModules refuses a build whose modules, or mode (MAILRULES_MODE), the daemon cannot
+// serve: a Webhook route that is not Public, a SignIn or SignOut that does not name one of
+// its module's Public GET routes, a SignOut without SignIn, more than one module with
+// SignIn, and cloud mode with no module that signs people in. The daemon calls it before
+// it serves anything.
+func CheckModules(mode string, modules []ext.Module) error {
+	var signIn []string
+	for _, m := range modules {
+		publicGet := map[string]bool{}
+		if m.Routes != nil {
+			for _, r := range m.Routes(host{&server{}}) {
+				if r.Webhook && !r.Public {
+					return fmt.Errorf("module %s: route %s %s is a Webhook but not Public", m.Name, r.Method, r.Path)
+				}
+				if r.Public && r.Method == http.MethodGet {
+					publicGet[r.Path] = true
+				}
+			}
+		}
+		if m.SignOut != "" && m.SignIn == "" {
+			return fmt.Errorf("module %s: SignOut is set without SignIn", m.Name)
+		}
+		for field, path := range map[string]string{"SignIn": m.SignIn, "SignOut": m.SignOut} {
+			if path != "" && !publicGet[path] {
+				return fmt.Errorf("module %s: %s %q is not one of its Public GET routes", m.Name, field, path)
+			}
+		}
+		if m.SignIn != "" {
+			signIn = append(signIn, m.Name)
+		}
+	}
+	if len(signIn) > 1 {
+		return fmt.Errorf("more than one module signs people in: %s", strings.Join(signIn, ", "))
+	}
+	if mode == "cloud" && len(signIn) == 0 {
+		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")
+	}
+	return nil
+}
 
 // moduleStream is eventStream as a module writes it (ext.EventStream).
 type moduleStream struct{ es eventStream }

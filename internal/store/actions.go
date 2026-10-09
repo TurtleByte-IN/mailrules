@@ -389,6 +389,7 @@ func (s *Store) FailRunningBatches(ctx context.Context) error {
 // when kind is empty. before is the cursor (only batches with a smaller id; 0 = from the
 // newest).
 func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64, limit int) ([]Batch, error) {
+	//nolint:gosec // G202: visibleBatch prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+batchCols+` FROM batches WHERE `+visibleBatch(v)+` AND (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`, kind, before, limit)
 	if err != nil {
@@ -411,6 +412,7 @@ func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64
 
 // BatchActionCounts counts a batch's own actions on the mailboxes the viewer sees, by status.
 func (s *Store) BatchActionCounts(ctx context.Context, v Viewer, batchID int64) (map[string]int, error) {
+	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT status, COUNT(*) FROM actions WHERE batch_id = ? AND `+inVisible("account_id", v)+` GROUP BY status`, batchID)
 	if err != nil {

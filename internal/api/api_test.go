@@ -38,6 +38,7 @@ type env struct {
 	st         *store.Store
 	hub        *events.Hub
 	mb         *mailtest.Mailbox
+	boxes      map[string]*mailtest.Mailbox // fake mailboxes by account username; any other username gets mb
 	mgr        *worker.Manager
 	sett       *settings.Settings
 	decider    *models.Fake
@@ -100,7 +101,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: db, st: store.New(db), ck: &clock{t: time.Unix(1_800_000_000, 0)}, hub: events.NewHub(),
-		mb: mailtest.New(1), mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t)}
+		mb: mailtest.New(1), boxes: map[string]*mailtest.Mailbox{}, mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t)}
 	for name, role := range map[string]string{"Trash": mail.RoleTrash, "Archive": mail.RoleArchive, "Sent": mail.RoleSent} {
 		e.mb.AddFolder(name, role)
 	}
@@ -115,7 +116,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	start := func(acct store.Account) {
 		e.mgr.Start(runCtx, &worker.Supervisor{
 			Account: acct, Store: e.st, Hub: e.hub,
-			Open:       func(context.Context) (mail.Mailbox, error) { return e.mb, nil },
+			Open:       func(context.Context) (mail.Mailbox, error) { return e.box(acct), nil },
 			Pipeline:   pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now, Live: e.Live, Override: e.RouterFor},
 			BackoffMin: time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 		})
@@ -127,7 +128,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 			if e.connectErr != nil {
 				return nil, "", e.connectErr
 			}
-			return e.mb, acct.Username, nil
+			return e.box(acct), acct.Username, nil
 		},
 		StartAccount: start, StopAccount: e.mgr.Stop, Modules: modules, Summary: e.summary,
 	}
@@ -136,6 +137,14 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	}
 	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(opts)}
 	return e
+}
+
+// box is the fake mailbox an account connects to.
+func (e *env) box(acct store.Account) *mailtest.Mailbox {
+	if mb := e.boxes[acct.Username]; mb != nil {
+		return mb
+	}
+	return e.mb
 }
 
 func eventually(t *testing.T, what string, ok func() bool) {
@@ -847,13 +856,13 @@ func TestSettings(t *testing.T) {
 }
 
 // stream opens the event stream over a real connection and returns its lines.
-func (e *env) stream(t *testing.T, url, lastEventID string) (lines <-chan string, status int) {
+func (c *client) stream(t *testing.T, url, lastEventID string) (lines <-chan string, status int) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url+"/api/events", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range e.cookies {
+	for name, value := range c.cookies {
 		req.AddCookie(&http.Cookie{Name: name, Value: value})
 	}
 	if lastEventID != "" {

@@ -28,7 +28,13 @@ info:
       false once nothing on it is younger.
     - Every route except the four under `/api/auth`, `/healthz`, `/readyz` and `/metrics` needs
       the `mailrules_session` cookie, and answers 401 without one: `setup_required` before the
-      admin account exists, `unauthenticated` after.
+      admin account exists, `unauthenticated` after. In a build whose sign-in module signs
+      people in (the hosted build), it is always `unauthenticated`, with `error.sign_in` the
+      path the browser goes to to sign in, and there is no password sign-in or first-run
+      setup: `/api/auth/setup`, `/api/auth/login` and `/api/auth/password` answer 404
+      `not_available`. A module's routes may also be served before sign-in, and a module's
+      webhook route (a call from another server, which checks its own signature) skips the
+      CSRF check.
     - Every response hands out a `mailrules_csrf` cookie, and every non-GET request must send
       its value back in the `X-CSRF-Token` header, or it is answered 403 `csrf_failed`.
       Call `GET /api/auth/me` first: it hands out the cookie and says which screen to show.
@@ -76,6 +82,7 @@ paths:
               schema: { $ref: '#/components/schemas/Session' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: email | password), invalid_json
         '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/Error' } # not_available: a sign-in module signs people in
         '409': { $ref: '#/components/responses/Error' } # already_set_up
   /api/auth/login:
     post:
@@ -97,6 +104,7 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_json
         '401': { $ref: '#/components/responses/Error' } # invalid_credentials
         '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/Error' } # not_available: a sign-in module signs people in
         '429':
           description: rate_limited; five failed sign-ins per minute from one client address, or ten for one email
           headers:
@@ -140,6 +148,7 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: current_password | new_password), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/Error' } # not_available: a sign-in module signs people in
         '429':
           description: rate_limited; five wrong current passwords per minute
           headers:
@@ -161,7 +170,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Session' }
-        '401': { $ref: '#/components/responses/Error' } # setup_required (show first-run setup) | unauthenticated (show sign-in)
+        '401': { $ref: '#/components/responses/Error' } # setup_required (show first-run setup) | unauthenticated (show sign-in; with error.sign_in when a sign-in module is present)
   /api/presets:
     get:
       tags: [Accounts]
@@ -2542,8 +2551,8 @@ components:
         weekday: { $ref: '#/components/schemas/Weekday', description: 'The day a weekly summary goes out; kept, and unused, while `frequency` is daily. Default monday' }
         time: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: 'When it goes out, HH:MM on a 24-hour clock in `time_zone`. Default 08:00' }
         time_zone: { type: string, description: 'The IANA time zone `time` is in, such as Europe/Berlin: the one the browser reported when the summary was last saved. UTC until then' }
-        to: { type: string, description: 'The address it goes to: the one saved, or `to_default` when none is' }
-        to_default: { type: string, readOnly: true, description: 'The admin account''s email, used while no address is saved' }
+        to: { type: string, description: 'The address it goes to: the one saved, or `to_default` when none is. The saved address is used while the team has one member; with more, each member''s summary goes to their own email' }
+        to_default: { type: string, readOnly: true, description: 'The signed-in user''s email, used while no address is saved, and always once the team has more than one member' }
         smtp:
           type: object
           readOnly: true

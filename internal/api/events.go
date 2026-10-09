@@ -16,14 +16,12 @@ import (
 // keepAlive is how often an idle stream gets a comment line, so proxies keep it open.
 const keepAlive = 25 * time.Second
 
-// visibleTo reports whether an event may go to v: one of v's tenant (or of none, a nudge
-// with no data) and, when it is about one mailbox, one v sees as it is sent, since sharing
-// can change while a stream is open.
+// visibleTo reports whether an event may go to v: one of v's tenant and, when it is about
+// one mailbox, one v sees as it is sent, since sharing can change while a stream is open.
+// An event of no tenant goes to nobody.
 func (s *server) visibleTo(ctx context.Context, v store.Viewer, ev events.Event) bool {
 	switch {
-	case ev.TenantID == 0:
-		return ev.Data == nil
-	case ev.TenantID != v.TenantID:
+	case ev.TenantID == 0 || ev.TenantID != v.TenantID:
 		return false
 	case ev.AccountID == 0:
 		return true

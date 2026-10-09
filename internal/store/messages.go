@@ -517,6 +517,7 @@ type SenderDecision struct {
 // actions were recorded in dry-run is left out, so a dry-run period teaches the learner
 // nothing, then or once MailRules is live.
 func (s *Store) RecentSenderDecisions(ctx context.Context, v Viewer, address string, n int) ([]SenderDecision, error) {
+	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.stage, COALESCE(d.rule_id, 0), COALESCE(d.confidence, 0),
 		        EXISTS (SELECT 1 FROM corrections c WHERE c.message_id = m.id)
@@ -637,6 +638,7 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 // Corrections lists the newest corrections made to mail in the mailboxes the viewer sees,
 // newest first, with the example each stored: the pool few-shot retrieval ranks.
 func (s *Store) Corrections(ctx context.Context, v Viewer, limit int) ([]Correction, error) {
+	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT c.id, c.message_id, COALESCE(c.wrong_rule_id, 0), COALESCE(c.right_rule_id, 0), c.example, c.created_at
 		 FROM corrections c JOIN messages m ON m.id = c.message_id

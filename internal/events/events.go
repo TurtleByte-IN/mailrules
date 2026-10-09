@@ -29,8 +29,8 @@ const subBuffer = 256
 //
 // TenantID and AccountID say who may receive it: the HTTP layer hands an event only to a
 // subscriber of that tenant and, when AccountID is set, only to one who sees that mailbox
-// at the moment it is sent. TenantID 0 is an event of no tenant: a nudge with no data
-// (UsageUpdated from a module, which cannot say whose), which every subscriber gets.
+// at the moment it is sent. Every publisher names a tenant: an event of TenantID 0 goes to
+// nobody.
 type Event struct {
 	ID        int64
 	Name      string

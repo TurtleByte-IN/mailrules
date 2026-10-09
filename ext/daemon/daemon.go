@@ -108,6 +108,9 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 	if !cfg.ListensLocally() {
 		slog.Warn("web UI is reachable from other machines; put it behind a reverse proxy with TLS", "listen", cfg.Listen)
 	}
+	if err := api.CheckModules(cfg.Mode, modules); err != nil {
+		return err
+	}
 
 	proxies, err := cfg.TrustedProxyPrefixes()
 	if err != nil {

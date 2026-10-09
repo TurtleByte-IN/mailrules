@@ -2501,9 +2501,9 @@ export interface components {
             time: string;
             /** @description The IANA time zone `time` is in, such as Europe/Berlin: the one the browser reported when the summary was last saved. UTC until then */
             time_zone: string;
-            /** @description The address it goes to: the one saved, or `to_default` when none is */
+            /** @description The address it goes to: the one saved, or `to_default` when none is. The saved address is used while the team has one member; with more, each member's summary goes to their own email */
             to: string;
-            /** @description The admin account's email, used while no address is saved */
+            /** @description The signed-in user's email, used while no address is saved, and always once the team has more than one member */
             readonly to_default: string;
             /** @description The outgoing mail server, as the daemon's environment sets it. Never the password */
             readonly smtp: {
@@ -2716,6 +2716,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["Error"];
             409: components["responses"]["Error"];
         };
     };
@@ -2744,6 +2745,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Error"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["Error"];
             /** @description rate_limited; five failed sign-ins per minute from one client address, or ten for one email */
             429: {
                 headers: {
@@ -2801,6 +2803,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["Error"];
             /** @description rate_limited; five wrong current passwords per minute */
             429: {
                 headers: {

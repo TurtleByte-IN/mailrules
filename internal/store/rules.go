@@ -345,6 +345,7 @@ type RuleStat struct {
 // `since` in the mailboxes the viewer sees, with the time of the latest one ever. Mail
 // waiting in Needs review does not count: nothing was applied.
 func (s *Store) RuleStats(ctx context.Context, v Viewer, since int64) (map[int64]RuleStat, error) {
+	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.rule_id, COALESCE(SUM(d.created_at >= ?), 0), MAX(d.created_at)
 		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN rules r ON r.id = d.rule_id

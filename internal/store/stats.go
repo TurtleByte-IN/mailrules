@@ -18,6 +18,7 @@ type SenderSeen struct {
 // SendersSeen lists every address the mailboxes the viewer sees have had mail from since
 // `since` (by when MailRules first saw the email).
 func (s *Store) SendersSeen(ctx context.Context, v Viewer, since int64) ([]SenderSeen, error) {
+	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT g.addr, g.n, g.last_seen, g.unsub, COALESCE((SELECT from_name FROM messages WHERE id = g.last_id), '')
 		 FROM (SELECT m.from_addr AS addr, COUNT(*) AS n, MAX(m.id) AS last_id,
