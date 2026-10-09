@@ -155,13 +155,13 @@ it('setting a learned sender by hand takes it off the learned list', async () =>
   expect(m.senders.learned).toEqual([]);
 });
 
-it('loadFolders merges the mailboxes by name, leaves out Inbox, trash, sent and drafts and a list that fails, and drops a stale answer', async () => {
+it('loadFolders merges the mailboxes by name, offers trash, sent and drafts, leaves out Inbox and a list that fails, and drops a stale answer', async () => {
   const f = (...names: string[]): Reply => [200, { items: names.map((n) => ({ name: n.split(':')[0], delimiter: '/', special_use: n.split(':')[1] ?? '' })) }];
   routes['GET /api/accounts/1/folders'] = f('INBOX', 'Receipts', 'Archive:\\Archive', 'Junk:\\Junk', 'Deleted Messages:\\Trash', 'Sent Messages:\\Sent');
   routes['GET /api/accounts/2/folders'] = f('Inbox', 'Receipts', 'Clients', 'Drafts:\\Drafts', 'Sent Messages');
   routes['GET /api/accounts/3/folders'] = failed(502, 'mail_error', 'The mail server did not answer.');
   await m.loadFolders([1, 2, 3]);
-  expect(m.senders.folders).toEqual(['Archive', 'Clients', 'Junk', 'Receipts']);
+  expect(m.senders.folders).toEqual(['Archive', 'Clients', 'Deleted Messages', 'Drafts', 'Junk', 'Receipts', 'Sent Messages']);
 
   let answerFirst = (_r: Response) => {};
   fetchMock.mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)));
@@ -169,5 +169,5 @@ it('loadFolders merges the mailboxes by name, leaves out Inbox, trash, sent and 
   await m.loadFolders([2]);
   answerFirst(new Response(JSON.stringify({ items: [{ name: 'Stale', delimiter: '/', special_use: '' }] })));
   await first;
-  expect(m.senders.folders).toEqual(['Clients', 'Receipts', 'Sent Messages']); // mailbox 2 alone does not mark it as sent mail
+  expect(m.senders.folders).toEqual(['Clients', 'Drafts', 'Receipts', 'Sent Messages']);
 });

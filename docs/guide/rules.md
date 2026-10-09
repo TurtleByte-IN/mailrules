@@ -169,7 +169,7 @@ A sender rule says what to do with all mail from one address, or one domain, bef
 - **Always move to \<folder\>**, to file all their mail in one of your folders;
 - **Always trash**.
 
-Like keeping and trashing, a folder chosen for a sender wins over every rule for that sender. The folders offered are those of all your mailboxes, except Inbox and the folders your mail server keeps for trash, sent mail and drafts (**Always trash** is the way to trash a sender's mail). The choice applies on every mailbox the sender writes to: a mailbox that has no folder by that name gets one the first time an email is moved there. In dry-run nothing is moved and no folder is made; Activity shows what would have been moved, and a move can be undone like any other.
+Like keeping and trashing, a folder chosen for a sender wins over every rule for that sender. Every folder of all your mailboxes is offered, Trash, Sent and Drafts included, except Inbox, which **Always keep in Inbox** covers. The choice applies on every mailbox the sender writes to: a mailbox that has no folder by that name gets one the first time an email is moved there. In dry-run nothing is moved and no folder is made; Activity shows what would have been moved, and a move can be undone like any other.
 
 **Learned from your corrections and consistent decisions** lists the sender rules MailRules made by itself. **Forget** removes one.
 
