@@ -1,8 +1,10 @@
 // Package ext is the plug-in point of the MailRules daemon: the one public package through
 // which a module built outside this repository adds a feature. A module registers API
-// routes, served behind the same sign-in and CSRF checks as the built-in ones, and a
-// capability the web app reads in GET /api/settings `features`. ext/daemon runs the daemon
-// with the modules a build compiles in.
+// routes, served behind the same sign-in and CSRF checks as the built-in ones unless it
+// marks one Public (served before sign-in) or Webhook (a call from another server), a
+// capability the web app reads in GET /api/settings `features`, and optionally the way
+// people sign in (Module.SignIn). ext/daemon runs the daemon with the modules a build
+// compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
 // mail it may read (read-only, with BODY.PEEK), the models it may call, the rules and
@@ -23,6 +25,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
 // Module is one feature compiled into the daemon from outside this repository.
@@ -32,8 +35,18 @@ type Module struct {
 	// feature's screen only then.
 	Name string
 	// Routes returns the module's API endpoints, given what the daemon offers them. Each
-	// one is served only to a signed-in user, with the CSRF check of every other route.
+	// one is served only to a signed-in user, with the CSRF check of every other route,
+	// unless the route says otherwise (Route.Public, Route.Webhook). Routes is called while
+	// the daemon starts, before it serves anything, perhaps more than once: build the list,
+	// do not call h.
 	Routes func(h Host) []Route
+	// SignIn is the path of the module's Public GET route that starts signing someone in.
+	// When a module sets it, the build offers no password sign-in or first-run setup, and
+	// the sign-in screen sends the browser there. At most one module of a build sets it.
+	SignIn string
+	// SignOut is the path of the module's Public GET route the browser goes to after the
+	// daemon has ended its session, so the sign-in service ends its own. It needs SignIn.
+	SignOut string
 }
 
 // Route is one API endpoint of a module, as http.ServeMux patterns it: a method and a
@@ -42,7 +55,46 @@ type Route struct {
 	Method  string
 	Path    string
 	Handler http.HandlerFunc
+	// Public serves the route to someone not signed in. CSRF still applies to methods
+	// other than GET and HEAD unless Webhook is set.
+	Public bool
+	// Webhook (with Public) exempts the route from CSRF: a call from another server, which
+	// carries no session or token. The handler must authenticate the caller itself, for
+	// example by checking a signature header.
+	Webhook bool
 }
+
+// Identity is a person as a sign-in service names them.
+type Identity struct {
+	Provider string // the sign-in service, such as "workos"
+	Subject  string // the service's stable id for the person
+	Email    string
+	Tenant   string // the service's id of the organisation they signed in under
+}
+
+var (
+	// ErrTenantMismatch is what Host.SignIn returns for a returning person who arrived
+	// under a different organisation than the one they signed up with. Nothing changed.
+	ErrTenantMismatch = store.ErrTenantMismatch
+	// ErrEmailInUse is what Host.SignIn returns when another user of the daemon already
+	// has the email. Nothing changed.
+	ErrEmailInUse = store.ErrEmailInUse
+)
+
+// The codes Host.SignInFailed sends the browser back to the sign-in screen with.
+const (
+	// SignInUnavailable: the sign-in service could not be reached.
+	SignInUnavailable = "unavailable"
+	// SignInRefused: the service refused the sign-in (a bad or expired code, a state
+	// mismatch).
+	SignInRefused = "refused"
+	// SignInChooseTenant: the person belongs to several organisations and chose none.
+	SignInChooseTenant = "choose_tenant"
+	// SignInTenantMismatch: Host.SignIn returned ErrTenantMismatch.
+	SignInTenantMismatch = "tenant_mismatch"
+	// SignInEmailInUse: Host.SignIn returned ErrEmailInUse.
+	SignInEmailInUse = "email_in_use"
+)
 
 // Host is what the daemon gives a module's routes.
 type Host interface {
@@ -69,25 +121,43 @@ type Host interface {
 	// UserID is the signed-in user the request is for.
 	UserID(r *http.Request) int64
 	// Scope checks a selection of mail the way a cleanup check takes it and fills in what it
-	// leaves out: INBOX when no folder is named, and at most the newest 2,000 emails. When
-	// it returns false it has answered 400 invalid_input.
+	// leaves out: INBOX when no folder is named, and at most the newest 2,000 emails. An
+	// account the user cannot see is refused as a missing one. When it returns false it has
+	// answered 400 invalid_input.
 	Scope(w http.ResponseWriter, r *http.Request, in ScopeInput) (Scope, bool)
-	// Mail is the connection to an account, read-only. It fails while the account is not
-	// connected; answer that with Fail.
+	// Mail is the connection to an account, read-only; the id must come from Scope. It
+	// fails while the account is not connected; answer that with Fail.
 	Mail(accountID int64) (Mail, error)
-	// Folders lists the names of the account's folders, sorted.
+	// Folders lists the names of the account's folders, sorted; the id must come from Scope.
 	Folders(ctx context.Context, accountID int64) ([]string, error)
-	// Rules lists the user's rules in priority order.
+	// Rules lists the rules of the user's tenant in priority order.
 	Rules(ctx context.Context, userID int64) ([]Rule, error)
 
-	// Composer is the rule composer model chosen in Settings. Its error, when none is set
-	// up, is answered with Fail (409 no_composer_model).
+	// Composer is the rule composer model chosen in the signed-in user's tenant's Settings;
+	// ctx must be the request's. Its error, when none is set up, is answered with Fail (409
+	// no_composer_model).
 	Composer(ctx context.Context) (Generator, error)
-	// RecordUsage books one model call on the usage ledger under purpose, one of the
-	// ledger's purposes in api/openapi.yaml. A failure to book it is logged, not returned.
+	// RecordUsage books one model call on the signed-in user's tenant's usage ledger under
+	// purpose, one of the ledger's purposes in api/openapi.yaml; ctx must be the request's.
+	// A failure to book it is logged, not returned.
 	RecordUsage(ctx context.Context, purpose string, u Usage)
-	// UsageChanged tells the open screens that the usage ledger changed.
-	UsageChanged()
+	// UsageChanged tells the open screens of the signed-in user's tenant that its usage
+	// ledger changed; ctx must be the request's.
+	UsageChanged(ctx context.Context)
+
+	// SignIn signs in the person a sign-in service vouched for, from the module's SignIn
+	// flow: it finds their tenant by (Provider, Tenant), or makes it, finds their user by
+	// (Provider, Subject), or makes one in that tenant who has no password, sets the user's
+	// email to id.Email, and starts the browser's session as a password sign-in does. It
+	// fails, changing nothing, with ErrTenantMismatch or ErrEmailInUse (answer those with
+	// SignInFailed and the matching code), or with an error of the database.
+	SignIn(w http.ResponseWriter, r *http.Request, id Identity) (userID int64, err error)
+	// EndSessions signs the identity out of every browser at once. An identity nobody has
+	// is not an error.
+	EndSessions(ctx context.Context, provider, subject string) error
+	// SignInFailed sends the browser back to the sign-in screen with code, one of the
+	// SignIn* codes (303 to /?signin_error=<code>).
+	SignInFailed(w http.ResponseWriter, r *http.Request, code string)
 }
 
 // ScopeInput is a selection of mail as a request sends it: the fields of the contract's

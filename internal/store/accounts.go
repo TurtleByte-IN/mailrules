@@ -18,7 +18,9 @@ import (
 // read it with AccountSecret at the moment a connection is made.
 type Account struct {
 	ID           int64
-	UserID       int64
+	UserID       int64 // the owner: who added it
+	TenantID     int64 // the owner's tenant
+	Shared       bool  // everyone in the tenant sees it; otherwise only the owner
 	Label        string
 	Preset       string
 	Host         string
@@ -33,13 +35,13 @@ type Account struct {
 	CreatedAt    int64
 }
 
-const accountCols = `id, user_id, label, preset, host, port, tls_mode, username, watch_folder, status,
-	COALESCE(last_error, ''), COALESCE(last_event_at, 0), COALESCE(capabilities, '[]'), created_at`
+const accountCols = `a.id, a.user_id, a.tenant_id, a.shared, a.label, a.preset, a.host, a.port, a.tls_mode, a.username, a.watch_folder, a.status,
+	COALESCE(a.last_error, ''), COALESCE(a.last_event_at, 0), COALESCE(a.capabilities, '[]'), a.created_at`
 
 func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var a Account
 	var caps string
-	if err := row.Scan(&a.ID, &a.UserID, &a.Label, &a.Preset, &a.Host, &a.Port, &a.TLSMode, &a.Username,
+	if err := row.Scan(&a.ID, &a.UserID, &a.TenantID, &a.Shared, &a.Label, &a.Preset, &a.Host, &a.Port, &a.TLSMode, &a.Username,
 		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt); err != nil {
 		return Account{}, err
 	}
@@ -73,11 +75,10 @@ func (a Account) OwnAddresses() []string {
 	return out
 }
 
-// FirstUser returns the admin account, or ErrNotFound before first-run setup.
+// FirstUser returns the admin account, or ErrNotFound before first-run setup. The command
+// line acts as this user, in its tenant.
 func (s *Store) FirstUser(ctx context.Context) (User, error) {
-	var u User
-	err := s.db.QueryRowContext(ctx, `SELECT id, email, password_hash, created_at FROM users ORDER BY id LIMIT 1`).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+	u, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id LIMIT 1`))
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -88,8 +89,10 @@ func (s *Store) FirstUser(ctx context.Context) (User, error) {
 }
 
 // CreateAccount stores an account with its secret encrypted under the master key. The
-// ciphertext is bound to the row id, which only exists after the insert, so the row is
-// inserted, sealed and updated in one transaction: no reader ever sees it without a secret.
+// account goes into its owner's (a.UserID's) tenant and starts shared or not as
+// NewAccountShared says; a.TenantID and a.Shared are ignored. The ciphertext is bound to
+// the row id, which only exists after the insert, so the row is inserted, sealed and
+// updated in one transaction: no reader ever sees it without a secret.
 func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, secret string) (Account, error) {
 	caps, err := json.Marshal(append([]string{}, a.Capabilities...))
 	if err != nil {
@@ -106,15 +109,18 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 		return Account{}, fmt.Errorf("create account: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO accounts (user_id, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
+	a.Shared = NewAccountShared
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
 		                       watch_folder, status, capabilities, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ?)`,
-		a.UserID, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt)
-	if err != nil {
-		return Account{}, fmt.Errorf("create account: %w", err)
+		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ? FROM users WHERE id = ?
+		 RETURNING id, tenant_id`,
+		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt, a.UserID).
+		Scan(&a.ID, &a.TenantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, fmt.Errorf("create account: user %d: %w", a.UserID, ErrNotFound)
 	}
-	if a.ID, err = res.LastInsertId(); err != nil {
+	if err != nil {
 		return Account{}, fmt.Errorf("create account: %w", err)
 	}
 	secretEnc, dekEnc, err := crypto.Seal(master, a.ID, []byte(secret))
@@ -130,9 +136,11 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 	return a, nil
 }
 
-// Account returns one account, or ErrNotFound.
+// Account returns one account, or ErrNotFound. It does not look at who asks: it is for
+// internal work on a known account (the worker, the executor). A request reads
+// VisibleAccount.
 func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
-	a, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountCols+` FROM accounts WHERE id = ?`, id))
+	a, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountCols+` FROM accounts a WHERE a.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -142,9 +150,40 @@ func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
 	return a, nil
 }
 
-// Accounts lists every account, oldest first.
+// VisibleAccount returns one account the viewer sees, or ErrNotFound: one they do not see
+// is answered as missing.
+func (s *Store) VisibleAccount(ctx context.Context, v Viewer, id int64) (Account, error) {
+	a, err := scanAccount(s.db.QueryRowContext(ctx,
+		`SELECT `+accountCols+` FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a", v), id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("get account: %w", err)
+	}
+	return a, nil
+}
+
+// Accounts lists every account of every tenant, oldest first: for the daemon's own work
+// (starting the watchers, the master key check), never for a request.
 func (s *Store) Accounts(ctx context.Context) ([]Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+accountCols+` FROM accounts ORDER BY id`)
+	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a ORDER BY a.id`)
+}
+
+// VisibleAccounts lists the accounts the viewer sees, oldest first.
+func (s *Store) VisibleAccounts(ctx context.Context, v Viewer) ([]Account, error) {
+	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a WHERE `+visibleAccounts("a", v)+` ORDER BY a.id`)
+}
+
+// TenantAccounts lists every account of a tenant, private ones included, oldest first.
+// It is for checks that span the tenant without showing what they find (a mailbox already
+// connected), never for listing to a person.
+func (s *Store) TenantAccounts(ctx context.Context, tenantID int64) ([]Account, error) {
+	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a WHERE a.tenant_id = ? ORDER BY a.id`, tenantID)
+}
+
+func (s *Store) listAccounts(ctx context.Context, query string, args ...any) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
@@ -161,6 +200,19 @@ func (s *Store) Accounts(ctx context.Context) ([]Account, error) {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
 	return out, nil
+}
+
+// SetAccountShared shares an account with everyone in its tenant, or makes it private to
+// its owner again. The caller checks that the owner asks.
+func (s *Store) SetAccountShared(ctx context.Context, id int64, shared bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET shared = ? WHERE id = ?`, shared, id)
+	if err != nil {
+		return fmt.Errorf("share account: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // AccountSecret decrypts an account's app password or token. It returns crypto.ErrDecrypt

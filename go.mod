@@ -2,6 +2,8 @@ module github.com/TurtleByte-IN/mailrules
 
 go 1.27
 
+toolchain go1.27.2
+
 require (
 	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8

@@ -57,12 +57,13 @@ type Pipeline struct {
 
 	MinConfidence float64 // act threshold for rules that set none
 	BodyChars     int     // plain-text characters shown to models
-	// Live, when set, supplies Router and MinConfidence afresh for every message, so a
-	// change made in Settings needs no restart (settings.Settings.Live).
-	Live func(ctx context.Context) (router *models.Router, minConfidence float64)
-	// Override returns the router for a rule's own model (rules.Rule.Model), or nil when
-	// that model cannot be used (settings.Settings.RouterFor). nil = rules' models are ignored.
-	Override func(ctx context.Context, spec string) *models.Router
+	// Live, when set, supplies Router and MinConfidence afresh for every message from the
+	// settings of the account's tenant, so a change made in Settings needs no restart
+	// (settings.Settings.Live).
+	Live func(ctx context.Context, tenantID int64) (router *models.Router, minConfidence float64)
+	// Override returns the tenant's router for a rule's own model (rules.Rule.Model), or nil
+	// when that model cannot be used (settings.Settings.RouterFor). nil = rules' models are ignored.
+	Override func(ctx context.Context, tenantID int64, spec string) *models.Router
 
 	// Batch is the batch the actions belong to. 0 = the day's live batch; a cleanup run
 	// sets its own, so the whole run can be undone as one.
@@ -158,7 +159,7 @@ func (p *Pipeline) run(ctx context.Context, m store.Message) error {
 			return err
 		}
 		m.State, m.NextAttemptAt = store.StateReview, 0
-		p.Hub.Publish(events.MessageReview, store.ActivityRow{Message: m, Decision: &d})
+		p.Hub.Publish(p.Account.TenantID, m.AccountID, events.MessageReview, store.ActivityRow{Message: m, Decision: &d})
 		return nil
 	}
 	return p.Store.SetMessageState(ctx, m.ID, store.StateError, m.Attempts, p.now().Add(RetryEvery).Unix())
@@ -193,18 +194,21 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 		return err
 	}
 
-	rs, err := p.Store.Rules(ctx, p.Account.UserID)
+	rs, err := p.Store.Rules(ctx, p.Account.TenantID)
 	if err != nil {
 		return err
 	}
-	senders, err := p.Store.SenderRules(ctx, p.Account.UserID)
+	senders, err := p.Store.SenderRules(ctx, p.Account.TenantID)
 	if err != nil {
 		return err
 	}
-	d := Decider{Router: p.Router, Override: p.Override, MinConfidence: p.MinConfidence, Now: now,
-		Examples: Corrections(p.Store, p.Account.UserID)}
+	d := Decider{Router: p.Router, MinConfidence: p.MinConfidence, Now: now, Examples: Corrections(p.Store, p.Account.Owner())}
+	if p.Override != nil {
+		tenant := p.Account.TenantID
+		d.Override = func(ctx context.Context, spec string) *models.Router { return p.Override(ctx, tenant, spec) }
+	}
 	if p.Live != nil {
-		d.Router, d.MinConfidence = p.Live(ctx)
+		d.Router, d.MinConfidence = p.Live(ctx, p.Account.TenantID)
 	}
 	if d.Own, err = OwnMail(ctx, p.Store, p.Account); err != nil {
 		return err
@@ -215,7 +219,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	}
 	res := out.Result
 	if out.Asked {
-		p.Hub.Publish(events.UsageUpdated, nil)
+		p.Hub.Publish(p.Account.TenantID, 0, events.UsageUpdated, nil)
 		u := out.Usage
 		if p.Spent != nil {
 			p.Spent(u.TokensIn+u.TokensOut, u.CostUSD)
@@ -281,7 +285,7 @@ func decisionFrom(out Outcome, messageID int64, now time.Time) store.Decision {
 func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.Result, m *store.Message) {
 	if (dec.Stage == string(rules.StageDecider) || dec.Stage == "fallback") && !res.Review && m.FromAddr != "" {
 		bulk := m.Signals.Bulk && m.Signals.DMARC == "pass"
-		if _, err := learn.Observe(ctx, p.Store, p.Account.UserID, m.FromAddr, bulk, p.now().Unix()); err != nil {
+		if _, err := learn.Observe(ctx, p.Store, p.Account.Owner(), m.FromAddr, bulk, p.now().Unix()); err != nil {
 			slog.WarnContext(ctx, "could not update learned sender rules", "account", p.Account.ID, "error", err.Error())
 		}
 	}
@@ -361,7 +365,7 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 		// Live processing shares one batch per day, so "undo today" is one batch undo.
 		batch := p.Batch
 		if batch == 0 {
-			if batch, err = p.Store.LiveBatch(ctx, p.now()); err != nil {
+			if batch, err = p.Store.LiveBatch(ctx, p.Account.TenantID, p.now()); err != nil {
 				return false, err
 			}
 		}
@@ -375,7 +379,7 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 		return false, err
 	}
 	m.State, m.NextAttemptAt = state, 0
-	p.Hub.Publish(event, store.ActivityRow{Message: *m, Decision: &dec})
+	p.Hub.Publish(p.Account.TenantID, m.AccountID, event, store.ActivityRow{Message: *m, Decision: &dec})
 	return dry, nil
 }
 

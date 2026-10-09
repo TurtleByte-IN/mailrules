@@ -15,17 +15,18 @@ type SenderSeen struct {
 	ListUnsubscribe bool // at least one of them carried a List-Unsubscribe header
 }
 
-// SendersSeen lists every address the user's accounts have seen mail from since `since`
-// (by when MailRules first saw the email).
-func (s *Store) SendersSeen(ctx context.Context, userID, since int64) ([]SenderSeen, error) {
+// SendersSeen lists every address the mailboxes the viewer sees have had mail from since
+// `since` (by when MailRules first saw the email).
+func (s *Store) SendersSeen(ctx context.Context, v Viewer, since int64) ([]SenderSeen, error) {
+	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT g.addr, g.n, g.last_seen, g.unsub, COALESCE((SELECT from_name FROM messages WHERE id = g.last_id), '')
 		 FROM (SELECT m.from_addr AS addr, COUNT(*) AS n, MAX(m.id) AS last_id,
 		              MAX(COALESCE(m.received_at, m.created_at)) AS last_seen,
 		              MAX(COALESCE(json_extract(m.signals, '$.list_unsubscribe'), 0)) AS unsub
-		       FROM messages m JOIN accounts a ON a.id = m.account_id
-		       WHERE a.user_id = ? AND m.created_at >= ? AND COALESCE(m.from_addr, '') <> ''
-		       GROUP BY m.from_addr) g`, userID, since)
+		       FROM messages m
+		       WHERE `+inVisible("m.account_id", v)+` AND m.created_at >= ? AND COALESCE(m.from_addr, '') <> ''
+		       GROUP BY m.from_addr) g`, since)
 	if err != nil {
 		return nil, fmt.Errorf("list senders: %w", err)
 	}
@@ -44,15 +45,17 @@ func (s *Store) SendersSeen(ctx context.Context, userID, since int64) ([]SenderS
 	return out, nil
 }
 
-// latest is every message of the user whose latest decision was made since ?2, with that
-// decision: the unit the stats count. A message decided twice (a retry, a cleanup run)
-// counts once, as it stands now.
-const latest = `WITH latest AS (
+// latest is every message of the mailboxes the viewer sees whose latest decision was made
+// since ?2, with that decision: the unit the stats count. A message decided twice (a retry,
+// a cleanup run) counts once, as it stands now. It leaves ?1 to the query that follows.
+func latest(v Viewer) string {
+	return `WITH latest AS (
 	SELECT m.id AS message_id, m.state AS state, d.stage AS stage, d.rule_id AS rule_id, COALESCE(d.model, '') AS model,
 	       COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, '') AS rule_name
-	FROM messages m JOIN accounts a ON a.id = m.account_id
+	FROM messages m
 	JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
-	WHERE a.user_id = ?1 AND d.created_at >= ?2) `
+	WHERE ` + inVisible("m.account_id", v) + ` AND d.created_at >= ?2) `
+}
 
 // withoutModelSQL is the one definition of "decided without a model", over the latest CTE:
 // a sender rule or a condition rule settled the email, no model was asked, and the rule's
@@ -74,18 +77,18 @@ type Totals struct {
 	WentNowhere int // left in the inbox: no rule matched, it was the mailbox's own mail, it could not be handled, or all that was done to it was undone
 }
 
-// StatsTotals counts the user's emails decided since `since`.
-func (s *Store) StatsTotals(ctx context.Context, userID, since int64) (Totals, error) {
+// StatsTotals counts the emails of the mailboxes the viewer sees decided since `since`.
+func (s *Store) StatsTotals(ctx context.Context, v Viewer, since int64) (Totals, error) {
 	var t Totals
 	// The four groups come from outcomeSQL, which the feed's ?outcome= filter is built from too.
 	went := outcomeSQL("state", "latest.message_id")
 	sum := func(outcome string) string { return `COALESCE(SUM(` + went[outcome] + `), 0)` }
 	err := s.db.QueryRowContext(ctx,
-		latest+`SELECT COUNT(*), COALESCE(SUM(`+withoutModelSQL+`), 0),
-		          (SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN accounts a ON a.id = x.account_id
-		           WHERE a.user_id = ?1 AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2),
+		latest(v)+`SELECT COUNT(*), COALESCE(SUM(`+withoutModelSQL+`), 0),
+		          (SELECT COUNT(DISTINCT x.message_id) FROM actions x
+		           WHERE `+inVisible("x.account_id", v)+` AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2),
 		          `+sum("sorted")+`, `+sum("trashed")+`, `+sum("review")+`, `+sum("inbox")+`
-		        FROM latest`, userID, since).
+		        FROM latest`, 0, since).
 		Scan(&t.Processed, &t.WithoutModel, &t.Trashed, &t.WentSorted, &t.WentTrash, &t.WentReview, &t.WentNowhere)
 	if err != nil {
 		return Totals{}, fmt.Errorf("stats totals: %w", err)
@@ -94,12 +97,13 @@ func (s *Store) StatsTotals(ctx context.Context, userID, since int64) (Totals, e
 	return t, nil
 }
 
-// QuietRules counts the user's enabled rules that were applied to no email since `since`.
-func (s *Store) QuietRules(ctx context.Context, userID, since int64) (int, error) {
+// QuietRules counts the enabled rules of the viewer's tenant that were applied to no email
+// of the mailboxes the viewer sees since `since`.
+func (s *Store) QuietRules(ctx context.Context, v Viewer, since int64) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		latest+`SELECT COUNT(*) FROM rules WHERE user_id = ?1 AND enabled = 1
-		        AND id NOT IN (SELECT rule_id FROM latest WHERE rule_id IS NOT NULL AND state = 'acted')`, userID, since).Scan(&n)
+		latest(v)+`SELECT COUNT(*) FROM rules WHERE tenant_id = ?1 AND enabled = 1
+		        AND id NOT IN (SELECT rule_id FROM latest WHERE rule_id IS NOT NULL AND state = 'acted')`, v.TenantID, since).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("quiet rules: %w", err)
 	}
@@ -138,23 +142,24 @@ func (s *Store) ruleUses(ctx context.Context, what, query string, args ...any) (
 	return out, nil
 }
 
-// TopRules lists the rules applied to the most emails since `since`, most first.
-func (s *Store) TopRules(ctx context.Context, userID, since int64, limit int) ([]RuleUse, error) {
+// TopRules lists the rules applied to the most emails of the mailboxes the viewer sees
+// since `since`, most first.
+func (s *Store) TopRules(ctx context.Context, v Viewer, since int64, limit int) ([]RuleUse, error) {
 	return s.ruleUses(ctx, "top rules",
-		latest+`SELECT rule_id, rule_name, COUNT(*), 0, 0 FROM latest WHERE state = 'acted' AND rule_name <> ''
-		        GROUP BY rule_id, rule_name ORDER BY 3 DESC, rule_name LIMIT ?3`, userID, since, limit)
+		latest(v)+`SELECT rule_id, rule_name, COUNT(*), 0, 0 FROM latest WHERE state = 'acted' AND rule_name <> ''
+		        GROUP BY rule_id, rule_name ORDER BY 3 DESC, rule_name LIMIT ?3`, 0, since, limit)
 }
 
-// RuleCosts lists, per rule, the emails decided for it since `since` and what the model
-// decisions among them cost, dearest first. Every decision counts here, a retry too: it
-// was paid for.
-func (s *Store) RuleCosts(ctx context.Context, userID, since int64) ([]RuleUse, error) {
+// RuleCosts lists, per rule, the emails of the mailboxes the viewer sees decided for it
+// since `since` and what the model decisions among them cost, dearest first. Every
+// decision counts here, a retry too: it was paid for.
+func (s *Store) RuleCosts(ctx context.Context, v Viewer, since int64) ([]RuleUse, error) {
 	return s.ruleUses(ctx, "rule costs",
 		`SELECT d.rule_id, COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, '') AS name,
 		        COUNT(DISTINCT d.message_id), COALESCE(SUM(COALESCE(d.model, '') <> ''), 0), COALESCE(SUM(d.cost_usd), 0)
-		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN accounts a ON a.id = m.account_id
-		 WHERE a.user_id = ? AND d.created_at >= ?
-		 GROUP BY d.rule_id, name ORDER BY 5 DESC, 3 DESC, name`, userID, since)
+		 FROM decisions d JOIN messages m ON m.id = d.message_id
+		 WHERE `+inVisible("m.account_id", v)+` AND d.created_at >= ?
+		 GROUP BY d.rule_id, name ORDER BY 5 DESC, 3 DESC, name`, since)
 }
 
 // UsageRow is one row of the cost ledger.
@@ -163,17 +168,18 @@ type UsageRow struct {
 	Provider  string
 	Model     string
 	Purpose   string // decide | escalate | compose | test | cleanup | suggest
+	Operator  bool   // made with a key the operator holds (MAILRULES_MODE=cloud)
 	Calls     int
 	TokensIn  int
 	TokensOut int
 	CostUSD   float64
 }
 
-// Usage lists the cost ledger from sinceDay (YYYY-MM-DD) on, oldest day first.
-func (s *Store) Usage(ctx context.Context, sinceDay string) ([]UsageRow, error) {
+// Usage lists the tenant's cost ledger from sinceDay (YYYY-MM-DD) on, oldest day first.
+func (s *Store) Usage(ctx context.Context, tenantID int64, sinceDay string) ([]UsageRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT day, provider, model, purpose, calls, tokens_in, tokens_out, cost_usd FROM usage_daily
-		 WHERE day >= ? ORDER BY day, provider, model, purpose`, sinceDay)
+		`SELECT day, provider, model, purpose, operator, calls, tokens_in, tokens_out, cost_usd FROM usage_daily
+		 WHERE tenant_id = ? AND day >= ? ORDER BY day, provider, model, purpose, operator`, tenantID, sinceDay)
 	if err != nil {
 		return nil, fmt.Errorf("list usage: %w", err)
 	}
@@ -181,7 +187,7 @@ func (s *Store) Usage(ctx context.Context, sinceDay string) ([]UsageRow, error) 
 	var out []UsageRow
 	for rows.Next() {
 		var u UsageRow
-		if err := rows.Scan(&u.Day, &u.Provider, &u.Model, &u.Purpose, &u.Calls, &u.TokensIn, &u.TokensOut, &u.CostUSD); err != nil {
+		if err := rows.Scan(&u.Day, &u.Provider, &u.Model, &u.Purpose, &u.Operator, &u.Calls, &u.TokensIn, &u.TokensOut, &u.CostUSD); err != nil {
 			return nil, fmt.Errorf("list usage: %w", err)
 		}
 		out = append(out, u)

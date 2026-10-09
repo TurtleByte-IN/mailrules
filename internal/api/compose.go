@@ -27,9 +27,9 @@ import (
 // the decision router in force, the router of a rule's own model, and the generative model
 // the composer writes with.
 type ModelSource interface {
-	Live(ctx context.Context) (router *models.Router, minConfidence float64)
-	RouterFor(ctx context.Context, spec string) *models.Router
-	Composer(ctx context.Context) (models.Generator, error)
+	Live(ctx context.Context, tenantID int64) (router *models.Router, minConfidence float64)
+	RouterFor(ctx context.Context, tenantID int64, spec string) *models.Router
+	Composer(ctx context.Context, tenantID int64) (models.Generator, error)
 }
 
 func (s *server) modelSource() ModelSource {
@@ -89,15 +89,17 @@ func (s *server) modelFail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// testDecider is the deciding step for a test run on acct's mail: the routers in force, with
-// their calls booked as tests, leaving the account's own mail alone as live sorting does.
-// acct may be nil when no mailbox is connected.
+// testDecider is the deciding step for a test run on acct's mail: the viewer's tenant's
+// routers in force, with their calls booked as tests, leaving the account's own mail alone
+// as live sorting does. acct may be nil when no mailbox is connected.
 func (s *server) testDecider(r *http.Request, acct *store.Account) (pipeline.Decider, error) {
-	src := s.modelSource()
-	router, minConfidence := src.Live(r.Context())
+	src, v := s.modelSource(), viewer(r)
+	router, minConfidence := src.Live(r.Context(), v.TenantID)
 	d := pipeline.Decider{Router: router.For("test"), MinConfidence: minConfidence, Now: s.now(),
-		Examples: pipeline.Corrections(s.store, user(r).ID),
-		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("test") }}
+		Examples: pipeline.Corrections(s.store, v),
+		Override: func(ctx context.Context, spec string) *models.Router {
+			return src.RouterFor(ctx, v.TenantID, spec).For("test")
+		}}
 	if acct == nil {
 		return d, nil
 	}
@@ -112,11 +114,12 @@ func (s *server) reader(accountID int64) (composer.Reader, error) {
 }
 
 // composeAccount picks the mailbox drafts are checked against: the one asked for, or else
-// the first that is connected. Both results are nil when there is none; ok is false when
-// the account asked for does not exist, which has been answered.
+// the first the viewer sees that is connected. Both results are nil when there is none; ok
+// is false when the account asked for does not exist (or is not one the viewer sees),
+// which has been answered.
 func (s *server) composeAccount(w http.ResponseWriter, r *http.Request, id int64) (*store.Account, composer.Reader, bool) {
 	if id != 0 {
-		a, err := s.store.Account(r.Context(), id)
+		a, err := s.store.VisibleAccount(r.Context(), viewer(r), id)
 		if err != nil {
 			invalid(w, "account_id", "No such account.")
 			return nil, nil, false
@@ -127,7 +130,7 @@ func (s *server) composeAccount(w http.ResponseWriter, r *http.Request, id int64
 		}
 		return &a, mb, true
 	}
-	all, err := s.store.Accounts(r.Context())
+	all, err := s.store.VisibleAccounts(r.Context(), viewer(r))
 	if err != nil {
 		internalError(w, r, err)
 		return nil, nil, false
@@ -150,7 +153,7 @@ func (s *server) compose(w http.ResponseWriter, r *http.Request, text string, ac
 	if !ok {
 		return composer.Output{}, false
 	}
-	gen, err := s.modelSource().Composer(r.Context())
+	gen, err := s.modelSource().Composer(r.Context(), viewer(r).TenantID)
 	if err != nil {
 		s.modelFail(w, r, err)
 		return composer.Output{}, false
@@ -161,11 +164,14 @@ func (s *server) compose(w http.ResponseWriter, r *http.Request, text string, ac
 		return composer.Output{}, false
 	}
 	c := composer.Composer{Store: s.store, Gen: gen, Now: s.now, BodyChars: s.Settings.Env.BodyChars}
+	if s.Settings != nil {
+		c.Usage = s.Settings.Ledger(r.Context(), viewer(r).TenantID)
+	}
 	began := time.Now()
 	slog.InfoContext(r.Context(), "compose started", "account", accountID, "reoptimize", rule != nil, "text_chars", len([]rune(text)))
-	out, err := c.Compose(r.Context(), composer.Request{UserID: user(r).ID, Text: strings.TrimSpace(text), Rule: rule,
+	out, err := c.Compose(r.Context(), composer.Request{Viewer: viewer(r), Text: strings.TrimSpace(text), Rule: rule,
 		Account: acct, Mailbox: mb, Decider: decider})
-	s.Hub.Publish(events.UsageUpdated, nil)
+	s.publish(r, 0, events.UsageUpdated, nil)
 	if err != nil {
 		if r.Context().Err() == nil {
 			slog.WarnContext(r.Context(), "compose failed", "account", accountID, "duration_ms", time.Since(began).Milliseconds(), "error", err.Error())
@@ -255,7 +261,7 @@ func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.R
 			rule.Intent = strings.TrimSpace(*in.Intent)
 		}
 		if in.AccountID != nil {
-			if _, err := s.store.Account(r.Context(), *in.AccountID); err != nil {
+			if _, err := s.store.VisibleAccount(r.Context(), viewer(r), *in.AccountID); err != nil {
 				invalid(w, at+".account_id", "No such account.")
 				return nil, nil, false
 			}
@@ -297,7 +303,7 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	// A rule is known by its name (an import replaces the rule of the same name), so a
 	// batch may not bring a name twice, nor one a saved rule has.
-	saved, err := s.store.Rules(r.Context(), user(r).ID)
+	saved, err := s.store.Rules(r.Context(), viewer(r).TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -313,7 +319,7 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	accounts, err := s.store.Accounts(r.Context())
+	accounts, err := s.store.VisibleAccounts(r.Context(), viewer(r))
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -321,8 +327,9 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 	added := make([]store.NewRule, len(rs))
 	for i, rule := range rs {
 		added[i] = store.NewRule{Rule: rule, Position: ins[i].Position}
-		// A rule for every account needs its folders on each of them. An account that is
-		// offline is passed over: the executor creates a missing folder on the first move.
+		// A rule for every account needs its folders on each of them the author sees. An
+		// account that is offline, or a teammate's private one, is passed over: the executor
+		// creates a missing folder on the first move.
 		for _, a := range accounts {
 			if rule.AccountID != 0 && rule.AccountID != a.ID {
 				continue
@@ -333,12 +340,12 @@ func (s *server) handleRulesBatch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	created, err := s.store.CreateRules(r.Context(), user(r).ID, added, s.now().Unix())
+	created, err := s.store.CreateRules(r.Context(), viewer(r).TenantID, user(r).ID, added, s.now().Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	s.Hub.Publish(events.RulesChanged, nil)
+	s.publish(r, 0, events.RulesChanged, nil)
 	items := make([]ruleJSON, len(created))
 	for i, rule := range created {
 		items[i] = toRuleJSON(rule, store.RuleStat{})
@@ -402,7 +409,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "account_id", "An account is required: say which mailbox to test the rules on.")
 		return
 	}
-	acct, err := s.store.Account(ctx, in.AccountID)
+	acct, err := s.store.VisibleAccount(ctx, viewer(r), in.AccountID)
 	if err != nil {
 		invalid(w, "account_id", "No such account.")
 		return
@@ -423,14 +430,14 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 	// tests exactly those and nothing else, each switched on so a rule can be tried before
 	// it is enabled. Only a request that names none tests the saved set as it is, sender
 	// rules included.
-	saved, err := s.store.Rules(ctx, user(r).ID)
+	saved, err := s.store.Rules(ctx, viewer(r).TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
 	var senders []rules.SenderRule
 	if in.RuleIDs == nil && len(in.Rules) == 0 {
-		if senders, err = s.store.SenderRules(ctx, user(r).ID); err != nil {
+		if senders, err = s.store.SenderRules(ctx, viewer(r).TenantID); err != nil {
 			internalError(w, r, err)
 			return
 		}
@@ -496,7 +503,7 @@ func (s *server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if seen.ModelCalls > 0 {
-		s.Hub.Publish(events.UsageUpdated, nil) // the stats screens may show the calls the test booked
+		s.publish(r, 0, events.UsageUpdated, nil) // the stats screens may show the calls the test booked
 	}
 	took := time.Since(began).Milliseconds()
 	switch {

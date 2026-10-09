@@ -21,10 +21,10 @@ type ImportProblem struct{ Path, Message string }
 
 func (e *ImportProblem) Error() string { return e.Path + ": " + e.Message }
 
-// models are the models in force, for comparing with a rules file. The provider keys are not
-// read, so this works where there is no master key (the command line).
-func (s *Settings) models(ctx context.Context) (config.Config, error) {
-	rows, err := s.Store.Settings(ctx)
+// models are the tenant's models in force, for comparing with a rules file. The provider
+// keys are not read, so this works where there is no master key (the command line).
+func (s *Settings) models(ctx context.Context, tenantID int64) (config.Config, error) {
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -37,26 +37,28 @@ func (s *Settings) models(ctx context.Context) (config.Config, error) {
 	return cfg, err
 }
 
-// ExportRules is the user's rules as a rules file: each rule in priority order, with the
-// address of the mailbox it applies to and of every mailbox its account conditions name (not
-// the account's number, which means nothing on another install), and the models in force as
-// the defaults the rules were written against. min_confidence is not a default here: a rule
-// without its own threshold takes the setting at the time, so the file writes none and an
-// import does not pin the current one onto it. A rule whose mailbox was removed has none and
-// is written marked (rules.Rule.MailboxRemoved). Removing a mailbox takes it out of every
-// rule (store.DeleteAccount, ReconcileRemovedMailboxes at start), so a rule naming a mailbox
+// ExportRules is the viewer's tenant's rules as a rules file: each rule in priority order,
+// with the address of the mailbox it applies to and of every mailbox its account conditions
+// name (not the account's number, which means nothing on another install), and the models
+// in force as the defaults the rules were written against. It holds no provider key.
+// min_confidence is not a default here: a rule without its own threshold takes the setting
+// at the time, so the file writes none and an import does not pin the current one onto
+// it. A rule whose mailbox was removed has none and is written marked
+// (rules.Rule.MailboxRemoved). Removing a mailbox takes it out of every rule
+// (store.DeleteAccount, ReconcileRemovedMailboxes at start), so a rule naming a mailbox
 // that no longer exists is a broken invariant, and stops the export rather than write a file
-// that names a number.
-func (s *Settings) ExportRules(ctx context.Context, userID int64) (rules.File, error) {
-	rs, err := s.Store.Rules(ctx, userID)
+// that names a number. The rules are the tenant's, so a mailbox one of them names is looked
+// up among all of the tenant's mailboxes, a teammate's private one too.
+func (s *Settings) ExportRules(ctx context.Context, v store.Viewer) (rules.File, error) {
+	rs, err := s.Store.Rules(ctx, v.TenantID)
 	if err != nil {
 		return rules.File{}, err
 	}
-	cfg, err := s.models(ctx)
+	cfg, err := s.models(ctx, v.TenantID)
 	if err != nil {
 		return rules.File{}, err
 	}
-	accounts, err := s.accountsByID(ctx)
+	accounts, err := s.accountsByID(ctx, v.TenantID)
 	if err != nil {
 		return rules.File{}, err
 	}
@@ -91,8 +93,8 @@ func (s *Settings) ExportRules(ctx context.Context, userID int64) (rules.File, e
 	return f, nil
 }
 
-func (s *Settings) accountsByID(ctx context.Context) (map[int64]store.Account, error) {
-	as, err := s.Store.Accounts(ctx)
+func (s *Settings) accountsByID(ctx context.Context, tenantID int64) (map[int64]store.Account, error) {
+	as, err := s.Store.TenantAccounts(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,8 +135,11 @@ func connected(accounts []store.Account, addr string) []store.Account {
 //     enabled says; one that also has applies_to contradicts itself and is refused. A
 //     marked rule here that the file names unmarked, with the same match and unless and no
 //     applies_to, keeps its mark: the file chose neither a mailbox nor new conditions.
-func (s *Settings) PrepareImport(ctx context.Context, userID int64, f rules.File) ([]rules.Rule, error) {
-	cfg, err := s.models(ctx)
+//
+// The rules are compared with the viewer's tenant's, and a mailbox is matched only among
+// the ones the viewer sees.
+func (s *Settings) PrepareImport(ctx context.Context, v store.Viewer, f rules.File) ([]rules.Rule, error) {
+	cfg, err := s.models(ctx, v.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +157,7 @@ func (s *Settings) PrepareImport(ctx context.Context, userID int64, f rules.File
 			"This file was written for the fallback model %q, but this install uses %s. An import does not change the models: they are settings of this install. Change the model in Settings, or delete fallback_model from the file's defaults, then import again.", m, now)})
 	}
 
-	accounts, err := s.Store.Accounts(ctx)
+	accounts, err := s.Store.VisibleAccounts(ctx, v)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +177,7 @@ func (s *Settings) PrepareImport(ctx context.Context, userID int64, f rules.File
 			r.AccountID = 0
 		case !said:
 			if existing == nil {
-				old, err := s.Store.Rules(ctx, userID)
+				old, err := s.Store.Rules(ctx, v.TenantID)
 				if err != nil {
 					return nil, err
 				}

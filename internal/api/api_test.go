@@ -38,6 +38,7 @@ type env struct {
 	st         *store.Store
 	hub        *events.Hub
 	mb         *mailtest.Mailbox
+	boxes      map[string]*mailtest.Mailbox // fake mailboxes by account username; any other username gets mb
 	mgr        *worker.Manager
 	sett       *settings.Settings
 	decider    *models.Fake
@@ -53,23 +54,23 @@ type env struct {
 
 // Live, RouterFor and Composer make env the daemon's source of models (ModelSource), with
 // scripted fakes in place of the providers.
-func (e *env) Live(context.Context) (*models.Router, float64) {
+func (e *env) Live(_ context.Context, tenantID int64) (*models.Router, float64) {
 	if e.noDecider {
 		return nil, 0.75
 	}
-	return &models.Router{Primary: e.decider, Usage: e.st, Now: e.ck.now}, 0.75
+	return &models.Router{Primary: e.decider, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now}, 0.75
 }
 
-func (e *env) RouterFor(_ context.Context, spec string) *models.Router {
+func (e *env) RouterFor(_ context.Context, tenantID int64, spec string) *models.Router {
 	if d := e.own[spec]; d != nil {
-		return &models.Router{Primary: d, Usage: e.st, Now: e.ck.now}
+		return &models.Router{Primary: d, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now}
 	}
 	return nil
 }
 
-func (e *env) Composer(ctx context.Context) (models.Generator, error) {
+func (e *env) Composer(ctx context.Context, tenantID int64) (models.Generator, error) {
 	if e.realGen {
-		return e.sett.Composer(ctx)
+		return e.sett.Composer(ctx, tenantID)
 	}
 	if e.gen == nil {
 		return nil, settings.ErrNoComposer
@@ -100,7 +101,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: db, st: store.New(db), ck: &clock{t: time.Unix(1_800_000_000, 0)}, hub: events.NewHub(),
-		mb: mailtest.New(1), mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t)}
+		mb: mailtest.New(1), boxes: map[string]*mailtest.Mailbox{}, mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t)}
 	for name, role := range map[string]string{"Trash": mail.RoleTrash, "Archive": mail.RoleArchive, "Sent": mail.RoleSent} {
 		e.mb.AddFolder(name, role)
 	}
@@ -115,7 +116,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	start := func(acct store.Account) {
 		e.mgr.Start(runCtx, &worker.Supervisor{
 			Account: acct, Store: e.st, Hub: e.hub,
-			Open:       func(context.Context) (mail.Mailbox, error) { return e.mb, nil },
+			Open:       func(context.Context) (mail.Mailbox, error) { return e.box(acct), nil },
 			Pipeline:   pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now, Live: e.Live, Override: e.RouterFor},
 			BackoffMin: time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 		})
@@ -127,7 +128,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 			if e.connectErr != nil {
 				return nil, "", e.connectErr
 			}
-			return e.mb, acct.Username, nil
+			return e.box(acct), acct.Username, nil
 		},
 		StartAccount: start, StopAccount: e.mgr.Stop, Modules: modules, Summary: e.summary,
 	}
@@ -136,6 +137,14 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	}
 	e.client = &client{t: t, cookies: map[string]string{}, h: NewHandler(opts)}
 	return e
+}
+
+// box is the fake mailbox an account connects to.
+func (e *env) box(acct store.Account) *mailtest.Mailbox {
+	if mb := e.boxes[acct.Username]; mb != nil {
+		return mb
+	}
+	return e.mb
 }
 
 func eventually(t *testing.T, what string, ok func() bool) {
@@ -754,7 +763,7 @@ func TestSettings(t *testing.T) {
 			t.Errorf("key %s reads as %v on a fresh install", name, set)
 		}
 	}
-	if router, _ := e.sett.Live(ctx); router != nil {
+	if router, _ := e.sett.Live(ctx, 1); router != nil {
 		t.Fatal("a decision model is in use before any key is set")
 	}
 
@@ -812,48 +821,48 @@ func TestSettings(t *testing.T) {
 	if v := stored["key.openrouter_api_key"]; v == "" || strings.Contains(fmt.Sprint(stored), secret) {
 		t.Fatalf("the key is missing from the settings table or stored in plain text: %v", stored)
 	}
-	if cfg, err := e.sett.Effective(ctx); err != nil || cfg.OpenRouterAPIKey != secret {
+	if cfg, err := e.sett.Effective(ctx, 1); err != nil || cfg.OpenRouterAPIKey != secret {
 		t.Fatalf("the stored key does not decrypt: %v", err)
 	}
 	// The stored key is bound to its name: moved to another row, it does not open.
-	if _, err := e.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('key.anthropic_api_key', ?)`, stored["key.openrouter_api_key"]); err != nil {
+	if _, err := e.db.ExecContext(ctx, `INSERT INTO settings (tenant_id, key, value) VALUES (1, 'key.anthropic_api_key', ?)`, stored["key.openrouter_api_key"]); err != nil {
 		t.Fatal(err)
 	}
 	// It reads as not set (a key that cannot be opened must not take the other settings down),
 	// and never as the key it holds.
-	if cfg, err := e.sett.Effective(ctx); err != nil || cfg.AnthropicAPIKey != "" {
+	if cfg, err := e.sett.Effective(ctx, 1); err != nil || cfg.AnthropicAPIKey != "" {
 		t.Errorf("a key moved to another row: effective Anthropic key %q, err %v; want it not set", cfg.AnthropicAPIKey, err)
 	}
-	if _, err := e.db.ExecContext(ctx, `DELETE FROM settings WHERE key = 'key.anthropic_api_key'`); err != nil {
+	if _, err := e.db.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = 1 AND key = 'key.anthropic_api_key'`); err != nil {
 		t.Fatal(err)
 	}
 
 	// The change is in force at once, with no restart: the next email gets a router and the new threshold.
-	router, minConfidence := e.sett.Live(ctx)
+	router, minConfidence := e.sett.Live(ctx, 1)
 	if router == nil || router.Name() != "jev" || router.Fallback != nil || router.EscalateBelow != 0.6 || minConfidence != 0.8 {
 		t.Fatalf("after the key was set: router %v, threshold %v", router, minConfidence)
 	}
-	if same, _ := e.sett.Live(ctx); same != router {
+	if same, _ := e.sett.Live(ctx, 1); same != router {
 		t.Error("the router was rebuilt although nothing changed")
 	}
-	if on, _ := e.st.DryRun(ctx, true); on {
+	if on, _ := e.st.DryRun(ctx, 1, true); on {
 		t.Error("the executor still sees dry-run on")
 	}
 	// Removing the stored key puts the environment's (none here) back in force.
 	e.call(http.MethodPatch, "/api/settings", `{"keys":{"openrouter_api_key":""}}`, http.StatusOK)
-	if router, _ := e.sett.Live(ctx); router != nil {
+	if router, _ := e.sett.Live(ctx, 1); router != nil {
 		t.Error("the decision model is still in use after its key was removed")
 	}
 }
 
 // stream opens the event stream over a real connection and returns its lines.
-func (e *env) stream(t *testing.T, url, lastEventID string) (lines <-chan string, status int) {
+func (c *client) stream(t *testing.T, url, lastEventID string) (lines <-chan string, status int) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url+"/api/events", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range e.cookies {
+	for name, value := range c.cookies {
 		req.AddCookie(&http.Cookie{Name: name, Value: value})
 	}
 	if lastEventID != "" {
@@ -910,8 +919,8 @@ func TestEventStream(t *testing.T) {
 	if _, status := e.stream(t, srv.URL, ""); status != http.StatusUnauthorized {
 		t.Fatalf("stream without a session = %d", status)
 	}
-	e.hub.Publish(events.UsageUpdated, nil) // event 1, before anyone listens
-	e.connect()                             // account.status events as the account goes live
+	e.hub.Publish(1, 0, events.UsageUpdated, nil) // event 1, before anyone listens
+	e.connect()                                   // account.status events as the account goes live
 	e.call(http.MethodPost, "/api/rules/import", rulesYAML, http.StatusOK)
 	published := 0
 	missed, _, cancel := e.hub.Subscribe(-1)
@@ -961,7 +970,7 @@ func TestEventStream(t *testing.T) {
 		}
 	}
 	// And then goes on live.
-	e.hub.Publish(events.UsageUpdated, nil)
+	e.hub.Publish(1, 0, events.UsageUpdated, nil)
 	if eventID, name, _ := next(t, replay); eventID != fmt.Sprint(published+4) || name != events.UsageUpdated {
 		t.Errorf("after the replay: id %s %s", eventID, name)
 	}

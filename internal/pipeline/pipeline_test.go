@@ -53,7 +53,7 @@ func (r *recorder) applied() []string {
 // addCutOff adds a condition-only rule for swiggy.example below the intent rules: the
 // cut-off, the default when the decider picks none of them.
 func (e *env) addCutOff() rules.Rule {
-	r, err := e.st.CreateRule(e.t.Context(), rules.Rule{UserID: e.user.ID, Name: "Orders", Priority: 9, Enabled: true,
+	r, err := e.st.CreateRule(e.t.Context(), 1, rules.Rule{UserID: e.user.ID, Name: "Orders", Priority: 9, Enabled: true,
 		Conditions: rules.Cond{Field: "from_domain", Op: rules.OpEq, Value: "swiggy.example"},
 		Actions:    []rules.Action{{Type: rules.ActMove, Folder: "Orders"}}}, 1)
 	if err != nil {
@@ -105,7 +105,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	rule := func(name, intent string, cond rules.Cond, folder string, priority int, minConf *float64) rules.Rule {
-		r, err := e.st.CreateRule(ctx, rules.Rule{UserID: e.user.ID, Name: name, Intent: intent, Conditions: cond,
+		r, err := e.st.CreateRule(ctx, 1, rules.Rule{UserID: e.user.ID, Name: name, Intent: intent, Conditions: cond,
 			Actions: []rules.Action{{Type: rules.ActMove, Folder: folder}}, Priority: priority, MinConfidence: minConf, Enabled: true}, 1)
 		if err != nil {
 			t.Fatal(err)
@@ -120,7 +120,7 @@ func newEnv(t *testing.T) *env {
 	e.mb = mailtest.New(acct.ID)
 	e.p = &Pipeline{
 		Store: e.st, Mailbox: e.mb, Account: acct, Exec: e.exec, Hub: events.NewHub(),
-		Router:        &models.Router{Primary: e.primary, Fallback: e.fallback, EscalateBelow: 0.75, Usage: e.st, Now: func() time.Time { return e.now }},
+		Router:        &models.Router{Primary: e.primary, Fallback: e.fallback, EscalateBelow: 0.75, Usage: store.Ledger{Store: e.st, TenantID: 1}, Now: func() time.Time { return e.now }},
 		MinConfidence: 0.75, BodyChars: 2000, Now: func() time.Time { return e.now },
 	}
 	return e
@@ -157,7 +157,7 @@ func (e *env) row(ref mail.MsgRef) store.ActivityRow {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	row, err := e.st.ActivityFor(e.t.Context(), m.ID)
+	row, err := e.st.ActivityFor(e.t.Context(), e.user.Viewer(), m.ID)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -172,11 +172,11 @@ func (e *env) row(ref mail.MsgRef) store.ActivityRow {
 func (e *env) settle(ref mail.MsgRef) Outcome {
 	e.t.Helper()
 	ctx := e.t.Context()
-	rs, err := e.st.Rules(ctx, e.user.ID)
+	rs, err := e.st.Rules(ctx, 1)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	senders, err := e.st.SenderRules(ctx, e.user.ID)
+	senders, err := e.st.SenderRules(ctx, 1)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestProcessEndToEnd(t *testing.T) {
 		{
 			name: "sender rule routes without a model", from: "orders@swiggy.example",
 			setup: func(e *env) {
-				_, err := e.st.PutSenderRule(e.t.Context(), rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchAddress,
+				_, err := e.st.PutSenderRule(e.t.Context(), 1, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchAddress,
 					Value: "orders@swiggy.example", RuleID: e.receipts.ID, Verdict: rules.VerdictRoute, Source: "user"}, 1)
 				if err != nil {
 					e.t.Fatal(err)
@@ -223,7 +223,7 @@ func TestProcessEndToEnd(t *testing.T) {
 		{
 			name: "blocked sender is trashed", from: "spam@junk.example",
 			setup: func(e *env) {
-				_, err := e.st.PutSenderRule(e.t.Context(), rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain,
+				_, err := e.st.PutSenderRule(e.t.Context(), 1, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain,
 					Value: "junk.example", Verdict: rules.VerdictBlock, Source: "user"}, 1)
 				if err != nil {
 					e.t.Fatal(err)
@@ -604,7 +604,7 @@ func TestLearnedSenderRule(t *testing.T) {
 	ctx := t.Context()
 	const sender = "orders@swiggy.example"
 	learned := func() []rules.SenderRule {
-		srs, err := e.st.SenderRules(ctx, e.user.ID)
+		srs, err := e.st.SenderRules(ctx, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -642,7 +642,7 @@ func TestLearnedSenderRule(t *testing.T) {
 	}
 
 	// Any correction for that sender deletes the learned rule, and the model is asked again.
-	if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
+	if _, err := e.st.AddCorrection(ctx, 1, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
 		RightRuleID: e.receipts.ID, Example: "{}", CreatedAt: e.now.Unix()}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestLearnedSenderRule(t *testing.T) {
 	}
 
 	// "Always for this sender" stores a user rule instead, which learning never replaces.
-	if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, RightRuleID: e.receipts.ID,
+	if _, err := e.st.AddCorrection(ctx, 1, e.user.ID, store.Correction{MessageID: row.Message.ID, RightRuleID: e.receipts.ID,
 		Example: "{}", CreatedAt: e.now.Unix()}, rules.MatchAddress); err != nil {
 		t.Fatal(err)
 	}
@@ -697,7 +697,7 @@ func TestBulkSenderLearnedAfterOne(t *testing.T) {
 			e.primary.DecideFunc = answer(e.food.ID, tc.confidence)
 			e.processWith(sender, "issue 2", tc.headers)
 
-			srs, err := e.st.SenderRules(t.Context(), e.user.ID)
+			srs, err := e.st.SenderRules(t.Context(), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -739,7 +739,7 @@ func TestDryRunLearnsNothing(t *testing.T) {
 			e.withExecutor(true)
 			e.primary.DecideFunc = answer(e.food.ID, 0.95) // confident enough to learn from
 			learned := func() []rules.SenderRule {
-				srs, err := e.st.SenderRules(ctx, e.user.ID)
+				srs, err := e.st.SenderRules(ctx, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -752,7 +752,7 @@ func TestDryRunLearnsNothing(t *testing.T) {
 				t.Fatalf("dry-run decisions learned a sender rule: %+v", got)
 			}
 
-			if err := e.st.SetDryRun(ctx, false); err != nil {
+			if err := e.st.SetDryRun(ctx, 1, false); err != nil {
 				t.Fatal(err)
 			}
 			for i := range learn.After {
@@ -797,13 +797,13 @@ func TestOwnMailLeftAlone(t *testing.T) {
 			ctx := t.Context()
 			e.p.Account.Preset, e.p.Account.Username = tc.preset, tc.username
 			if tc.off {
-				if err := e.st.SetSetting(ctx, store.SettingLeaveOwnMail, "false"); err != nil {
+				if err := e.st.SetSetting(ctx, 1, store.SettingLeaveOwnMail, "false"); err != nil {
 					t.Fatal(err)
 				}
 			}
 			_, domain, _ := strings.Cut(strings.ToLower(tc.from), "@")
 			if tc.blocked {
-				if _, err := e.st.PutSenderRule(ctx, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: domain,
+				if _, err := e.st.PutSenderRule(ctx, 1, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: domain,
 					Verdict: rules.VerdictBlock, Source: "user"}, e.now.Unix()); err != nil {
 					t.Fatal(err)
 				}
@@ -812,7 +812,7 @@ func TestOwnMailLeftAlone(t *testing.T) {
 			row := e.processWith(tc.from, "my reply", "List-Unsubscribe: <mailto:u@"+domain+">\r\n"+
 				"Authentication-Results: mx.example.test; dmarc=pass header.from="+domain+"\r\n")
 
-			srs, err := e.st.SenderRules(ctx, e.user.ID)
+			srs, err := e.st.SenderRules(ctx, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -828,7 +828,7 @@ func TestOwnMailLeftAlone(t *testing.T) {
 					t.Errorf("model calls %d, executor calls %d, learned %v, state %s", asked, len(e.exec.calls), learned, row.Message.State)
 				}
 				// Counted as an email left in the inbox, never as one decided without a model.
-				tot, err := e.st.StatsTotals(ctx, e.user.ID, 0)
+				tot, err := e.st.StatsTotals(ctx, e.user.Viewer(), 0)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -883,7 +883,7 @@ func TestLiveProcessingWithTheExecutor(t *testing.T) {
 
 	// "Undo today": the mail comes back to the inbox under a new UID, and the watcher
 	// reports that UID. It is the same message, not new mail, and must not be sorted again.
-	if u, err := x.UndoBatch(ctx, day1); u.Actions != 2 || err != nil {
+	if u, err := x.UndoBatch(ctx, e.user.Viewer(), day1); u.Actions != 2 || err != nil {
 		t.Fatalf("UndoBatch = %+v, %v", u, err)
 	}
 	back, _ := e.st.Message(ctx, row.Message.ID)
@@ -894,7 +894,7 @@ func TestLiveProcessingWithTheExecutor(t *testing.T) {
 	if err := e.p.Process(ctx, back.Location()); err != nil {
 		t.Fatal(err)
 	}
-	all, _ := e.st.Activity(ctx, store.ActivityFilter{})
+	all, _ := e.st.Activity(ctx, e.user.Viewer(), store.ActivityFilter{})
 	if after, _ := e.st.Message(ctx, row.Message.ID); len(all) != 2 || len(e.primary.Requests()) != calls || after.Location() != back.Location() {
 		t.Errorf("undone mail was treated as new: %d messages, %d new model calls, now at %+v", len(all), len(e.primary.Requests())-calls, after.Location())
 	}
@@ -937,7 +937,7 @@ func TestDryRunCountsNoSenderRuleHits(t *testing.T) {
 			if tc.verdict == rules.VerdictRoute {
 				sr.RuleID = e.food.ID
 			}
-			if _, err := e.st.PutSenderRule(ctx, sr, 1); err != nil {
+			if _, err := e.st.PutSenderRule(ctx, 1, sr, 1); err != nil {
 				t.Fatal(err)
 			}
 			var row store.ActivityRow
@@ -953,7 +953,7 @@ func TestDryRunCountsNoSenderRuleHits(t *testing.T) {
 			if row.Decision.Stage != "sender" || row.Message.State != store.StateActed && tc.verdict == rules.VerdictRoute {
 				t.Fatalf("decision %+v, state %s", row.Decision, row.Message.State)
 			}
-			if srs, _ := e.st.SenderRules(ctx, e.user.ID); len(srs) != 1 || srs[0].Hits != tc.wantHits {
+			if srs, _ := e.st.SenderRules(ctx, 1); len(srs) != 1 || srs[0].Hits != tc.wantHits {
 				t.Errorf("sender rules = %+v, want %d hits", srs, tc.wantHits)
 			}
 		})
@@ -970,7 +970,7 @@ func TestReviewAndRetryWithTheExecutor(t *testing.T) {
 
 	// Live, below the threshold: Needs review, and the mailbox is not touched at all.
 	for _, dry := range []bool{false, true} {
-		if err := e.st.SetDryRun(ctx, dry); err != nil {
+		if err := e.st.SetDryRun(ctx, 1, dry); err != nil {
 			t.Fatal(err)
 		}
 		row := e.process("orders@swiggy.example", fmt.Sprintf("unsure dry-run %v", dry))
@@ -988,7 +988,7 @@ func TestReviewAndRetryWithTheExecutor(t *testing.T) {
 
 	// Live again, on a server that cannot move: the action fails, is recorded as failed
 	// and is not retried.
-	if err := e.st.SetDryRun(ctx, false); err != nil {
+	if err := e.st.SetDryRun(ctx, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	e.mb.Caps = mail.Caps{}
@@ -1005,7 +1005,7 @@ func TestRuleModelOverride(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
 	e.receipts.Model = "clef:clef-flash"
-	if err := e.st.UpdateRule(ctx, e.receipts, 2); err != nil {
+	if err := e.st.UpdateRule(ctx, 1, e.receipts, 2); err != nil {
 		t.Fatal(err)
 	}
 	own := &models.Fake{NameValue: "clef", DecideFunc: func(models.DecideRequest) (models.Decision, models.Usage, error) {
@@ -1013,12 +1013,12 @@ func TestRuleModelOverride(t *testing.T) {
 	}}
 	var asked []string
 	usable := true
-	e.p.Override = func(_ context.Context, spec string) *models.Router {
+	e.p.Override = func(_ context.Context, _ int64, spec string) *models.Router {
 		asked = append(asked, spec)
 		if !usable {
 			return nil
 		}
-		return &models.Router{Primary: own, Usage: e.st}
+		return &models.Router{Primary: own, Usage: store.Ledger{Store: e.st, TenantID: 1}}
 	}
 	e.primary.DecideFunc = answer(e.food.ID, 0.9)
 
@@ -1058,7 +1058,7 @@ func TestFallbackSeesCorrectionsAndTheSpreadIsKept(t *testing.T) {
 		row := e.process(from, subject)
 		ex, _ := json.Marshal(message.Summary{From: from, FromDomain: from[strings.IndexByte(from, '@')+1:], Subject: subject})
 		e.now = e.now.Add(time.Minute)
-		if _, err := e.st.AddCorrection(ctx, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
+		if _, err := e.st.AddCorrection(ctx, 1, e.user.ID, store.Correction{MessageID: row.Message.ID, WrongRuleID: e.food.ID,
 			RightRuleID: right, Example: string(ex), CreatedAt: e.now.Unix()}, ""); err != nil {
 			t.Fatal(err)
 		}
@@ -1123,7 +1123,7 @@ func TestSortExistingMail(t *testing.T) {
 		t.Errorf("sorting existing mail moved the watch position: %v", err)
 	}
 	// Live: the same email is decided afresh and moved, though it was seen before.
-	if err := e.st.SetDryRun(ctx, false); err != nil {
+	if err := e.st.SetDryRun(ctx, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Sort(ctx, ref); err != nil {
@@ -1142,14 +1142,14 @@ func TestSortExistingMail(t *testing.T) {
 	}
 
 	// A sender rule that settles an email counts the hit.
-	sr, err := e.st.PutSenderRule(ctx, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: "swiggy.example", Verdict: rules.VerdictKeep, Source: "user"}, 1)
+	sr, err := e.st.PutSenderRule(ctx, 1, rules.SenderRule{UserID: e.user.ID, MatchType: rules.MatchDomain, Value: "swiggy.example", Verdict: rules.VerdictKeep, Source: "user"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.process("orders@swiggy.example", "order 3")
 	e.process("offers@mail.swiggy.example", "order 4")
 	e.process("hello@news.example", "weekly issue")
-	if srs, _ := e.st.SenderRules(ctx, e.user.ID); len(srs) != 1 || srs[0].ID != sr.ID || srs[0].Hits != 2 {
+	if srs, _ := e.st.SenderRules(ctx, 1); len(srs) != 1 || srs[0].ID != sr.ID || srs[0].Hits != 2 {
 		t.Errorf("sender rules = %+v, want 2 hits", srs)
 	}
 }

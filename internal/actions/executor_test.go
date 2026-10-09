@@ -260,7 +260,7 @@ func TestApply(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
 			if tt.trashOff {
-				if err := e.st.SetTrashToFolder(t.Context(), false); err != nil {
+				if err := e.st.SetTrashToFolder(t.Context(), 1, false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -321,7 +321,7 @@ func TestApplyFailures(t *testing.T) {
 			if err := e.st.SaveFolders(e.t.Context(), e.acct.ID, roleFolders[:1]); err != nil {
 				e.t.Fatal(err)
 			}
-			if err := e.st.SetTrashToFolder(e.t.Context(), false); err != nil {
+			if err := e.st.SetTrashToFolder(e.t.Context(), 1, false); err != nil {
 				e.t.Fatal(err)
 			}
 		}, act("trash", "read"), nil, "no Trash folder", []string{"failed"}, "INBOX"},
@@ -373,7 +373,7 @@ func TestDryRun(t *testing.T) {
 	d := e.deliver("1")
 	all := act("move:Food", "trash", "archive", "junk", "flag", "unflag", "read", "unread", "keep")
 
-	batch, err := e.st.CreateBatch(ctx, store.BatchLive, store.BatchDone, 1)
+	batch, err := e.st.CreateBatch(ctx, 1, store.BatchLive, store.BatchDone, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestDryRun(t *testing.T) {
 	}
 
 	// The stored switch wins over the default, in both directions, without a restart.
-	if err := e.st.SetDryRun(ctx, false); err != nil {
+	if err := e.st.SetDryRun(ctx, 1, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.x.Apply(ctx, d, act("read"), 0); err != nil {
@@ -420,7 +420,7 @@ func TestDryRun(t *testing.T) {
 		t.Errorf("with dry-run off the action did not run: %v", flags)
 	}
 	e.x.DryRunDefault = false
-	if err := e.st.SetDryRun(ctx, true); err != nil {
+	if err := e.st.SetDryRun(ctx, 1, true); err != nil {
 		t.Fatal(err)
 	}
 	e.mb.calls = nil
@@ -451,7 +451,7 @@ func TestMailboxOffersNoDelete(t *testing.T) {
 func TestUndoBatch(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
-	batch, err := e.st.CreateBatch(ctx, store.BatchLive, store.BatchDone, 1)
+	batch, err := e.st.CreateBatch(ctx, 1, store.BatchLive, store.BatchDone, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestUndoBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u, err := e.x.UndoBatch(ctx, batch)
+	u, err := e.x.UndoBatch(ctx, e.user.Viewer(), batch)
 	if u != (Undid{Actions: 8, Emails: 2}) || err != nil {
 		t.Fatalf("UndoBatch = %+v, %v", u, err)
 	}
@@ -498,10 +498,10 @@ func TestUndoBatch(t *testing.T) {
 	if got := e.mb.changes(); got[len(got)-1] != `store -\Flagged` || got[len(got)-2] != "move INBOX" {
 		t.Errorf("undo order = %v", got[len(got)-4:])
 	}
-	if u, err := e.x.UndoBatch(ctx, batch); u != (Undid{}) || err != nil {
+	if u, err := e.x.UndoBatch(ctx, e.user.Viewer(), batch); u != (Undid{}) || err != nil {
 		t.Errorf("undoing a batch twice = %+v, %v", u, err)
 	}
-	if _, err := e.x.UndoBatch(ctx, 999); !errors.Is(err, store.ErrNotFound) {
+	if _, err := e.x.UndoBatch(ctx, e.user.Viewer(), 999); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("unknown batch: %v", err)
 	}
 	if e.accs.locks == 0 {
@@ -510,7 +510,7 @@ func TestUndoBatch(t *testing.T) {
 
 	// One message was deleted by the user: the others are still undone, the error says
 	// which action could not be, and the batch is not marked undone.
-	batch2, _ := e.st.CreateBatch(ctx, store.BatchLive, store.BatchDone, 2)
+	batch2, _ := e.st.CreateBatch(ctx, 1, store.BatchLive, store.BatchDone, 2)
 	gone, kept := e.deliver("gone"), e.deliver("kept")
 	for _, d := range []DecisionRecord{gone, kept} {
 		if _, err := e.x.Apply(ctx, d, act("move:Food"), batch2); err != nil {
@@ -521,7 +521,7 @@ func TestUndoBatch(t *testing.T) {
 	if _, err := e.mb.Mailbox.Move(ctx, ref, "Trash"); err != nil { // not through the executor: "outside MailRules"
 		t.Fatal(err)
 	}
-	u, err = e.x.UndoBatch(ctx, batch2)
+	u, err = e.x.UndoBatch(ctx, e.user.Viewer(), batch2)
 	if u != (Undid{Actions: 1, Emails: 1, Failed: 1}) || !errors.Is(err, ErrGone) {
 		t.Fatalf("UndoBatch with a missing message = %+v, %v", u, err)
 	}
@@ -563,7 +563,7 @@ func TestCorrect(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
 	rule := func(name string, acts ...string) rules.Rule {
-		r, err := e.st.CreateRule(ctx, rules.Rule{UserID: e.user.ID, Name: name, Intent: name, Actions: act(acts...), Enabled: true}, 1)
+		r, err := e.st.CreateRule(ctx, 1, rules.Rule{UserID: e.user.ID, Name: name, Intent: name, Actions: act(acts...), Enabled: true}, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -577,13 +577,13 @@ func TestCorrect(t *testing.T) {
 	if _, err := e.x.Apply(ctx, d, food.Actions, 0); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := e.st.AddLearnedSenderRule(ctx, e.user.ID, "orders@shop.example", food.ID, 1); !ok || err != nil {
+	if ok, err := e.st.AddLearnedSenderRule(ctx, 1, e.user.ID, "orders@shop.example", food.ID, 1); !ok || err != nil {
 		t.Fatal(ok, err)
 	}
 	_, live, cancel := e.x.Hub.Subscribe(0)
 	defer cancel()
 
-	batch, err := e.x.Correct(ctx, Correction{MessageID: d.MessageID, RightRuleID: receipts.ID})
+	batch, err := e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: d.MessageID, RightRuleID: receipts.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestCorrect(t *testing.T) {
 		wrong != food.ID || right != receipts.ID || !strings.Contains(example, `"Subject":"order 1"`) || !strings.Contains(example, "orders@shop.example") {
 		t.Errorf("correction = wrong %d right %d example %s, %v", wrong, right, example, err)
 	}
-	if srs, _ := e.st.SenderRules(ctx, e.user.ID); len(srs) != 0 {
+	if srs, _ := e.st.SenderRules(ctx, 1); len(srs) != 0 {
 		t.Errorf("the learned sender rule survived: %+v", srs)
 	}
 	if m, _ := e.st.Message(ctx, d.MessageID); m.State != store.StateActed {
@@ -619,7 +619,7 @@ func TestCorrect(t *testing.T) {
 	}
 
 	// The correction is itself one batch: undoing it puts the mail back in the inbox, unread.
-	if u, err := e.x.UndoBatch(ctx, batch); u != (Undid{Actions: 2, Emails: 1}) || err != nil {
+	if u, err := e.x.UndoBatch(ctx, e.user.Viewer(), batch); u != (Undid{Actions: 2, Emails: 1}) || err != nil {
 		t.Fatalf("undo of the correction batch = %+v, %v", u, err)
 	}
 	if ref, flags := e.where(d.MessageID); ref.Folder != "INBOX" || len(flags) != 0 {
@@ -627,7 +627,7 @@ func TestCorrect(t *testing.T) {
 	}
 
 	// "Keep in the inbox, always for this sender".
-	batch, err = e.x.Correct(ctx, Correction{MessageID: d.MessageID, Always: rules.MatchAddress})
+	batch, err = e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: d.MessageID, Always: rules.MatchAddress})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,26 +635,26 @@ func TestCorrect(t *testing.T) {
 	if last := rows[len(rows)-1]; last.Kind != rules.ActKeep || last.BatchID != batch || last.Status != store.ActionDone {
 		t.Errorf("keep action = %+v", last)
 	}
-	srs, _ := e.st.SenderRules(ctx, e.user.ID)
+	srs, _ := e.st.SenderRules(ctx, 1)
 	if len(srs) != 1 || srs[0].Verdict != rules.VerdictKeep || srs[0].Source != "user" || srs[0].Value != "orders@shop.example" {
 		t.Errorf("sender rules = %+v", srs)
 	}
 
 	// Errors: unknown message, unknown rule, and mail the user has since deleted.
-	if _, err := e.x.Correct(ctx, Correction{MessageID: 999}); !errors.Is(err, store.ErrNotFound) {
+	if _, err := e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: 999}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("unknown message: %v", err)
 	}
-	if _, err := e.x.Correct(ctx, Correction{MessageID: d.MessageID, RightRuleID: 999}); !errors.Is(err, store.ErrNotFound) {
+	if _, err := e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: d.MessageID, RightRuleID: 999}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("unknown rule: %v", err)
 	}
-	if _, err := e.x.Correct(ctx, Correction{MessageID: d.MessageID, RightRuleID: food.ID}); err != nil {
+	if _, err := e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: d.MessageID, RightRuleID: food.ID}); err != nil {
 		t.Fatal(err)
 	}
 	ref, _ := e.where(d.MessageID)
 	if _, err := e.mb.Mailbox.Move(ctx, ref, "Trash"); err != nil {
 		t.Fatal(err)
 	}
-	batch, err = e.x.Correct(ctx, Correction{MessageID: d.MessageID, RightRuleID: receipts.ID})
+	batch, err = e.x.Correct(ctx, Correction{By: e.user.Viewer(), MessageID: d.MessageID, RightRuleID: receipts.ID})
 	if b, _ := e.st.Batch(ctx, batch); !errors.Is(err, ErrGone) || b.Status != store.BatchFailed {
 		t.Errorf("correcting mail that is gone: %v, batch %+v", err, b)
 	}
@@ -681,7 +681,7 @@ func TestUndoSince(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	batch, u, err := e.x.UndoSince(ctx, 0, 4000)
+	batch, u, err := e.x.UndoSince(ctx, e.user.Viewer(), 0, 4000)
 	if err != nil || u != (Undid{Actions: 2, Emails: 1, Failed: 2}) {
 		t.Fatalf("UndoSince = %+v, %v", u, err)
 	}
@@ -694,7 +694,7 @@ func TestUndoSince(t *testing.T) {
 	if ref, _ := e.where(old.MessageID); ref.Folder != "Food" {
 		t.Errorf("an action from before the time was undone: the message is in %s", ref.Folder)
 	}
-	if batch, u, err := e.x.UndoSince(ctx, 77, 0); err != nil || u != (Undid{}) || batch == 0 {
+	if batch, u, err := e.x.UndoSince(ctx, e.user.Viewer(), 77, 0); err != nil || u != (Undid{}) || batch == 0 {
 		t.Errorf("UndoSince for a rule with no actions = batch %d, %+v, %v", batch, u, err)
 	}
 }

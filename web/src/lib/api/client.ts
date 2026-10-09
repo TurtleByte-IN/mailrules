@@ -25,10 +25,13 @@ export class ApiError extends Error {
 export const needsSettings = (e: unknown): e is ApiError =>
   e instanceof ApiError && (e.code === 'no_composer_model' || e.code === 'anthropic_workspace_needed');
 
-let onUnauthorized = (_code: string) => {};
+let onUnauthorized = (_code: string, _signIn?: string) => {};
 
-/** Called once by the auth state; runs on any 401 with the error code so the app can show Setup or Login. */
-export function setUnauthorizedHandler(fn: (code: string) => void) {
+/**
+ * Called once by the auth state; runs on any 401 with the error code so the app can show Setup or
+ * Login, and the sign-in path a sign-in module hands out (only on `GET /api/auth/me`).
+ */
+export function setUnauthorizedHandler(fn: (code: string, signIn?: string) => void) {
   onUnauthorized = fn;
 }
 
@@ -47,7 +50,7 @@ export async function request(method: string, path: string, headers: Record<stri
   if (res.ok) return res;
 
   const err = (await res.json().catch(() => null))?.error;
-  if (res.status === 401) onUnauthorized(err?.code ?? 'unauthenticated');
+  if (res.status === 401) onUnauthorized(err?.code ?? 'unauthenticated', err?.sign_in || undefined);
   throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path);
 }
 

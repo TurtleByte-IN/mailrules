@@ -162,7 +162,7 @@ func rulesDB(ctx context.Context, args []string, getenv func(string) string, out
 	}
 
 	if args[0] == "export" {
-		f, err := sett.ExportRules(ctx, user.ID)
+		f, err := sett.ExportRules(ctx, user.Viewer())
 		if err != nil {
 			return err
 		}
@@ -184,11 +184,11 @@ func rulesDB(ctx context.Context, args []string, getenv func(string) string, out
 	if err != nil {
 		return fmt.Errorf("%s:\n%w", args[1], err)
 	}
-	toStore, err := sett.PrepareImport(ctx, user.ID, f)
+	toStore, err := sett.PrepareImport(ctx, user.Viewer(), f)
 	if err != nil {
 		return fmt.Errorf("%s:\n%w", args[1], err)
 	}
-	created, updated, err := st.ImportRules(ctx, user.ID, toStore, time.Now().Unix())
+	created, updated, err := st.ImportRules(ctx, user.TenantID, user.ID, toStore, time.Now().Unix())
 	if err != nil {
 		return err
 	}

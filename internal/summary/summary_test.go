@@ -3,6 +3,7 @@ package summary
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,7 +54,7 @@ func newFixture(t *testing.T) *fixture {
 		name string
 		dst  *int64
 	}{{"Receipts", &f.receipts}, {"Scams", &f.scams}} {
-		saved, err := f.st.CreateRule(ctx, rules.Rule{UserID: f.user.ID, Name: r.name, Actions: []rules.Action{{Type: rules.ActMove, Folder: r.name}}, Priority: 1, Enabled: true}, 1)
+		saved, err := f.st.CreateRule(ctx, 1, rules.Rule{UserID: f.user.ID, Name: r.name, Actions: []rules.Action{{Type: rules.ActMove, Folder: r.name}}, Priority: 1, Enabled: true}, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,7 +171,7 @@ func TestBuild(t *testing.T) {
 			for _, e := range tt.emails(f) {
 				f.add(t, e)
 			}
-			c, err := build(t.Context(), f.st, f.user.ID, tuesday8.Add(-24*time.Hour), tuesday8, false)
+			c, err := build(t.Context(), f.st, f.user.Viewer(), tuesday8.Add(-24*time.Hour), tuesday8, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -214,7 +215,7 @@ func TestBuildCapsTheLists(t *testing.T) {
 	for range maxReview + 2 {
 		f.add(t, email{from: "r@x.example", subject: "Which?", state: store.StateReview, at: in})
 	}
-	c, err := build(t.Context(), f.st, f.user.ID, tuesday8.Add(-24*time.Hour), tuesday8, false)
+	c, err := build(t.Context(), f.st, f.user.Viewer(), tuesday8.Add(-24*time.Hour), tuesday8, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +410,7 @@ func newService(f *fixture, sender mailer.Sender, ck *clockAt) *Service {
 
 func (f *fixture) switchOn(t *testing.T, s Settings) {
 	t.Helper()
-	if err := save(t.Context(), f.st, s); err != nil {
+	if err := save(t.Context(), f.st, 1, s); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -659,17 +660,53 @@ func TestPrepareStoresNothingUntilCommit(t *testing.T) {
 	f := newFixture(t)
 	svc := newService(f, &mailertest.Sender{}, &clockAt{tuesday8})
 	on := true
-	commit, err := svc.Prepare(t.Context(), Patch{Enabled: &on})
+	commit, err := svc.Prepare(t.Context(), 1, Patch{Enabled: &on})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := load(t.Context(), f.st); s.Enabled {
+	if s, _ := load(t.Context(), f.st, 1); s.Enabled {
 		t.Fatal("stored before commit")
 	}
 	if err := commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := load(context.Background(), f.st); !s.Enabled || s.EnabledAt != tuesday8.Unix() {
+	if s, _ := load(context.Background(), f.st, 1); !s.Enabled || s.EnabledAt != tuesday8.Unix() {
 		t.Fatalf("after commit: %+v", s)
+	}
+}
+
+// The saved address is the tenant's, but a summary covers the user's own private mailboxes,
+// so it goes there only while the tenant has one member; once a teammate joins, each
+// member's summary goes to their own email.
+func TestRecipientFollowsTenantSize(t *testing.T) {
+	tests := []struct {
+		name  string
+		saved string
+		mates int
+		want  string
+	}{
+		{"no address saved", "", 0, "admin@example.com"},
+		{"one member, address saved", "neha@example.com", 0, "neha@example.com"},
+		{"two members, address saved", "neha@example.com", 1, "admin@example.com"},
+		{"two members, none saved", "", 1, "admin@example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.switchOn(t, Settings{Frequency: Daily, Weekday: "monday", Time: "08:00", TimeZone: "UTC", To: tt.saved})
+			for i := range tt.mates {
+				if _, err := f.st.CreateUser(t.Context(), f.user.TenantID, fmt.Sprintf("mate%d@example.com", i), "hash", 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fake := &mailertest.Sender{}
+			svc := newService(f, fake, &clockAt{tuesday8})
+			if _, to, err := svc.SendTest(t.Context(), f.user); err != nil || to != tt.want {
+				t.Errorf("test summary went to %q, %v; want %q", to, err, tt.want)
+			}
+			if _, _, to, err := svc.Preview(t.Context(), f.user); err != nil || to != tt.want {
+				t.Errorf("preview addressed to %q, %v; want %q", to, err, tt.want)
+			}
+		})
 	}
 }

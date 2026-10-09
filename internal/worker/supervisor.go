@@ -132,7 +132,7 @@ func (s *Supervisor) setStatus(ctx context.Context, status string, err error) {
 	if err := s.Store.SetAccountStatus(context.WithoutCancel(ctx), acct.ID, status, acct.LastError, acct.LastEventAt); err != nil {
 		slog.ErrorContext(ctx, "could not store the account status", "account", acct.ID, "error", err.Error())
 	}
-	s.Hub.Publish(events.AccountStatus, acct)
+	s.Hub.Publish(acct.TenantID, acct.ID, events.AccountStatus, acct)
 }
 
 // discover lists the server's folders and stores them with their special-use roles.

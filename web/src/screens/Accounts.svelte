@@ -4,7 +4,9 @@
   import { ApiError } from '../lib/api/client';
   import { clock, day } from '../lib/format';
   import { accounts, edit, folderNames, load, loadPresets, reconnect, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { auth } from '../lib/state/auth.svelte';
   import { flash } from '../lib/state/toast.svelte';
+  import Toggle from '../lib/components/Toggle.svelte';
   import Wizard from './accounts/Wizard.svelte';
 
   let connecting = $state(false);
@@ -26,7 +28,7 @@
 
   let testing = $state<Record<number, boolean>>({});
   // The Edit form of the mailbox being edited. A new password lives here only, until it is sent or the form closes.
-  let form = $state({ label: '', folder: '', password: '', folders: [] as string[], error: '', errorPath: '', busy: false });
+  let form = $state({ label: '', folder: '', password: '', shared: false, folders: [] as string[], error: '', errorPath: '', busy: false });
 
   // The list names each provider by its preset label.
   if (!accounts.presets.length) loadPresets();
@@ -44,7 +46,7 @@
   }
 
   async function openEdit(a: Account, focus: 'name' | 'password') {
-    form = { label: a.label, folder: a.watch_folder, password: '', folders: [a.watch_folder], error: '', errorPath: '', busy: false };
+    form = { label: a.label, folder: a.watch_folder, password: '', shared: a.shared, folders: [a.watch_folder], error: '', errorPath: '', busy: false };
     editing = a.id;
     await tick();
     document.getElementById('edit-' + focus)?.focus();
@@ -64,6 +66,7 @@
     if (form.label.trim() !== a.label) p.label = form.label.trim();
     if (form.folder !== a.watch_folder) p.watch_folder = form.folder;
     if (form.password.trim()) p.password = form.password;
+    if (form.shared !== a.shared) p.shared = form.shared;
     form.password = '';
     if (!Object.keys(p).length) return closeEdit();
     form.busy = true;
@@ -146,12 +149,21 @@
                 {@render fieldError('password')}
                 <span class="text-[12.5px] text-secondary">Leave empty to keep the current one.</span>
               </label>
+              {#if a.mine && auth.members > 1}
+                <span class="flex flex-[1_1_100%] items-center gap-3">
+                  <Toggle on={form.shared} label="Shared with team" onchange={() => (form.shared = !form.shared)} />
+                  <span class="flex flex-col">
+                    <span class="text-[13px] font-semibold">Shared with team</span>
+                    <span class="text-[12.5px] text-secondary">Everyone in your team sees this mailbox and can act on its mail. Only you can edit it.</span>
+                  </span>
+                </span>
+              {/if}
               <span class="flex flex-[1_1_100%] justify-end gap-2">
                 <button type="button" class="btn" onclick={closeEdit}>Cancel</button>
                 <button class="btn-primary" disabled={form.busy}>{form.busy ? 'Saving…' : 'Save'}</button>
               </span>
             </form>
-          {:else}
+          {:else if a.mine}
             <div class="flex flex-wrap gap-2">
               {#if a.status === 'paused'}
                 <button type="button" class="btn" aria-label="Resume {a.label}" onclick={() => setPaused(a.id, false)}>Resume</button>
@@ -172,6 +184,8 @@
                 <button type="button" class="btn" aria-label="New app password for {a.label}" onclick={() => openEdit(a, 'password')}>New app password</button>
               </div>
             {/if}
+          {:else if a.status === 'auth_failed'}
+            <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">Sign-in failed. The person who added this mailbox needs to enter a new app password.</p>
           {/if}
         </div>
       {:else}

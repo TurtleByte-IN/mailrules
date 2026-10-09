@@ -504,28 +504,28 @@ func TestSettingsModelURLs(t *testing.T) {
 		t.Errorf("after patch = %v", got)
 	}
 	// Ollama needs no key: with its URL set the decider is ready, with no restart.
-	if router, _ := e.sett.Live(t.Context()); router == nil || router.Name() != "ollama" {
+	if router, _ := e.sett.Live(t.Context(), 1); router == nil || router.Name() != "ollama" {
 		t.Fatalf("the ollama decider is not in use: %v", router)
 	}
 	// A rule's own model is built from the same settings, and only when it can be used.
-	if own := e.sett.RouterFor(t.Context(), "ollama:phi4"); own == nil || own != e.sett.RouterFor(t.Context(), "ollama:phi4") {
+	if own := e.sett.RouterFor(t.Context(), 1, "ollama:phi4"); own == nil || own != e.sett.RouterFor(t.Context(), 1, "ollama:phi4") {
 		t.Error("a rule's ollama model is not built, or is rebuilt on every email")
 	}
-	if e.sett.RouterFor(t.Context(), "jev") != nil || e.sett.RouterFor(t.Context(), "nope") != nil {
+	if e.sett.RouterFor(t.Context(), 1, "jev") != nil || e.sett.RouterFor(t.Context(), 1, "nope") != nil {
 		t.Error("a model without its key, or an unknown one, is used")
 	}
 	// An empty string means no URL: the decider can no longer run.
 	if got := e.call(http.MethodPatch, "/api/settings", `{"ollama_url":""}`, http.StatusOK); got["ollama_url"] != "" {
 		t.Errorf("after clearing = %v", got["ollama_url"])
 	}
-	if router, _ := e.sett.Live(t.Context()); router != nil || e.sett.RouterFor(t.Context(), "ollama:phi4") != nil {
+	if router, _ := e.sett.Live(t.Context(), 1); router != nil || e.sett.RouterFor(t.Context(), 1, "ollama:phi4") != nil {
 		t.Error("ollama is still in use after its URL was removed")
 	}
-	if _, err := e.sett.Composer(t.Context()); err == nil {
+	if _, err := e.sett.Composer(t.Context(), 1); err == nil {
 		t.Error("a composer model without an Anthropic key")
 	}
 	e.call(http.MethodPatch, "/api/settings", `{"keys":{"anthropic_api_key":"sk-ant-test"}}`, http.StatusOK)
-	if gen, err := e.sett.Composer(t.Context()); err != nil || gen == nil {
+	if gen, err := e.sett.Composer(t.Context(), 1); err != nil || gen == nil {
 		t.Errorf("composer with a key: %v", err)
 	}
 }

@@ -18,7 +18,7 @@ func TestRetentionJob(t *testing.T) {
 	ctx := t.Context()
 	now := time.Unix(1_800_000_000, 0)
 	days := 30
-	job := Retention{Store: e.st, Days: func(context.Context) int { return days }, Now: func() time.Time { return now }}
+	job := Retention{Store: e.st, Days: func(context.Context, int64) int { return days }, Now: func() time.Time { return now }}
 
 	uid := uint32(0)
 	// seen records an email first seen ago days back, with a snippet, a decision and one

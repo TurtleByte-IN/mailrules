@@ -84,6 +84,7 @@ type route struct {
 	method, path string
 	handler      http.HandlerFunc
 	public       bool // reachable without a session
+	webhook      bool // a call from another server: no CSRF check (only with public)
 }
 
 // routes is the single list of endpoints, the modules' included; a test keeps it in step
@@ -94,11 +95,12 @@ func (s *server) routes() []route {
 		return route{method: method, path: path, handler: h}
 	}
 	builtIn := []route{
-		{post, "/api/auth/setup", s.handleSetup, true},
-		{post, "/api/auth/login", s.handleLogin, true},
-		{post, "/api/auth/logout", s.handleLogout, true},
-		{get, "/api/auth/me", s.handleMe, true},
-		on(post, "/api/auth/password", s.handlePasswordChange),
+		{method: post, path: "/api/auth/setup", handler: s.passwordOnly(s.handleSetup), public: true},
+		{method: post, path: "/api/auth/login", handler: s.passwordOnly(s.handleLogin), public: true},
+		{method: post, path: "/api/auth/logout", handler: s.handleLogout, public: true},
+		{method: get, path: "/api/auth/me", handler: s.handleMe, public: true},
+		// Public only so that a sign-in build refuses it before asking for a session.
+		{method: post, path: "/api/auth/password", handler: s.passwordOnly(s.requireSession(s.handlePasswordChange)), public: true},
 
 		on(get, "/api/presets", s.handlePresets),
 		on(post, "/api/accounts/test", s.handleAccountTest),
@@ -192,11 +194,14 @@ func NewHandler(o Options) http.Handler {
 	})
 	mux.Handle("GET /metrics", s.Metrics.Handler())
 	for _, r := range s.routes() {
-		h := r.handler
+		var h http.Handler = r.handler
 		if !r.public {
-			h = s.requireSession(h)
+			h = s.requireSession(r.handler)
 		}
-		mux.Handle(r.method+" "+r.path, s.csrf(h))
+		if !r.webhook {
+			h = s.csrf(h.ServeHTTP)
+		}
+		mux.Handle(r.method+" "+r.path, h)
 	}
 	// Everything else under /api/ is a JSON 404, so a mistyped endpoint never gets the UI's
 	// index.html. The UI takes what is left; the patterns above are more specific and win.
@@ -247,6 +252,7 @@ type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Path    string `json:"path,omitempty"`
+	SignIn  string `json:"sign_in,omitempty"` // where to sign in, when a module signs people in
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

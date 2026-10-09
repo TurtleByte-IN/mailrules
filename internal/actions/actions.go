@@ -26,5 +26,6 @@ type Executor interface {
 	// A failure stops the remaining actions and is returned with the records so far.
 	Apply(ctx context.Context, d DecisionRecord, acts []rules.Action, batchID int64) ([]ActionRecord, error)
 	Undo(ctx context.Context, actionID int64) error
-	UndoBatch(ctx context.Context, batchID int64) (Undid, error)
+	// UndoBatch undoes the actions of a batch the viewer sees on the mailboxes they see.
+	UndoBatch(ctx context.Context, v store.Viewer, batchID int64) (Undid, error)
 }

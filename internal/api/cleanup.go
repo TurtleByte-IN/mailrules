@@ -30,7 +30,7 @@ func (s *server) scope(w http.ResponseWriter, r *http.Request, in ext.ScopeInput
 	if c.Folder == "" {
 		c.Folder = "INBOX"
 	}
-	switch _, err := s.store.Account(r.Context(), in.AccountID); {
+	switch _, err := s.store.VisibleAccount(r.Context(), viewer(r), in.AccountID); {
 	case err != nil:
 		invalid(w, "account_id", "No such account.")
 	case in.Since != nil && *in.Since < 0:
@@ -175,12 +175,12 @@ func cmpStr(a, b string) int {
 
 // currentFingerprint is the fingerprint of the rules a check limited to ruleIDs (nil = every
 // rule) would be made with right now.
-func (s *server) currentFingerprint(ctx context.Context, userID int64, ruleIDs []int64) (string, error) {
-	rs, err := s.store.Rules(ctx, userID)
+func (s *server) currentFingerprint(ctx context.Context, tenantID int64, ruleIDs []int64) (string, error) {
+	rs, err := s.store.Rules(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
-	senders, err := s.store.SenderRules(ctx, userID)
+	senders, err := s.store.SenderRules(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
@@ -203,7 +203,7 @@ func (s *server) cleanupMailboxes(w http.ResponseWriter, r *http.Request, in cle
 	}
 	var ids []int64
 	for _, id := range in.AccountIDs {
-		if _, err := s.store.Account(r.Context(), id); err != nil {
+		if _, err := s.store.VisibleAccount(r.Context(), viewer(r), id); err != nil {
 			invalid(w, "account_ids", "No such account.")
 			return nil, false
 		}
@@ -242,13 +242,13 @@ func (s *server) handleCleanupCheckStart(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	ctx, uid := r.Context(), user(r).ID
-	rs, err := s.store.Rules(ctx, uid)
+	ctx, v := r.Context(), viewer(r)
+	rs, err := s.store.Rules(ctx, v.TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	senders, err := s.store.SenderRules(ctx, uid)
+	senders, err := s.store.SenderRules(ctx, v.TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -267,12 +267,12 @@ func (s *server) handleCleanupCheckStart(w http.ResponseWriter, r *http.Request)
 			fail(w, r, err, "account")
 			return
 		}
-		acct, err := s.store.Account(ctx, id)
+		acct, err := s.store.VisibleAccount(ctx, v, id)
 		if err != nil {
 			internalError(w, r, err)
 			return
 		}
-		decider, err := s.cleanupDecider(ctx, uid, acct)
+		decider, err := s.cleanupDecider(ctx, v, acct)
 		if err != nil {
 			internalError(w, r, err)
 			return
@@ -316,7 +316,7 @@ func (s *server) handleCleanupCheckGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"check": nil})
 		return
 	}
-	st, err := s.freshState(r.Context(), user(r).ID, chk)
+	st, err := s.freshState(r.Context(), viewer(r).TenantID, chk)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -329,10 +329,10 @@ func (s *server) handleCleanupCheckGet(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleCleanupChecks(w http.ResponseWriter, r *http.Request) {
 	out := []cleanupCheckJSON{}
 	for _, chk := range s.Checks.All() {
-		if _, err := s.store.Account(r.Context(), chk.AccountID); err != nil {
-			continue // the account was deleted since
+		if !s.seesAccount(r, chk.AccountID) {
+			continue // the account was deleted since, or is not one the viewer sees
 		}
-		st, err := s.freshState(r.Context(), user(r).ID, chk)
+		st, err := s.freshState(r.Context(), viewer(r).TenantID, chk)
 		if err != nil {
 			internalError(w, r, err)
 			return
@@ -359,7 +359,7 @@ func (s *server) checkAccount(w http.ResponseWriter, r *http.Request) (int64, bo
 		invalid(w, "account_id", "Give account_id as a positive integer.")
 		return 0, false
 	}
-	if _, err := s.store.Account(r.Context(), id); err != nil {
+	if _, err := s.store.VisibleAccount(r.Context(), viewer(r), id); err != nil {
 		invalid(w, "account_id", "No such account.")
 		return 0, false
 	}
@@ -368,12 +368,12 @@ func (s *server) checkAccount(w http.ResponseWriter, r *http.Request) (int64, bo
 
 // freshState reads a check's state, first moving a ready check whose rules have changed
 // since it ran to stale: its rows were settled by rules that are no longer in force.
-func (s *server) freshState(ctx context.Context, userID int64, chk *worker.Check) (worker.CheckState, error) {
+func (s *server) freshState(ctx context.Context, tenantID int64, chk *worker.Check) (worker.CheckState, error) {
 	st := chk.State()
 	if st.Status != worker.CheckReady {
 		return st, nil
 	}
-	fp, err := s.currentFingerprint(ctx, userID, st.RuleIDs)
+	fp, err := s.currentFingerprint(ctx, tenantID, st.RuleIDs)
 	if err != nil {
 		return worker.CheckState{}, err
 	}
@@ -395,7 +395,7 @@ func (s *server) readyCheck(w http.ResponseWriter, r *http.Request, accountID in
 		return nil, worker.CheckState{}, false
 	}
 	// A ready check may have gone stale: the rules changed since it ran.
-	st, err := s.freshState(r.Context(), user(r).ID, chk)
+	st, err := s.freshState(r.Context(), viewer(r).TenantID, chk)
 	if err != nil {
 		internalError(w, r, err)
 		return nil, worker.CheckState{}, false
@@ -424,7 +424,7 @@ func (s *server) handleCleanupSelection(w http.ResponseWriter, r *http.Request) 
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if _, err := s.store.Account(r.Context(), in.AccountID); err != nil {
+	if _, err := s.store.VisibleAccount(r.Context(), viewer(r), in.AccountID); err != nil {
 		invalid(w, "account_id", "No such account.")
 		return
 	}
@@ -496,7 +496,7 @@ func (s *server) handleCleanupRun(w http.ResponseWriter, r *http.Request) {
 	sorts := make([]worker.SortRun, len(items))
 	seen := map[int64]bool{}
 	for i, it := range items {
-		if _, err := s.store.Account(ctx, it.AccountID); err != nil {
+		if _, err := s.store.VisibleAccount(ctx, viewer(r), it.AccountID); err != nil {
 			invalid(w, at(i, "account_id"), "No such account.")
 			return
 		}
@@ -542,7 +542,7 @@ func (s *server) handleCleanupRun(w http.ResponseWriter, r *http.Request) {
 	out := make([]batchJSON, len(batches))
 	for i, it := range items {
 		s.Checks.Take(it.AccountID, it.CheckID) // used: delete it, unless a newer check replaced it
-		if out[i], err = s.batchJSON(ctx, batches[i]); err != nil {
+		if out[i], err = s.batchJSON(ctx, viewer(r), batches[i]); err != nil {
 			internalError(w, r, err)
 			return
 		}
@@ -637,13 +637,15 @@ func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 // cleanupDecider is the deciding step of a cleanup check of acct's mail: the routers in
 // force, with their calls booked under the "cleanup" purpose so Usage can tell them from
 // live sorting, leaving the account's own mail alone as live sorting does.
-func (s *server) cleanupDecider(ctx context.Context, userID int64, acct store.Account) (pipeline.Decider, error) {
+func (s *server) cleanupDecider(ctx context.Context, v store.Viewer, acct store.Account) (pipeline.Decider, error) {
 	src := s.modelSource()
-	router, minConfidence := src.Live(ctx)
+	router, minConfidence := src.Live(ctx, acct.TenantID)
 	own, err := pipeline.OwnMail(ctx, s.store, acct)
 	return pipeline.Decider{Router: router.For("cleanup"), MinConfidence: minConfidence, Now: s.now(), Own: own,
-		Examples: pipeline.Corrections(s.store, userID),
-		Override: func(ctx context.Context, spec string) *models.Router { return src.RouterFor(ctx, spec).For("cleanup") }}, err
+		Examples: pipeline.Corrections(s.store, v),
+		Override: func(ctx context.Context, spec string) *models.Router {
+			return src.RouterFor(ctx, acct.TenantID, spec).For("cleanup")
+		}}, err
 }
 
 var batchKinds = []string{store.BatchLive, store.BatchCleanup, "review", store.BatchCorrection, store.BatchUndo}
@@ -673,7 +675,7 @@ func (s *server) handleBatches(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	rows, err := s.store.Batches(r.Context(), kind, before, limit+1)
+	rows, err := s.store.Batches(r.Context(), viewer(r), kind, before, limit+1)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -686,7 +688,7 @@ func (s *server) handleBatches(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]batchJSON, len(rows))
 	for i, b := range rows {
-		if items[i], err = s.batchJSON(r.Context(), b); err != nil {
+		if items[i], err = s.batchJSON(r.Context(), viewer(r), b); err != nil {
 			internalError(w, r, err)
 			return
 		}

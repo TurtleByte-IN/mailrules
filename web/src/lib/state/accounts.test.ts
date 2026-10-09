@@ -33,6 +33,8 @@ const acct = (over: Partial<Account> = {}): Account => ({
   can_move: true,
   folder_count: 14,
   created_at: 1791260000,
+  shared: false,
+  mine: true,
   ...over,
 });
 

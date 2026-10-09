@@ -79,7 +79,7 @@ export async function folderNames(id: number) {
 }
 
 /** Saves edits to a mailbox. A new password goes to the API and nowhere else. Throws when the daemon refuses. */
-export async function edit(id: number, p: Pick<accountsApi.AccountPatch, 'label' | 'watch_folder' | 'password'>) {
+export async function edit(id: number, p: Pick<accountsApi.AccountPatch, 'label' | 'watch_folder' | 'password' | 'shared'>) {
   const a = await accountsApi.patch(id, p);
   put(a);
   flash(a.label + ' updated');

@@ -52,7 +52,7 @@ func TestFallbackNotActiveIsReported(t *testing.T) {
 			s := newSettings(t, tt.env)
 			if tt.off {
 				off := ""
-				if err := s.Apply(t.Context(), Patch{FallbackModel: &off}); err != nil {
+				if err := s.Apply(t.Context(), 1, Patch{FallbackModel: &off}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -62,7 +62,7 @@ func TestFallbackNotActiveIsReported(t *testing.T) {
 			}
 			// Startup builds the router, and so does every email; the warning is one line, once.
 			for range 3 {
-				s.Live(t.Context())
+				s.Live(t.Context(), 1)
 			}
 			lines := fallbackLines(logs)
 			if want := map[bool]int{true: 1, false: 0}[tt.wantLog]; len(lines) != want {
@@ -83,21 +83,21 @@ func TestFallbackNotActiveIsReported(t *testing.T) {
 func TestFallbackReportFollowsTheKey(t *testing.T) {
 	logs := captureLogs(t)
 	s := newSettings(t, map[string]string{"OPENROUTER_API_KEY": "sk-or-test-secret"})
-	s.Live(t.Context())
+	s.Live(t.Context(), 1)
 	if len(fallbackLines(logs)) != 1 || view(t, s).FallbackActive {
 		t.Fatalf("before: log %q, view %+v", fallbackLines(logs), view(t, s))
 	}
-	if err := s.Apply(t.Context(), Patch{Keys: map[string]string{"anthropic_api_key": "sk-ant-test-secret"}}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{Keys: map[string]string{"anthropic_api_key": "sk-ant-test-secret"}}); err != nil {
 		t.Fatal(err)
 	}
-	s.Live(t.Context())
+	s.Live(t.Context(), 1)
 	if v := view(t, s); !v.FallbackActive || v.FallbackNote != "" || len(fallbackLines(logs)) != 1 {
 		t.Fatalf("with a key: view active=%v note=%q, log %q", v.FallbackActive, v.FallbackNote, fallbackLines(logs))
 	}
-	if err := s.Apply(t.Context(), Patch{Keys: map[string]string{"anthropic_api_key": ""}}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{Keys: map[string]string{"anthropic_api_key": ""}}); err != nil {
 		t.Fatal(err)
 	}
-	s.Live(t.Context())
+	s.Live(t.Context(), 1)
 	if v := view(t, s); v.FallbackActive || v.FallbackNote == "" || len(fallbackLines(logs)) != 2 {
 		t.Fatalf("key removed: view active=%v note=%q, log %q", v.FallbackActive, v.FallbackNote, fallbackLines(logs))
 	}

@@ -122,10 +122,16 @@ func (s *server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// writeNoSession tells the UI which screen to show: first-run setup or login.
+// writeNoSession tells the UI which screen to show: the module's sign-in, first-run setup
+// or login.
 func (s *server) writeNoSession(w http.ResponseWriter, r *http.Request, err error) {
 	if !errors.Is(err, store.ErrNotFound) {
 		internalError(w, r, err)
+		return
+	}
+	if m := s.signIn(); m != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]apiError{"error": {
+			Code: "unauthenticated", Message: "Sign in to continue.", SignIn: m.SignIn}})
 		return
 	}
 	has, err := s.store.HasUsers(r.Context())
@@ -138,6 +144,18 @@ func (s *server) writeNoSession(w http.ResponseWriter, r *http.Request, err erro
 		return
 	}
 	writeError(w, http.StatusUnauthorized, "unauthenticated", "Sign in to continue.", "")
+}
+
+// passwordOnly refuses a password route (first-run setup, sign-in, password change) with
+// 404 not_available in a build where a module signs people in.
+func (s *server) passwordOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.signIn() != nil {
+			writeError(w, http.StatusNotFound, "not_available", "This build of MailRules signs people in through its sign-in service, not with a password.", "")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // startSession replaces any session the browser already holds with a fresh one.
@@ -198,7 +216,7 @@ func (s *server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
+	s.writeSession(w, r, http.StatusCreated, u)
 }
 
 // clientIP is the address a request counts against. It is the connection's peer, unless
@@ -281,7 +299,8 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.dummyMu.Do(func() { s.dummy, _ = crypto.HashPassword("no such account") })
 		hash = s.dummy
 	}
-	if !crypto.VerifyPassword(hash, in.Password) || u.ID == 0 {
+	// A user made from a sign-in service's identity has no password: it never matches.
+	if !crypto.VerifyPassword(hash, in.Password) || u.ID == 0 || u.PasswordHash == "" {
 		s.logins.fail(ip, now)
 		s.accountLogins.fail(account, now)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Wrong email or password.", "")
@@ -291,7 +310,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
+	s.writeSession(w, r, http.StatusOK, u)
 }
 
 type passwordChange struct {
@@ -316,7 +335,8 @@ func (s *server) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if !crypto.VerifyPassword(u.PasswordHash, in.CurrentPassword) {
+	// A user made from a sign-in service's identity has no password to check or replace.
+	if u.PasswordHash == "" || !crypto.VerifyPassword(u.PasswordHash, in.CurrentPassword) {
 		s.logins.fail(key, now)
 		writeError(w, http.StatusBadRequest, "invalid_input", "The current password is wrong.", "current_password")
 		return
@@ -338,7 +358,7 @@ func (s *server) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
+	s.writeSession(w, r, http.StatusOK, u)
 }
 
 func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -352,13 +372,35 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// sessionJSON is the contract's Session: the user, how many people are in their tenant,
+// and where the browser goes after signing out when a module signs people in.
+type sessionJSON struct {
+	User    userJSON `json:"user"`
+	Members int      `json:"members"`
+	SignOut string   `json:"sign_out,omitempty"`
+}
+
+// writeSession answers status with u's Session.
+func (s *server) writeSession(w http.ResponseWriter, r *http.Request, status int, u store.User) {
+	members, err := s.store.TenantMembers(r.Context(), u.TenantID)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	out := sessionJSON{User: userJSON{ID: u.ID, Email: u.Email}, Members: members}
+	if m := s.signIn(); m != nil {
+		out.SignOut = m.SignOut
+	}
+	writeJSON(w, status, out)
+}
+
 func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u, err := s.currentUser(r)
 	if err != nil {
 		s.writeNoSession(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]userJSON{"user": {ID: u.ID, Email: u.Email}})
+	s.writeSession(w, r, http.StatusOK, u)
 }
 
 // failureLimiter blocks a client after max failures inside window.

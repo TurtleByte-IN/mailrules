@@ -38,12 +38,12 @@ func sealedStore(t *testing.T, accounts int, keys map[string][]byte) *store.Stor
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := st.SetSetting(ctx, keyPrefix+name, enc); err != nil {
+		if err := st.SetSetting(ctx, 1, keyPrefix+name, enc); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Settings that are not secrets are not counted.
-	if err := st.SetSetting(ctx, "dry_run", "true"); err != nil {
+	if err := st.SetSetting(ctx, 1, "dry_run", "true"); err != nil {
 		t.Fatal(err)
 	}
 	return st
@@ -88,7 +88,7 @@ func TestCheckSecrets(t *testing.T) {
 // of the check.
 func TestCheckSecretsDamagedRow(t *testing.T) {
 	st := sealedStore(t, 0, nil)
-	if err := st.SetSetting(t.Context(), keyPrefix+"openrouter", "not json"); err != nil {
+	if err := st.SetSetting(t.Context(), 1, keyPrefix+"openrouter", "not json"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := CheckSecrets(t.Context(), st, key(1))
@@ -108,14 +108,14 @@ func TestUnreadableStoredKeyIsNotSet(t *testing.T) {
 	}
 	s := &Settings{Store: st, Master: key(2), Env: env}
 
-	cfg, err := s.Effective(ctx)
+	cfg, err := s.Effective(ctx, 1)
 	if err != nil {
 		t.Fatalf("Effective with one unreadable key: %v", err)
 	}
 	if cfg.OpenRouterAPIKey != "" || cfg.AnthropicAPIKey != "sk-secret" || cfg.OpenAIAPIKey != "sk-from-env" {
 		t.Errorf("keys in force = %q %q %q", cfg.OpenRouterAPIKey, cfg.AnthropicAPIKey, cfg.OpenAIAPIKey)
 	}
-	v, err := s.View(ctx)
+	v, err := s.View(ctx, 1)
 	if err != nil {
 		t.Fatalf("View with one unreadable key: %v", err)
 	}
@@ -126,13 +126,13 @@ func TestUnreadableStoredKeyIsNotSet(t *testing.T) {
 		}
 	}
 
-	if err := s.Apply(ctx, Patch{Keys: map[string]string{"openrouter_api_key": "sk-entered-again"}}); err != nil {
+	if err := s.Apply(ctx, 1, Patch{Keys: map[string]string{"openrouter_api_key": "sk-entered-again"}}); err != nil {
 		t.Fatalf("entering the key again: %v", err)
 	}
-	if cfg, err = s.Effective(ctx); err != nil || cfg.OpenRouterAPIKey != "sk-entered-again" {
+	if cfg, err = s.Effective(ctx, 1); err != nil || cfg.OpenRouterAPIKey != "sk-entered-again" {
 		t.Fatalf("after entering it again: %q, %v", cfg.OpenRouterAPIKey, err)
 	}
-	if v, _ = s.View(ctx); v.Keys["openrouter_api_key"] != KeyStored {
+	if v, _ = s.View(ctx, 1); v.Keys["openrouter_api_key"] != KeyStored {
 		t.Errorf("key shows %q after being entered again", v.Keys["openrouter_api_key"])
 	}
 }

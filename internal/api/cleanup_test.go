@@ -322,7 +322,7 @@ ran:
 		t.Errorf("ledger = %d cleanup calls, %d decide calls; want %d, 0", cleanupCalls, decideCalls, calls)
 	}
 	// A model-decided email counts as such; a condition- or sender-decided one counts as free.
-	tot, err := e.st.StatsTotals(t.Context(), 1, 0)
+	tot, err := e.st.StatsTotals(t.Context(), store.Viewer{UserID: 1, TenantID: 1}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

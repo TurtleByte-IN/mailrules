@@ -137,7 +137,7 @@ func TestComposeOnEveryProvider(t *testing.T) {
 			gen := &spy{Generator: w.build(url)}
 			now := time.Unix(1_800_000_000, 0)
 			out, err := Composer{Store: e.st, Gen: gen, Now: func() time.Time { return now }, BodyChars: 2000}.Compose(t.Context(),
-				Request{UserID: e.user.ID, Text: paragraph, Account: &e.acct, Mailbox: e.mb})
+				Request{Viewer: e.user.Viewer(), Text: paragraph, Account: &e.acct, Mailbox: e.mb})
 			if err != nil {
 				t.Fatal(err)
 			}

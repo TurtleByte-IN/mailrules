@@ -1340,6 +1340,10 @@ export interface components {
         };
         Session: {
             user: components["schemas"]["User"];
+            /** @description How many users the signed-in user's team has; the web app offers sharing a mailbox only when there is more than one */
+            members: number;
+            /** @description Set when a sign-in module is present: the path the browser goes to after `POST /api/auth/logout`, so the sign-in service ends its own session */
+            sign_out?: string;
         };
         ErrorBody: {
             error: {
@@ -1349,6 +1353,8 @@ export interface components {
                 message: string;
                 /** @description Where the problem is, when there is a place: a field (`limit`), or a path into a rule (`rules[0].conditions.all[0].op`) */
                 path?: string;
+                /** @description Only on the 401 from `GET /api/auth/me` when a sign-in module is present: the path the browser goes to to sign in. There is no password sign-in or first-run setup then */
+                sign_in?: string;
             };
         };
         Preset: {
@@ -1427,6 +1433,10 @@ export interface components {
             folder_count: number;
             /** Format: int64 */
             created_at: number;
+            /** @description Everyone in the team can see this mailbox and act on its mail; false means only the person who added it */
+            shared: boolean;
+            /** @description The signed-in user added this mailbox; only they can edit */
+            mine: boolean;
         };
         AccountEnvelope: {
             account: components["schemas"]["Account"];
@@ -1438,6 +1448,8 @@ export interface components {
             password?: string;
             /** @description true stops watching; false resumes */
             paused?: boolean;
+            /** @description true lets everyone in the team see this mailbox; false makes it private again. Owner only */
+            shared?: boolean;
         };
         Folder: {
             /** @description The server's own name */
@@ -2489,9 +2501,9 @@ export interface components {
             time: string;
             /** @description The IANA time zone `time` is in, such as Europe/Berlin: the one the browser reported when the summary was last saved. UTC until then */
             time_zone: string;
-            /** @description The address it goes to: the one saved, or `to_default` when none is */
+            /** @description The address it goes to: the one saved, or `to_default` when none is. The saved address is used while the team has one member; with more, each member's summary goes to their own email */
             to: string;
-            /** @description The admin account's email, used while no address is saved */
+            /** @description The signed-in user's email, used while no address is saved, and always once the team has more than one member */
             readonly to_default: string;
             /** @description The outgoing mail server, as the daemon's environment sets it. Never the password */
             readonly smtp: {
@@ -2704,6 +2716,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["Error"];
             409: components["responses"]["Error"];
         };
     };
@@ -2732,6 +2745,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Error"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["Error"];
             /** @description rate_limited; five failed sign-ins per minute from one client address, or ten for one email */
             429: {
                 headers: {
@@ -2789,6 +2803,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["Error"];
             /** @description rate_limited; five wrong current passwords per minute */
             429: {
                 headers: {

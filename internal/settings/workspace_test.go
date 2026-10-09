@@ -41,7 +41,7 @@ func withAnthropic(t *testing.T, env map[string]string, cfg anthropictest.Config
 
 func compose(t *testing.T, s *Settings) error {
 	t.Helper()
-	gen, err := s.Composer(t.Context())
+	gen, err := s.Composer(t.Context(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func compose(t *testing.T, s *Settings) error {
 
 func view(t *testing.T, s *Settings) View {
 	t.Helper()
-	v, err := s.View(t.Context())
+	v, err := s.View(t.Context(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestWorkspaceIDIsCheckedOnSave(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
 			s := newSettings(t, nil)
-			err := s.Apply(t.Context(), Patch{AnthropicWorkspaceID: new(tt.in)})
+			err := s.Apply(t.Context(), 1, Patch{AnthropicWorkspaceID: new(tt.in)})
 			var bad *Invalid
 			if tt.refused {
 				if !errors.As(err, &bad) || bad.Path != "anthropic_workspace_id" || !strings.Contains(bad.Message, "wrkspc_") {
@@ -100,10 +100,10 @@ func TestWorkspaceIDIsCheckedOnSave(t *testing.T) {
 	}
 	// null forgets the stored one: the environment's is back.
 	s := newSettings(t, map[string]string{"ANTHROPIC_WORKSPACE_ID": "wrkspc_env"})
-	if err := s.Apply(t.Context(), Patch{AnthropicWorkspaceID: new("wrkspc_mine")}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{AnthropicWorkspaceID: new("wrkspc_mine")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Apply(t.Context(), Patch{Reset: []string{"anthropic_workspace_id"}}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{Reset: []string{"anthropic_workspace_id"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := view(t, s).AnthropicWorkspaceID; got != "wrkspc_env" {
@@ -123,12 +123,12 @@ func TestEveryClaudeRequestNamesTheWorkspace(t *testing.T) {
 	}{
 		{"composer", nil, compose},
 		{"decider", map[string]string{"MAILRULES_DECIDER": "anthropic"}, func(t *testing.T, s *Settings) error {
-			r, _ := s.Live(t.Context())
+			r, _ := s.Live(t.Context(), 1)
 			_, _, err := r.Primary.Decide(t.Context(), req)
 			return err
 		}},
 		{"fallback", map[string]string{"OPENROUTER_API_KEY": "sk-or-test"}, func(t *testing.T, s *Settings) error {
-			r, _ := s.Live(t.Context())
+			r, _ := s.Live(t.Context(), 1)
 			if r == nil || r.Fallback == nil {
 				t.Fatal("no fallback")
 			}
@@ -144,7 +144,7 @@ func TestEveryClaudeRequestNamesTheWorkspace(t *testing.T) {
 					env[k] = v
 				}
 				s, fake := withAnthropic(t, env, anthropictest.Config{Answer: answer})
-				if err := s.Apply(t.Context(), Patch{AnthropicWorkspaceID: new(ws)}); err != nil {
+				if err := s.Apply(t.Context(), 1, Patch{AnthropicWorkspaceID: new(ws)}); err != nil {
 					t.Fatal(err)
 				}
 				if err := p.call(t, s); err != nil {
@@ -179,7 +179,7 @@ func TestSavingAKeyLooksUpItsWorkspace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s, fake := withAnthropic(t, nil, tt.anthropic)
-			if err := s.Apply(t.Context(), Patch{Keys: map[string]string{"anthropic_api_key": claudeKey}}); err != nil {
+			if err := s.Apply(t.Context(), 1, Patch{Keys: map[string]string{"anthropic_api_key": claudeKey}}); err != nil {
 				t.Fatal(err)
 			}
 			v := view(t, s)
@@ -189,7 +189,7 @@ func TestSavingAKeyLooksUpItsWorkspace(t *testing.T) {
 			if workspaceWarned(v) {
 				t.Errorf("warned before any refusal: %v", v.Warnings)
 			}
-			got, err := s.LookupWorkspaces(t.Context())
+			got, err := s.LookupWorkspaces(t.Context(), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -215,7 +215,7 @@ func TestReplacingTheKeyForgetsTheWorkspaceFound(t *testing.T) {
 	s, fake := withAnthropic(t, nil, orgKeyOne)
 	saveKey := func(k string) {
 		t.Helper()
-		if err := s.Apply(t.Context(), Patch{Keys: map[string]string{"anthropic_api_key": k}}); err != nil {
+		if err := s.Apply(t.Context(), 1, Patch{Keys: map[string]string{"anthropic_api_key": k}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -229,12 +229,12 @@ func TestReplacingTheKeyForgetsTheWorkspaceFound(t *testing.T) {
 	if v := view(t, s); v.AnthropicWorkspaceID != "" || v.AnthropicWorkspaceFound {
 		t.Errorf("after replacing the key, the old key's workspace is still in force: %+v", v)
 	}
-	if got, _ := s.LookupWorkspaces(t.Context()); got.Status != WorkspaceSeveral {
+	if got, _ := s.LookupWorkspaces(t.Context(), 1); got.Status != WorkspaceSeveral {
 		t.Errorf("lookup = %+v", got)
 	}
 
 	// The user picks one: it is theirs, so a new key keeps it, and it is not looked up.
-	if err := s.Apply(t.Context(), Patch{AnthropicWorkspaceID: new("wrkspc_mail")}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{AnthropicWorkspaceID: new("wrkspc_mail")}); err != nil {
 		t.Fatal(err)
 	}
 	if v := view(t, s); v.AnthropicWorkspaceID != "wrkspc_mail" || v.AnthropicWorkspaceName != "Mail" || v.AnthropicWorkspaceFound {
@@ -251,13 +251,13 @@ func TestReplacingTheKeyForgetsTheWorkspaceFound(t *testing.T) {
 
 	// Removing the key forgets a found workspace too.
 	fake.Set(orgKeyOne)
-	if err := s.Apply(t.Context(), Patch{AnthropicWorkspaceID: new("")}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{AnthropicWorkspaceID: new("")}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.LookupWorkspaces(t.Context()); got.Status != WorkspaceOne {
+	if got, _ := s.LookupWorkspaces(t.Context(), 1); got.Status != WorkspaceOne {
 		t.Fatalf("lookup = %+v", got)
 	}
-	if err := s.Apply(t.Context(), Patch{Keys: map[string]string{"anthropic_api_key": ""}}); err != nil {
+	if err := s.Apply(t.Context(), 1, Patch{Keys: map[string]string{"anthropic_api_key": ""}}); err != nil {
 		t.Fatal(err)
 	}
 	if v := view(t, s); v.AnthropicWorkspaceID != "" {
@@ -308,7 +308,7 @@ func TestARefusedRequestLooksUpTheWorkspaceOnce(t *testing.T) {
 				t.Errorf("view = %+v", v)
 			}
 			// Choosing one clears the warning.
-			if err := s.Apply(t.Context(), Patch{AnthropicWorkspaceID: new("wrkspc_default")}); err != nil {
+			if err := s.Apply(t.Context(), 1, Patch{AnthropicWorkspaceID: new("wrkspc_default")}); err != nil {
 				t.Fatal(err)
 			}
 			if v := view(t, s); workspaceWarned(v) {

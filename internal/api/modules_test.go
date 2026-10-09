@@ -105,7 +105,7 @@ func probe() ext.Module {
 			u, err := gen.Generate(ext.WithPurpose(ctx, "suggest"), "system", "user", json.RawMessage(`{"type":"object"}`), &out)
 			if err == nil || u.TokensIn > 0 {
 				h.RecordUsage(ctx, "suggest", u)
-				h.UsageChanged()
+				h.UsageChanged(ctx)
 			}
 			switch {
 			case err != nil && es.Started():

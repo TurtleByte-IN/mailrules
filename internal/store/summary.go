@@ -93,52 +93,56 @@ type SummaryEmail struct {
 	DryRun    bool   // a trashed email: the trash was only recorded, in dry-run
 }
 
-// windowLatest is latest (stats.go) with an end: every message of user ?1 whose latest
-// decision was made in [?2, ?3).
-const windowLatest = `WITH latest AS (
+// windowLatest is latest (stats.go) with an end: every message of the mailboxes the viewer
+// sees whose latest decision was made in [?1, ?2).
+func windowLatest(v Viewer) string {
+	return `WITH latest AS (
 	SELECT m.id AS message_id, m.state AS state, d.rule_id AS rule_id,
 	       COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, '') AS rule_name
-	FROM messages m JOIN accounts a ON a.id = m.account_id
+	FROM messages m
 	JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
-	WHERE a.user_id = ?1 AND d.created_at >= ?2 AND d.created_at < ?3) `
-
-// SummaryRules lists, per rule, the emails a rule was applied to (sorted or trashed, as
-// the Overview counts them) whose latest decision was made in [from, to), most first.
-func (s *Store) SummaryRules(ctx context.Context, userID, from, to int64) ([]RuleUse, error) {
-	went := outcomeSQL("state", "latest.message_id")
-	return s.ruleUses(ctx, "summary rules",
-		windowLatest+`SELECT rule_id, rule_name, COUNT(*), 0, 0 FROM latest
-		 WHERE rule_name <> '' AND ((`+went["sorted"]+`) OR (`+went["trashed"]+`))
-		 GROUP BY rule_id, rule_name ORDER BY 3 DESC, rule_name`, userID, from, to)
+	WHERE ` + inVisible("m.account_id", v) + ` AND d.created_at >= ?1 AND d.created_at < ?2) `
 }
 
-// SummaryTrashed lists the emails trashed (or, in dry-run, recorded as trashed) in
-// [from, to) and not undone since, newest first, at most limit of them, and how many there are.
-func (s *Store) SummaryTrashed(ctx context.Context, userID, from, to int64, limit int) ([]SummaryEmail, int, error) {
-	const where = ` FROM actions x JOIN messages m ON m.id = x.message_id JOIN accounts a ON a.id = x.account_id
-		 WHERE a.user_id = ?1 AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?2 AND x.created_at < ?3`
+// SummaryRules lists, per rule, the emails of the mailboxes the viewer sees a rule was
+// applied to (sorted or trashed, as the Overview counts them) whose latest decision was
+// made in [from, to), most first.
+func (s *Store) SummaryRules(ctx context.Context, v Viewer, from, to int64) ([]RuleUse, error) {
+	went := outcomeSQL("state", "latest.message_id")
+	return s.ruleUses(ctx, "summary rules",
+		windowLatest(v)+`SELECT rule_id, rule_name, COUNT(*), 0, 0 FROM latest
+		 WHERE rule_name <> '' AND ((`+went["sorted"]+`) OR (`+went["trashed"]+`))
+		 GROUP BY rule_id, rule_name ORDER BY 3 DESC, rule_name`, from, to)
+}
+
+// SummaryTrashed lists the emails of the mailboxes the viewer sees trashed (or, in
+// dry-run, recorded as trashed) in [from, to) and not undone since, newest first, at most
+// limit of them, and how many there are.
+func (s *Store) SummaryTrashed(ctx context.Context, v Viewer, from, to int64, limit int) ([]SummaryEmail, int, error) {
+	where := ` FROM actions x JOIN messages m ON m.id = x.message_id
+		 WHERE ` + inVisible("x.account_id", v) + ` AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?1 AND x.created_at < ?2`
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT x.message_id)`+where, userID, from, to).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT x.message_id)`+where, from, to).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("summary trashed: %w", err)
 	}
 	out, err := s.summaryEmails(ctx, "summary trashed",
 		`SELECT m.id, COALESCE(m.from_name, ''), COALESCE(m.from_addr, ''), COALESCE(m.subject, ''),
 		        COALESCE(json_extract(x.params, '$.folder'), json_extract(x.after, '$.folder'), ''), x.status = 'dry_run'`+where+`
-		 GROUP BY m.id ORDER BY MAX(x.id) DESC LIMIT ?4`, userID, from, to, limit)
+		 GROUP BY m.id ORDER BY MAX(x.id) DESC LIMIT ?3`, from, to, limit)
 	return out, total, err
 }
 
-// SummaryReview lists the user's emails waiting in Needs review now, newest first, at most
-// limit of them, and how many there are.
-func (s *Store) SummaryReview(ctx context.Context, userID int64, limit int) ([]SummaryEmail, int, error) {
-	const where = ` FROM messages m JOIN accounts a ON a.id = m.account_id WHERE a.user_id = ?1 AND m.state = 'review'`
+// SummaryReview lists the emails of the mailboxes the viewer sees waiting in Needs review
+// now, newest first, at most limit of them, and how many there are.
+func (s *Store) SummaryReview(ctx context.Context, v Viewer, limit int) ([]SummaryEmail, int, error) {
+	where := ` FROM messages m WHERE ` + inVisible("m.account_id", v) + ` AND m.state = 'review'`
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+where, userID).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+where).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("summary review: %w", err)
 	}
 	out, err := s.summaryEmails(ctx, "summary review",
 		`SELECT m.id, COALESCE(m.from_name, ''), COALESCE(m.from_addr, ''), COALESCE(m.subject, ''), '', 0`+where+`
-		 ORDER BY m.acted_at DESC, m.id DESC LIMIT ?2`, userID, limit)
+		 ORDER BY m.acted_at DESC, m.id DESC LIMIT ?`, limit)
 	return out, total, err
 }
 
@@ -162,12 +166,13 @@ func (s *Store) summaryEmails(ctx context.Context, what, query string, args ...a
 	return out, nil
 }
 
-// SummaryCost is what the model decisions made in [from, to) cost, and how many asked a model.
-func (s *Store) SummaryCost(ctx context.Context, userID, from, to int64) (costUSD float64, calls int, err error) {
+// SummaryCost is what the model decisions made in [from, to) on the mail of the mailboxes
+// the viewer sees cost, and how many asked a model.
+func (s *Store) SummaryCost(ctx context.Context, v Viewer, from, to int64) (costUSD float64, calls int, err error) {
 	err = s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(d.cost_usd), 0), COALESCE(SUM(COALESCE(d.model, '') <> ''), 0)
-		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN accounts a ON a.id = m.account_id
-		 WHERE a.user_id = ? AND d.created_at >= ? AND d.created_at < ?`, userID, from, to).Scan(&costUSD, &calls)
+		 FROM decisions d JOIN messages m ON m.id = d.message_id
+		 WHERE `+inVisible("m.account_id", v)+` AND d.created_at >= ? AND d.created_at < ?`, from, to).Scan(&costUSD, &calls)
 	if err != nil {
 		return 0, 0, fmt.Errorf("summary cost: %w", err)
 	}

@@ -254,22 +254,22 @@ func (m *Manager) StartCheck(c Cleanup, fingerprint string, run CheckFunc) (*Che
 	}
 	chk.begun = chk.State()
 	checks.put(chk)
-	hub := r.sup.Hub
+	hub, tenant, account := r.sup.Hub, r.sup.account().TenantID, c.AccountID
 	began := time.Now()
 	slog.InfoContext(ctx, "cleanup check started", "account", c.AccountID, "folder", c.Folder, "limit", c.Limit)
 	m.wg.Go(func() {
 		defer cancel()
 		rows, err := run(ctx, func(p composer.CheckProgress) {
 			chk.setProgress(p)
-			hub.Publish(events.CheckProgress, chk.progressState())
+			hub.Publish(tenant, account, events.CheckProgress, chk.progressState())
 		})
 		st := chk.finish(rows, err, ctx)
 		if st.Status == "" { // replaced, or the daemon is stopping: it is not the account's any more
 			return
 		}
-		hub.Publish(events.CheckProgress, st)
+		hub.Publish(tenant, account, events.CheckProgress, st)
 		if st.ModelCalls > 0 {
-			hub.Publish(events.UsageUpdated, nil) // the stats screens may show the calls the check booked
+			hub.Publish(tenant, 0, events.UsageUpdated, nil) // the stats screens may show the calls the check booked
 		}
 		if st.Status == CheckFailed {
 			slog.WarnContext(ctx, "cleanup check failed", "account", c.AccountID, "folder", c.Folder,

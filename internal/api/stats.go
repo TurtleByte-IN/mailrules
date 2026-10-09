@@ -59,33 +59,33 @@ func (s *server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, uid := r.Context(), user(r).ID
-	totals, err := s.store.StatsTotals(ctx, uid, since.Unix())
+	ctx, v := r.Context(), viewer(r)
+	totals, err := s.store.StatsTotals(ctx, v, since.Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	review, err := s.store.CountMessages(ctx, store.StateReview)
+	review, err := s.store.CountMessages(ctx, v, store.StateReview)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	top, err := s.store.TopRules(ctx, uid, since.Unix(), 5)
+	top, err := s.store.TopRules(ctx, v, since.Unix(), 5)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	ledger, err := s.store.Usage(ctx, since.Format(time.DateOnly))
+	ledger, err := s.store.Usage(ctx, v.TenantID, since.Format(time.DateOnly))
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	accounts, err := s.store.Accounts(ctx)
+	accounts, err := s.store.VisibleAccounts(ctx, v)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	quiet, err := s.store.QuietRules(ctx, uid, since.Unix())
+	quiet, err := s.store.QuietRules(ctx, v, since.Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -125,18 +125,18 @@ func (s *server) handleStatsUsage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, uid := r.Context(), user(r).ID
-	totals, err := s.store.StatsTotals(ctx, uid, since.Unix())
+	ctx, v := r.Context(), viewer(r)
+	totals, err := s.store.StatsTotals(ctx, v, since.Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	ledger, err := s.store.Usage(ctx, since.Format(time.DateOnly))
+	ledger, err := s.store.Usage(ctx, v.TenantID, since.Format(time.DateOnly))
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	costs, err := s.store.RuleCosts(ctx, uid, since.Unix())
+	costs, err := s.store.RuleCosts(ctx, v, since.Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return

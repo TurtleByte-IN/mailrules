@@ -127,7 +127,7 @@ func TestManagerSort(t *testing.T) {
 	}
 	// Three were sorted (the moved one was skipped), each by the Reading rule; the pipeline
 	// here has no executor, so there are decisions and no actions.
-	actRows, err := e.st.Activity(ctx, store.ActivityFilter{})
+	actRows, err := e.st.Activity(ctx, store.Viewer{UserID: 1, TenantID: 1}, store.ActivityFilter{})
 	if err != nil || len(actRows) != 3 || actRows[0].Message.State != store.StateActed {
 		t.Fatalf("sorted = %d rows, %v", len(actRows), err)
 	}
@@ -311,7 +311,7 @@ func TestManagerSortAll(t *testing.T) {
 	}
 	batchCount := func() int {
 		t.Helper()
-		bs, err := e.st.Batches(ctx, store.BatchCleanup, 0, 50)
+		bs, err := e.st.Batches(ctx, store.Viewer{UserID: 1, TenantID: 1}, store.BatchCleanup, 0, 50)
 		if err != nil {
 			t.Fatal(err)
 		}

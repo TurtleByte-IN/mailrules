@@ -106,14 +106,15 @@ func workspaceWarning(cfg config.Config, l workspaceLookup) []Warning {
 		Message: "Your Claude key covers your whole organisation, so Claude refuses MailRules' requests until a workspace is chosen. Choose the Anthropic workspace under the key."}}
 }
 
-// LookupWorkspaces says which workspace the Claude key in force needs, as the Settings
-// screen asks. A known answer (none needed, one, several) is given again without asking
-// Anthropic; otherwise Anthropic is asked, and one workspace found while none is set is
-// stored as the setting.
-func (s *Settings) LookupWorkspaces(ctx context.Context) (WorkspaceLookup, error) {
+// LookupWorkspaces says which workspace the tenant's Claude key in force needs, as the
+// Settings screen asks. A known answer (none needed, one, several) is given again without
+// asking Anthropic; otherwise Anthropic is asked, and one workspace found while none is
+// set is stored as the setting. The operator's key (cloud mode) is not the tenant's to ask
+// about: it answers none needed.
+func (s *Settings) LookupWorkspaces(ctx context.Context, tenantID int64) (WorkspaceLookup, error) {
 	s.lookupMu.Lock()
 	defer s.lookupMu.Unlock()
-	rows, err := s.Store.Settings(ctx)
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		return WorkspaceLookup{}, err
 	}
@@ -121,14 +122,14 @@ func (s *Settings) LookupWorkspaces(ctx context.Context) (WorkspaceLookup, error
 	if err != nil {
 		return WorkspaceLookup{}, err
 	}
-	if cfg.AnthropicAPIKey == "" {
-		return workspaceLookup{Status: WorkspaceNoneNeeded}.answer(), nil // no key, nothing to name
+	if cfg.AnthropicAPIKey == "" || s.operatorKey(rows, "anthropic_api_key") {
+		return workspaceLookup{Status: WorkspaceNoneNeeded}.answer(), nil // no key of theirs, nothing to name
 	}
 	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
 	if l.Status == WorkspaceNoneNeeded || l.Status == WorkspaceOne || l.Status == WorkspaceSeveral {
 		return l.answer(), nil
 	}
-	return s.lookup(ctx, cfg, l, false)
+	return s.lookup(ctx, tenantID, cfg, l, false)
 }
 
 // applyWorkspace adds to set a change of anthropic_workspace_id, and what a saved, replaced
@@ -168,9 +169,10 @@ func (s *Settings) applyWorkspace(p Patch, cfg *config.Config, before workspaceL
 	return nil
 }
 
-// lookup asks Anthropic and stores what it said. The caller holds lookupMu; l is what was
-// known about this key before. refused records that a Claude request was refused.
-func (s *Settings) lookup(ctx context.Context, cfg config.Config, l workspaceLookup, refused bool) (WorkspaceLookup, error) {
+// lookup asks Anthropic and stores what it said in the tenant's rows. The caller holds
+// lookupMu; l is what was known about this key before. refused records that a Claude
+// request was refused.
+func (s *Settings) lookup(ctx context.Context, tenantID int64, cfg config.Config, l workspaceLookup, refused bool) (WorkspaceLookup, error) {
 	next := workspaceLookup{Key: s.fingerprint(cfg.AnthropicAPIKey), Refused: refused || l.Refused, Found: l.Found}
 	if s.Workspaces == nil {
 		next.Status = WorkspaceFailed
@@ -204,22 +206,24 @@ func (s *Settings) lookup(ctx context.Context, cfg config.Config, l workspaceLoo
 	}
 	v := string(b)
 	set[lookupRow] = &v
-	if err := s.Store.SetSettings(ctx, set); err != nil {
+	if err := s.Store.SetSettings(ctx, tenantID, set); err != nil {
 		return WorkspaceLookup{}, err
 	}
 	slog.InfoContext(ctx, "looked up the Anthropic workspace", "status", next.Status, "workspaces", len(next.Workspaces), "stored", set[settingWorkspace] != nil)
 	return next.answer(), nil
 }
 
-// workspaceNeeded is models.Deps.WorkspaceNeeded: a Claude request made with apiKey was
-// refused for want of a workspace. It answers the workspace to retry in: the setting, when
-// it was set since the request's adapter was built, or the one workspace a lookup finds.
-// The lookup runs once per key: after it found several or failed, later refusals are only
-// recorded (Settings shows the warning), and asking again is Settings' business.
-func (s *Settings) workspaceNeeded(ctx context.Context, apiKey string) string {
+// workspaceNeeded is models.Deps.WorkspaceNeeded for a tenant: a Claude request made with
+// apiKey was refused for want of a workspace. It answers the workspace to retry in: the
+// setting, when it was set since the request's adapter was built, or the one workspace a
+// lookup finds. The lookup runs once per key: after it found several or failed, later
+// refusals are only recorded (Settings shows the warning), and asking again is Settings'
+// business. The operator's key (cloud mode) is never looked up for a tenant: its workspace
+// is the environment's.
+func (s *Settings) workspaceNeeded(ctx context.Context, tenantID int64, apiKey string) string {
 	s.lookupMu.Lock()
 	defer s.lookupMu.Unlock()
-	rows, err := s.Store.Settings(ctx)
+	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read settings to find the Anthropic workspace", "error", err.Error())
 		return ""
@@ -233,6 +237,8 @@ func (s *Settings) workspaceNeeded(ctx context.Context, apiKey string) string {
 		return ""
 	case cfg.AnthropicWorkspaceID != "":
 		return cfg.AnthropicWorkspaceID
+	case s.operatorKey(rows, "anthropic_api_key"):
+		return ""
 	}
 	l := s.lookupFor(rows, apiKey)
 	if l.Refused && (l.Status == WorkspaceSeveral || l.Status == WorkspaceFailed) {
@@ -242,12 +248,12 @@ func (s *Settings) workspaceNeeded(ctx context.Context, apiKey string) string {
 		l.Refused = true
 		b, _ := json.Marshal(l)
 		v := string(b)
-		if err := s.Store.SetSettings(ctx, map[string]*string{lookupRow: &v}); err != nil {
+		if err := s.Store.SetSettings(ctx, tenantID, map[string]*string{lookupRow: &v}); err != nil {
 			slog.WarnContext(ctx, "could not record the refused Claude request", "error", err.Error())
 		}
 		return ""
 	}
-	res, err := s.lookup(ctx, cfg, l, true)
+	res, err := s.lookup(ctx, tenantID, cfg, l, true)
 	if err != nil {
 		slog.WarnContext(ctx, "could not look up the Anthropic workspace", "error", err.Error())
 		return ""
@@ -258,10 +264,10 @@ func (s *Settings) workspaceNeeded(ctx context.Context, apiKey string) string {
 	return ""
 }
 
-// deps are the adapters' Deps, with the refusal of a Claude request for want of a
-// workspace sent to workspaceNeeded.
-func (s *Settings) deps() models.Deps {
+// deps are the adapters' Deps for a tenant, with the refusal of a Claude request for want
+// of a workspace sent to workspaceNeeded.
+func (s *Settings) deps(tenantID int64) models.Deps {
 	d := s.Deps
-	d.WorkspaceNeeded = s.workspaceNeeded
+	d.WorkspaceNeeded = func(ctx context.Context, apiKey string) string { return s.workspaceNeeded(ctx, tenantID, apiKey) }
 	return d
 }
