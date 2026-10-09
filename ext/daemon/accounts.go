@@ -25,7 +25,7 @@ import (
 
 const accountsUsage = `usage: mailrules accounts <add|list|test> [flags]
 
-  add   --preset icloud|fastmail|yahoo|zoho|generic --username NAME
+  add   --preset icloud|gmail|fastmail|yahoo|zoho|generic --username NAME
         [--label TEXT] [--host HOST] [--port 993] [--tls implicit|starttls]
         [--watch-folder INBOX] [--password-file PATH]
         The app password comes from --password-file, else MAILRULES_ACCOUNT_PASSWORD,
@@ -102,7 +102,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 	case "add":
 		preset, ok := presets.Get(*presetName)
 		if !ok {
-			return fmt.Errorf("accounts add: --preset %q must be icloud, fastmail, yahoo, zoho or generic", *presetName)
+			return fmt.Errorf("accounts add: --preset %q must be icloud, gmail, fastmail, yahoo, zoho or generic", *presetName)
 		}
 		acct := store.Account{
 			Label: *label, Preset: preset.Name, Host: preset.Host, Port: preset.Port, TLSMode: preset.TLSMode,

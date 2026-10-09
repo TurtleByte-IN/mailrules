@@ -104,7 +104,7 @@ type accountInput struct {
 func (in accountInput) account(w http.ResponseWriter) (store.Account, bool) {
 	preset, ok := presets.Get(in.Preset)
 	if !ok {
-		invalid(w, "preset", "Choose a provider: icloud, fastmail, yahoo, zoho or generic.")
+		invalid(w, "preset", "Choose a provider: icloud, gmail, fastmail, yahoo, zoho or generic.")
 		return store.Account{}, false
 	}
 	a := store.Account{Label: strings.TrimSpace(in.Label), Preset: preset.Name, Host: preset.Host, Port: preset.Port,

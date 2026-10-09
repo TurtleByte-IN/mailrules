@@ -1644,8 +1644,8 @@ components:
         tls_mode: { $ref: '#/components/schemas/TLSMode' }
         help_url: { type: string, description: Where the user creates an app password; may be empty }
         local_part_login: { type: boolean, description: The server may want the part before "@" as the username; the daemon tries both }
-        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Fastmail, Yahoo, Zoho) or "Password" (generic)' }
-    PresetName: { type: string, enum: [icloud, fastmail, yahoo, zoho, generic] }
+        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho) or "Password" (generic)' }
+    PresetName: { type: string, enum: [icloud, gmail, fastmail, yahoo, zoho, generic] }
     TLSMode: { type: string, enum: [implicit, starttls] }
     AccountStatus:
       type: string
@@ -2364,7 +2364,7 @@ components:
             properties:
               account_id: { type: integer, format: int64 }
               label: { type: string }
-              preset: { type: string, description: 'icloud | fastmail | yahoo | zoho | generic' }
+              preset: { type: string, description: 'icloud | gmail | fastmail | yahoo | zoho | generic' }
               username: { type: string }
               folder_count: { type: integer }
               status: { $ref: '#/components/schemas/AccountStatus' }

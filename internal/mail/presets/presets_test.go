@@ -27,10 +27,10 @@ func TestPresets(t *testing.T) {
 		}
 	}
 	// These are the values accounts.preset may hold.
-	if want := []string{"icloud", "fastmail", "yahoo", "zoho", "generic"}; !slices.Equal(names, want) {
+	if want := []string{"icloud", "gmail", "fastmail", "yahoo", "zoho", "generic"}; !slices.Equal(names, want) {
 		t.Errorf("presets = %v, want %v", names, want)
 	}
-	if _, ok := Get("gmail"); ok {
+	if _, ok := Get("outlook"); ok {
 		t.Error("unknown preset found")
 	}
 }
@@ -55,22 +55,30 @@ func TestUsernames(t *testing.T) {
 
 func TestFillRoles(t *testing.T) {
 	icloud, _ := Get("icloud")
+	gmail, _ := Get("gmail")
 	for _, tc := range []struct {
-		name string
-		in   []mail.Folder
-		want map[string]string // folder -> role, only folders that get one
+		name   string
+		preset Preset
+		in     []mail.Folder
+		want   map[string]string // folder -> role, only folders that get one
 	}{
-		{"icloud names", []mail.Folder{{Name: "INBOX"}, {Name: "Deleted Messages"}, {Name: "sent messages"}, {Name: "Drafts"}},
+		{"icloud names", icloud, []mail.Folder{{Name: "INBOX"}, {Name: "Deleted Messages"}, {Name: "sent messages"}, {Name: "Drafts"}},
 			map[string]string{"Deleted Messages": mail.RoleTrash, "sent messages": mail.RoleSent, "Drafts": mail.RoleDrafts}},
-		{"best-ranked name wins", []mail.Folder{{Name: "Trash"}, {Name: "Deleted Messages"}},
+		{"best-ranked name wins", icloud, []mail.Folder{{Name: "Trash"}, {Name: "Deleted Messages"}},
 			map[string]string{"Deleted Messages": mail.RoleTrash}},
-		{"the server's own role is kept", []mail.Folder{{Name: "Corbeille", SpecialUse: mail.RoleTrash}, {Name: "Trash"}},
+		{"the server's own role is kept", icloud, []mail.Folder{{Name: "Corbeille", SpecialUse: mail.RoleTrash}, {Name: "Trash"}},
 			map[string]string{"Corbeille": mail.RoleTrash}},
-		{"a folder with a role is not given another", []mail.Folder{{Name: "Junk", SpecialUse: mail.RoleArchive}},
+		{"a folder with a role is not given another", icloud, []mail.Folder{{Name: "Junk", SpecialUse: mail.RoleArchive}},
 			map[string]string{"Junk": mail.RoleArchive}},
+		{"gmail names without SPECIAL-USE", gmail, []mail.Folder{{Name: "INBOX"}, {Name: "[Gmail]/All Mail"}, {Name: "[Gmail]/Spam"},
+			{Name: "[Gmail]/Trash"}, {Name: "[Gmail]/Sent Mail"}, {Name: "[Gmail]/Drafts"}, {Name: "Receipts"}},
+			map[string]string{"[Gmail]/All Mail": mail.RoleArchive, "[Gmail]/Spam": mail.RoleJunk, "[Gmail]/Trash": mail.RoleTrash,
+				"[Gmail]/Sent Mail": mail.RoleSent, "[Gmail]/Drafts": mail.RoleDrafts}},
+		{"google mail names", gmail, []mail.Folder{{Name: "[Google Mail]/All Mail"}, {Name: "[Google Mail]/Bin"}},
+			map[string]string{"[Google Mail]/All Mail": mail.RoleArchive, "[Google Mail]/Bin": mail.RoleTrash}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			icloud.FillRoles(tc.in)
+			tc.preset.FillRoles(tc.in)
 			got := map[string]string{}
 			for _, f := range tc.in {
 				if f.SpecialUse != "" {

@@ -315,7 +315,7 @@ func TestAccounts(t *testing.T) {
 	ctx := t.Context()
 
 	presets := e.call(http.MethodGet, "/api/presets", "", http.StatusOK)["items"].([]any)
-	if len(presets) != 5 || presets[0].(map[string]any)["name"] != "icloud" {
+	if len(presets) != 6 || presets[0].(map[string]any)["name"] != "icloud" || presets[1].(map[string]any)["name"] != "gmail" {
 		t.Fatalf("presets = %v", presets)
 	}
 	conform(t, e.doc, "Preset", presets[0])
