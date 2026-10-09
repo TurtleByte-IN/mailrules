@@ -383,7 +383,7 @@ func TestAccounts(t *testing.T) {
 	e.refuse(http.MethodPatch, "/api/accounts/1", `{"label":" "}`, http.StatusBadRequest, "invalid_input", "label")
 	e.refuse(http.MethodPatch, "/api/accounts/1", `{"password":""}`, http.StatusBadRequest, "invalid_input", "password")
 	e.refuse(http.MethodPatch, "/api/accounts/1", `{"label":7}`, http.StatusBadRequest, "invalid_input", "label")
-	e.refuse(http.MethodPatch, "/api/accounts/1", `{"tls_mode":"starttls"}`, http.StatusBadRequest, "invalid_json", "tls_mode")
+	e.refuse(http.MethodPatch, "/api/accounts/1", `{"preset":"icloud"}`, http.StatusBadRequest, "invalid_json", "preset")
 	if a := e.call(http.MethodPatch, "/api/accounts/1", `{"label":"Home"}`, http.StatusOK)["account"].(map[string]any); a["label"] != "Home" || a["status"] != "live" {
 		t.Errorf("rename = %v", a)
 	}
@@ -515,12 +515,13 @@ func TestAccountServerEdit(t *testing.T) {
 	e.live()
 	unchanged := func() {
 		t.Helper()
-		if a, _ := e.st.Account(ctx, 1); a.Host != "127.0.0.1" || a.Port != 1143 || a.CertFingerprint != fp || a.Status != worker.StatusLive {
+		if a, _ := e.st.Account(ctx, 1); a.Host != "127.0.0.1" || a.Port != 1143 || a.TLSMode != "starttls" || a.CertFingerprint != fp || a.Status != worker.StatusLive {
 			t.Fatalf("a refused edit changed the mailbox: %+v", a)
 		}
 	}
 
-	for body, path := range map[string]string{`{"host":" "}`: "host", `{"port":0}`: "port", `{"port":70000}`: "port", `{"port":"1144"}`: "port"} {
+	for body, path := range map[string]string{`{"host":" "}`: "host", `{"port":0}`: "port", `{"port":70000}`: "port", `{"port":"1144"}`: "port",
+		`{"tls_mode":"plain"}`: "tls_mode", `{"tls_mode":""}`: "tls_mode"} {
 		e.refuse(http.MethodPatch, "/api/accounts/1", body, http.StatusBadRequest, "invalid_input", path)
 	}
 	unchanged()
@@ -536,27 +537,32 @@ func TestAccountServerEdit(t *testing.T) {
 		{"the new server refuses the login", fmt.Errorf("login: %w", mail.ErrAuth), "auth_failed", "password"},
 		{"nothing listens there", fmt.Errorf("dial: %w", mail.ErrConnection), "connection_failed", "host"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e.connectErr = tc.err
-			r := e.do(http.MethodPatch, "/api/accounts/1", `{"port":1144}`)
-			if r.status != http.StatusUnprocessableEntity || r.body.Error.Code != tc.code || r.body.Error.Path != tc.path {
-				t.Fatalf("PATCH = %d %s", r.status, r.raw)
-			}
-			if tc.code == "cert_untrusted" && (r.body.Error.Cert == nil || r.body.Error.Cert.Fingerprint != newFP) {
-				t.Errorf("cert = %+v", r.body.Error.Cert)
-			}
-			// The test went to the new port with the stored password and without the old pin.
-			if e.dialed.Port != 1144 || e.dialed.Host != "127.0.0.1" || e.dialed.CertFingerprint != "" {
-				t.Errorf("dialed %+v", e.dialed)
-			}
-			unchanged()
-		})
+		for _, change := range []struct{ body, port, tls string }{
+			{`{"port":1144}`, "1144", "starttls"},
+			{`{"tls_mode":"implicit"}`, "1143", "implicit"},
+		} {
+			t.Run(tc.name+" "+change.body, func(t *testing.T) {
+				e.connectErr = tc.err
+				r := e.do(http.MethodPatch, "/api/accounts/1", change.body)
+				if r.status != http.StatusUnprocessableEntity || r.body.Error.Code != tc.code || r.body.Error.Path != tc.path {
+					t.Fatalf("PATCH = %d %s", r.status, r.raw)
+				}
+				if tc.code == "cert_untrusted" && (r.body.Error.Cert == nil || r.body.Error.Cert.Fingerprint != newFP) {
+					t.Errorf("cert = %+v", r.body.Error.Cert)
+				}
+				// The test went to the new server with the stored password and without the old pin.
+				if fmt.Sprint(e.dialed.Port) != change.port || e.dialed.TLSMode != change.tls || e.dialed.Host != "127.0.0.1" || e.dialed.CertFingerprint != "" {
+					t.Errorf("dialed %+v", e.dialed)
+				}
+				unchanged()
+			})
+		}
 	}
 	e.connectErr = nil
 
-	// A label alone, or the same port again, does not log in anywhere.
+	// A label alone, or the same server again, does not log in anywhere.
 	e.dialed = store.Account{}
-	e.call(http.MethodPatch, "/api/accounts/1", `{"label":"Proton","port":1143}`, http.StatusOK)
+	e.call(http.MethodPatch, "/api/accounts/1", `{"label":"Proton","port":1143,"tls_mode":"starttls"}`, http.StatusOK)
 	if e.dialed.ID != 0 {
 		t.Errorf("an edit that kept the server logged in to it: %+v", e.dialed)
 	}
@@ -572,12 +578,16 @@ func TestAccountServerEdit(t *testing.T) {
 		t.Errorf("stored = %+v", s)
 	}
 
-	// A server the system trusts needs nothing accepted: the old pin goes.
-	a = e.call(http.MethodPatch, "/api/accounts/1", `{"host":" imap.example.test ","port":993}`, http.StatusOK)["account"].(map[string]any)
-	if a["host"] != "imap.example.test" || a["cert_fingerprint"] != "" {
+	// A server the system trusts needs nothing accepted: the old pin goes. A new encryption
+	// alone is a new server too.
+	a = e.call(http.MethodPatch, "/api/accounts/1", `{"host":" imap.example.test ","port":993,"tls_mode":"implicit"}`, http.StatusOK)["account"].(map[string]any)
+	if a["host"] != "imap.example.test" || a["tls_mode"] != "implicit" || a["cert_fingerprint"] != "" || e.dialed.TLSMode != "implicit" {
 		t.Errorf("after moving to a trusted server = %v", a)
 	}
 	e.live()
+	if s, _ := e.st.Account(ctx, 1); s.TLSMode != "implicit" || s.Port != 993 {
+		t.Errorf("stored = %+v", s)
+	}
 
 	// Another mailbox of the tenant already lives there.
 	e.call(http.MethodPost, "/api/accounts", `{"preset":"generic","host":"imap.other.test","username":"me@proton.me","password":"pw"}`, http.StatusCreated)

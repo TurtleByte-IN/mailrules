@@ -451,11 +451,11 @@ func (s *Store) IsContact(ctx context.Context, accountID int64, address string) 
 	return n == 1, nil
 }
 
-// UpdateAccount stores an account's label, watch folder, server (host and port) and status
-// (the fields the user edits).
+// UpdateAccount stores an account's label, watch folder, server (host, port and TLS mode)
+// and status (the fields the user edits).
 func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?, host = ?, port = ?, status = ? WHERE id = ?`,
-		a.Label, a.WatchFolder, a.Host, a.Port, a.Status, a.ID)
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?, host = ?, port = ?, tls_mode = ?, status = ? WHERE id = ?`,
+		a.Label, a.WatchFolder, a.Host, a.Port, a.TLSMode, a.Status, a.ID)
 	if err != nil {
 		return fmt.Errorf("update account: %w", err)
 	}

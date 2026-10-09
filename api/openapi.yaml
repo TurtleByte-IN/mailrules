@@ -269,7 +269,7 @@ paths:
       summary: Rename, change the watched folder, the server or the app password, accept a server certificate, pause or resume
       description: |
         Anything but the label restarts the account's connection, so the change is in force when the response arrives.
-        A new `host` or `port` is logged in to first, with `password` if sent and the stored one otherwise, as
+        A new `host`, `port` or `tls_mode` is logged in to first, with `password` if sent and the stored one otherwise, as
         `/api/accounts/test` does; if that fails, nothing is saved and the answer is the test's 422. A new server
         drops the accepted certificate unless `cert_fingerprint` is sent with it.
       requestBody:
@@ -283,12 +283,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccountEnvelope' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: label | watch_folder | password | host | port | paused | cert_fingerprint), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: label | watch_folder | password | host | port | tls_mode | paused | cert_fingerprint), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # account_exists (path: host): another mailbox of the team is on that server with this username
-        '422': { $ref: '#/components/responses/ConnectionFailed' } # only when host or port changes
+        '422': { $ref: '#/components/responses/ConnectionFailed' } # only when host, port or tls_mode changes
     delete:
       tags: [Accounts]
       operationId: deleteAccount
@@ -1733,7 +1733,8 @@ components:
         shared: { type: boolean, description: true lets everyone in the team see this mailbox; false makes it private again. Owner only }
         cert_fingerprint: { type: string, description: 'Accepts the server certificate with this SHA-256 fingerprint, as for `AccountInput`; reconnect follows. Empty goes back to the system''s trust store' }
         host: { type: string, description: 'Moves the mailbox to another IMAP server; tested before it is saved' }
-        port: { type: integer, minimum: 1, maximum: 65535, description: Tested before it is saved, as `host` }
+        port: { type: integer, minimum: 1, maximum: 65535, description: 'Tested before it is saved, as `host`' }
+        tls_mode: { allOf: [{ $ref: '#/components/schemas/TLSMode' }], description: 'Tested before it is saved, as `host`' }
     Folder:
       type: object
       required: [name, delimiter, special_use]

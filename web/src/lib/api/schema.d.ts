@@ -175,7 +175,7 @@ export interface paths {
         /**
          * Rename, change the watched folder, the server or the app password, accept a server certificate, pause or resume
          * @description Anything but the label restarts the account's connection, so the change is in force when the response arrives.
-         *     A new `host` or `port` is logged in to first, with `password` if sent and the stored one otherwise, as
+         *     A new `host`, `port` or `tls_mode` is logged in to first, with `password` if sent and the stored one otherwise, as
          *     `/api/accounts/test` does; if that fails, nothing is saved and the answer is the test's 422. A new server
          *     drops the accepted certificate unless `cert_fingerprint` is sent with it.
          */
@@ -1475,8 +1475,10 @@ export interface components {
             cert_fingerprint?: string;
             /** @description Moves the mailbox to another IMAP server; tested before it is saved */
             host?: string;
-            /** @description Tested before it is saved */
+            /** @description Tested before it is saved, as `host` */
             port?: number;
+            /** @description Tested before it is saved, as `host` */
+            tls_mode?: components["schemas"]["TLSMode"];
         };
         Folder: {
             /** @description The server's own name */
