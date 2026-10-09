@@ -313,13 +313,15 @@ it('adds a Proton Mail mailbox through Bridge: the server is filled in, and its 
   expect(tests[1]).toMatchObject({ preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' });
 });
 
-const bridge = acct({ preset: 'proton', host: '127.0.0.1', port: 1143, cert_fingerprint: '00:11' });
+const bridge = acct({ preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', cert_fingerprint: '00:11' });
+const other = acct({ preset: 'generic', host: 'mail.example.com', port: 143, tls_mode: 'starttls', cert_fingerprint: '00:11' });
 
 it('offers no server fields in Edit for a provider with its own server', async () => {
   await show(acct());
   const form = await openEdit();
   expect(form.queryByLabelText('Host')).toBeNull();
   expect(form.queryByLabelText('Port')).toBeNull();
+  expect(form.queryByLabelText('Encryption')).toBeNull();
 });
 
 it("moves a Bridge mailbox to another port: the new server's certificate is shown and accepted before anything is saved", async () => {
@@ -358,8 +360,54 @@ it("changes a Zoho mailbox's region in Edit", async () => {
   routes['PATCH /api/accounts/1'] = [200, { account: acct({ preset: 'zoho', host: 'imap.zoho.eu' }) }];
   const form = await openEdit();
   expect(form.queryByLabelText('Port')).toBeNull();
+  expect(form.queryByLabelText('Encryption')).toBeNull();
   await fireEvent.change(form.getByLabelText('Zoho region'), { target: { value: 'imap.zoho.eu' } });
   await fireEvent.click(form.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(screen.queryByRole('form')).toBeNull());
   expect(patches()).toEqual([{ host: 'imap.zoho.eu' }]);
+});
+
+it('moves the port with the encryption for a server the person named, until the port is typed by hand', async () => {
+  await show(other);
+  const form = await openEdit();
+  const port = form.getByLabelText('Port') as HTMLInputElement;
+  const tls = form.getByLabelText('Encryption') as HTMLSelectElement;
+  expect([tls.value, port.value]).toEqual(['starttls', '143']);
+  await fireEvent.change(tls, { target: { value: 'implicit' } });
+  expect(port.value).toBe('993');
+  await fireEvent.input(port, { target: { value: '1993' } });
+  await fireEvent.change(tls, { target: { value: 'starttls' } });
+  await fireEvent.change(tls, { target: { value: 'implicit' } });
+  expect(port.value).toBe('1993');
+});
+
+it("switches a Bridge mailbox to SSL: the port stays, and the new server's certificate is accepted before anything is saved", async () => {
+  await show(bridge);
+  const form = await openEdit();
+  const tls = form.getByLabelText('Encryption') as HTMLSelectElement;
+  expect([...tls.options].map((o) => o.text)).toEqual(['SSL', 'STARTTLS']);
+  await fireEvent.change(tls, { target: { value: 'implicit' } });
+  expect((form.getByLabelText('Port') as HTMLInputElement).value).toBe('1143');
+  routes['PATCH /api/accounts/1'] = [422, { error: { code: 'cert_untrusted', message: 'The certificate of 127.0.0.1 is not one this system trusts.', path: 'cert_fingerprint', cert } }];
+  await fireEvent.click(form.getByRole('button', { name: 'Save' }));
+
+  const check = within(await form.findByRole('alert', { name: 'Server certificate' }));
+  expect(accounts.list[0]).toMatchObject({ tls_mode: 'starttls', cert_fingerprint: '00:11' });
+  routes['PATCH /api/accounts/1'] = [200, { account: { ...bridge, tls_mode: 'implicit', cert_fingerprint: FP, status: 'new' } }];
+  await fireEvent.click(check.getByRole('button', { name: 'Accept certificate' }));
+  await waitFor(() => expect(screen.queryByRole('form')).toBeNull());
+  expect(patches()).toEqual([{ tls_mode: 'implicit' }, { tls_mode: 'implicit', cert_fingerprint: FP }]);
+  expect(accounts.list[0]).toMatchObject({ tls_mode: 'implicit', cert_fingerprint: FP });
+});
+
+it('shows a refused encryption beside the Encryption field and keeps the mailbox as it was', async () => {
+  await show(other);
+  const form = await openEdit();
+  await fireEvent.change(form.getByLabelText('Encryption'), { target: { value: 'implicit' } });
+  routes['PATCH /api/accounts/1'] = [400, { error: { code: 'invalid_input', message: 'The TLS mode is implicit or starttls.', path: 'tls_mode' } }];
+  await fireEvent.click(form.getByRole('button', { name: 'Save' }));
+  expect((await form.findByText('The TLS mode is implicit or starttls.')).getAttribute('role')).toBe('alert');
+  expect(form.getByLabelText(/^Encryption/).getAttribute('aria-invalid')).toBe('true');
+  expect(patches()).toEqual([{ port: 993, tls_mode: 'implicit' }]);
+  expect(accounts.list[0].tls_mode).toBe('starttls');
 });

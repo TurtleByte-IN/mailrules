@@ -33,14 +33,16 @@
   let certs = $state<Record<number, 'checking' | { cert: ServerCert; message: string; busy: boolean }>>({});
   // The Edit form of the mailbox being edited. A new password lives here only, until it is sent or the form closes.
   let form = $state({
-    label: '', folder: '', password: '', shared: false, host: '', port: 0, folders: [] as string[], error: '', errorPath: '', busy: false,
+    label: '', folder: '', password: '', shared: false, host: '', port: 0, tls: 'implicit' as Account['tls_mode'], folders: [] as string[], error: '', errorPath: '', busy: false,
+    /** Once the person has typed a port, a change of encryption leaves it alone, as in the wizard. */
+    portEdited: false,
     /** The new server's certificate, while the person is asked to accept it. */
     cert: undefined as ServerCert | undefined,
   });
   // The edit refused for the certificate above, sent again with it once accepted. It holds a new password, if one
   // was typed, until then or until the form closes.
   let pending: AccountPatch | undefined;
-  const editFields = ['label', 'watch_folder', 'password', 'host', 'port'];
+  const editFields = ['label', 'watch_folder', 'password', 'host', 'port', 'tls_mode'];
 
   // The list names each provider by its preset label.
   if (!accounts.presets.length) loadPresets();
@@ -79,13 +81,19 @@
   const serverEdit = (a: Account) => (a.preset === 'zoho' ? 'region' : a.preset === 'generic' || editableServer.includes(a.preset) ? 'server' : '');
 
   async function openEdit(a: Account, focus: 'name' | 'password') {
-    form = { label: a.label, folder: a.watch_folder, password: '', shared: a.shared, host: a.host, port: a.port, folders: [a.watch_folder], error: '', errorPath: '', busy: false, cert: undefined };
+    form = { label: a.label, folder: a.watch_folder, password: '', shared: a.shared, host: a.host, port: a.port, tls: a.tls_mode, portEdited: false, folders: [a.watch_folder], error: '', errorPath: '', busy: false, cert: undefined };
     pending = undefined;
     editing = a.id;
     await tick();
     document.getElementById('edit-' + focus)?.focus();
     const names = await folderNames(a.id);
     if (editing === a.id && names.length) form.folders = names.includes(a.watch_folder) ? names : [a.watch_folder, ...names];
+  }
+
+  /** The port follows the encryption for a server the person named, as in the wizard; a preset's port (Bridge's) stays. */
+  function setTls(a: Account, mode: Account['tls_mode']) {
+    form.tls = mode;
+    if (!form.portEdited && a.preset === 'generic') form.port = mode === 'implicit' ? 993 : 143;
   }
 
   function closeEdit() {
@@ -104,6 +112,7 @@
     if (form.shared !== a.shared) p.shared = form.shared;
     if (form.host.trim() !== a.host) p.host = form.host.trim();
     if (form.port !== a.port) p.port = form.port;
+    if (form.tls !== a.tls_mode) p.tls_mode = form.tls;
     form.password = '';
     if (!Object.keys(p).length) return closeEdit();
     await send(a.id, p);
@@ -193,9 +202,17 @@
                   <input class="field h-11 font-mono" autocomplete="off" aria-invalid={form.errorPath === 'host'} bind:value={form.host} />
                   {@render fieldError('host')}
                 </label>
+                <label class="flex flex-[2_1_150px] flex-col gap-1.5">
+                  <span class="text-[13px] font-semibold">Encryption</span>
+                  <select class="field h-11 px-2.5" aria-invalid={form.errorPath === 'tls_mode'} value={form.tls} onchange={(e) => setTls(a, e.currentTarget.value as Account['tls_mode'])}>
+                    <option value="implicit">{a.preset === 'proton' ? 'SSL' : 'TLS (port 993)'}</option>
+                    <option value="starttls">{a.preset === 'proton' ? 'STARTTLS' : 'STARTTLS (port 143)'}</option>
+                  </select>
+                  {@render fieldError('tls_mode')}
+                </label>
                 <label class="flex flex-[1_1_80px] flex-col gap-1.5">
                   <span class="text-[13px] font-semibold">Port</span>
-                  <input class="field h-11 font-mono" type="number" min="1" max="65535" aria-invalid={form.errorPath === 'port'} bind:value={form.port} />
+                  <input class="field h-11 font-mono" type="number" min="1" max="65535" aria-invalid={form.errorPath === 'port'} bind:value={form.port} oninput={() => (form.portEdited = true)} />
                   {@render fieldError('port')}
                 </label>
               {:else if serverEdit(a) === 'region'}

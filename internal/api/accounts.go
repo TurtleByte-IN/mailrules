@@ -347,11 +347,11 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAccountPatch edits the label, the watched folder, the app password, the server
-// (host and port), the accepted server certificate, whether the account is shared with the
-// tenant, or pauses and resumes the account. Only the owner may: to anyone else the account
-// answers as missing. A new server is logged in to first, as the wizard's test does, and
-// nothing is saved unless that works; it drops the accepted certificate unless one is sent
-// with it. A change of server, folder, password, certificate or pause restarts the
+// (host, port and TLS mode), the accepted server certificate, whether the account is shared
+// with the tenant, or pauses and resumes the account. Only the owner may: to anyone else the
+// account answers as missing. A new server is logged in to first, as the wizard's test does,
+// and nothing is saved unless that works; it drops the accepted certificate unless one is
+// sent with it. A change of server, folder, password, certificate or pause restarts the
 // account's supervisor, so the change is in force when the response arrives.
 func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -361,9 +361,9 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	var password, cert string
 	paused, shared := a.Status == worker.StatusPaused, a.Shared
-	wasPaused, oldFolder, oldHost, oldPort := paused, a.WatchFolder, a.Host, a.Port
+	wasPaused, oldFolder, oldHost, oldPort, oldTLS := paused, a.WatchFolder, a.Host, a.Port, a.TLSMode
 	sent, ok := readPatch(w, r, map[string]any{"label": &a.Label, "watch_folder": &a.WatchFolder, "password": &password,
-		"paused": &paused, "shared": &shared, "cert_fingerprint": &cert, "host": &a.Host, "port": &a.Port})
+		"paused": &paused, "shared": &shared, "cert_fingerprint": &cert, "host": &a.Host, "port": &a.Port, "tls_mode": &a.TLSMode})
 	if !ok {
 		return
 	}
@@ -384,8 +384,11 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	case a.Port < 1 || a.Port > 65535:
 		invalid(w, "port", "The port must be between 1 and 65535.")
 		return
+	case a.TLSMode != presets.TLSImplicit && a.TLSMode != presets.TLSStartTLS:
+		invalid(w, "tls_mode", "The TLS mode is implicit or starttls.")
+		return
 	}
-	moved := a.Host != oldHost || a.Port != oldPort
+	moved := a.Host != oldHost || a.Port != oldPort || a.TLSMode != oldTLS
 	if moved {
 		a.CertFingerprint = "" // accepted for the old server
 	}
