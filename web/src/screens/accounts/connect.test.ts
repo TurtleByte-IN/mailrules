@@ -14,12 +14,13 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 const presets: Preset[] = [
   { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.apple.com/en-us/102654', local_part_login: true, secret_label: 'App-specific password' },
   { name: 'zoho', label: 'Zoho Mail', host: 'imap.zoho.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password' },
+  { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password' },
   { name: 'generic', label: 'Other IMAP server', host: '', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'Password' },
 ];
 const found = { username: 'new', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Junk', delimiter: '/', special_use: '\\Junk' }], can_move: true, idle: true };
 const created: Account = {
   id: 3, label: 'new@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'new', watch_folder: 'INBOX',
-  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true,
+  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '',
 };
 
 type Reply = [status: number, body?: unknown];
@@ -253,4 +254,72 @@ it('ignores a test result that arrives after the fields changed', async () => {
   w.edited();
   await running;
   expect(w.test).toBe('idle');
+});
+
+it('fills in Proton Mail Bridge on this machine, and sends it as the server, which can be changed', async () => {
+  const w = atSignIn({ email: 'me@proton.me', password: 'bridge-pw' });
+  w.choose('proton');
+  expect([w.serverFields, w.host, w.port, w.tls]).toEqual([true, '127.0.0.1', 1143, 'starttls']);
+  w.setTls('implicit'); // Bridge's SSL mode keeps its port
+  expect(w.port).toBe(1143);
+  w.setTls('starttls');
+  await w.runTest();
+  w.port = 1144;
+  w.portEdited();
+  await w.runTest();
+  const sent = { preset: 'proton', username: 'me@proton.me', password: 'bridge-pw', host: '127.0.0.1', tls_mode: 'starttls' };
+  expect(bodies('/api/accounts/test')).toEqual([{ ...sent, port: 1143 }, { ...sent, port: 1144 }]);
+  w.choose('generic');
+  expect([w.host, w.port, w.tls]).toEqual(['', 993, 'implicit']);
+});
+
+const cert = { fingerprint: 'AB:CD', subject: 'CN=127.0.0.1', issuer: 'CN=127.0.0.1', not_before: 1700000000, not_after: 2000000000 };
+const certRefusal = (code: string) => ({ error: { code, message: 'The certificate of 127.0.0.1 is not one this system trusts.', path: 'cert_fingerprint', cert } });
+
+it('shows a certificate the system does not trust, and tests and saves with it once accepted', async () => {
+  routes['POST /api/accounts/test'] = [422, certRefusal('cert_untrusted')];
+  const w = atSignIn({ email: 'me@proton.me', password: 'bridge-pw' });
+  w.choose('proton');
+  expect(await w.next()).toBe(false);
+  expect([w.test, w.cert, w.errorField, w.error]).toEqual(['err', cert, '', 'The certificate of 127.0.0.1 is not one this system trusts.']);
+
+  routes['POST /api/accounts/test'] = [200, found];
+  await w.acceptCert();
+  expect([w.test, w.cert, w.certFingerprint]).toEqual(['ok', undefined, 'AB:CD']);
+  w.password = 'bridge-pw-2';
+  w.edited(); // the password is not the server: the accepted certificate stays
+  await w.runTest();
+  w.step = 3;
+  expect(await w.next()).toBe(true);
+  const sent = { preset: 'proton', username: 'me@proton.me', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' };
+  expect(bodies('/api/accounts/test')).toEqual([
+    { ...sent, password: 'bridge-pw' },
+    { ...sent, password: 'bridge-pw', cert_fingerprint: 'AB:CD' },
+    { ...sent, password: 'bridge-pw-2', cert_fingerprint: 'AB:CD' },
+  ]);
+  expect(bodies('/api/accounts')).toEqual([{ ...sent, password: 'bridge-pw-2', cert_fingerprint: 'AB:CD' }]);
+});
+
+it.each<[string, (w: Wizard) => void]>([
+  ['the host', (w) => w.serverEdited()],
+  ['the port', (w) => w.portEdited()],
+  ['the encryption', (w) => w.setTls('implicit')],
+  ['the provider', (w) => w.choose('generic')],
+])('forgets an accepted certificate when %s changes', async (_name, change) => {
+  const w = atSignIn({ email: 'me@proton.me', password: 'bridge-pw' });
+  w.choose('proton');
+  w.certFingerprint = 'AB:CD';
+  change(w);
+  expect(w.certFingerprint).toBe('');
+});
+
+it('goes back to sign-in with the new certificate when the server presents another one at save', async () => {
+  const w = atSignIn({ email: 'me@proton.me', password: 'bridge-pw' });
+  w.choose('proton');
+  w.certFingerprint = '00:11';
+  await w.runTest();
+  w.step = 3;
+  routes['POST /api/accounts'] = [422, certRefusal('cert_changed')];
+  expect(await w.next()).toBe(false);
+  expect([w.step, w.test, w.cert]).toEqual([1, 'err', cert]);
 });

@@ -71,6 +71,8 @@ export function health(a: Account): { detail: string; chip: string; action?: 'te
       return { detail: 'Paused · new mail is not sorted', chip: 'chip-neutral', action: 'resume', label: 'Resume' };
     case 'auth_failed':
       return { detail: a.last_error || 'Login rejected.', chip: 'chip-trash', action: 'go', label: 'Fix sign-in' };
+    case 'cert_changed':
+      return { detail: "The server's certificate changed.", chip: 'chip-trash', action: 'go', label: 'Check certificate' };
     case 'error':
       return { detail: a.last_error || 'Could not connect.', chip: 'chip-trash', action: 'reconnect', label: 'Reconnect now' };
   }

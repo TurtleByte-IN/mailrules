@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,6 +171,12 @@ func TestSupervisorStatuses(t *testing.T) {
 	}{
 		{"wrong password stops for good", func(*env, int) (mail.Mailbox, error) { return nil, mail.ErrAuth }, StatusAuthFailed, true},
 		{"tls failure stops for good", func(*env, int) (mail.Mailbox, error) { return nil, mail.ErrTLS }, StatusError, true},
+		{"a changed certificate stops for good", func(*env, int) (mail.Mailbox, error) {
+			return nil, fmt.Errorf("connect: %w", &mail.CertError{Host: "127.0.0.1", Cert: mail.Cert{Fingerprint: "AA"}, Pinned: "BB"})
+		}, StatusCertChanged, true},
+		{"an untrusted certificate stops for good", func(*env, int) (mail.Mailbox, error) {
+			return nil, &mail.CertError{Host: "127.0.0.1", Cert: mail.Cert{Fingerprint: "AA"}, Reason: "self-made"}
+		}, StatusCertChanged, true},
 		{"missing watch folder stops for good", func(e *env, _ int) (mail.Mailbox, error) {
 			e.sup.Account.WatchFolder = "Gone"
 			return e.mb, nil

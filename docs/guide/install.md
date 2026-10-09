@@ -25,6 +25,7 @@ docker run -d --name mailrules --restart unless-stopped \
 - Inside the container the daemon listens on every interface, and `-p 127.0.0.1:8080:8080` publishes the port to this machine only.
 - `MAILRULES_COOKIE_SECURE=false` lets you stay signed in over plain HTTP at `http://127.0.0.1:8080`. Change it to `true` once a TLS reverse proxy is in front; see [Security](./security.md#putting-mailrules-behind-a-reverse-proxy).
 - Pass other settings with more `-e NAME=value` options, or with `--env-file`. All of them are in the [settings reference](./settings.md). Model keys can also be entered in the browser instead.
+- **Proton Mail does not work from Docker.** Proton Mail Bridge listens on the machine's own address, `127.0.0.1`, and inside a container that address is the container itself, so MailRules cannot reach Bridge there. The same holds for Docker Compose. To sort Proton Mail, use the [Homebrew](#homebrew-macos-and-linux) or [single binary](#single-binary) install on the machine Bridge runs on; see [Proton Mail](./first-run.md#proton-mail).
 
 The image has no shell. To run a `mailrules` command against the running container, use `docker exec`:
 
@@ -63,6 +64,7 @@ What the compose file sets up:
 - Data lives in the `mailrules-data` volume.
 - The container runs with a read-only root filesystem, no capabilities and `no-new-privileges`.
 - `MAILRULES_COOKIE_SECURE` defaults to `false`, for the same reason as with `docker run`. Set it to `true` in `deploy/.env` once a TLS reverse proxy is in front.
+- As with `docker run`, MailRules in the container cannot reach Proton Mail Bridge on this machine (see [Docker](#docker)).
 
 Put your settings in `deploy/.env`, never in the compose file itself. Compose passes on only the variables listed in the `environment:` section of `deploy/docker-compose.yml`. That is every setting in the [settings reference](./settings.md) except `MAILRULES_LISTEN`: inside the container MailRules must listen on `0.0.0.0:8080` for the published port to work, so change the port on your machine with `MAILRULES_PORT` instead.
 

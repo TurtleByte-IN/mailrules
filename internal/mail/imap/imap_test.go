@@ -2,6 +2,8 @@ package imap
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -549,6 +551,79 @@ func TestConnectErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCertificates(t *testing.T) {
+	s := imaptest.Start(t, capsMove)
+	fp := s.Fingerprint()
+	other := mail.Fingerprint([]byte("another certificate"))
+	untrusted := &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12} // trusts nothing
+	for _, tc := range []struct {
+		name       string
+		tls        *tls.Config
+		serverName string
+		pin        string
+		wantPinned string // on a *mail.CertError; "" with wantErr means untrusted
+		wantReason string
+		wantErr    bool
+	}{
+		{name: "trusted chain", tls: s.TLS},
+		{name: "unknown certificate, first time", tls: untrusted, wantErr: true, wantReason: "self-made"},
+		{name: "trusted chain, another name", tls: s.TLS, serverName: "imap.example.test", wantErr: true, wantReason: "another name than imap.example.test"},
+		{name: "pinned match", tls: untrusted, pin: fp},
+		{name: "pinned match, another name", tls: untrusted, serverName: "imap.example.test", pin: fp},
+		{name: "pinned mismatch", tls: untrusted, pin: other, wantErr: true, wantPinned: other},
+		{name: "a pin wins over a trusted chain", tls: s.TLS, pin: other, wantErr: true, wantPinned: other},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config(s)
+			cfg.TLSConfig = tc.tls.Clone()
+			cfg.TLSConfig.ServerName = tc.serverName
+			cfg.CertFingerprint = tc.pin
+			m, err := Open(t.Context(), cfg)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = m.Close()
+				return
+			}
+			var ce *mail.CertError
+			if !errors.As(err, &ce) || !errors.Is(err, mail.ErrTLS) {
+				t.Fatalf("err = %v, want a certificate error", err)
+			}
+			if ce.Cert.Fingerprint != fp || ce.Pinned != tc.wantPinned || !strings.Contains(ce.Reason, tc.wantReason) ||
+				ce.Cert.Subject != "CN=imaptest" || ce.Cert.NotAfter.IsZero() {
+				t.Errorf("certificate error = %+v", ce)
+			}
+		})
+	}
+	if err := verifyCert(tls.ConnectionState{}, nil, "x", ""); !errors.Is(err, mail.ErrTLS) {
+		t.Errorf("no certificate at all: err = %v", err)
+	}
+}
+
+// A server whose certificate is replaced after it was pinned is refused, on a new
+// connection and by a running Watch alike, and Watch gives up instead of retrying.
+func TestPinnedCertificateChanges(t *testing.T) {
+	s := imaptest.Start(t, capsMove)
+	cfg := config(s)
+	cfg.TLSConfig = &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}
+	cfg.CertFingerprint = s.Fingerprint()
+	m := open(t, cfg)
+	pinned := s.Fingerprint()
+	s.Rotate(t)
+	s.KillConnections()
+	err := m.Watch(t.Context(), "INBOX", 0, make(chan mail.NewMail))
+	var ce *mail.CertError
+	if !errors.As(err, &ce) || ce.Pinned != pinned || ce.Cert.Fingerprint != s.Fingerprint() {
+		t.Fatalf("Watch err = %v, want the changed certificate", err)
+	}
+	if _, err := Open(t.Context(), cfg); !errors.As(err, &ce) {
+		t.Fatalf("Open err = %v, want the changed certificate", err)
+	}
+	cfg.CertFingerprint = s.Fingerprint() // the new one accepted
+	_ = open(t, cfg)
 }
 
 func TestWatchStopsOnAuthFailure(t *testing.T) {

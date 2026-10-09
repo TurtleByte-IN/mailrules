@@ -36,7 +36,7 @@ You can skip this step: mail that only a plain-English rule could sort then wait
 
 MailRules works with any IMAP mailbox that signs in with a password or app password. Connecting one takes four steps: **Provider**, **Sign in**, **Rules** and **Preview**. The same wizard opens later from **Mailboxes** → **Add mailbox**.
 
-1. **Where is your email?** Pick your provider: iCloud Mail, Gmail, Fastmail, Yahoo Mail, Zoho Mail, or Other IMAP server.
+1. **Where is your email?** Pick your provider: iCloud Mail, Gmail, Fastmail, Yahoo Mail, Zoho Mail, Proton Mail, or Other IMAP server.
 2. **Sign in.** Enter your email address and an app password. Click **Test connection** to check it, or **Test and continue**. MailRules logs in and lists your folders; nothing is saved if the test fails. The result says how many folders it found, which special folders (Archive, Junk, Trash, Sent) it recognised, and whether the server supports push (IDLE).
 3. **Start with a few rules.** Tick any starter rules you want. Newsletters, Receipts and Login codes are ticked by default; Cold sales and Travel are not. You can edit them or remove them later.
 4. **Preview** lists the starter rules you picked. Click **Connect** to save the mailbox and the rules.
@@ -54,10 +54,29 @@ Use an app password (a password made for one program), not the password you sign
 | Fastmail | `imap.fastmail.com`, port 993, TLS | Needs an [app password](https://www.fastmail.help/hc/en-us/articles/360058752854). |
 | Yahoo Mail | `imap.mail.yahoo.com`, port 993, TLS | Needs an [app password](https://help.yahoo.com/kb/SLN15241.html). The user name is your full address. |
 | Zoho Mail | `imap.zoho.com` (or your region's host), port 993, TLS | Switch on [IMAP access](https://www.zoho.com/mail/help/imap-access.html) in Zoho's webmail first. The wizard asks which Zoho region your account is in, and for an app password. |
+| Proton Mail | `127.0.0.1`, port 1143, STARTTLS: [Proton Mail Bridge](https://proton.me/support/protonmail-bridge-install) on this machine | See [Proton Mail](#proton-mail) below. Not yet tested with a real Bridge. |
 | Other IMAP server | You enter it | Choose **TLS (port 993)** or **STARTTLS (port 143)**, and the port if it differs. |
 | Outlook.com, Hotmail, Microsoft 365 | — | Can't connect. Microsoft no longer accepts passwords or app passwords over IMAP, only its own sign-in, which this build does not include. |
 
 The Zoho Mail choice in the wizard asks where your account is: United States (`imap.zoho.com`), Europe (`imap.zoho.eu`), India (`imap.zoho.in`), Australia (`imap.zoho.com.au`), Japan (`imap.zoho.jp`) or China (`imap.zoho.com.cn`). Use the one you see in the address bar when you sign in to Zoho Mail. Paid Zoho organisations use `imappro.zoho.com`: pick **Other IMAP server** and enter it, or add the mailbox from the command line with `--preset zoho --host imappro.zoho.com`.
+
+### Proton Mail
+
+Proton Mail has no IMAP server of its own. Proton Mail Bridge, Proton's app for mail programs, runs on your computer and offers your mailbox over IMAP there. Bridge needs a paid Proton plan.
+
+1. Install Bridge on the same machine as MailRules, sign in to it and leave it running. MailRules can only sort while Bridge runs.
+2. In Bridge, open your account's **Mailbox details**. It shows the IMAP server, port, username and a password Bridge made for mail programs.
+3. In the wizard, pick **Proton Mail**. The server is filled in as Bridge's defaults: `127.0.0.1`, port 1143, STARTTLS. If Bridge's Mailbox details show another port, or SSL instead of STARTTLS, change them here.
+4. Enter your Proton address and the **Bridge password** from Mailbox details, not your Proton password, and click **Test connection**.
+5. Bridge makes its own certificate, which your system does not trust, so MailRules shows it: its SHA-256 fingerprint, who it is issued to and by, and its dates. Click **Accept certificate**. MailRules tests again and lists your folders.
+
+Proton works with the binary and Homebrew installs. MailRules in Docker cannot reach it: Bridge listens on the machine's own address `127.0.0.1`, which inside a container is the container itself.
+
+### Servers with their own certificate
+
+A server whose certificate your system does not trust, such as Proton Mail Bridge or your own server with a certificate it made itself, is not refused outright. The connection test shows the certificate and why it is not trusted (made by the server itself or by an unknown authority, made out to another name, or expired), with **Accept certificate**. Accept it only if it is your server's.
+
+Accepting trusts that exact certificate, and no other, for that mailbox. Every later connection checks for it. If the server ever presents another one, MailRules stops connecting and the mailbox says **Certificate changed** (see [Troubleshooting](./troubleshooting.md#a-mailbox-says-certificate-changed)). A certificate your system trusts needs nothing accepted, as before. [Security](./security.md#mail-server-certificates) says what an accepted certificate does and does not check.
 
 ### What the server needs to support
 
@@ -77,12 +96,13 @@ The last step of the guide, **You're set**, suggests the next move: watch **Acti
 
 ## Managing mailboxes
 
-**Mailboxes** lists every connected mailbox with its status: Connecting, Live, Reconnecting, Paused, Sign-in failed or Error. For each one:
+**Mailboxes** lists every connected mailbox with its status: Connecting, Live, Reconnecting, Paused, Sign-in failed, Certificate changed or Error. For each one:
 
 - **Test** logs in once more and reports what it found, without touching the running connection.
 - **Pause** stops sorting that mailbox until you click **Resume**.
-- **Edit** changes its **Name**, the **Watched folder**, or the app password (**New app password**; leave it empty to keep the current one).
+- **Edit** changes its **Name**, the **Watched folder**, or the app password (**New app password**; leave it empty to keep the current one). For **Other IMAP server** and **Proton Mail** it also changes the **Host** and **Port**, and for **Zoho Mail** the **Zoho region**. A new server is tested before it is saved, as in the wizard: if the test fails, nothing changes and the mailbox keeps its old settings. If the new server's certificate is not one your system trusts, Edit shows it with **Accept certificate**, and a certificate accepted for the old server no longer counts. The encryption (TLS or STARTTLS) cannot be changed: remove the mailbox and add it again.
 - **Reconnect** appears when a mailbox is not live, and starts it again.
+- **Check certificate** appears when the mailbox says **Certificate changed**. It shows the certificate the server presents now, to accept or not (see [Troubleshooting](./troubleshooting.md#a-mailbox-says-certificate-changed)).
 - **Remove** deletes the mailbox from MailRules: its password, folder list, contacts, activity and undo history. Rules that apply only to it are kept but switched off, marked so you can give them another mailbox, and rules whose conditions name it are adjusted (see [When a mailbox is removed](./rules.md#when-a-mailbox-is-removed)). Nothing in the mailbox itself changes.
 
 ## Without the web UI
@@ -93,7 +113,13 @@ The admin account can only be created in the browser, or with `POST /api/auth/se
 mailrules accounts add --preset icloud --username you@example.com
 ```
 
-`--preset` is `icloud`, `gmail`, `fastmail`, `yahoo`, `zoho` or `generic`; `generic` also needs `--host`, and optionally `--port` and `--tls implicit|starttls`. Other flags: `--label`, `--watch-folder` (default `INBOX`) and `--data-dir`. The app password is never a flag: it is read from `--password-file`, else from the environment variable `MAILRULES_ACCOUNT_PASSWORD`, else from one line typed on standard input (which is not hidden).
+`--preset` is `icloud`, `gmail`, `fastmail`, `yahoo`, `zoho`, `proton` or `generic`; `generic` also needs `--host`, and any preset takes `--host`, `--port` and `--tls implicit|starttls` to change its server. Other flags: `--label`, `--watch-folder` (default `INBOX`) and `--data-dir`. The app password is never a flag: it is read from `--password-file`, else from the environment variable `MAILRULES_ACCOUNT_PASSWORD`, else from one line typed on standard input (which is not hidden).
+
+A server whose certificate your system does not trust, such as Proton Mail Bridge, is refused, and the error prints the certificate with its SHA-256 fingerprint. If it is your server's, add the mailbox again with `--accept-cert` and that fingerprint, as printed or without the colons:
+
+```bash
+mailrules accounts add --preset proton --username you@proton.me --accept-cert 3A:7F:…:C2
+```
 
 `mailrules accounts list` shows every mailbox, and `mailrules accounts test <id>` logs in to one (see [Troubleshooting](./troubleshooting.md#checking-a-mailbox-from-the-command-line)).
 

@@ -23,6 +23,8 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
+
+	"github.com/TurtleByte-IN/mailrules/internal/mail"
 )
 
 // The one account on the test server.
@@ -44,6 +46,19 @@ type Server struct {
 	// special holds the folders made with CreateSpecial; once there is one, LIST is
 	// answered here (see session.List).
 	special map[string][]imap.MailboxAttr
+	cert    atomic.Pointer[tls.Certificate] // what the server presents; see Rotate
+}
+
+// Fingerprint is the SHA-256 fingerprint of the certificate the server presents now, as
+// mail.Cert.Fingerprint has it.
+func (s *Server) Fingerprint() string { return mail.Fingerprint(s.cert.Load().Certificate[0]) }
+
+// Rotate makes the server present a new self-signed certificate from the next connection
+// on, as a server whose certificate was replaced would. TLS keeps trusting only the old one.
+func (s *Server) Rotate(t testing.TB) {
+	t.Helper()
+	cert, _ := selfSigned(t)
+	s.cert.Store(&cert)
 }
 
 // CreateSpecial makes a folder that LIST reports with the given SPECIAL-USE attributes
@@ -151,8 +166,11 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 		TLS:  &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 		User: user,
 	}
+	s.cert.Store(&cert)
+	serve := &tls.Config{MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return s.cert.Load(), nil }}
 	go func() {
-		_ = srv.Serve(tracking{tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}), s})
+		_ = srv.Serve(tracking{tls.NewListener(ln, serve), s})
 	}()
 	t.Cleanup(func() { _ = srv.Close() })
 	return s

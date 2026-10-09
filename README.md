@@ -1,6 +1,6 @@
 # MailRules
 
-MailRules is a small daemon that sorts incoming email over IMAP, in real time, using rules you write in plain English or as structured conditions. It works with any IMAP mailbox that signs in with a password or app password (iCloud, Gmail, Fastmail, Yahoo, Zoho, your own server), lets you choose the model that decides, and runs as one binary with the web UI built in. Outlook.com and Microsoft 365 accept only Microsoft's own sign-in, which this build does not include.
+MailRules is a small daemon that sorts incoming email over IMAP, in real time, using rules you write in plain English or as structured conditions. It works with any IMAP mailbox that signs in with a password or app password (iCloud, Gmail, Fastmail, Yahoo, Zoho, Proton Mail through Proton Mail Bridge, your own server), lets you choose the model that decides, and runs as one binary with the web UI built in. Outlook.com and Microsoft 365 accept only Microsoft's own sign-in, which this build does not include.
 
 [![A rule written in plain English, and new emails being filed into Jobs, Reading, Food and Trash by it](docs/images/mailrules-demo.gif)](https://mailrules.app/?utm_source=github&utm_medium=readme&utm_content=demo)
 

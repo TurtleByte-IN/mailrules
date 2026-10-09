@@ -204,7 +204,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccountTestResult' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: preset | username | password | host | port | tls_mode), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: preset | username | password | host | port | tls_mode | cert_fingerprint), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '422': { $ref: '#/components/responses/ConnectionFailed' }
@@ -266,8 +266,12 @@ paths:
     patch:
       tags: [Accounts]
       operationId: updateAccount
-      summary: Rename, change the watched folder or the app password, pause or resume
-      description: Anything but the label restarts the account's connection, so the change is in force when the response arrives.
+      summary: Rename, change the watched folder, the server or the app password, accept a server certificate, pause or resume
+      description: |
+        Anything but the label restarts the account's connection, so the change is in force when the response arrives.
+        A new `host` or `port` is logged in to first, with `password` if sent and the stored one otherwise, as
+        `/api/accounts/test` does; if that fails, nothing is saved and the answer is the test's 422. A new server
+        drops the accepted certificate unless `cert_fingerprint` is sent with it.
       requestBody:
         required: true
         content:
@@ -279,10 +283,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccountEnvelope' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: label | watch_folder | password | paused), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: label | watch_folder | password | host | port | paused | cert_fingerprint), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # account_exists (path: host): another mailbox of the team is on that server with this username
+        '422': { $ref: '#/components/responses/ConnectionFailed' } # only when host or port changes
     delete:
       tags: [Accounts]
       operationId: deleteAccount
@@ -300,7 +306,7 @@ paths:
       tags: [Accounts]
       operationId: reconnectAccount
       summary: Drop the connection and connect again
-      description: Also how an account that stopped on `auth_failed` or `error` is started again. The outcome arrives over `account.status`.
+      description: Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`.
       responses:
         '200':
           description: Reconnecting; the body is the account as stored at this moment
@@ -1568,7 +1574,11 @@ components:
     ConnectionFailed:
       description: |
         The mail server could not be used with these details: `auth_failed` (path `password`),
-        `tls_failed` (path `host`), `no_folder` (path `watch_folder`) or `connection_failed` (path `host`)
+        `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
+        or a server certificate to accept (path `cert_fingerprint`, with `cert` set):
+        `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
+        stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).
+        Sending `cert.fingerprint` as `cert_fingerprint` accepts it.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -1632,6 +1642,17 @@ components:
             message: { type: string, description: 'A sentence for a person, safe to show as it is: capitalised, ending with a full stop, with no field path in it. A refused import has one such line per rule, separated by newlines' }
             path: { type: string, description: 'Where the problem is, when there is a place: a field (`limit`), or a path into a rule (`rules[0].conditions.all[0].op`)' }
             sign_in: { type: string, description: 'Only on the 401 from `GET /api/auth/me` when a sign-in module is present: the path the browser goes to to sign in. There is no password sign-in or first-run setup then' }
+            cert: { $ref: '#/components/schemas/ServerCert' }
+    ServerCert:
+      type: object
+      description: 'Only on `cert_untrusted` and `cert_changed`: the certificate the mail server presented, for the person to check before accepting it'
+      required: [fingerprint, subject, issuer, not_before, not_after]
+      properties:
+        fingerprint: { type: string, description: 'SHA-256 of the certificate, upper-case hex pairs separated by colons, as browsers and `openssl x509 -fingerprint -sha256` show it' }
+        subject: { type: string, description: 'Who the certificate is made out to, e.g. "CN=127.0.0.1,O=Proton AG"' }
+        issuer: { type: string, description: 'Who signed it; the same as `subject` for a certificate the server made itself' }
+        not_before: { type: integer, format: int64 }
+        not_after: { type: integer, format: int64 }
 
     Preset:
       type: object
@@ -1644,13 +1665,13 @@ components:
         tls_mode: { $ref: '#/components/schemas/TLSMode' }
         help_url: { type: string, description: Where the user creates an app password; may be empty }
         local_part_login: { type: boolean, description: The server may want the part before "@" as the username; the daemon tries both }
-        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho) or "Password" (generic)' }
-    PresetName: { type: string, enum: [icloud, gmail, fastmail, yahoo, zoho, generic] }
+        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic)' }
+    PresetName: { type: string, enum: [icloud, gmail, fastmail, yahoo, zoho, proton, generic] }
     TLSMode: { type: string, enum: [implicit, starttls] }
     AccountStatus:
       type: string
-      enum: [new, live, reconnecting, auth_failed, error, paused]
-      description: '`auth_failed` and `error` have stopped and wait for the user (fix the password, then reconnect); `paused` was set by the user'
+      enum: [new, live, reconnecting, auth_failed, cert_changed, error, paused]
+      description: '`auth_failed`, `cert_changed` and `error` have stopped and wait for the user (fix the password, or accept the certificate the server now presents, then reconnect); `paused` was set by the user'
     AccountInput:
       type: object
       required: [preset, username, password]
@@ -1664,6 +1685,7 @@ components:
         port: { type: integer, minimum: 1, maximum: 65535 }
         tls_mode: { $ref: '#/components/schemas/TLSMode' }
         watch_folder: { type: string, description: Left out = INBOX }
+        cert_fingerprint: { type: string, description: 'Accepts the server certificate with this SHA-256 fingerprint (from `cert` on a `cert_untrusted` answer): the server must then present exactly it, and the system''s roots and the host name are not checked. Hex pairs, colons and case optional' }
     AccountTestResult:
       type: object
       required: [username, folders, can_move, idle]
@@ -1674,7 +1696,7 @@ components:
         idle: { type: boolean, description: False means new mail is checked for once a minute }
     Account:
       type: object
-      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, last_mail_at, capabilities, can_move, folder_count, created_at, shared, mine]
+      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, last_mail_at, capabilities, can_move, folder_count, created_at, shared, mine, cert_fingerprint]
       properties:
         id: { type: integer, format: int64 }
         label: { type: string }
@@ -1694,6 +1716,7 @@ components:
         created_at: { type: integer, format: int64 }
         shared: { type: boolean, description: Everyone in the team can see this mailbox and act on its mail; false means only the person who added it }
         mine: { type: boolean, description: The signed-in user added this mailbox; only they can edit, pause, delete or share it }
+        cert_fingerprint: { type: string, description: 'The server certificate accepted for this mailbox, as `ServerCert.fingerprint`; empty when the system''s trust store decides' }
     AccountEnvelope:
       type: object
       required: [account]
@@ -1708,6 +1731,9 @@ components:
         password: { type: string, writeOnly: true, description: A new app password; reconnect follows }
         paused: { type: boolean, description: true stops watching; false resumes }
         shared: { type: boolean, description: true lets everyone in the team see this mailbox; false makes it private again. Owner only }
+        cert_fingerprint: { type: string, description: 'Accepts the server certificate with this SHA-256 fingerprint, as for `AccountInput`; reconnect follows. Empty goes back to the system''s trust store' }
+        host: { type: string, description: 'Moves the mailbox to another IMAP server; tested before it is saved' }
+        port: { type: integer, minimum: 1, maximum: 65535, description: Tested before it is saved, as `host` }
     Folder:
       type: object
       required: [name, delimiter, special_use]
@@ -2364,7 +2390,7 @@ components:
             properties:
               account_id: { type: integer, format: int64 }
               label: { type: string }
-              preset: { type: string, description: 'icloud | gmail | fastmail | yahoo | zoho | generic' }
+              preset: { type: string, description: 'icloud | gmail | fastmail | yahoo | zoho | proton | generic' }
               username: { type: string }
               folder_count: { type: integer }
               status: { $ref: '#/components/schemas/AccountStatus' }

@@ -405,7 +405,8 @@ func TestContractGaps(t *testing.T) {
 		conform(t, e.doc, "Preset", p)
 		labels[p.(map[string]any)["name"].(string)] = p.(map[string]any)["secret_label"]
 	}
-	if labels["icloud"] != "App-specific password" || labels["fastmail"] != "App password" || labels["gmail"] != "App password" || labels["generic"] != "Password" {
+	if labels["icloud"] != "App-specific password" || labels["fastmail"] != "App password" || labels["gmail"] != "App password" ||
+		labels["proton"] != "Bridge password" || labels["generic"] != "Password" {
 		t.Errorf("secret labels = %v", labels)
 	}
 
