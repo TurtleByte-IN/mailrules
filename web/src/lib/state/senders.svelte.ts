@@ -1,3 +1,4 @@
+import { folders as listFolders } from '../api/accounts';
 import * as sendersApi from '../api/senders';
 import { rules } from './rules.svelte';
 import { flash } from './toast.svelte';
@@ -14,7 +15,9 @@ export const senders = $state<{
   learned: Sender[];
   sort: sendersApi.Sort;
   q: string;
-}>({ status: 'loading', error: '', list: [], next: null, learned: [], sort: 'volume', q: '' });
+  /** Folders a sender can be filed in: every mailbox's, by name, Inbox left out. */
+  folders: string[];
+}>({ status: 'loading', error: '', list: [], next: null, learned: [], sort: 'volume', q: '', folders: [] });
 
 const fail = (e: unknown) => flash((e as Error).message);
 const same = (a: Sender, b: Sender) => a.type === b.type && a.value === b.value;
@@ -64,23 +67,60 @@ export async function more() {
   }
 }
 
+// The mailboxes whose folders were asked for last, so a late answer for an older set is dropped.
+let foldersFor = '';
+
+/**
+ * Lists the folders of these mailboxes. A sender's folder is a name used on every mailbox,
+ * as a rule's move is, so the names are merged; a mailbox that lacks one gets it on the first
+ * live move. A mailbox whose list cannot be read adds nothing.
+ */
+export async function loadFolders(accountIds: number[]) {
+  const mine = (foldersFor = accountIds.join(','));
+  const lists = await Promise.all(accountIds.map((id) => listFolders(id).catch(() => [])));
+  if (mine !== foldersFor) return;
+  const names = new Set(lists.flat().map((f) => f.name));
+  senders.folders = [...names].filter((n) => n.toUpperCase() !== 'INBOX').sort((a, b) => a.localeCompare(b));
+}
+
 export const nameOf = (s: Sender) => s.name || s.value;
 
-// The routing select speaks one value: 'auto', 'keep', 'trash' or a rule id.
+const MOVE = 'move:';
+
+// The routing select speaks one value: 'auto', 'keep', 'trash', 'move:<folder>' or a rule id.
 export const routingOf = (s: Sender) =>
-  s.verdict === 'keep' ? 'keep' : s.verdict === 'block' ? 'trash' : s.verdict === 'route' ? String(s.rule_id) : 'auto';
+  s.verdict === 'keep'
+    ? 'keep'
+    : s.verdict === 'block'
+      ? 'trash'
+      : s.verdict === 'move'
+        ? MOVE + (s.folder ?? '')
+        : s.verdict === 'route'
+          ? String(s.rule_id)
+          : 'auto';
+
+/** The folder a 'move:<folder>' routing names; null for any other routing. */
+export const folderOf = (routing: string) => (routing.startsWith(MOVE) ? routing.slice(MOVE.length) : null);
+
+/** The routing value that files a sender's mail in this folder. */
+export const moveTo = (folder: string) => MOVE + folder;
 
 const routeName = (routing: string) =>
   routing === 'keep'
     ? 'Keep in Inbox'
     : routing === 'trash'
       ? 'Trash'
-      : (rules.list.find((r) => String(r.id) === routing)?.name ?? routing);
+      : folderOf(routing) !== null
+        ? 'Move to ' + folderOf(routing)
+        : (rules.list.find((r) => String(r.id) === routing)?.name ?? routing);
 
 export const targetOf = (s: Sender) => routeName(routingOf(s));
 
-const toPut = (routing: string): sendersApi.SenderPut =>
-  routing === 'keep' ? { verdict: 'keep' } : routing === 'trash' ? { verdict: 'block' } : { verdict: 'route', rule_id: Number(routing) };
+function toPut(routing: string): sendersApi.SenderPut {
+  const folder = folderOf(routing);
+  if (folder !== null) return { verdict: 'move', folder };
+  return routing === 'keep' ? { verdict: 'keep' } : routing === 'trash' ? { verdict: 'block' } : { verdict: 'route', rule_id: Number(routing) };
+}
 
 // Whatever the user just set or removed is no longer a learned rule.
 function replace(s: Sender) {
@@ -91,7 +131,7 @@ function replace(s: Sender) {
 // DELETE answers 204 with no body: the sender is what it was, minus its rule.
 async function removeRule(s: Sender) {
   await sendersApi.remove(s);
-  replace({ ...s, verdict: null, rule_id: null, source: null, hits: 0 });
+  replace({ ...s, verdict: null, rule_id: null, folder: null, source: null, hits: 0 });
 }
 
 /** False when the daemon refused, so the screen can put the select back. */

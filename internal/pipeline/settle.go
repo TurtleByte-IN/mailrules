@@ -159,6 +159,8 @@ func localReason(res rules.Result, names map[int64]string) string {
 	switch {
 	case res.Stage == rules.StageNone:
 		return "No rule matched"
+	case res.Stage == rules.StageSender && res.RuleID == 0 && res.Actions[0].Type == rules.ActMove:
+		return fmt.Sprintf("Sender rule: move to %q", res.Actions[0].Folder)
 	case res.Stage == rules.StageSender && res.RuleID == 0:
 		return "Sender rule: " + res.Actions[0].Type // keep, or trash for a blocked sender
 	case res.Stage == rules.StageSender:

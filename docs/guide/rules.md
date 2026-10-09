@@ -161,12 +161,15 @@ Rules that still named a mailbox removed with an older version of MailRules are 
 
 A sender rule says what to do with all mail from one address, or one domain, before any other rule is looked at. It never asks a model.
 
-**Senders** lists who emailed you in the last 30 days, with how many emails. For each sender choose:
+**Senders** lists who emailed you in the last 30 days, with how many emails and the day each last wrote. For each sender choose:
 
 - **Let my rules decide** (the default);
 - **Always keep in Inbox**;
 - **Always: \<rule\>**, to send all their mail where that rule sends it;
+- **Always move to \<folder\>**, to file all their mail in one of your folders;
 - **Always trash**.
+
+Like keeping and trashing, a folder chosen for a sender wins over every rule for that sender. The folders offered are those of all your mailboxes, Inbox left out. The choice applies on every mailbox the sender writes to: a mailbox that has no folder by that name gets one the first time an email is moved there. In dry-run nothing is moved and no folder is made; Activity shows what would have been moved, and a move can be undone like any other.
 
 **Learned from your corrections and consistent decisions** lists the sender rules MailRules made by itself. **Forget** removes one.
 

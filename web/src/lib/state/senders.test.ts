@@ -18,6 +18,7 @@ const sender = (value: string, over: Partial<Sender> = {}): Sender => ({
   has_list_unsubscribe: false,
   verdict: null,
   rule_id: null,
+  folder: null,
   source: null,
   hits: 0,
   ...over,
@@ -99,6 +100,7 @@ it.each([
   [sender('x@y.z', { verdict: 'block' }), 'trash', 'Trash'],
   [jobs, '5', 'Recruiters'],
   [sender('x@y.z', { verdict: 'route', rule_id: 99 }), '99', '99'],
+  [sender('x@y.z', { verdict: 'move', folder: 'Work/Clients' }), 'move:Work/Clients', 'Move to Work/Clients'],
 ] as const)('%o routes as %s', (s, routing, target) => {
   expect(m.routingOf(s)).toBe(routing);
   if (routing !== 'auto') expect(m.targetOf(s)).toBe(target);
@@ -108,9 +110,10 @@ it.each([
   ['keep', { verdict: 'keep' }, 'Mail from Swiggy: Keep in Inbox'],
   ['trash', { verdict: 'block' }, 'Mail from Swiggy: Trash'],
   ['5', { verdict: 'route', rule_id: 5 }, 'Mail from Swiggy: Recruiters'],
+  ['move:Receipts', { verdict: 'move', folder: 'Receipts' }, 'Mail from Swiggy: Move to Receipts'],
 ] as const)('routing %s puts %o', async (routing, body, text) => {
   await m.load();
-  const saved = { ...swiggy, ...body, rule_id: 'rule_id' in body ? body.rule_id : null, source: 'user' as const };
+  const saved = { ...swiggy, ...body, rule_id: 'rule_id' in body ? body.rule_id : null, folder: 'folder' in body ? body.folder : null, source: 'user' as const };
   routes['PUT ' + SWIGGY] = [200, { sender: saved }];
 
   expect(await m.setRouting(row(swiggy), routing)).toBe(true);
@@ -124,7 +127,7 @@ it('routing auto deletes the sender rule', async () => {
   routes['DELETE /api/senders/address/alerts%40hdfcbank.net'] = [204];
   expect(await m.setRouting(row(hdfc), 'auto')).toBe(true);
   expect(lastCall()[1].method).toBe('DELETE');
-  expect(row(hdfc)).toMatchObject({ verdict: null, rule_id: null, source: null, hits: 0 });
+  expect(row(hdfc)).toMatchObject({ verdict: null, rule_id: null, folder: null, source: null, hits: 0 });
   expect(toast.text).toBe('HDFC Bank goes back to your rules');
 });
 
@@ -150,4 +153,21 @@ it('setting a learned sender by hand takes it off the learned list', async () =>
   routes['PUT /api/senders/domain/jobalerts.in'] = [200, { sender: { ...jobs, verdict: 'keep', rule_id: null, source: 'user' } }];
   await m.setRouting(row(jobs), 'keep');
   expect(m.senders.learned).toEqual([]);
+});
+
+it('loadFolders merges the mailboxes by name, leaves out Inbox and a list that fails, and drops a stale answer', async () => {
+  const f = (...names: string[]): Reply => [200, { items: names.map((name) => ({ name, delimiter: '/', special_use: '' })) }];
+  routes['GET /api/accounts/1/folders'] = f('INBOX', 'Receipts', 'Archive');
+  routes['GET /api/accounts/2/folders'] = f('Inbox', 'Receipts', 'Clients');
+  routes['GET /api/accounts/3/folders'] = failed(502, 'mail_error', 'The mail server did not answer.');
+  await m.loadFolders([1, 2, 3]);
+  expect(m.senders.folders).toEqual(['Archive', 'Clients', 'Receipts']);
+
+  let answerFirst = (_r: Response) => {};
+  fetchMock.mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)));
+  const first = m.loadFolders([1]);
+  await m.loadFolders([2]);
+  answerFirst(new Response(JSON.stringify({ items: [{ name: 'Stale', delimiter: '/', special_use: '' }] })));
+  await first;
+  expect(m.senders.folders).toEqual(['Clients', 'Receipts']);
 });

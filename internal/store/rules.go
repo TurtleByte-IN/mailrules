@@ -279,12 +279,12 @@ func (s *Store) PutSenderRule(ctx context.Context, tenantID int64, sr rules.Send
 		}
 	}
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, source, hits, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
 		 ON CONFLICT (tenant_id, match_type, value) DO UPDATE
-		 SET rule_id = excluded.rule_id, verdict = excluded.verdict, source = excluded.source
+		 SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = excluded.folder, source = excluded.source
 		 RETURNING id, hits, created_at`,
-		tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, sr.Source, now).
+		tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, null(sr.Folder), sr.Source, now).
 		Scan(&sr.ID, &sr.Hits, &sr.CreatedAt)
 	if err != nil {
 		return rules.SenderRule{}, fmt.Errorf("put sender rule: %w", err)
@@ -295,7 +295,7 @@ func (s *Store) PutSenderRule(ctx context.Context, tenantID int64, sr rules.Send
 // SenderRules returns all of the tenant's sender rules.
 func (s *Store) SenderRules(ctx context.Context, tenantID int64) ([]rules.SenderRule, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, match_type, value, rule_id, verdict, source, hits, created_at
+		`SELECT id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at
 		 FROM sender_rules WHERE tenant_id = ? ORDER BY id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list sender rules: %w", err)
@@ -305,10 +305,11 @@ func (s *Store) SenderRules(ctx context.Context, tenantID int64) ([]rules.Sender
 	for rows.Next() {
 		var sr rules.SenderRule
 		var ruleID sql.NullInt64
-		if err := rows.Scan(&sr.ID, &sr.UserID, &sr.MatchType, &sr.Value, &ruleID, &sr.Verdict, &sr.Source, &sr.Hits, &sr.CreatedAt); err != nil {
+		var folder sql.NullString
+		if err := rows.Scan(&sr.ID, &sr.UserID, &sr.MatchType, &sr.Value, &ruleID, &sr.Verdict, &folder, &sr.Source, &sr.Hits, &sr.CreatedAt); err != nil {
 			return nil, fmt.Errorf("list sender rules: %w", err)
 		}
-		sr.RuleID = ruleID.Int64
+		sr.RuleID, sr.Folder = ruleID.Int64, folder.String
 		out = append(out, sr)
 	}
 	if err := rows.Err(); err != nil {
