@@ -173,8 +173,11 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Rename, change the watched folder or the app password, accept a server certificate, pause or resume
+         * Rename, change the watched folder, the server or the app password, accept a server certificate, pause or resume
          * @description Anything but the label restarts the account's connection, so the change is in force when the response arrives.
+         *     A new `host` or `port` is logged in to first, with `password` if sent and the stored one otherwise, as
+         *     `/api/accounts/test` does; if that fails, nothing is saved and the answer is the test's 422. A new server
+         *     drops the accepted certificate unless `cert_fingerprint` is sent with it.
          */
         patch: operations["updateAccount"];
         trace?: never;
@@ -1470,6 +1473,10 @@ export interface components {
             shared?: boolean;
             /** @description Accepts the server certificate with this SHA-256 fingerprint, as for `AccountInput`; reconnect follows. Empty goes back to the system's trust store */
             cert_fingerprint?: string;
+            /** @description Moves the mailbox to another IMAP server; tested before it is saved */
+            host?: string;
+            /** @description Tested before it is saved */
+            port?: number;
         };
         Folder: {
             /** @description The server's own name */
@@ -3047,6 +3054,8 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ConnectionFailed"];
         };
     };
     reconnectAccount: {

@@ -383,7 +383,7 @@ func TestAccounts(t *testing.T) {
 	e.refuse(http.MethodPatch, "/api/accounts/1", `{"label":" "}`, http.StatusBadRequest, "invalid_input", "label")
 	e.refuse(http.MethodPatch, "/api/accounts/1", `{"password":""}`, http.StatusBadRequest, "invalid_input", "password")
 	e.refuse(http.MethodPatch, "/api/accounts/1", `{"label":7}`, http.StatusBadRequest, "invalid_input", "label")
-	e.refuse(http.MethodPatch, "/api/accounts/1", `{"host":"x"}`, http.StatusBadRequest, "invalid_json", "host")
+	e.refuse(http.MethodPatch, "/api/accounts/1", `{"tls_mode":"starttls"}`, http.StatusBadRequest, "invalid_json", "tls_mode")
 	if a := e.call(http.MethodPatch, "/api/accounts/1", `{"label":"Home"}`, http.StatusOK)["account"].(map[string]any); a["label"] != "Home" || a["status"] != "live" {
 		t.Errorf("rename = %v", a)
 	}
@@ -499,6 +499,91 @@ func TestAccountCertificates(t *testing.T) {
 	e.live()
 	if stored, _ = e.st.Account(ctx, 1); stored.CertFingerprint != newFP {
 		t.Errorf("stored certificate = %q", stored.CertFingerprint)
+	}
+}
+
+// Moving a mailbox to another host or port logs in there first, as the wizard's test does:
+// nothing is saved unless that works, and the certificate accepted for the old server is
+// dropped unless one is accepted for the new one with the same request.
+func TestAccountServerEdit(t *testing.T) {
+	e := newEnv(t)
+	e.signIn()
+	ctx := t.Context()
+	const fp = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+	const newFP = "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00"
+	e.call(http.MethodPost, "/api/accounts", `{"preset":"proton","username":"me@proton.me","password":"bridge-pw","cert_fingerprint":"`+fp+`"}`, http.StatusCreated)
+	e.live()
+	unchanged := func() {
+		t.Helper()
+		if a, _ := e.st.Account(ctx, 1); a.Host != "127.0.0.1" || a.Port != 1143 || a.CertFingerprint != fp || a.Status != worker.StatusLive {
+			t.Fatalf("a refused edit changed the mailbox: %+v", a)
+		}
+	}
+
+	for body, path := range map[string]string{`{"host":" "}`: "host", `{"port":0}`: "port", `{"port":70000}`: "port", `{"port":"1144"}`: "port"} {
+		e.refuse(http.MethodPatch, "/api/accounts/1", body, http.StatusBadRequest, "invalid_input", path)
+	}
+	unchanged()
+
+	cert := mail.Cert{Fingerprint: newFP, Subject: "CN=127.0.0.1", Issuer: "CN=127.0.0.1", NotBefore: time.Unix(1, 0), NotAfter: time.Unix(2, 0)}
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+		path string
+	}{
+		{"the new server's certificate is not trusted", &mail.CertError{Host: "127.0.0.1", Cert: cert, Reason: "it is self-made"}, "cert_untrusted", "cert_fingerprint"},
+		{"the new server refuses the login", fmt.Errorf("login: %w", mail.ErrAuth), "auth_failed", "password"},
+		{"nothing listens there", fmt.Errorf("dial: %w", mail.ErrConnection), "connection_failed", "host"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e.connectErr = tc.err
+			r := e.do(http.MethodPatch, "/api/accounts/1", `{"port":1144}`)
+			if r.status != http.StatusUnprocessableEntity || r.body.Error.Code != tc.code || r.body.Error.Path != tc.path {
+				t.Fatalf("PATCH = %d %s", r.status, r.raw)
+			}
+			if tc.code == "cert_untrusted" && (r.body.Error.Cert == nil || r.body.Error.Cert.Fingerprint != newFP) {
+				t.Errorf("cert = %+v", r.body.Error.Cert)
+			}
+			// The test went to the new port with the stored password and without the old pin.
+			if e.dialed.Port != 1144 || e.dialed.Host != "127.0.0.1" || e.dialed.CertFingerprint != "" {
+				t.Errorf("dialed %+v", e.dialed)
+			}
+			unchanged()
+		})
+	}
+	e.connectErr = nil
+
+	// A label alone, or the same port again, does not log in anywhere.
+	e.dialed = store.Account{}
+	e.call(http.MethodPatch, "/api/accounts/1", `{"label":"Proton","port":1143}`, http.StatusOK)
+	if e.dialed.ID != 0 {
+		t.Errorf("an edit that kept the server logged in to it: %+v", e.dialed)
+	}
+
+	// The certificate shown for the new server is accepted with it.
+	a := e.call(http.MethodPatch, "/api/accounts/1", `{"port":1144,"cert_fingerprint":"`+newFP+`"}`, http.StatusOK)["account"].(map[string]any)
+	conform(t, e.doc, "Account", a)
+	if a["port"] != float64(1144) || a["cert_fingerprint"] != newFP || e.dialed.CertFingerprint != newFP {
+		t.Errorf("after the move = %v, dialed %+v", a, e.dialed)
+	}
+	e.live()
+	if s, _ := e.st.Account(ctx, 1); s.Port != 1144 || s.CertFingerprint != newFP {
+		t.Errorf("stored = %+v", s)
+	}
+
+	// A server the system trusts needs nothing accepted: the old pin goes.
+	a = e.call(http.MethodPatch, "/api/accounts/1", `{"host":" imap.example.test ","port":993}`, http.StatusOK)["account"].(map[string]any)
+	if a["host"] != "imap.example.test" || a["cert_fingerprint"] != "" {
+		t.Errorf("after moving to a trusted server = %v", a)
+	}
+	e.live()
+
+	// Another mailbox of the tenant already lives there.
+	e.call(http.MethodPost, "/api/accounts", `{"preset":"generic","host":"imap.other.test","username":"me@proton.me","password":"pw"}`, http.StatusCreated)
+	e.refuse(http.MethodPatch, "/api/accounts/1", `{"host":"IMAP.other.test"}`, http.StatusConflict, "account_exists", "host")
+	if s, _ := e.st.Account(ctx, 1); s.Host != "imap.example.test" {
+		t.Errorf("a refused move changed the host to %q", s.Host)
 	}
 }
 

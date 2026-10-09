@@ -33,7 +33,7 @@ export const secretLabel = (p: Preset) => p.secret_label;
  * Presets whose server the person may change although the preset names one: Proton Mail Bridge
  * runs on the person's own machine, and its port and encryption can be changed in Bridge.
  */
-const editableServer: Preset['name'][] = ['proton'];
+export const editableServer: Preset['name'][] = ['proton'];
 
 /** View state for one run of the connect wizard. Thrown away when the wizard closes. */
 export class Wizard {

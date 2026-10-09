@@ -26,6 +26,7 @@ When adding a mailbox, the same problem reads: "The mail server refused the sign
 - MailRules reaches Proton Mail only through Proton Mail Bridge, which must be running and signed in on the same machine. While Bridge is closed, the mailbox says **Reconnecting** and catches up once Bridge is back.
 - The password is the one in Bridge's **Mailbox details**, not your Proton password. If Bridge shows a different one than you entered, click **New app password** on the mailbox and paste it.
 - "Could not reach Proton Mail Bridge at 127.0.0.1:1143": Bridge is not running, or uses another port. Check the IMAP port in Bridge's Mailbox details.
+- If you changed Bridge's IMAP port, click **Edit** on the mailbox, enter the new **Port** and **Save**; there is no need to remove and add it again. MailRules tests the new port first and saves it only if that works. If Bridge's certificate is new as well, accept it there.
 - MailRules in Docker cannot reach Bridge; see [Install](./install.md#docker).
 
 ## A mailbox says Certificate changed

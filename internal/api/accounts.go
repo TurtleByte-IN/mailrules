@@ -346,11 +346,13 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAccountPatch edits the label, the watched folder, the app password, the accepted
-// server certificate, whether the account is shared with the tenant, or pauses and resumes
-// the account. Only the owner may: to anyone else the account answers as missing. A change
-// of folder, password, certificate or pause restarts the account's supervisor, so the
-// change is in force when the response arrives.
+// handleAccountPatch edits the label, the watched folder, the app password, the server
+// (host and port), the accepted server certificate, whether the account is shared with the
+// tenant, or pauses and resumes the account. Only the owner may: to anyone else the account
+// answers as missing. A new server is logged in to first, as the wizard's test does, and
+// nothing is saved unless that works; it drops the accepted certificate unless one is sent
+// with it. A change of server, folder, password, certificate or pause restarts the
+// account's supervisor, so the change is in force when the response arrives.
 func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	a, ok := s.ownAccount(w, r)
@@ -359,13 +361,13 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	var password, cert string
 	paused, shared := a.Status == worker.StatusPaused, a.Shared
-	wasPaused, oldFolder := paused, a.WatchFolder
+	wasPaused, oldFolder, oldHost, oldPort := paused, a.WatchFolder, a.Host, a.Port
 	sent, ok := readPatch(w, r, map[string]any{"label": &a.Label, "watch_folder": &a.WatchFolder, "password": &password,
-		"paused": &paused, "shared": &shared, "cert_fingerprint": &cert})
+		"paused": &paused, "shared": &shared, "cert_fingerprint": &cert, "host": &a.Host, "port": &a.Port})
 	if !ok {
 		return
 	}
-	a.Label, a.WatchFolder = strings.TrimSpace(a.Label), strings.TrimSpace(a.WatchFolder)
+	a.Label, a.WatchFolder, a.Host = strings.TrimSpace(a.Label), strings.TrimSpace(a.WatchFolder), strings.TrimSpace(a.Host)
 	switch {
 	case a.Label == "":
 		invalid(w, "label", "The label cannot be empty.")
@@ -376,27 +378,43 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	case sent["password"] && password == "":
 		invalid(w, "password", "Enter the app password.")
 		return
+	case a.Host == "":
+		invalid(w, "host", "Enter the IMAP server's host name.")
+		return
+	case a.Port < 1 || a.Port > 65535:
+		invalid(w, "port", "The port must be between 1 and 65535.")
+		return
+	}
+	moved := a.Host != oldHost || a.Port != oldPort
+	if moved {
+		a.CertFingerprint = "" // accepted for the old server
 	}
 	if sent["cert_fingerprint"] {
 		if a.CertFingerprint, ok = certFingerprint(w, cert); !ok {
 			return
 		}
 	}
-	restart := a.WatchFolder != oldFolder || sent["password"] || sent["cert_fingerprint"] || paused != wasPaused
+	if moved {
+		if !s.tryMove(w, r, a, password) {
+			return
+		}
+	}
+	certChanged := sent["cert_fingerprint"] || moved
+	restart := a.WatchFolder != oldFolder || sent["password"] || certChanged || paused != wasPaused
 	if restart {
 		s.StopAccount(a.ID) // before the row changes, so the old supervisor cannot write over it
 	}
 	switch {
 	case paused:
 		a.Status = worker.StatusPaused
-	case wasPaused, sent["cert_fingerprint"]:
+	case wasPaused, certChanged:
 		a.Status = "new" // until the supervisor reports
 	}
 	err := s.store.UpdateAccount(ctx, a)
 	if err == nil && sent["password"] {
 		err = s.store.SetAccountSecret(ctx, s.Master, a.ID, password)
 	}
-	if err == nil && sent["cert_fingerprint"] {
+	if err == nil && certChanged {
 		err = s.store.SetAccountCert(ctx, a.ID, a.CertFingerprint)
 	}
 	if err == nil && shared != a.Shared {
@@ -413,6 +431,31 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r, a.ID, events.AccountStatus, a)
 	writeJSON(w, http.StatusOK, map[string]any{"account": s.accountJSON(ctx, viewer(r), a)})
+}
+
+// tryMove logs in to the server an account is being moved to, with the new password or
+// else the stored one, before anything is saved. A mailbox the tenant already has there is
+// refused, as on create. On failure it has answered.
+func (s *server) tryMove(w http.ResponseWriter, r *http.Request, a store.Account, password string) bool {
+	existing, err := s.store.TenantAccounts(r.Context(), a.TenantID)
+	if err != nil {
+		internalError(w, r, err)
+		return false
+	}
+	for _, e := range existing {
+		if e.ID != a.ID && strings.EqualFold(e.Host, a.Host) && strings.EqualFold(e.Username, a.Username) {
+			writeError(w, http.StatusConflict, "account_exists", "This mailbox is already connected.", "host")
+			return false
+		}
+	}
+	if password == "" {
+		if password, err = s.store.AccountSecret(r.Context(), s.Master, a.ID); err != nil {
+			internalError(w, r, err)
+			return false
+		}
+	}
+	_, ok := s.tryAccount(w, r, a, password)
+	return ok
 }
 
 // handleAccountDelete removes a mailbox and everything MailRules kept of it. Only its

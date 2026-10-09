@@ -100,7 +100,7 @@ The last step of the guide, **You're set**, suggests the next move: watch **Acti
 
 - **Test** logs in once more and reports what it found, without touching the running connection.
 - **Pause** stops sorting that mailbox until you click **Resume**.
-- **Edit** changes its **Name**, the **Watched folder**, or the app password (**New app password**; leave it empty to keep the current one).
+- **Edit** changes its **Name**, the **Watched folder**, or the app password (**New app password**; leave it empty to keep the current one). For **Other IMAP server** and **Proton Mail** it also changes the **Host** and **Port**, and for **Zoho Mail** the **Zoho region**. A new server is tested before it is saved, as in the wizard: if the test fails, nothing changes and the mailbox keeps its old settings. If the new server's certificate is not one your system trusts, Edit shows it with **Accept certificate**, and a certificate accepted for the old server no longer counts. The encryption (TLS or STARTTLS) cannot be changed: remove the mailbox and add it again.
 - **Reconnect** appears when a mailbox is not live, and starts it again.
 - **Check certificate** appears when the mailbox says **Certificate changed**. It shows the certificate the server presents now, to accept or not (see [Troubleshooting](./troubleshooting.md#a-mailbox-says-certificate-changed)).
 - **Remove** deletes the mailbox from MailRules: its password, folder list, contacts, activity and undo history. Rules that apply only to it are kept but switched off, marked so you can give them another mailbox, and rules whose conditions name it are adjusted (see [When a mailbox is removed](./rules.md#when-a-mailbox-is-removed)). Nothing in the mailbox itself changes.
