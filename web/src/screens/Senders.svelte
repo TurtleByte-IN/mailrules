@@ -1,13 +1,24 @@
 <script lang="ts">
   import Waiting from '../lib/components/Waiting.svelte';
   import { features } from '../lib/features';
+  import { day } from '../lib/format';
   import type { Sender, Sort } from '../lib/api/senders';
+  import { accounts } from '../lib/state/accounts.svelte';
   import { rules } from '../lib/state/rules.svelte';
-  import { forget, load, more, nameOf, routingOf, senders, setQuery, setRouting, setSort, targetOf } from '../lib/state/senders.svelte';
+  import { forget, load, loadFolders, more, moveTo, nameOf, routingOf, senders, setQuery, setRouting, setSort, targetOf } from '../lib/state/senders.svelte';
 
   load();
 
   let query = $state('');
+
+  // A string, so a status change that rebuilds the list does not fetch the folders again.
+  const mailboxes = $derived(accounts.list.map((a) => a.id).join(','));
+  $effect(() => {
+    loadFolders(mailboxes ? mailboxes.split(',').map(Number) : []);
+  });
+
+  // A sender's folder stays on offer even when no mailbox lists it (yet): it is made on the first move.
+  const foldersFor = (s: Sender) => (s.verdict === 'move' && s.folder && !senders.folders.includes(s.folder) ? [...senders.folders, s.folder] : senders.folders);
 
   async function route(s: Sender, select: HTMLSelectElement) {
     if (!(await setRouting(s, select.value))) select.value = routingOf(s);
@@ -53,6 +64,9 @@
           <div class="w-[130px]">
             <div class="font-semibold">{s.messages.toLocaleString()} emails</div>
             <div class="text-[12.5px] text-muted">30 days</div>
+            {#if s.last_seen_at !== null}
+              <div class="text-[12.5px] text-muted">last wrote {day(s.last_seen_at)}</div>
+            {/if}
           </div>
           <label class="sr-only" for="sd-{s.type}-{s.value}">What happens to mail from {nameOf(s)}</label>
           <select id="sd-{s.type}-{s.value}" class="field flex-[1_1_200px] px-2.5 max-md:min-w-0" value={routingOf(s)} onchange={(e) => route(s, e.currentTarget)}>
@@ -60,6 +74,9 @@
             <option value="keep">Always keep in Inbox</option>
             {#each rules.list as r (r.id)}
               <option value={String(r.id)}>Always: {r.name}</option>
+            {/each}
+            {#each foldersFor(s) as f (f)}
+              <option value={moveTo(f)}>Always move to {f}</option>
             {/each}
             <option value="trash">Always trash</option>
           </select>

@@ -761,7 +761,7 @@ paths:
       tags: [Senders]
       operationId: putSender
       summary: Set how a sender is routed
-      description: Stores a sender rule of source `user`, replacing whatever the sender had, a learned rule included. Mail from the sender is then settled without a model; `hits` counts it.
+      description: 'Stores a sender rule of source `user`, replacing whatever the sender had, a learned rule included. Mail from the sender is then settled without a model; `hits` counts it. A `move` names a folder by its name on the server and applies on every mailbox, as a rule''s move action does: a mailbox that lacks the folder gets it on the first live move (never in dry-run).'
       requestBody:
         required: true
         content:
@@ -777,7 +777,7 @@ paths:
                 required: [sender]
                 properties:
                   sender: { $ref: '#/components/schemas/Sender' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: type | value | verdict | rule_id), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: type | value | verdict | rule_id | folder), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
     delete:
@@ -1999,16 +1999,17 @@ components:
 
     Sender:
       type: object
-      required: [type, value, name, messages, last_seen_at, has_list_unsubscribe, verdict, rule_id, source, hits]
+      required: [type, value, name, messages, last_seen_at, has_list_unsubscribe, verdict, rule_id, folder, source, hits]
       properties:
         type: { type: string, enum: [address, domain] }
         value: { type: string, description: Lower-case address or domain }
         name: { type: string, description: 'The From display name of the newest email from this address. Empty when that email had none, for a domain, and for an address that has a sender rule but no mail in the last 30 days: show `value` once then, not twice' }
         messages: { type: integer, description: 'Emails MailRules has seen from this sender in the last 30 days; for a domain, from all its addresses' }
-        last_seen_at: { type: [integer, 'null'], format: int64 }
+        last_seen_at: { type: [integer, 'null'], format: int64, description: 'When the newest email from this sender arrived, within the last 30 days; null when there was none' }
         has_list_unsubscribe: { type: boolean, description: At least one of those emails carried a List-Unsubscribe header. Unsubscribing itself is not built (features.unsubscribe) }
-        verdict: { type: [string, 'null'], enum: [route, keep, block, null], description: null = no sender rule; the rules decide }
+        verdict: { type: [string, 'null'], enum: [route, move, keep, block, null], description: 'null = no sender rule; the rules decide. `move` files the mail in `folder`, `keep` leaves it in the inbox, `block` trashes it' }
         rule_id: { type: [integer, 'null'], format: int64, description: 'For route: the rule whose actions apply' }
+        folder: { type: [string, 'null'], description: 'For move: the folder the mail goes to, on whichever mailbox it arrives in; null otherwise' }
         source: { type: [string, 'null'], enum: [user, learned, null] }
         hits: { type: integer, description: 'How many emails the sender rule settled whose actions were carried out; an email whose actions were only recorded in dry-run does not count' }
     SenderPut:
@@ -2016,8 +2017,9 @@ components:
       required: [verdict]
       additionalProperties: false
       properties:
-        verdict: { type: string, enum: [route, keep, block] }
+        verdict: { type: string, enum: [route, move, keep, block] }
         rule_id: { type: integer, format: int64, description: Required for route; ignored otherwise }
+        folder: { type: string, description: 'Required for move: a folder name as the server lists it, 1 to 200 characters, without wildcards; ignored otherwise' }
 
     Stage:
       type: string

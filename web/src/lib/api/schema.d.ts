@@ -609,7 +609,7 @@ export interface paths {
         get?: never;
         /**
          * Set how a sender is routed
-         * @description Stores a sender rule of source `user`, replacing whatever the sender had, a learned rule included. Mail from the sender is then settled without a model; `hits` counts it.
+         * @description Stores a sender rule of source `user`, replacing whatever the sender had, a learned rule included. Mail from the sender is then settled without a model; `hits` counts it. A `move` names a folder by its name on the server and applies on every mailbox, as a rule's move action does: a mailbox that lacks the folder gets it on the first live move (never in dry-run).
          */
         put: operations["putSender"];
         post?: never;
@@ -1794,20 +1794,25 @@ export interface components {
             name: string;
             /** @description Emails MailRules has seen from this sender in the last 30 days; for a domain, from all its addresses */
             messages: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description When the newest email from this sender arrived, within the last 30 days; null when there was none
+             */
             last_seen_at: number | null;
             /** @description At least one of those emails carried a List-Unsubscribe header. Unsubscribing itself is not built (features.unsubscribe) */
             has_list_unsubscribe: boolean;
             /**
-             * @description null = no sender rule; the rules decide
+             * @description null = no sender rule; the rules decide. `move` files the mail in `folder`, `keep` leaves it in the inbox, `block` trashes it
              * @enum {string|null}
              */
-            verdict: "route" | "keep" | "block" | null;
+            verdict: "route" | "move" | "keep" | "block" | null;
             /**
              * Format: int64
              * @description For route: the rule whose actions apply
              */
             rule_id: number | null;
+            /** @description For move: the folder the mail goes to, on whichever mailbox it arrives in; null otherwise */
+            folder: string | null;
             /** @enum {string|null} */
             source: "user" | "learned" | null;
             /** @description How many emails the sender rule settled whose actions were carried out; an email whose actions were only recorded in dry-run does not count */
@@ -1815,12 +1820,14 @@ export interface components {
         };
         SenderPut: {
             /** @enum {string} */
-            verdict: "route" | "keep" | "block";
+            verdict: "route" | "move" | "keep" | "block";
             /**
              * Format: int64
              * @description Required for route; ignored otherwise
              */
             rule_id?: number;
+            /** @description Required for move: a folder name as the server lists it, 1 to 200 characters, without wildcards; ignored otherwise */
+            folder?: string;
         };
         /**
          * @description Which step settled an email: a sender rule, conditions alone, the decision model, the fallback model, or no rule. While no decision model is set, rules with an intent are passed over: a condition-only rule below them still applies (`condition`), and an email only they could take waits in Needs review with the reason "No decision model is set"

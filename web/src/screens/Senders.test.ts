@@ -1,8 +1,12 @@
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { Account } from '../lib/api/accounts';
 import type { Sender } from '../lib/api/senders';
+import { day } from '../lib/format';
+import { accounts } from '../lib/state/accounts.svelte';
 import { rules } from '../lib/state/rules.svelte';
 import { senders } from '../lib/state/senders.svelte';
+import { toast } from '../lib/state/toast.svelte';
 import Senders from './Senders.svelte';
 
 type Reply = [status: number, body: unknown];
@@ -17,6 +21,7 @@ const sender = (value: string, over: Partial<Sender> = {}): Sender => ({
   has_list_unsubscribe: false,
   verdict: null,
   rule_id: null,
+  folder: null,
   source: null,
   hits: 0,
   ...over,
@@ -31,8 +36,9 @@ const page = (items: Sender[]): Reply => [200, { items, next_cursor: null }];
 
 beforeEach(() => {
   // The state lives in module scope; each test starts it over.
-  Object.assign(senders, { status: 'loading', error: '', list: [], next: null, learned: [], sort: 'volume', q: '' });
+  Object.assign(senders, { status: 'loading', error: '', list: [], next: null, learned: [], sort: 'volume', q: '', folders: [] });
   Object.assign(rules, { list: [{ id: 5, name: 'Recruiters' }] });
+  accounts.list = [];
   routes = { [LIST]: page([swiggy, jobs, quiet]), [LEARNED]: page([jobs]) };
   vi.stubGlobal(
     'fetch',
@@ -78,4 +84,47 @@ it('shows names, addresses, domain rows, routing and the learned rules', async (
   const learned = screen.getByRole('region', { name: 'Learned sender rules' });
   expect(learned.textContent).toContain('jobalerts.in → Recruiters');
   expect(screen.getByRole('button', { name: 'Forget jobalerts.in' })).toBeTruthy();
+});
+
+it('says when each sender last wrote, and nothing for one with no mail in 30 days', async () => {
+  render(Senders);
+  expect(await screen.findByText('last wrote ' + day(swiggy.last_seen_at!))).toBeTruthy();
+  expect(screen.getAllByText(/^last wrote /)).toHaveLength(1);
+});
+
+const folder = (name: string) => ({ name, delimiter: '/', special_use: '' as const });
+
+it("offers every mailbox's folders, Inbox left out, and files a sender in the one chosen", async () => {
+  accounts.list = [{ id: 1 }, { id: 2 }] as Account[];
+  routes['GET /api/accounts/1/folders'] = [200, { items: [folder('INBOX'), folder('Receipts'), folder('Archive')] }];
+  routes['GET /api/accounts/2/folders'] = [200, { items: [folder('INBOX'), folder('Receipts'), folder('Work/Clients')] }];
+  const saved = { ...swiggy, verdict: 'move', folder: 'Receipts', source: 'user' };
+  routes['PUT /api/senders/address/no-reply%40swiggy.in'] = [200, { sender: saved }];
+  render(Senders);
+
+  const select = (await screen.findByLabelText('What happens to mail from Swiggy')) as HTMLSelectElement;
+  await waitFor(() => expect(select.textContent).toContain('Always move to Receipts'));
+  expect([...select.options].map((o) => o.text)).toEqual([
+    'Let my rules decide',
+    'Always keep in Inbox',
+    'Always: Recruiters',
+    'Always move to Archive',
+    'Always move to Receipts',
+    'Always move to Work/Clients',
+    'Always trash',
+  ]);
+
+  await fireEvent.change(select, { target: { value: 'move:Receipts' } });
+  await waitFor(() => expect(toast.text).toBe('Mail from Swiggy: Move to Receipts'));
+  const put = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PUT')!;
+  expect(JSON.parse(put[1]!.body as string)).toEqual({ verdict: 'move', folder: 'Receipts' });
+  expect(select.value).toBe('move:Receipts');
+});
+
+it('keeps a sender\'s folder on offer when no mailbox lists it', async () => {
+  routes[LIST] = page([sender('a@b.example', { name: 'Gone', verdict: 'move', folder: 'Old stuff', source: 'user' })]);
+  render(Senders);
+  const select = (await screen.findByLabelText('What happens to mail from Gone')) as HTMLSelectElement;
+  expect(select.value).toBe('move:Old stuff');
+  expect(select.selectedOptions[0].text).toBe('Always move to Old stuff');
 });

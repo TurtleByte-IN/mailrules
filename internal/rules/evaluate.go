@@ -28,6 +28,7 @@ const (
 	VerdictRoute = "route"
 	VerdictKeep  = "keep"
 	VerdictBlock = "block"
+	VerdictMove  = "move"
 )
 
 // SenderRule mirrors one row of the sender_rules table.
@@ -37,7 +38,10 @@ type SenderRule struct {
 	MatchType string // address | domain
 	Value     string // lower-case
 	RuleID    int64  // for route: the rule whose actions apply; 0 otherwise
-	Verdict   string // route | keep | block
+	Verdict   string // route | keep | block | move
+	// Folder is where a move verdict files the sender's mail, on whichever mailbox it
+	// arrives in; "" otherwise.
+	Folder    string
 	Source    string // user | learned
 	Hits      int
 	CreatedAt int64
@@ -106,6 +110,9 @@ func Evaluate(e message.Summary, rs []Rule, senders []SenderRule, opt Options) E
 			return ev
 		case VerdictBlock:
 			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActTrash}}, SenderRuleID: sr.ID}
+			return ev
+		case VerdictMove:
+			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActMove, Folder: sr.Folder}}, SenderRuleID: sr.ID}
 			return ev
 		case VerdictRoute:
 			// A route to a rule that is gone or switched off falls through to the walk.

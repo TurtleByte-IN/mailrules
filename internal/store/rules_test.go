@@ -146,6 +146,18 @@ func TestSenderRules(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0] != block {
 		t.Fatalf("list = %+v, %v; want %+v", list, err, block)
 	}
+	// A move keeps its folder; whatever replaces it clears the folder again.
+	move, err := s.PutSenderRule(ctx, u.TenantID, rules.SenderRule{UserID: u.ID, MatchType: rules.MatchAddress, Value: "alumni@college.edu",
+		Verdict: rules.VerdictMove, Folder: "College", Source: "user"}, 300)
+	if list, _ := s.SenderRules(ctx, u.TenantID); err != nil || len(list) != 1 || list[0] != move || list[0].Folder != "College" {
+		t.Fatalf("move = %+v, %v; listed %+v", move, err, list)
+	}
+	if _, err := s.PutSenderRule(ctx, u.TenantID, block, 400); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.SenderRules(ctx, u.TenantID); len(list) != 1 || list[0].Verdict != rules.VerdictBlock || list[0].Folder != "" {
+		t.Fatalf("after replacing the move: %+v", list)
+	}
 	for range 2 { // deleting twice is harmless
 		if err := s.DeleteSenderRule(ctx, u.TenantID, rules.MatchAddress, "alumni@college.edu"); err != nil {
 			t.Fatal(err)
