@@ -628,3 +628,43 @@ func TestFetchAndParseFixture(t *testing.T) {
 		t.Errorf("received %v, size %v", sum.ReceivedAt, sum.SizeKB)
 	}
 }
+
+func TestToFoldersArchivesToAllMail(t *testing.T) {
+	gmail, _ := presets.Get("gmail")
+	attrs := func(a ...imap.MailboxAttr) []imap.MailboxAttr { return a }
+	for _, tc := range []struct {
+		name string
+		list []*imap.ListData
+		want map[string]string // folder -> role, only folders that get one
+	}{
+		{"\\All serves as Archive when there is no \\Archive", []*imap.ListData{
+			{Mailbox: "INBOX"},
+			{Mailbox: "[Gmail]", Attrs: attrs(imap.MailboxAttrNoSelect)},
+			{Mailbox: "[Gmail]/All Mail", Attrs: attrs(imap.MailboxAttrHasNoChildren, imap.MailboxAttrAll)},
+			{Mailbox: "[Gmail]/Trash", Attrs: attrs(imap.MailboxAttrTrash)},
+		}, map[string]string{"[Gmail]/All Mail": mail.RoleArchive, "[Gmail]/Trash": mail.RoleTrash}},
+		{"\\Archive wins over \\All", []*imap.ListData{
+			{Mailbox: "All Mail", Attrs: attrs(imap.MailboxAttrAll)},
+			{Mailbox: "Old", Attrs: attrs(imap.MailboxAttrArchive)},
+		}, map[string]string{"Old": mail.RoleArchive}},
+		{"\\All wins over a folder that is only named Archive", []*imap.ListData{
+			{Mailbox: "Archive"},
+			{Mailbox: "All Mail", Attrs: attrs(imap.MailboxAttrAll)},
+		}, map[string]string{"All Mail": mail.RoleArchive}},
+		{"a folder named Archive still counts without \\All", []*imap.ListData{
+			{Mailbox: "Archive"},
+		}, map[string]string{"Archive": mail.RoleArchive}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string]string{}
+			for _, f := range toFolders(tc.list, gmail) {
+				if f.SpecialUse != "" {
+					got[f.Name] = f.SpecialUse
+				}
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("roles = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

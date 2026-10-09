@@ -83,7 +83,7 @@ func TestAccountsAddListTest(t *testing.T) {
 		t.Fatalf("a failed add stored %+v", list)
 	}
 	for _, bad := range [][]string{
-		{"add", "--preset", "gmail", "--username", "x"},
+		{"add", "--preset", "outlook", "--username", "x"},
 		{"add", "--preset", "generic", "--username", "x"}, // generic needs --host
 		{"add", "--preset", "icloud"},
 		{"add", "--password", "x"}, // never a flag

@@ -487,3 +487,52 @@ func TestAnswerReviewForMailGoneElsewhere(t *testing.T) {
 		}
 	}
 }
+
+// Gmail has no \Archive folder: archive goes to the folder holding all mail (\All), and
+// undo brings the message back to INBOX. A real \Archive folder still wins.
+func TestArchiveToAllMailOverIMAP(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		archive bool // the server also has an \Archive folder
+		want    string
+	}{
+		{"no Archive folder: All Mail", false, "[Gmail]/All Mail"},
+		{"an Archive folder wins over All Mail", true, "Archive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, srv := imapEnv(t, goimap.CapMove, goimap.CapUIDPlus, goimap.CapSpecialUse)
+			ctx := t.Context()
+			srv.CreateSpecial(t, "[Gmail]/All Mail", goimap.MailboxAttrAll)
+			srv.CreateSpecial(t, "[Gmail]/Trash", goimap.MailboxAttrTrash)
+			if tc.archive {
+				srv.CreateSpecial(t, "Archive", goimap.MailboxAttrArchive)
+			}
+			// Discovery, as the worker does on connect, stores the roles the server reports.
+			folders, err := e.raw.Folders(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows := make([]store.Folder, len(folders))
+			for i, f := range folders {
+				rows[i] = store.Folder{Name: f.Name, Delimiter: f.Delimiter, SpecialUse: f.SpecialUse}
+			}
+			if err := e.st.SaveFolders(ctx, e.acct.ID, rows); err != nil {
+				t.Fatal(err)
+			}
+			d := e.arrive(srv, "1")
+			recs, err := e.x.Apply(ctx, d, act("archive"), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ref, _ := e.where(d.MessageID); ref.Folder != tc.want || e.count("INBOX") != 0 || e.count(tc.want) != 1 {
+				t.Fatalf("after archive: in %s, %d left in INBOX, want it in %s", ref.Folder, e.count("INBOX"), tc.want)
+			}
+			if err := e.x.Undo(ctx, recs[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			if ref, _ := e.where(d.MessageID); ref.Folder != "INBOX" || e.count(tc.want) != 0 || e.count("INBOX") != 1 {
+				t.Errorf("after undo: in %s; %s holds %d", ref.Folder, tc.want, e.count(tc.want))
+			}
+		})
+	}
+}

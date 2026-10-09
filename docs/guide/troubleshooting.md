@@ -8,7 +8,7 @@ order: 100
 
 The mail server refused the user name or password. MailRules stops trying for that mailbox until you fix it.
 
-- Use an app password, not the password you sign in to your provider with. iCloud, Fastmail and Yahoo require one. See [App passwords](./first-run.md#app-passwords).
+- Use an app password, not the password you sign in to your provider with. iCloud, Gmail, Fastmail and Yahoo require one. See [App passwords](./first-run.md#app-passwords).
 - App passwords stop working when you revoke them or change your main password. Make a new one.
 - Click **New app password** on the mailbox (or **Edit** → **New app password**), paste it, and **Save**. MailRules reconnects at once.
 
