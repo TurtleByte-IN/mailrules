@@ -49,7 +49,7 @@ func TestAccountsCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Defaults come from the schema; everything else is what was stored.
-	if got.WatchFolder != "INBOX" || got.Status != "new" || got.LastError != "" || got.LastEventAt != 0 ||
+	if got.WatchFolder != "INBOX" || got.Status != "new" || got.LastError != "" || got.LastEventAt != 0 || got.CertFingerprint != "" ||
 		got.Username != "me@icloud.com" || got.Port != 993 || !slices.Equal(got.Capabilities, []string{"IDLE", "MOVE"}) || got.ID != a.ID {
 		t.Errorf("account = %+v", got)
 	}
@@ -72,6 +72,12 @@ func TestAccountsCRUD(t *testing.T) {
 	if got, _ = s.Account(ctx, a.ID); got.Status != "live" || got.LastError != "" {
 		t.Errorf("error not cleared: %+v", got)
 	}
+	if err := s.SetAccountCert(ctx, a.ID, "AA:BB"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.Account(ctx, a.ID); got.CertFingerprint != "AA:BB" {
+		t.Errorf("certificate not stored: %+v", got)
+	}
 
 	if _, err := s.DeleteAccount(ctx, a.ID, 400); err != nil {
 		t.Fatal(err)
@@ -81,6 +87,7 @@ func TestAccountsCRUD(t *testing.T) {
 		"secret": func() error { _, err := s.AccountSecret(ctx, testMaster, a.ID); return err }(),
 		"status": s.SetAccountStatus(ctx, a.ID, "live", "", 1),
 		"caps":   s.SetAccountCapabilities(ctx, a.ID, nil),
+		"cert":   s.SetAccountCert(ctx, a.ID, ""),
 		"delete": func() error { _, err := s.DeleteAccount(ctx, a.ID, 401); return err }(),
 	} {
 		if !errors.Is(err, ErrNotFound) {

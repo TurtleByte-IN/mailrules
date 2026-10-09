@@ -249,10 +249,11 @@ func (s *server) harden(next http.Handler) http.Handler {
 }
 
 type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Path    string `json:"path,omitempty"`
-	SignIn  string `json:"sign_in,omitempty"` // where to sign in, when a module signs people in
+	Code    string    `json:"code"`
+	Message string    `json:"message"`
+	Path    string    `json:"path,omitempty"`
+	SignIn  string    `json:"sign_in,omitempty"` // where to sign in, when a module signs people in
+	Cert    *certJSON `json:"cert,omitempty"`    // the server certificate to accept, on cert_untrusted and cert_changed
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

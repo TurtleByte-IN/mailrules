@@ -14,8 +14,14 @@ func TestPresets(t *testing.T) {
 		if got, ok := Get(p.Name); !ok || got.Name != p.Name {
 			t.Errorf("Get(%q) = %v", p.Name, ok)
 		}
-		if p.Port != 993 || p.TLSMode != TLSImplicit || p.Label == "" {
-			t.Errorf("%s: port %d, tls %q, label %q", p.Name, p.Port, p.TLSMode, p.Label)
+		// Proton Mail Bridge listens on this machine with STARTTLS; every provider's own
+		// server uses implicit TLS.
+		wantPort, wantTLS := 993, TLSImplicit
+		if p.Name == "proton" {
+			wantPort, wantTLS = 1143, TLSStartTLS
+		}
+		if p.Port != wantPort || p.TLSMode != wantTLS || p.Label == "" || p.PasteLabel == "" {
+			t.Errorf("%s: port %d, tls %q, label %q, secret label %q", p.Name, p.Port, p.TLSMode, p.Label, p.PasteLabel)
 		}
 		if (p.Host == "") != (p.Name == "generic") || (p.HelpURL == "") != (p.Name == "generic") {
 			t.Errorf("%s: host %q, help %q", p.Name, p.Host, p.HelpURL)
@@ -27,7 +33,7 @@ func TestPresets(t *testing.T) {
 		}
 	}
 	// These are the values accounts.preset may hold.
-	if want := []string{"icloud", "gmail", "fastmail", "yahoo", "zoho", "generic"}; !slices.Equal(names, want) {
+	if want := []string{"icloud", "gmail", "fastmail", "yahoo", "zoho", "proton", "generic"}; !slices.Equal(names, want) {
 		t.Errorf("presets = %v, want %v", names, want)
 	}
 	if _, ok := Get("outlook"); ok {

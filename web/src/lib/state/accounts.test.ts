@@ -35,6 +35,7 @@ const acct = (over: Partial<Account> = {}): Account => ({
   created_at: 1791260000,
   shared: false,
   mine: true,
+  cert_fingerprint: '',
   ...over,
 });
 
@@ -115,7 +116,7 @@ it('follows account.status events for listed mailboxes only', () => {
 });
 
 it('has a label and a dot for every status in the contract', () => {
-  expect(Object.keys(statuses).sort()).toEqual(['auth_failed', 'error', 'live', 'new', 'paused', 'reconnecting']);
+  expect(Object.keys(statuses).sort()).toEqual(['auth_failed', 'cert_changed', 'error', 'live', 'new', 'paused', 'reconnecting']);
 });
 
 const folders = (...special: TestResult['folders'][number]['special_use'][]) =>

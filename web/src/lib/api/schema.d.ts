@@ -173,7 +173,7 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Rename, change the watched folder or the app password, pause or resume
+         * Rename, change the watched folder or the app password, accept a server certificate, pause or resume
          * @description Anything but the label restarts the account's connection, so the change is in force when the response arrives.
          */
         patch: operations["updateAccount"];
@@ -192,7 +192,7 @@ export interface paths {
         put?: never;
         /**
          * Drop the connection and connect again
-         * @description Also how an account that stopped on `auth_failed` or `error` is started again. The outcome arrives over `account.status`.
+         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`.
          */
         post: operations["reconnectAccount"];
         delete?: never;
@@ -1355,7 +1355,21 @@ export interface components {
                 path?: string;
                 /** @description Only on the 401 from `GET /api/auth/me` when a sign-in module is present: the path the browser goes to to sign in. There is no password sign-in or first-run setup then */
                 sign_in?: string;
+                cert?: components["schemas"]["ServerCert"];
             };
+        };
+        /** @description Only on `cert_untrusted` and `cert_changed`: the certificate the mail server presented, for the person to check before accepting it */
+        ServerCert: {
+            /** @description SHA-256 of the certificate, upper-case hex pairs separated by colons, as browsers and `openssl x509 -fingerprint -sha256` show it */
+            fingerprint: string;
+            /** @description Who the certificate is made out to, e.g. "CN=127.0.0.1,O=Proton AG" */
+            subject: string;
+            /** @description Who signed it; the same as `subject` for a certificate the server made itself */
+            issuer: string;
+            /** Format: int64 */
+            not_before: number;
+            /** Format: int64 */
+            not_after: number;
         };
         Preset: {
             name: components["schemas"]["PresetName"];
@@ -1369,18 +1383,18 @@ export interface components {
             help_url: string;
             /** @description The server may want the part before "@" as the username; the daemon tries both */
             local_part_login: boolean;
-            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho) or "Password" (generic) */
+            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic) */
             secret_label: string;
         };
         /** @enum {string} */
-        PresetName: "icloud" | "gmail" | "fastmail" | "yahoo" | "zoho" | "generic";
+        PresetName: "icloud" | "gmail" | "fastmail" | "yahoo" | "zoho" | "proton" | "generic";
         /** @enum {string} */
         TLSMode: "implicit" | "starttls";
         /**
-         * @description `auth_failed` and `error` have stopped and wait for the user (fix the password, then reconnect); `paused` was set by the user
+         * @description `auth_failed`, `cert_changed` and `error` have stopped and wait for the user (fix the password, or accept the certificate the server now presents, then reconnect); `paused` was set by the user
          * @enum {string}
          */
-        AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "error" | "paused";
+        AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "cert_changed" | "error" | "paused";
         AccountInput: {
             preset: components["schemas"]["PresetName"];
             username: string;
@@ -1394,6 +1408,8 @@ export interface components {
             tls_mode?: components["schemas"]["TLSMode"];
             /** @description Left out = INBOX */
             watch_folder?: string;
+            /** @description Accepts the server certificate with this SHA-256 fingerprint (from `cert` on a `cert_untrusted` answer): the server must then present exactly it, and the system's roots and the host name are not checked. Hex pairs, colons and case optional */
+            cert_fingerprint?: string;
         };
         AccountTestResult: {
             /** @description The username that worked (may be the local part) */
@@ -1437,6 +1453,8 @@ export interface components {
             shared: boolean;
             /** @description The signed-in user added this mailbox; only they can edit */
             mine: boolean;
+            /** @description The server certificate accepted for this mailbox, as `ServerCert.fingerprint`; empty when the system's trust store decides */
+            cert_fingerprint: string;
         };
         AccountEnvelope: {
             account: components["schemas"]["Account"];
@@ -1450,6 +1468,8 @@ export interface components {
             paused?: boolean;
             /** @description true lets everyone in the team see this mailbox; false makes it private again. Owner only */
             shared?: boolean;
+            /** @description Accepts the server certificate with this SHA-256 fingerprint, as for `AccountInput`; reconnect follows. Empty goes back to the system's trust store */
+            cert_fingerprint?: string;
         };
         Folder: {
             /** @description The server's own name */
@@ -2286,7 +2306,7 @@ export interface components {
                 /** Format: int64 */
                 account_id: number;
                 label: string;
-                /** @description icloud | gmail | fastmail | yahoo | zoho | generic */
+                /** @description icloud | gmail | fastmail | yahoo | zoho | proton | generic */
                 preset: string;
                 username: string;
                 folder_count: number;
@@ -2640,7 +2660,11 @@ export interface components {
         };
         /**
          * @description The mail server could not be used with these details: `auth_failed` (path `password`),
-         *     `tls_failed` (path `host`), `no_folder` (path `watch_folder`) or `connection_failed` (path `host`)
+         *     `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
+         *     or a server certificate to accept (path `cert_fingerprint`, with `cert` set):
+         *     `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
+         *     stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).
+         *     Sending `cert.fingerprint` as `cert_fingerprint` accepts it.
          */
         ConnectionFailed: {
             headers: {

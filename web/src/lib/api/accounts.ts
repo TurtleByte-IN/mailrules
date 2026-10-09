@@ -10,6 +10,8 @@ export type AccountPatch = S['AccountPatch'];
 /** The password is sent once and never comes back in any response. */
 export type AccountInput = S['AccountInput'];
 export type TestResult = S['AccountTestResult'];
+/** A mail server's certificate the system does not trust, or that replaced the accepted one. */
+export type ServerCert = S['ServerCert'];
 
 export const listPresets = () => api<{ items: Preset[] }>('GET', '/presets').then((r) => r.items);
 export const list = () => api<{ items: Account[] }>('GET', '/accounts').then((r) => r.items);

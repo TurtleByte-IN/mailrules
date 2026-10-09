@@ -3,6 +3,8 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -187,6 +189,74 @@ func TestAccountsAddListTest(t *testing.T) {
 	}
 	if st, err := srv.User.Status("INBOX", &imap.StatusOptions{NumUnseen: true}); err != nil || int(*st.NumUnseen) != unseen {
 		t.Errorf("unseen after watching = %v, %v, want %d", st.NumUnseen, err, unseen)
+	}
+}
+
+// A server the system does not trust, as Proton Mail Bridge is, is refused with its
+// fingerprint, added with --accept-cert, tested against that certificate only, and refused
+// again once it presents another.
+func TestAccountsAddAcceptCert(t *testing.T) {
+	ctx := t.Context()
+	srv := imaptest.Start(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}, imap.CapUIDPlus: {}})
+	dir := t.TempDir()
+	env := map[string]string{
+		"MAILRULES_DATA_DIR":         dir,
+		"MAILRULES_MASTER_KEY":       base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)),
+		"MAILRULES_ACCOUNT_PASSWORD": imaptest.Password,
+	}
+	trustsNothing := &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}
+	run := func(args ...string) (string, error) {
+		out := &syncBuffer{}
+		err := accountsCLI{stdin: strings.NewReader(""), stdout: out, getenv: func(k string) string { return env[k] }, tlsConfig: trustsNothing}.run(ctx, args)
+		return out.String(), err
+	}
+	db, err := store.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(db)
+	if _, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
+		t.Fatal(err)
+	}
+	fp := srv.Fingerprint()
+	add := []string{"add", "--preset", "generic", "--host", srv.Host, "--port", strconv.Itoa(srv.Port), "--username", imaptest.Username}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string // in the error
+	}{
+		{"untrusted", nil, "--accept-cert " + fp},
+		{"not a fingerprint", []string{"--accept-cert", "12:34"}, "64 hex digits"},
+		{"another certificate", []string{"--accept-cert", mail.Fingerprint([]byte("x"))}, "changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := run(append(append([]string{}, add...), tc.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q in it", err, tc.want)
+			}
+			if list, _ := st.Accounts(ctx); len(list) != 0 {
+				t.Fatalf("a refused certificate stored %+v", list)
+			}
+		})
+	}
+
+	if _, err := run(append(add, "--accept-cert", strings.ToLower(strings.ReplaceAll(fp, ":", "")))...); err != nil {
+		t.Fatal(err)
+	}
+	if acct, err := st.Account(ctx, 1); err != nil || acct.CertFingerprint != fp {
+		t.Fatalf("stored account = %+v, %v", acct, err)
+	}
+	if out, err := run("test", "1"); err != nil || !strings.Contains(out, "ok: logged in") {
+		t.Fatalf("test with the accepted certificate = %s, %v", out, err)
+	}
+	srv.Rotate(t)
+	if _, err := run("test", "1"); err == nil || !strings.Contains(err.Error(), "changed") || !strings.Contains(err.Error(), "Check certificate") {
+		t.Fatalf("test after the certificate changed: %v", err)
 	}
 }
 

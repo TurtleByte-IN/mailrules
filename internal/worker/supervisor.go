@@ -24,8 +24,12 @@ const (
 	StatusLive         = "live"
 	StatusReconnecting = "reconnecting"
 	StatusAuthFailed   = "auth_failed"
-	StatusError        = "error"
-	StatusPaused       = "paused" // set by the user; Run is not started for a paused account
+	// StatusCertChanged: the server presents a certificate that is not the one accepted for
+	// the account, or, with none accepted, one the system does not trust. It waits until the
+	// person accepts the new certificate.
+	StatusCertChanged = "cert_changed"
+	StatusError       = "error"
+	StatusPaused      = "paused" // set by the user; Run is not started for a paused account
 )
 
 // Supervisor owns one account's connection, watcher and processor goroutine.
@@ -82,8 +86,8 @@ func or(d, def time.Duration) time.Duration {
 }
 
 // Run supervises the account until ctx is done or the account needs the user: wrong
-// credentials, a TLS failure or a watch folder that does not exist. Anything else is
-// retried with a growing delay.
+// credentials, a certificate to accept, another TLS failure or a watch folder that does
+// not exist. Anything else is retried with a growing delay.
 func (s *Supervisor) Run(ctx context.Context) {
 	backoff := or(s.BackoffMin, time.Second)
 	for ctx.Err() == nil {
@@ -100,6 +104,9 @@ func (s *Supervisor) Run(ctx context.Context) {
 			return
 		case errors.Is(err, mail.ErrAuth):
 			s.setStatus(ctx, StatusAuthFailed, err)
+			return
+		case errors.As(err, new(*mail.CertError)):
+			s.setStatus(ctx, StatusCertChanged, err)
 			return
 		case errors.Is(err, mail.ErrTLS), errors.Is(err, mail.ErrNoFolder):
 			s.setStatus(ctx, StatusError, err)

@@ -25,11 +25,14 @@ import (
 
 const accountsUsage = `usage: mailrules accounts <add|list|test> [flags]
 
-  add   --preset icloud|gmail|fastmail|yahoo|zoho|generic --username NAME
+  add   --preset icloud|gmail|fastmail|yahoo|zoho|proton|generic --username NAME
         [--label TEXT] [--host HOST] [--port 993] [--tls implicit|starttls]
-        [--watch-folder INBOX] [--password-file PATH]
+        [--watch-folder INBOX] [--password-file PATH] [--accept-cert SHA256]
         The app password comes from --password-file, else MAILRULES_ACCOUNT_PASSWORD,
         else one line on standard input. It is never accepted as a flag.
+        --accept-cert trusts the server's own certificate with that SHA-256 fingerprint,
+        and only it, for a server the system does not trust (such as Proton Mail Bridge).
+        Without it, such a server is refused and its fingerprint printed.
   list  show every account
   test  ID [--watch]   log in and list folders; --watch also prints new mail as it arrives
 
@@ -67,6 +70,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		watchFolder  = fs.String("watch-folder", "INBOX", "")
 		passwordFile = fs.String("password-file", "", "")
 		watch        = fs.Bool("watch", false, "")
+		acceptCert   = fs.String("accept-cert", "", "")
 	)
 	// Allow "test 3 --watch" as well as "test --watch 3".
 	var positional []string
@@ -102,7 +106,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 	case "add":
 		preset, ok := presets.Get(*presetName)
 		if !ok {
-			return fmt.Errorf("accounts add: --preset %q must be icloud, gmail, fastmail, yahoo, zoho or generic", *presetName)
+			return fmt.Errorf("accounts add: --preset %q must be icloud, gmail, fastmail, yahoo, zoho, proton or generic", *presetName)
 		}
 		acct := store.Account{
 			Label: *label, Preset: preset.Name, Host: preset.Host, Port: preset.Port, TLSMode: preset.TLSMode,
@@ -122,6 +126,11 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		}
 		if acct.Username == "" || acct.Host == "" {
 			return errors.New("accounts add: --username is required, and --host too with the generic preset")
+		}
+		if *acceptCert != "" {
+			if acct.CertFingerprint, err = mail.ParseFingerprint(*acceptCert); err != nil {
+				return fmt.Errorf("accounts add: --accept-cert: %w", err)
+			}
 		}
 		password, err := a.password(*passwordFile, preset)
 		if err != nil {
@@ -182,7 +191,7 @@ func dial(ctx context.Context, acct store.Account, password string, tlsConfig *t
 		var mb *imap.Mailbox
 		mb, err = imap.Open(ctx, imap.Config{
 			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
-			Username: name, Password: password, Preset: preset, TLSConfig: tlsConfig,
+			Username: name, Password: password, Preset: preset, TLSConfig: tlsConfig, CertFingerprint: acct.CertFingerprint,
 		})
 		if err == nil {
 			return mb, name, nil
@@ -197,8 +206,19 @@ func dial(ctx context.Context, acct store.Account, password string, tlsConfig *t
 func (a accountsCLI) open(ctx context.Context, acct store.Account, preset presets.Preset, username, password string) (*imap.Mailbox, error) {
 	return imap.Open(ctx, imap.Config{
 		AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
-		Username: username, Password: password, Preset: preset, TLSConfig: a.tlsConfig,
+		Username: username, Password: password, Preset: preset, TLSConfig: a.tlsConfig, CertFingerprint: acct.CertFingerprint,
 	})
+}
+
+// certHelp adds to a certificate error what the certificate is and how to accept it.
+func certHelp(err error, hint string) error {
+	var ce *mail.CertError
+	if !errors.As(err, &ce) {
+		return err
+	}
+	c := ce.Cert
+	return fmt.Errorf("%w\n  subject %s, issued by %s, valid %s to %s\n%s", err, c.Subject, c.Issuer,
+		c.NotBefore.Format(time.DateOnly), c.NotAfter.Format(time.DateOnly), strings.ReplaceAll(hint, "FINGERPRINT", c.Fingerprint))
 }
 
 // add checks the account against the server before anything is stored, then does the
@@ -218,7 +238,7 @@ func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, ac
 		if errors.Is(err, mail.ErrAuth) && preset.HelpURL != "" {
 			return fmt.Errorf("%w\nthis provider needs an app password, not your account password: %s", err, preset.HelpURL)
 		}
-		return err
+		return certHelp(err, "if this is your server's own certificate (Proton Mail Bridge makes its own), check the fingerprint and add the mailbox again with --accept-cert FINGERPRINT")
 	}
 	defer mb.Close()
 	acct.Username = username
@@ -304,7 +324,7 @@ func (a accountsCLI) test(ctx context.Context, st *store.Store, master []byte, i
 	preset, _ := presets.Get(acct.Preset)
 	mb, err := a.open(ctx, acct, preset, acct.Username, password)
 	if err != nil {
-		return err
+		return certHelp(err, "if you replaced the server's certificate, accept the new one in the web UI: Mailboxes, then Check certificate on this mailbox")
 	}
 	defer mb.Close()
 	folders, err := mb.Folders(ctx)

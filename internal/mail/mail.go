@@ -15,7 +15,9 @@ import (
 var (
 	// ErrAuth means the server refused the credentials. Do not retry; ask the user.
 	ErrAuth = errors.New("authentication failed")
-	// ErrTLS means the TLS handshake or certificate check failed. Do not retry.
+	// ErrTLS means the TLS handshake or certificate check failed. Do not retry. A
+	// certificate the person could accept, or one that replaced the accepted one, is a
+	// *CertError, which wraps ErrTLS.
 	ErrTLS = errors.New("tls failure")
 	// ErrConnection means the connection was lost, reset or timed out. Reconnect.
 	ErrConnection = errors.New("connection lost")

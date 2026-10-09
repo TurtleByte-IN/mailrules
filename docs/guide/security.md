@@ -1,6 +1,6 @@
 ---
 title: Security
-description: MailRules' safe defaults, how sign-in works, how to put it behind a reverse proxy with TLS, what is never logged, and how to report a vulnerability.
+description: MailRules' safe defaults, how sign-in works, how to put it behind a reverse proxy with TLS, how mail server certificates are checked, what is never logged, and how to report a vulnerability.
 order: 90
 ---
 
@@ -118,6 +118,16 @@ MAILRULES_TRUSTED_PROXIES=172.18.0.0/16,10.0.0.5
 - Logs never contain passwords, keys, tokens or the text of an email, at any `LOG_LEVEL`.
 - `mailrules accounts add` and `mailrules users reset-password` never take a password as a flag, where other users of the machine could see it in the process list.
 - Mail that a model needs to read is sent to the provider of that model. [What is sent to a model](./models.md#what-is-sent-to-a-model) lists exactly what, and Ollama keeps it on your own server.
+
+## Mail server certificates
+
+MailRules only talks to mail servers over TLS (implicit, or STARTTLS), and checks the server's certificate before it sends the password.
+
+- **By default** the certificate must chain to a root your system trusts and be made out to the host name you entered, as in any mail program. Such a server needs nothing accepted.
+- **A certificate the system does not trust**, such as the one Proton Mail Bridge makes for itself, is shown with its SHA-256 fingerprint, and connects only once you accept it. MailRules stores that fingerprint with the mailbox.
+- **With an accepted certificate**, the fingerprint is the whole check: the server must present exactly that certificate. The system's roots, the host name and the dates are not checked, because a certificate a server made for itself may pass none of them (Bridge's need not even be made out to `127.0.0.1`). Someone who could put another server in its place cannot present that certificate without its private key, so the check still keeps them out.
+- **If the server presents any other certificate**, MailRules refuses it, does not send the password, stops retrying and shows **Certificate changed** until you check the new one and accept it. A server replaced on purpose, such as Bridge after a reinstall, needs this once; a change you did not expect is a reason to stop and find out why.
+- Accept a certificate only if you know it is your server's. For Bridge, it is the one presented on `127.0.0.1` while Bridge runs on your own machine.
 
 ## Reporting a vulnerability
 

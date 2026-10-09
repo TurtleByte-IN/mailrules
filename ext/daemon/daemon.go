@@ -312,7 +312,7 @@ func openAccount(st *store.Store, master []byte, acct store.Account) func(contex
 		preset, _ := presets.Get(acct.Preset)
 		mb, err := imap.Open(ctx, imap.Config{
 			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
-			Username: acct.Username, Password: password, Preset: preset,
+			Username: acct.Username, Password: password, Preset: preset, CertFingerprint: acct.CertFingerprint,
 		})
 		if err != nil {
 			return nil, err

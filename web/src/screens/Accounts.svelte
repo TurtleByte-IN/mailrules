@@ -1,12 +1,13 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Account, AccountPatch } from '../lib/api/accounts';
+  import type { Account, AccountPatch, ServerCert } from '../lib/api/accounts';
   import { ApiError } from '../lib/api/client';
   import { clock, day } from '../lib/format';
-  import { accounts, edit, folderNames, load, loadPresets, reconnect, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { auth } from '../lib/state/auth.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
+  import CertCheck from './accounts/CertCheck.svelte';
   import Wizard from './accounts/Wizard.svelte';
 
   let connecting = $state(false);
@@ -27,6 +28,8 @@
       .join(' · ');
 
   let testing = $state<Record<number, boolean>>({});
+  // A changed server certificate being checked: 'checking' while the daemon asks the server, then what it presents.
+  let certs = $state<Record<number, 'checking' | { cert: ServerCert; message: string; busy: boolean }>>({});
   // The Edit form of the mailbox being edited. A new password lives here only, until it is sent or the form closes.
   let form = $state({ label: '', folder: '', password: '', shared: false, folders: [] as string[], error: '', errorPath: '', busy: false });
 
@@ -37,12 +40,27 @@
   const detail = (a: Account) =>
     a.status === 'live'
       ? a.capabilities.includes('IDLE') ? 'push (IDLE) connected' : 'checked once a minute'
-      : a.last_error || statuses[a.status].label.toLowerCase();
+      : a.status === 'cert_changed' ? '' : a.last_error || statuses[a.status].label.toLowerCase();
 
   async function runTest(id: number) {
     testing[id] = true;
     await test(id);
     testing[id] = false;
+  }
+
+  async function reviewCert(id: number) {
+    certs[id] = 'checking';
+    const found = await checkCert(id);
+    if (found) certs[id] = { ...found, busy: false };
+    else delete certs[id];
+  }
+
+  async function accept(id: number) {
+    const c = certs[id];
+    if (typeof c !== 'object') return;
+    c.busy = true;
+    await acceptCert(id, c.cert.fingerprint);
+    delete certs[id];
   }
 
   async function openEdit(a: Account, focus: 'name' | 'password') {
@@ -184,8 +202,23 @@
                 <button type="button" class="btn" aria-label="New app password for {a.label}" onclick={() => openEdit(a, 'password')}>New app password</button>
               </div>
             {/if}
+            {#if a.status === 'cert_changed'}
+              {@const c = certs[a.id]}
+              {#if typeof c === 'object'}
+                <div class="flex-[1_1_100%]">
+                  <CertCheck cert={c.cert} message={c.message} busy={c.busy} onaccept={() => accept(a.id)} oncancel={() => delete certs[a.id]} />
+                </div>
+              {:else}
+                <div class="flex flex-[1_1_100%] flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-3 py-2 text-trash">
+                  <span>The server's certificate changed. Check the new one before MailRules connects again.</span>
+                  <button type="button" class="btn" aria-label="Check certificate for {a.label}" disabled={c === 'checking'} onclick={() => reviewCert(a.id)}>{c === 'checking' ? 'Checking…' : 'Check certificate'}</button>
+                </div>
+              {/if}
+            {/if}
           {:else if a.status === 'auth_failed'}
             <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">Sign-in failed. The person who added this mailbox needs to enter a new app password.</p>
+          {:else if a.status === 'cert_changed'}
+            <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">The server's certificate changed. The person who added this mailbox needs to check and accept the new one.</p>
           {/if}
         </div>
       {:else}

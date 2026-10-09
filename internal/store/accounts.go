@@ -28,21 +28,24 @@ type Account struct {
 	TLSMode      string
 	Username     string
 	WatchFolder  string
-	Status       string // new | live | reconnecting | auth_failed | error | paused
+	Status       string // new | live | reconnecting | auth_failed | cert_changed | error | paused
 	LastError    string
 	LastEventAt  int64
 	Capabilities []string
 	CreatedAt    int64
+	// CertFingerprint is the server certificate the person accepted, as mail.Cert has it:
+	// the server must present exactly that one. Empty: the system's trust store decides.
+	CertFingerprint string
 }
 
 const accountCols = `a.id, a.user_id, a.tenant_id, a.shared, a.label, a.preset, a.host, a.port, a.tls_mode, a.username, a.watch_folder, a.status,
-	COALESCE(a.last_error, ''), COALESCE(a.last_event_at, 0), COALESCE(a.capabilities, '[]'), a.created_at`
+	COALESCE(a.last_error, ''), COALESCE(a.last_event_at, 0), COALESCE(a.capabilities, '[]'), a.created_at, a.cert_fingerprint`
 
 func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var a Account
 	var caps string
 	if err := row.Scan(&a.ID, &a.UserID, &a.TenantID, &a.Shared, &a.Label, &a.Preset, &a.Host, &a.Port, &a.TLSMode, &a.Username,
-		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt); err != nil {
+		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt, &a.CertFingerprint); err != nil {
 		return Account{}, err
 	}
 	if err := json.Unmarshal([]byte(caps), &a.Capabilities); err != nil {
@@ -112,10 +115,11 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 	a.Shared = NewAccountShared
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
-		                       watch_folder, status, capabilities, created_at)
-		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ? FROM users WHERE id = ?
+		                       watch_folder, status, capabilities, created_at, cert_fingerprint)
+		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ?, ? FROM users WHERE id = ?
 		 RETURNING id, tenant_id`,
-		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt, a.UserID).
+		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt,
+		a.CertFingerprint, a.UserID).
 		Scan(&a.ID, &a.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, fmt.Errorf("create account: user %d: %w", a.UserID, ErrNotFound)
@@ -239,6 +243,19 @@ func (s *Store) SetAccountStatus(ctx context.Context, id int64, status, lastErro
 		`UPDATE accounts SET status = ?, last_error = NULLIF(?, ''), last_event_at = ? WHERE id = ?`, status, lastError, now, id)
 	if err != nil {
 		return fmt.Errorf("set account status: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetAccountCert stores the server certificate the person accepted for an account; ""
+// leaves the decision to the system's trust store again.
+func (s *Store) SetAccountCert(ctx context.Context, id int64, fingerprint string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET cert_fingerprint = ? WHERE id = ?`, fingerprint, id)
+	if err != nil {
+		return fmt.Errorf("set account certificate: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound

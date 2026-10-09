@@ -1,5 +1,6 @@
 // The only module that calls fetch. Owns the CSRF header and the error shape
 // ({"error": {"code", "message", "path"}}, docs/api.md).
+import type { components } from './schema';
 
 // Cookie name set by the daemon (internal/api/auth.go, csrfCookie).
 const CSRF_COOKIE = 'mailrules_csrf';
@@ -11,6 +12,8 @@ export class ApiError extends Error {
     message: string,
     /** Field the error points at, e.g. "conditions.all[0].op". */
     readonly path?: string,
+    /** The mail server's certificate, on `cert_untrusted` and `cert_changed`: shown so the person can accept it. */
+    readonly cert?: components['schemas']['ServerCert'],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -51,7 +54,7 @@ export async function request(method: string, path: string, headers: Record<stri
 
   const err = (await res.json().catch(() => null))?.error;
   if (res.status === 401) onUnauthorized(err?.code ?? 'unauthenticated', err?.sign_in || undefined);
-  throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path);
+  throw new ApiError(res.status, err?.code ?? 'http_error', err?.message ?? res.statusText, err?.path, err?.cert);
 }
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {

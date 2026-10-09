@@ -7,6 +7,9 @@ export const clock = (ts: number) => date(ts).toLocaleTimeString([], { hour: '2-
 /** 6 Oct */
 export const day = (ts: number) => date(ts).toLocaleDateString([], { day: 'numeric', month: 'short' });
 
+/** 6 Oct 2026 */
+export const fullDay = (ts: number) => date(ts).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+
 /** Wed 7 Oct; the year is added when it is not this year: Mon 22 Sep 2025. */
 export function weekday(ts: number, now = Date.now() / 1000) {
   const d = date(ts);

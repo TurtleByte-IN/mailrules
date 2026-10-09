@@ -45,6 +45,11 @@ type Config struct {
 	TLSConfig *tls.Config    // nil uses the system roots; tests pass their own CA
 	Logger    *slog.Logger   // nil uses slog.Default()
 
+	// CertFingerprint is the server certificate the person accepted (mail.Cert.Fingerprint).
+	// When set, the server must present exactly that certificate, and the system's roots
+	// and the host name are not checked: the pin replaces both. Empty trusts the system.
+	CertFingerprint string
+
 	// Timers. Zero means the default; tests shrink them to milliseconds.
 	IdleRestart     time.Duration // leave IDLE and check the connection (25 min)
 	PollInterval    time.Duration // search for new mail when the server lacks IDLE (60 s)
@@ -116,6 +121,11 @@ func (m *Mailbox) dial(ctx context.Context, handler *imapclient.UnilateralDataHa
 	if tlsCfg.ServerName == "" {
 		tlsCfg.ServerName = m.cfg.Host
 	}
+	// The certificate is checked in verifyCert instead of by crypto/tls, so a failure can
+	// say which certificate it was, and an accepted one can be pinned.
+	roots, name, pin := tlsCfg.RootCAs, tlsCfg.ServerName, m.cfg.CertFingerprint
+	tlsCfg.InsecureSkipVerify = true // #nosec G402 -- verifyCert checks the chain and the name, or the pin
+	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error { return verifyCert(cs, roots, name, pin) }
 	opts := &imapclient.Options{TLSConfig: tlsCfg, UnilateralDataHandler: handler}
 	nd := &net.Dialer{Timeout: 30 * time.Second}
 
@@ -155,6 +165,46 @@ func (m *Mailbox) dial(ctx context.Context, handler *imapclient.UnilateralDataHa
 		return nil, classify("log in to "+addr, err)
 	}
 	return c, nil
+}
+
+// verifyCert accepts the server's certificate when it is the pinned one or, with no pin,
+// when it chains to a trusted root and is made out to host. crypto/tls runs it in place of
+// its own check (see dial). Any other certificate is a *mail.CertError naming it.
+func verifyCert(cs tls.ConnectionState, roots *x509.CertPool, host, pin string) error {
+	if len(cs.PeerCertificates) == 0 {
+		return fmt.Errorf("%w: the server sent no certificate", mail.ErrTLS)
+	}
+	leaf := cs.PeerCertificates[0]
+	cert := mail.CertOf(leaf)
+	if pin != "" {
+		if cert.Fingerprint == pin {
+			return nil
+		}
+		return &mail.CertError{Host: host, Cert: cert, Pinned: pin}
+	}
+	inter := x509.NewCertPool()
+	for _, c := range cs.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	_, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, DNSName: host})
+	if err == nil {
+		return nil
+	}
+	var (
+		unknownCA x509.UnknownAuthorityError
+		hostname  x509.HostnameError
+		invalid   x509.CertificateInvalidError
+	)
+	reason := "the system cannot verify it"
+	switch {
+	case errors.As(err, &unknownCA):
+		reason = "it is self-made, or signed by an authority this system does not know"
+	case errors.As(err, &hostname):
+		reason = "it is made out to another name than " + host
+	case errors.As(err, &invalid) && invalid.Reason == x509.Expired:
+		reason = "it has expired, or is not valid yet"
+	}
+	return &mail.CertError{Host: host, Cert: cert, Reason: reason}
 }
 
 // kindOf maps an error to the sentinel a caller should act on, or nil for a plain

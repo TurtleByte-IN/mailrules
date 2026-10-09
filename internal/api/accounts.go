@@ -47,6 +47,18 @@ type accountJSON struct {
 	CreatedAt    int64    `json:"created_at"`
 	Shared       bool     `json:"shared"` // everyone in the tenant sees it
 	Mine         bool     `json:"mine"`   // the viewer owns it, so may manage it
+	// CertFingerprint is the server certificate accepted for the account; empty when the
+	// system's trust store decides.
+	CertFingerprint string `json:"cert_fingerprint"`
+}
+
+// certJSON is a server certificate as the person checks it before accepting it.
+type certJSON struct {
+	Fingerprint string `json:"fingerprint"`
+	Subject     string `json:"subject"`
+	Issuer      string `json:"issuer"`
+	NotBefore   int64  `json:"not_before"`
+	NotAfter    int64  `json:"not_after"`
 }
 
 type folderJSON struct {
@@ -60,7 +72,7 @@ func (s *server) accountJSON(ctx context.Context, v store.Viewer, a store.Accoun
 	out := accountJSON{ID: a.ID, Label: a.Label, Preset: a.Preset, Host: a.Host, Port: a.Port, TLSMode: a.TLSMode,
 		Username: a.Username, WatchFolder: a.WatchFolder, Status: a.Status, LastError: a.LastError,
 		LastEventAt: ts(a.LastEventAt), Capabilities: append([]string{}, a.Capabilities...), CreatedAt: a.CreatedAt,
-		Shared: a.Shared, Mine: a.UserID == v.UserID}
+		Shared: a.Shared, Mine: a.UserID == v.UserID, CertFingerprint: a.CertFingerprint}
 	for _, c := range a.Capabilities {
 		out.CanMove = out.CanMove || c == "MOVE" || c == "UIDPLUS"
 	}
@@ -98,13 +110,29 @@ type accountInput struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	WatchFolder string `json:"watch_folder"`
+	// CertFingerprint accepts the server certificate with this SHA-256 fingerprint, which
+	// a test answered with cert_untrusted showed.
+	CertFingerprint string `json:"cert_fingerprint"`
+}
+
+// certFingerprint reads an accepted fingerprint; "" is none. On a bad one it has answered.
+func certFingerprint(w http.ResponseWriter, s string) (string, bool) {
+	if strings.TrimSpace(s) == "" {
+		return "", true
+	}
+	fp, err := mail.ParseFingerprint(s)
+	if err != nil {
+		invalid(w, "cert_fingerprint", "The certificate fingerprint is 64 hexadecimal digits, as SHA-256 fingerprints are shown.")
+		return "", false
+	}
+	return fp, true
 }
 
 // account turns the wizard's form into an account, with the preset's defaults filled in.
 func (in accountInput) account(w http.ResponseWriter) (store.Account, bool) {
 	preset, ok := presets.Get(in.Preset)
 	if !ok {
-		invalid(w, "preset", "Choose a provider: icloud, gmail, fastmail, yahoo, zoho or generic.")
+		invalid(w, "preset", "Choose a provider: icloud, gmail, fastmail, yahoo, zoho, proton or generic.")
 		return store.Account{}, false
 	}
 	a := store.Account{Label: strings.TrimSpace(in.Label), Preset: preset.Name, Host: preset.Host, Port: preset.Port,
@@ -136,7 +164,8 @@ func (in accountInput) account(w http.ResponseWriter) (store.Account, bool) {
 	case a.TLSMode != presets.TLSImplicit && a.TLSMode != presets.TLSStartTLS:
 		invalid(w, "tls_mode", "The TLS mode is implicit or starttls.")
 	default:
-		return a, true
+		a.CertFingerprint, ok = certFingerprint(w, in.CertFingerprint)
+		return a, ok
 	}
 	return store.Account{}, false
 }
@@ -174,19 +203,39 @@ func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Acco
 		}
 	}
 	slog.InfoContext(r.Context(), "account connection test failed", "host", a.Host, "error", err.Error())
+	var certErr *mail.CertError
 	switch {
 	case errors.Is(err, mail.ErrAuth):
 		msg := "The mail server refused the sign-in. Check the username and use an app password, not your account password."
-		if p, _ := presets.Get(a.Preset); p.HelpURL != "" {
+		if a.Preset == "proton" {
+			msg = "Proton Mail Bridge refused the sign-in. Use your Proton address and the Bridge password from Bridge's Mailbox details, not your Proton password."
+		} else if p, _ := presets.Get(a.Preset); p.HelpURL != "" {
 			msg += " Create one here: " + p.HelpURL
 		}
 		return refuse("auth_failed", msg, "password")
+	case errors.As(err, &certErr):
+		c := certErr.Cert
+		cert := &certJSON{Fingerprint: c.Fingerprint, Subject: c.Subject, Issuer: c.Issuer,
+			NotBefore: c.NotBefore.Unix(), NotAfter: c.NotAfter.Unix()}
+		code, msg := "cert_untrusted", "The certificate of "+a.Host+" is not one this system trusts: "+certErr.Reason+
+			". Accept it only if it is your own server's certificate, such as the one Proton Mail Bridge makes."
+		if certErr.Pinned != "" {
+			code, msg = "cert_changed", "The certificate of "+a.Host+" is not the one accepted for this mailbox. "+
+				"Accept the new one only if you know it was replaced, for example after reinstalling Proton Mail Bridge."
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]apiError{"error": {Code: code, Message: msg, Path: "cert_fingerprint", Cert: cert}})
+		return connected{}, false
 	case errors.Is(err, mail.ErrTLS):
 		return refuse("tls_failed", "The secure connection to "+a.Host+" could not be set up. Check the host, port and TLS mode.", "host")
 	case errors.Is(err, mail.ErrNoFolder):
 		return refuse("no_folder", "The server has no folder named "+a.WatchFolder+".", "watch_folder")
 	}
-	return refuse("connection_failed", "Could not reach "+a.Host+":"+strconv.Itoa(a.Port)+". Check the host and port.", "host")
+	addr := a.Host + ":" + strconv.Itoa(a.Port)
+	if a.Preset == "proton" {
+		return refuse("connection_failed", "Could not reach Proton Mail Bridge at "+addr+
+			". Check that Bridge is running and signed in on this machine, and that the port is the IMAP port in Bridge's Mailbox details.", "host")
+	}
+	return refuse("connection_failed", "Could not reach "+addr+". Check the host and port.", "host")
 }
 
 func (s *server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
@@ -297,21 +346,22 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAccountPatch edits the label, the watched folder, the app password, whether the
-// account is shared with the tenant, or pauses and resumes the account. Only the owner may:
-// to anyone else the account answers as missing. A change of folder, password or pause
-// restarts the account's supervisor, so the change is in force when the response arrives.
+// handleAccountPatch edits the label, the watched folder, the app password, the accepted
+// server certificate, whether the account is shared with the tenant, or pauses and resumes
+// the account. Only the owner may: to anyone else the account answers as missing. A change
+// of folder, password, certificate or pause restarts the account's supervisor, so the
+// change is in force when the response arrives.
 func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	a, ok := s.ownAccount(w, r)
 	if !ok {
 		return
 	}
-	var password string
+	var password, cert string
 	paused, shared := a.Status == worker.StatusPaused, a.Shared
 	wasPaused, oldFolder := paused, a.WatchFolder
 	sent, ok := readPatch(w, r, map[string]any{"label": &a.Label, "watch_folder": &a.WatchFolder, "password": &password,
-		"paused": &paused, "shared": &shared})
+		"paused": &paused, "shared": &shared, "cert_fingerprint": &cert})
 	if !ok {
 		return
 	}
@@ -327,19 +377,27 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "password", "Enter the app password.")
 		return
 	}
-	restart := a.WatchFolder != oldFolder || sent["password"] || paused != wasPaused
+	if sent["cert_fingerprint"] {
+		if a.CertFingerprint, ok = certFingerprint(w, cert); !ok {
+			return
+		}
+	}
+	restart := a.WatchFolder != oldFolder || sent["password"] || sent["cert_fingerprint"] || paused != wasPaused
 	if restart {
 		s.StopAccount(a.ID) // before the row changes, so the old supervisor cannot write over it
 	}
 	switch {
 	case paused:
 		a.Status = worker.StatusPaused
-	case wasPaused:
+	case wasPaused, sent["cert_fingerprint"]:
 		a.Status = "new" // until the supervisor reports
 	}
 	err := s.store.UpdateAccount(ctx, a)
 	if err == nil && sent["password"] {
 		err = s.store.SetAccountSecret(ctx, s.Master, a.ID, password)
+	}
+	if err == nil && sent["cert_fingerprint"] {
+		err = s.store.SetAccountCert(ctx, a.ID, a.CertFingerprint)
 	}
 	if err == nil && shared != a.Shared {
 		if err = s.store.SetAccountShared(ctx, a.ID, shared); err == nil {

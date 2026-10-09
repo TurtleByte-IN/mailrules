@@ -21,9 +21,28 @@ When adding a mailbox, the same problem reads: "The mail server refused the sign
 - Enter your iCloud address (`name@icloud.com`, `@me.com` or `@mac.com`). MailRules tries the full address, then the part before the `@`.
 - iCloud's special folders are Archive, Junk, Deleted Messages and Sent Messages. iCloud empties Deleted Messages after 30 days, which is why trashed mail goes to `MailRules Trash` by default.
 
+### Proton Mail
+
+- MailRules reaches Proton Mail only through Proton Mail Bridge, which must be running and signed in on the same machine. While Bridge is closed, the mailbox says **Reconnecting** and catches up once Bridge is back.
+- The password is the one in Bridge's **Mailbox details**, not your Proton password. If Bridge shows a different one than you entered, click **New app password** on the mailbox and paste it.
+- "Could not reach Proton Mail Bridge at 127.0.0.1:1143": Bridge is not running, or uses another port. Check the IMAP port in Bridge's Mailbox details.
+- MailRules in Docker cannot reach Bridge; see [Install](./install.md#docker).
+
+## A mailbox says Certificate changed
+
+The server presented a certificate other than the one accepted for the mailbox, or, for a mailbox that never needed one accepted, a certificate the system does not trust. MailRules stopped connecting before sending the password, and does not retry.
+
+1. On **Mailboxes**, click **Check certificate**. MailRules connects once more, on its own, and shows the certificate the server presents now: its SHA-256 fingerprint, who it is issued to and by, and its dates.
+2. If you know the server's certificate was replaced, for example after reinstalling Proton Mail Bridge or renewing your own server's certificate, click **Accept certificate**. MailRules trusts that one from then on and reconnects.
+3. If you did not expect a change, do not accept it: something else may be answering in your server's place. Find out why first.
+
+If the server presents the accepted certificate again by the time you check, MailRules simply reconnects. From the command line, `mailrules accounts test <id>` prints the new certificate; accepting it is done in the web UI.
+
+When adding a mailbox, the connection test shows the same check for a server whose certificate the system does not trust; see [Servers with their own certificate](./first-run.md#servers-with-their-own-certificate).
+
 ## A mailbox says Error or Reconnecting
 
-- **Error** means the secure connection could not be set up, or the watched folder no longer exists. Check the host, port and encryption (for **Other IMAP server**), or choose another **Watched folder** under **Edit**, then click **Reconnect**.
+- **Error** means the secure connection could not be set up, or the watched folder no longer exists. Check the host, port and encryption (for **Other IMAP server** or **Proton Mail**), or choose another **Watched folder** under **Edit**, then click **Reconnect**.
 - **Reconnecting** means the connection dropped. MailRules retries by itself, waiting longer each time, up to 5 minutes between tries, and catches up on mail that arrived in the meantime. **Reconnect now** on Overview tries at once.
 - **Reconnecting** with the error `decrypt failed` means the master key is not the one the passwords were stored with. See [If the master key is lost](./backup.md#if-the-master-key-is-lost). A start with no `master.key` at all, after a restore or a move, no longer gets this far: MailRules stops and says the master key is missing, as described in [Restoring](./backup.md#restoring).
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
+  import CertCheck from './CertCheck.svelte';
   import { secretLabel, stepNames, Wizard, zohoRegions } from './connect.svelte';
 
   /**
@@ -11,6 +12,7 @@
 
   const w = new Wizard();
   const apple = $derived(w.presetId === 'icloud');
+  const proton = $derived(w.presetId === 'proton');
   const chosen = $derived(w.templates.filter((t) => t.on));
   if (!accounts.presets.length) loadPresets();
 </script>
@@ -43,7 +45,7 @@
           <button
             type="button"
             aria-pressed={on}
-            onclick={() => (w.presetId = p.name)}
+            onclick={() => w.choose(p.name)}
             class="min-h-[72px] rounded-md px-3.5 py-3 text-left {on ? 'border-2 border-ink bg-selected-row' : 'border border-line-card bg-surface'}"
           >
             <div class="font-semibold">{p.label}</div>
@@ -72,6 +74,18 @@
           <div class="text-[12.5px] text-secondary">MailRules never sees your Apple ID password. You can revoke this one any time.</div>
         </div>
       {/if}
+      {#if proton}
+        <div class="flex flex-[1_1_300px] flex-col gap-2.5 rounded-md border border-selected bg-selected-row p-3.5">
+          <div class="font-semibold">Connect through Proton Mail Bridge</div>
+          <ol class="m-0 flex list-decimal flex-col gap-1.5 pl-[18px] text-[13.5px] text-nav">
+            <li>Proton Mail Bridge needs a paid Proton plan. Install it on this machine, the one MailRules runs on, sign in, and leave it running.</li>
+            <li>In Bridge, open your account's Mailbox details and copy the IMAP username, password and port.</li>
+            <li>Bridge makes its own certificate. After Test connection, MailRules shows its fingerprint for you to accept.</li>
+          </ol>
+          <a href={w.preset?.help_url} target="_blank" rel="noreferrer" class="text-[13.5px] font-semibold">How to set up Proton Mail Bridge</a>
+          <div class="text-[12.5px] text-secondary">MailRules in Docker cannot reach a Bridge running on this machine. Use the binary or the Homebrew install.</div>
+        </div>
+      {/if}
       <form
         class="flex flex-[1_1_300px] flex-col gap-3"
         onsubmit={(e) => {
@@ -87,7 +101,7 @@
         {#if w.presetId === 'zoho'}
           <label class="flex flex-col gap-1.5">
             <span class="text-[13px] font-semibold">Where is your Zoho account?</span>
-            <select class="field h-11 px-2.5" aria-invalid={w.errorField === 'host'} bind:value={w.region} onchange={() => w.edited()}>
+            <select class="field h-11 px-2.5" aria-invalid={w.errorField === 'host'} bind:value={w.region} onchange={() => w.serverEdited()}>
               {#each zohoRegions as r (r.id)}
                 <option value={r.id}>{r.label}</option>
               {/each}
@@ -96,18 +110,18 @@
             {@render fieldError('host')}
           </label>
         {/if}
-        {#if w.preset && !w.preset.host}
+        {#if w.serverFields}
           <div class="flex flex-wrap gap-3">
             <label class="flex flex-[3_1_180px] flex-col gap-1.5">
               <span class="text-[13px] font-semibold">Host</span>
-              <input class="field h-11 font-mono" autocomplete="off" aria-invalid={w.errorField === 'host'} bind:value={w.host} oninput={() => w.edited()} />
+              <input class="field h-11 font-mono" autocomplete="off" aria-invalid={w.errorField === 'host'} bind:value={w.host} oninput={() => w.serverEdited()} />
               {@render fieldError('host')}
             </label>
             <label class="flex flex-[2_1_150px] flex-col gap-1.5">
               <span class="text-[13px] font-semibold">Encryption</span>
               <select class="field h-11 px-2.5" aria-invalid={w.errorField === 'tls_mode'} value={w.tls} onchange={(e) => w.setTls(e.currentTarget.value as typeof w.tls)}>
-                <option value="implicit">TLS (port 993)</option>
-                <option value="starttls">STARTTLS (port 143)</option>
+                <option value="implicit">{proton ? 'SSL' : 'TLS (port 993)'}</option>
+                <option value="starttls">{proton ? 'STARTTLS' : 'STARTTLS (port 143)'}</option>
               </select>
               {@render fieldError('tls_mode')}
             </label>
@@ -128,6 +142,8 @@
           <Waiting text="Logging in to your mail server and listing its folders" />
         {:else if w.test === 'ok' && w.result}
           <div role="status" class="rounded bg-selected px-3 py-2.5 text-[13px]">{testSummary(w.result)}</div>
+        {:else if w.test === 'err' && w.cert}
+          <CertCheck cert={w.cert} message={w.error} onaccept={() => w.acceptCert()} />
         {:else if w.test === 'err' && !w.errorField}
           <div role="alert" class="rounded bg-trash-bg px-3 py-2.5 text-[13px] text-trash">{w.error}</div>
         {/if}
