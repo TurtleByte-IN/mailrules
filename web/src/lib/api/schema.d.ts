@@ -195,7 +195,7 @@ export interface paths {
         put?: never;
         /**
          * Drop the connection and connect again
-         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`.
+         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. A one-click mailbox in `reconnect_needed` comes back only when the person signs in to the provider again, through the module's one-click URL with `&account=<id>` (`Preset.one_click_url`). The outcome arrives over `account.status`.
          */
         post: operations["reconnectAccount"];
         delete?: never;
@@ -1382,22 +1382,26 @@ export interface components {
             host: string;
             port: number;
             tls_mode: components["schemas"]["TLSMode"];
-            /** @description Where the user creates an app password; may be empty */
+            /** @description Where the user creates an app password (for Outlook, Microsoft's IMAP settings page); may be empty */
             help_url: string;
             /** @description The server may want the part before "@" as the username; the daemon tries both */
             local_part_login: boolean;
-            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic) */
+            /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic); empty for Outlook, which takes none */
             secret_label: string;
+            /** @description The wizard can connect it with a pasted password or app password (`secret_label`). False for Outlook, which takes only Microsoft's own sign-in */
+            password: boolean;
+            /** @description Where the browser goes to connect a mailbox here with one-click sign-in (the person signs in to the provider; no password), when a module of this build signs in to the preset; append `&account=<id>` to reconnect a mailbox in `reconnect_needed`. null otherwise: in the free build always */
+            one_click_url: string | null;
         };
         /** @enum {string} */
-        PresetName: "icloud" | "gmail" | "fastmail" | "yahoo" | "zoho" | "proton" | "generic";
+        PresetName: "icloud" | "gmail" | "outlook" | "fastmail" | "yahoo" | "zoho" | "proton" | "generic";
         /** @enum {string} */
         TLSMode: "implicit" | "starttls";
         /**
-         * @description `auth_failed`, `cert_changed` and `error` have stopped and wait for the user (fix the password, or accept the certificate the server now presents, then reconnect); `paused` was set by the user
+         * @description `auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again, for a one-click mailbox whose sign-in was revoked or refused; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`
          * @enum {string}
          */
-        AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "cert_changed" | "error" | "paused";
+        AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "reconnect_needed" | "cert_changed" | "error" | "paused";
         AccountInput: {
             preset: components["schemas"]["PresetName"];
             username: string;
@@ -1458,6 +1462,8 @@ export interface components {
             mine: boolean;
             /** @description The server certificate accepted for this mailbox, as `ServerCert.fingerprint`; empty when the system's trust store decides */
             cert_fingerprint: string;
+            /** @description The mailbox signs in with one-click sign-in, through the module that connected it: it has no password, its server is the provider's, and PATCH refuses `password`, `host`, `port`, `tls_mode` and `cert_fingerprint` for it */
+            one_click: boolean;
         };
         AccountEnvelope: {
             account: components["schemas"]["Account"];
@@ -2482,6 +2488,7 @@ export interface components {
                 draft_replies: boolean;
                 billing: boolean;
                 unsubscribe: boolean;
+                /** @description A module of this build connects mailboxes with one-click sign-in; GET /api/presets gives `one_click_url` for the providers it signs in to */
                 oauth_providers: boolean;
                 /** @description Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works */
                 suggest: boolean;
@@ -2676,7 +2683,8 @@ export interface components {
         };
         /**
          * @description The mail server could not be used with these details: `auth_failed` (path `password`),
-         *     `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
+         *     `reconnect_needed` (a one-click mailbox whose provider no longer accepts its sign-in: sign in
+         *     again), `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
          *     or a server certificate to accept (path `cert_fingerprint`, with `cert` set):
          *     `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
          *     stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).
@@ -2887,7 +2895,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Every preset, generic last */
+            /** @description Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one */
             200: {
                 headers: {
                     [name: string]: unknown;

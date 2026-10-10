@@ -50,6 +50,14 @@ type Config struct {
 	// and the host name are not checked: the pin replaces both. Empty trusts the system.
 	CertFingerprint string
 
+	// Token, when set, is how the account signs in: with OAuth (SASL XOAUTH2) as Username,
+	// with the access token it returns, asked for again just before every login, so a
+	// connection the server closed when its token expired comes back with a fresh one.
+	// Password is not used. An error that wraps mail.ErrReconnect stops the account; any
+	// other is a failed connection, retried. The server refusing the token is
+	// mail.ErrReconnect too: the only fix is signing in to the provider again.
+	Token func(ctx context.Context) (string, error)
+
 	// Timers. Zero means the default; tests shrink them to milliseconds.
 	IdleRestart     time.Duration // leave IDLE and check the connection (25 min)
 	PollInterval    time.Duration // search for new mail when the server lacks IDLE (60 s)
@@ -152,19 +160,43 @@ func (m *Mailbox) dial(ctx context.Context, handler *imapclient.UnilateralDataHa
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 
-	if err := c.Login(m.cfg.Username, m.cfg.Password).Wait(); err != nil {
+	if err := m.login(ctx, c, addr); err != nil {
 		_ = c.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		var ie *imap.Error
-		if errors.As(err, &ie) && kindOf(err) == nil {
-			// Many servers answer a bad password with a bare NO and no response code.
-			return nil, fmt.Errorf("log in to %s: %w: %w", addr, mail.ErrAuth, err)
-		}
-		return nil, classify("log in to "+addr, err)
+		return nil, err
 	}
 	return c, nil
+}
+
+// login signs in on a connection just made: with the password, or with an access token
+// (Config.Token). Errors never contain the password or the token.
+func (m *Mailbox) login(ctx context.Context, c *imapclient.Client, addr string) error {
+	if m.cfg.Token == nil {
+		err := c.Login(m.cfg.Username, m.cfg.Password).Wait()
+		var ie *imap.Error
+		if err != nil && errors.As(err, &ie) && kindOf(err) == nil {
+			// Many servers answer a bad password with a bare NO and no response code.
+			return fmt.Errorf("log in to %s: %w: %w", addr, mail.ErrAuth, err)
+		}
+		return classify("log in to "+addr, err)
+	}
+	token, err := m.cfg.Token(ctx)
+	switch {
+	case err == nil:
+	case errors.Is(err, mail.ErrReconnect), ctx.Err() != nil:
+		return fmt.Errorf("sign in to %s: %w", addr, err)
+	default:
+		return fmt.Errorf("sign in to %s: get an access token: %w: %w", addr, mail.ErrConnection, err)
+	}
+	err = c.Authenticate(xoauth2{user: m.cfg.Username, token: token})
+	var ie *imap.Error
+	if errors.Is(err, errTokenRefused) ||
+		(errors.As(err, &ie) && ie.Type == imap.StatusResponseTypeNo && (kindOf(err) == nil || errors.Is(kindOf(err), mail.ErrAuth))) {
+		return fmt.Errorf("log in to %s with an access token: %w: %w", addr, mail.ErrReconnect, err)
+	}
+	return classify("log in to "+addr+" with an access token", err)
 }
 
 // verifyCert accepts the server's certificate when it is the pinned one or, with no pin,
@@ -237,7 +269,7 @@ func kindOf(err error) error {
 		errors.As(err, &verify) || errors.As(err, &record) || errors.As(err, &alert) {
 		return mail.ErrTLS
 	}
-	for _, s := range []error{mail.ErrAuth, mail.ErrTLS, mail.ErrConnection, mail.ErrThrottled,
+	for _, s := range []error{mail.ErrAuth, mail.ErrReconnect, mail.ErrTLS, mail.ErrConnection, mail.ErrThrottled,
 		mail.ErrUnsupported, mail.ErrNoFolder, mail.ErrNotFound, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, s) {
 			return nil // already classified

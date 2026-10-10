@@ -50,7 +50,7 @@ async function show(step: Step, saved = fresh({ warnings: [noOpenRouter, noClaud
 
 beforeEach(() => {
   routes = {
-    'GET /api/presets': [200, { items: [{ name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true, secret_label: 'App-specific password' }] }],
+    'GET /api/presets': [200, { items: [{ name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true, secret_label: 'App-specific password', password: true, one_click_url: null }] }],
   };
   fetchMock.mockClear();
   vi.stubGlobal('fetch', fetchMock);

@@ -4,6 +4,14 @@ description: Fix mailbox sign-in failures, find out why mail is not being sorted
 order: 100
 ---
 
+## A mailbox says Reconnect needed
+
+Only a mailbox connected with one-click sign-in (Gmail or Outlook, in a build that offers it) can say this. Google or Microsoft no longer accepts MailRules' sign-in: you removed its access in your account's security settings, the access expired, or the provider refused it (for example, IMAP was switched off for the account). MailRules stops trying, and no rule acts on the mailbox, until you sign in again. Mail that arrives meanwhile is sorted once it reconnects.
+
+- Click **Reconnect** on the mailbox, on **Mailboxes** or **Overview**. Sign in to Google or Microsoft as the mailbox's own address and allow access. MailRules connects again at once.
+- Signing in as another address is refused, and the mailbox stays as it was.
+- Google and Microsoft end each IMAP session about once an hour, when its access token expires. That is not this: MailRules reconnects with a new token on its own and the mailbox stays **Live**.
+
 ## A mailbox says Sign-in failed
 
 The mail server refused the user name or password. MailRules stops trying for that mailbox until you fix it.

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account, TestResult } from '../api/accounts';
 import { dispatch } from '../api/events';
-import { accounts, connect, load, reconnect, remove, setPaused, statuses, test, testSummary } from './accounts.svelte';
+import { accounts, connect, load, reconnect, reconnectURL, remove, setPaused, statuses, test, testSummary } from './accounts.svelte';
 import { toast } from './toast.svelte';
 
 type Reply = [status: number, body?: unknown];
@@ -36,6 +36,7 @@ const acct = (over: Partial<Account> = {}): Account => ({
   shared: false,
   mine: true,
   cert_fingerprint: '',
+  one_click: false,
   ...over,
 });
 
@@ -116,7 +117,17 @@ it('follows account.status events for listed mailboxes only', () => {
 });
 
 it('has a label and a dot for every status in the contract', () => {
-  expect(Object.keys(statuses).sort()).toEqual(['auth_failed', 'cert_changed', 'error', 'live', 'new', 'paused', 'reconnecting']);
+  expect(Object.keys(statuses).sort()).toEqual(['auth_failed', 'cert_changed', 'error', 'live', 'new', 'paused', 'reconnect_needed', 'reconnecting']);
+});
+
+it("sends a one-click mailbox to its provider's sign-in to reconnect, when this build has one", () => {
+  const gmail = { name: 'gmail' as const, label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit' as const, help_url: '', local_part_login: false, secret_label: 'App password', password: true };
+  accounts.presets = [{ ...gmail, one_click_url: '/api/oauth/start?provider=gmail' }];
+  expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: true }))).toBe('/api/oauth/start?provider=gmail&account=4');
+  expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: false }))).toBeUndefined();
+  accounts.presets = [{ ...gmail, one_click_url: null }];
+  expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: true }))).toBeUndefined();
+  accounts.presets = [];
 });
 
 const folders = (...special: TestResult['folders'][number]['special_use'][]) =>

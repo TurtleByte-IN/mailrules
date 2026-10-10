@@ -11,7 +11,7 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 // GET /api/accounts, one item.
 const acct = (over: Partial<Account> = {}): Account => ({
   id: 1, label: 'me@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'me', watch_folder: 'INBOX',
-  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '',
+  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: false,
   ...over,
 });
 const failed = acct({ status: 'auth_failed', last_error: 'The mail server refused the sign-in.' });
@@ -282,8 +282,8 @@ it('reconnects at once when the check finds the server presents the accepted cer
 
 it('adds a Proton Mail mailbox through Bridge: the server is filled in, and its certificate is accepted before it connects', async () => {
   routes['GET /api/presets'] = [200, { items: [
-    { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true, secret_label: 'App-specific password' },
-    { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password' },
+    { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true, secret_label: 'App-specific password', password: true, one_click_url: null },
+    { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password', password: true, one_click_url: null },
   ] }];
   accounts.presets = [];
   await show();
@@ -410,4 +410,27 @@ it('shows a refused encryption beside the Encryption field and keeps the mailbox
   expect(form.getByLabelText(/^Encryption/).getAttribute('aria-invalid')).toBe('true');
   expect(patches()).toEqual([{ port: 993, tls_mode: 'implicit' }]);
   expect(accounts.list[0].tls_mode).toBe('starttls');
+});
+
+it("sends a one-click mailbox that needs reconnecting to its provider's sign-in, and offers it no password", async () => {
+  routes['GET /api/presets'] = [200, { items: [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
+    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail' }] }];
+  accounts.presets = [];
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  await show(acct({ label: 'me@icloud.com', preset: 'gmail', one_click: true, status: 'reconnect_needed', last_error: 'invalid_grant' }));
+  await waitFor(() => expect(screen.getByText(/Gmail no longer accepts MailRules' sign-in/)).toBeTruthy());
+  expect(screen.getByText('Reconnect needed')).toBeTruthy();
+  expect(screen.queryByText(/invalid_grant/)).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Reconnect me@icloud.com' }));
+  expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail&account=1');
+  expect(fetchMock.mock.calls.some((c) => c[0] === '/api/accounts/1/reconnect')).toBe(false);
+  const form = await openEdit();
+  expect(form.queryByLabelText('New app password')).toBeNull();
+});
+
+it('tells a teammate that the person who added a one-click mailbox needs to reconnect it', async () => {
+  await show(acct({ mine: false, shared: true, one_click: true, status: 'reconnect_needed' }));
+  expect(screen.getByText(/The person who added this mailbox needs to reconnect it/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Reconnect/ })).toBeNull();
 });

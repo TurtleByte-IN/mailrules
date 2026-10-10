@@ -1,9 +1,11 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { replace, router } from 'svelte-spa-router';
   import type { Account, AccountPatch, ServerCert } from '../lib/api/accounts';
   import { ApiError } from '../lib/api/client';
   import { clock, day } from '../lib/format';
-  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { mailboxReturn } from '../lib/state/oneclick';
   import { auth } from '../lib/state/auth.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
@@ -11,7 +13,15 @@
   import { editableServer, zohoRegions } from './accounts/connect.svelte';
   import Wizard from './accounts/Wizard.svelte';
 
-  let connecting = $state(false);
+  // A one-click sign-in comes back here (#/accounts?added=<id>, ?reconnected=<id> or ?mailbox_error=<code>):
+  // read it once, then clear the address bar.
+  const back = mailboxReturn(router.querystring ?? '');
+  if (router.querystring) replace('/accounts');
+  if (back.reconnected) flash((accounts.list.find((a) => a.id === back.reconnected)?.label ?? 'Your mailbox') + ' is connected again');
+  let returnError = $state(back.error);
+  /** A mailbox a one-click sign-in just connected: the wizard goes on at Rules for it. */
+  let added = $state(back.added);
+  let connecting = $state(!!back.added);
   let removing = $state<number>();
   let editing = $state<number>();
   // Joined here, not in the markup: a separator at the start of an {#if} block loses its leading space.
@@ -51,7 +61,14 @@
   const detail = (a: Account) =>
     a.status === 'live'
       ? a.capabilities.includes('IDLE') ? 'push (IDLE) connected' : 'checked once a minute'
-      : a.status === 'cert_changed' ? '' : a.last_error || statuses[a.status].label.toLowerCase();
+      : a.status === 'cert_changed' || a.status === 'reconnect_needed' ? '' : a.last_error || statuses[a.status].label.toLowerCase();
+
+  /** A one-click mailbox reconnects by signing in to its provider again; any other one by connecting again. */
+  function reconnectMailbox(a: Account) {
+    const url = a.status === 'reconnect_needed' ? reconnectURL(a) : undefined;
+    if (url) window.location.assign(url);
+    else reconnect(a.id);
+  }
 
   async function runTest(id: number) {
     testing[id] = true;
@@ -160,6 +177,13 @@
     </div>
   {/if}
 
+  {#if returnError}
+    <div role="alert" class="flex flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-[18px] py-3 text-trash">
+      <span>{returnError}</span>
+      <button type="button" class="btn" onclick={() => (returnError = undefined)}>Dismiss</button>
+    </div>
+  {/if}
+
   {#if accounts.loaded}
     <section aria-label="Connected mailboxes" class="card overflow-hidden">
       {#each accounts.list as a (a.id)}
@@ -229,12 +253,14 @@
                   {@render fieldError('host')}
                 </label>
               {/if}
-              <label class="flex flex-[1_1_180px] flex-col gap-1.5">
-                <span class="text-[13px] font-semibold">New app password</span>
-                <input id="edit-password" class="field h-11 font-mono" type="password" autocomplete="new-password" aria-invalid={form.errorPath === 'password'} bind:value={form.password} />
-                {@render fieldError('password')}
-                <span class="text-[12.5px] text-secondary">Leave empty to keep the current one.</span>
-              </label>
+              {#if !a.one_click}
+                <label class="flex flex-[1_1_180px] flex-col gap-1.5">
+                  <span class="text-[13px] font-semibold">New app password</span>
+                  <input id="edit-password" class="field h-11 font-mono" type="password" autocomplete="new-password" aria-invalid={form.errorPath === 'password'} bind:value={form.password} />
+                  {@render fieldError('password')}
+                  <span class="text-[12.5px] text-secondary">Leave empty to keep the current one.</span>
+                </label>
+              {/if}
               {#if a.mine && auth.members > 1}
                 <span class="flex flex-[1_1_100%] items-center gap-3">
                   <Toggle on={form.shared} label="Shared with team" onchange={() => (form.shared = !form.shared)} />
@@ -265,7 +291,7 @@
                 {#if a.status === 'live'}
                   <button type="button" class="btn" aria-label="Test {a.label}" disabled={testing[a.id]} onclick={() => runTest(a.id)}>{testing[a.id] ? 'Testing…' : 'Test'}</button>
                 {:else}
-                  <button type="button" class="btn" aria-label="Reconnect {a.label}" onclick={() => reconnect(a.id)}>Reconnect</button>
+                  <button type="button" class="btn" aria-label="Reconnect {a.label}" onclick={() => reconnectMailbox(a)}>Reconnect</button>
                 {/if}
                 <button type="button" class="btn" aria-label="Pause {a.label}" onclick={() => setPaused(a.id, true)}>Pause</button>
               {/if}
@@ -277,6 +303,9 @@
                 <span>Sign-in failed. Enter a new app password.</span>
                 <button type="button" class="btn" aria-label="New app password for {a.label}" onclick={() => openEdit(a, 'password')}>New app password</button>
               </div>
+            {/if}
+            {#if a.status === 'reconnect_needed'}
+              <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">{provider(a)} no longer accepts MailRules' sign-in: access was revoked or has expired. Reconnect to sign in again.</p>
             {/if}
             {#if a.status === 'cert_changed'}
               {@const c = certs[a.id]}
@@ -293,6 +322,8 @@
             {/if}
           {:else if a.status === 'auth_failed'}
             <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">Sign-in failed. The person who added this mailbox needs to enter a new app password.</p>
+          {:else if a.status === 'reconnect_needed'}
+            <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">{provider(a)} no longer accepts MailRules' sign-in. The person who added this mailbox needs to reconnect it.</p>
           {:else if a.status === 'cert_changed'}
             <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">The server's certificate changed. The person who added this mailbox needs to check and accept the new one.</p>
           {/if}
@@ -304,6 +335,12 @@
   {/if}
 
   {#if connecting}
-    <Wizard onclose={() => (connecting = false)} />
+    <Wizard
+      {added}
+      onclose={() => {
+        connecting = false;
+        added = undefined;
+      }}
+    />
   {/if}
 </div>

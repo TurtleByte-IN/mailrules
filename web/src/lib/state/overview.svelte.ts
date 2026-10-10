@@ -53,8 +53,11 @@ export function healthLine(list: Account[]) {
   return { ok: true, text: list.length === 1 ? 'Your mailbox is live' : 'All ' + list.length + ' mailboxes live' };
 }
 
-/** What a mailbox's row says and offers. `go` sends the user to Mailboxes; the other actions run in place. */
-export function health(a: Account): { detail: string; chip: string; action?: 'test' | 'reconnect' | 'resume' | 'go' | 'wait'; label?: string } {
+/**
+ * What a mailbox's row says and offers. `go` sends the user to Mailboxes; `sign-in` to the provider's sign-in
+ * for a one-click mailbox (`reconnectURL`); the other actions run in place.
+ */
+export function health(a: Account): { detail: string; chip: string; action?: 'test' | 'reconnect' | 'resume' | 'go' | 'sign-in' | 'wait'; label?: string } {
   switch (a.status) {
     case 'live':
       return {
@@ -71,6 +74,8 @@ export function health(a: Account): { detail: string; chip: string; action?: 'te
       return { detail: 'Paused · new mail is not sorted', chip: 'chip-neutral', action: 'resume', label: 'Resume' };
     case 'auth_failed':
       return { detail: a.last_error || 'Login rejected.', chip: 'chip-trash', action: 'go', label: 'Fix sign-in' };
+    case 'reconnect_needed':
+      return { detail: 'Sign-in revoked or expired. Reconnect to sign in again.', chip: 'chip-trash', action: 'sign-in', label: 'Reconnect' };
     case 'cert_changed':
       return { detail: "The server's certificate changed.", chip: 'chip-trash', action: 'go', label: 'Check certificate' };
     case 'error':

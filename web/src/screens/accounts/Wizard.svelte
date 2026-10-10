@@ -6,14 +6,18 @@
 
   /**
    * `onclose` runs when the first step's `cancelLabel` button is pressed, and once the mailbox
-   * is saved unless `onconnected` is given.
+   * is saved unless `onconnected` is given. `added` is a mailbox a one-click sign-in just
+   * connected: the wizard opens at Rules for it.
    */
-  let { onclose, onconnected, cancelLabel = 'Cancel' }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string } = $props();
+  let { onclose, onconnected, cancelLabel = 'Cancel', added }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number } = $props();
 
-  const w = new Wizard();
+  // svelte-ignore state_referenced_locally -- read once: the wizard is made again for another mailbox
+  const w = new Wizard(added);
   const apple = $derived(w.presetId === 'icloud');
   const proton = $derived(w.presetId === 'proton');
   const chosen = $derived(w.templates.filter((t) => t.on));
+  // A provider a module signs in to has a one-click tile, ahead of its app-password tile when it takes one.
+  const tiles = $derived(accounts.presets.flatMap((p) => [...(p.one_click_url ? [{ p, oneClick: true }] : []), ...(p.password ? [{ p, oneClick: false }] : [])]));
   if (!accounts.presets.length) loadPresets();
 </script>
 
@@ -40,16 +44,16 @@
     <div class="flex flex-col gap-3">
       <h2>Where is your email?</h2>
       <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5">
-        {#each accounts.presets as p (p.name)}
-          {@const on = w.presetId === p.name}
+        {#each tiles as { p, oneClick } (p.name + (oneClick ? ' one-click' : ''))}
+          {@const on = w.presetId === p.name && w.oneClick === oneClick}
           <button
             type="button"
             aria-pressed={on}
-            onclick={() => w.choose(p.name)}
+            onclick={() => w.choose(p.name, oneClick)}
             class="min-h-[72px] rounded-md px-3.5 py-3 text-left {on ? 'border-2 border-ink bg-selected-row' : 'border border-line-card bg-surface'}"
           >
             <div class="font-semibold">{p.label}</div>
-            <div class="text-[12.5px] text-muted">{p.host ? secretLabel(p) : 'Host, port, password'}</div>
+            <div class="text-[12.5px] text-muted">{oneClick ? 'One-click sign-in' : p.host ? secretLabel(p) : 'Host, port, password'}</div>
           </button>
         {/each}
       </div>
@@ -164,19 +168,23 @@
     <div class="flex flex-col gap-3">
       <h2>Starter rules you picked</h2>
       {#if w.busy}
-        <Waiting text="Connecting your mailbox and saving the rules you picked" />
+        <Waiting text={w.accountId ? 'Saving the rules you picked' : 'Connecting your mailbox and saving the rules you picked'} />
       {/if}
       {#each chosen as t (t.id)}
         <div class="rounded-md border border-line-card px-3.5 py-3"><span class="font-semibold">{t.name}</span><span class="text-secondary"> · {t.desc}</span></div>
       {:else}
         <p class="text-secondary">No starter rules chosen. You can add rules any time.</p>
       {/each}
-      <p class="text-[13px] text-secondary">Nothing has moved yet. Connect saves the mailbox and starts watching it, but dry-run stays on: new mail is previewed in Activity, and nothing moves until you turn dry-run off. Existing mail stays put until you run Cleanup.</p>
+      {#if w.accountId}
+        <p class="text-[13px] text-secondary">Nothing has moved yet. Your mailbox is connected and MailRules is watching it, but dry-run stays on: new mail is previewed in Activity, and nothing moves until you turn dry-run off. Existing mail stays put until you run Cleanup.</p>
+      {:else}
+        <p class="text-[13px] text-secondary">Nothing has moved yet. Connect saves the mailbox and starts watching it, but dry-run stays on: new mail is previewed in Activity, and nothing moves until you turn dry-run off. Existing mail stays put until you run Cleanup.</p>
+      {/if}
     </div>
   {/if}
 
   <div class="flex flex-wrap justify-between gap-2 border-t border-line-divider pt-3.5">
-    <button type="button" class="btn min-h-11" onclick={() => (w.step === 0 ? onclose() : w.step--)}>{w.step === 0 ? cancelLabel : 'Back'}</button>
+    <button type="button" class="btn min-h-11" onclick={() => (w.step === w.first ? onclose() : w.step--)}>{w.step === w.first ? cancelLabel : 'Back'}</button>
     <button
       type="button"
       class="btn-primary min-h-11 px-[18px]"

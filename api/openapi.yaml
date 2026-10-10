@@ -178,7 +178,7 @@ paths:
       summary: Provider presets for the connect wizard
       responses:
         '200':
-          description: Every preset, generic last
+          description: 'Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one'
           content:
             application/json:
               schema:
@@ -306,7 +306,7 @@ paths:
       tags: [Accounts]
       operationId: reconnectAccount
       summary: Drop the connection and connect again
-      description: Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`.
+      description: Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. A one-click mailbox in `reconnect_needed` comes back only when the person signs in to the provider again, through the module's one-click URL with `&account=<id>` (`Preset.one_click_url`). The outcome arrives over `account.status`.
       responses:
         '200':
           description: Reconnecting; the body is the account as stored at this moment
@@ -1574,7 +1574,8 @@ components:
     ConnectionFailed:
       description: |
         The mail server could not be used with these details: `auth_failed` (path `password`),
-        `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
+        `reconnect_needed` (a one-click mailbox whose provider no longer accepts its sign-in: sign in
+        again), `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
         or a server certificate to accept (path `cert_fingerprint`, with `cert` set):
         `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
         stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).
@@ -1656,22 +1657,24 @@ components:
 
     Preset:
       type: object
-      required: [name, label, host, port, tls_mode, help_url, local_part_login, secret_label]
+      required: [name, label, host, port, tls_mode, help_url, local_part_login, secret_label, password, one_click_url]
       properties:
         name: { $ref: '#/components/schemas/PresetName' }
         label: { type: string, description: 'Shown in the provider picker, e.g. "iCloud Mail"' }
         host: { type: string, description: Empty for generic; the user supplies it }
         port: { type: integer }
         tls_mode: { $ref: '#/components/schemas/TLSMode' }
-        help_url: { type: string, description: Where the user creates an app password; may be empty }
+        help_url: { type: string, description: 'Where the user creates an app password (for Outlook, Microsoft''s IMAP settings page); may be empty' }
         local_part_login: { type: boolean, description: The server may want the part before "@" as the username; the daemon tries both }
-        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic)' }
-    PresetName: { type: string, enum: [icloud, gmail, fastmail, yahoo, zoho, proton, generic] }
+        secret_label: { type: string, description: 'What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic); empty for Outlook, which takes none' }
+        password: { type: boolean, description: 'The wizard can connect it with a pasted password or app password (`secret_label`). False for Outlook, which takes only Microsoft''s own sign-in' }
+        one_click_url: { type: [string, 'null'], description: 'Where the browser goes to connect a mailbox here with one-click sign-in (the person signs in to the provider; no password), when a module of this build signs in to the preset; append `&account=<id>` to reconnect a mailbox in `reconnect_needed`. null otherwise: in the free build always' }
+    PresetName: { type: string, enum: [icloud, gmail, outlook, fastmail, yahoo, zoho, proton, generic] }
     TLSMode: { type: string, enum: [implicit, starttls] }
     AccountStatus:
       type: string
-      enum: [new, live, reconnecting, auth_failed, cert_changed, error, paused]
-      description: '`auth_failed`, `cert_changed` and `error` have stopped and wait for the user (fix the password, or accept the certificate the server now presents, then reconnect); `paused` was set by the user'
+      enum: [new, live, reconnecting, auth_failed, reconnect_needed, cert_changed, error, paused]
+      description: '`auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again, for a one-click mailbox whose sign-in was revoked or refused; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`'
     AccountInput:
       type: object
       required: [preset, username, password]
@@ -1696,7 +1699,7 @@ components:
         idle: { type: boolean, description: False means new mail is checked for once a minute }
     Account:
       type: object
-      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, last_mail_at, capabilities, can_move, folder_count, created_at, shared, mine, cert_fingerprint]
+      required: [id, label, preset, host, port, tls_mode, username, watch_folder, status, last_error, last_event_at, last_mail_at, capabilities, can_move, folder_count, created_at, shared, mine, cert_fingerprint, one_click]
       properties:
         id: { type: integer, format: int64 }
         label: { type: string }
@@ -1717,6 +1720,7 @@ components:
         shared: { type: boolean, description: Everyone in the team can see this mailbox and act on its mail; false means only the person who added it }
         mine: { type: boolean, description: The signed-in user added this mailbox; only they can edit, pause, delete or share it }
         cert_fingerprint: { type: string, description: 'The server certificate accepted for this mailbox, as `ServerCert.fingerprint`; empty when the system''s trust store decides' }
+        one_click: { type: boolean, description: 'The mailbox signs in with one-click sign-in, through the module that connected it: it has no password, its server is the provider''s, and PATCH refuses `password`, `host`, `port`, `tls_mode` and `cert_fingerprint` for it' }
     AccountEnvelope:
       type: object
       required: [account]
@@ -2532,7 +2536,7 @@ components:
             draft_replies: { type: boolean }
             billing: { type: boolean }
             unsubscribe: { type: boolean }
-            oauth_providers: { type: boolean }
+            oauth_providers: { type: boolean, description: 'A module of this build connects mailboxes with one-click sign-in; GET /api/presets gives `one_click_url` for the providers it signs in to' }
             suggest: { type: boolean, description: 'Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works' }
     SettingsPatch:
       type: object
