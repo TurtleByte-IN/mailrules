@@ -199,6 +199,14 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		defer close(watching)
 		watcher.Run(ctx, accountPollInterval)
 	}()
+	// The removal job removes the data of people a sign-in module forgot, once their wait
+	// is over: now, and then every hour. It stops their mailboxes first.
+	removals := make(chan struct{})
+	defer func() { stopAll(); <-removals }()
+	go func() {
+		defer close(removals)
+		worker.Removal{Store: st, Stop: supervisors.Stop, Start: watcher.Start, Hub: hub}.Run(ctx)
+	}()
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
 		return err

@@ -105,9 +105,10 @@ func (s *Store) Tenants(ctx context.Context) ([]int64, error) {
 	return out, nil
 }
 
-// Users lists every user, oldest first: who the summary email is checked for.
+// Users lists every user, oldest first, but those forgotten (ForgetIdentity) whose removal
+// waits: who the summary email is checked for.
 func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users WHERE id NOT IN (SELECT user_id FROM forgotten) ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}

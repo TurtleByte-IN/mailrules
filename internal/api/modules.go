@@ -176,6 +176,12 @@ func (h host) EndSessions(ctx context.Context, provider, subject string) error {
 	return h.s.store.EndIdentitySessions(ctx, provider, subject)
 }
 
+// ForgetIdentity ends the identity's sessions, frees its email and schedules the removal
+// of its data (ext.Host).
+func (h host) ForgetIdentity(ctx context.Context, provider, subject string) error {
+	return h.s.store.ForgetIdentity(ctx, provider, subject, h.s.now().Unix())
+}
+
 // SignInFailed sends the browser to the sign-in screen with code (ext.Host).
 func (h host) SignInFailed(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/?signin_error="+url.QueryEscape(code), http.StatusSeeOther)
