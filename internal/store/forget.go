@@ -114,8 +114,6 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	// The first statement writes, so the transaction holds the write lock from the start: one
-	// that read first could not write after another connection had (SQLITE_BUSY_SNAPSHOT).
 	const user = `SELECT u.id FROM identities i JOIN users u ON u.id = i.user_id
 		WHERE i.provider = ? AND i.subject = ? AND u.tenant_id != ?`
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id IN (`+user+`)`, provider, subject, SelfHostTenant); err != nil {
@@ -213,7 +211,7 @@ func (s *Store) DueForRemoval(ctx context.Context, now int64) ([]Forgotten, erro
 // mailbox of their tenant when they are its only member, else the ones they own, shared or
 // not. Their supervisors are stopped before RemoveForgotten runs.
 func (s *Store) RemovalAccounts(ctx context.Context, userID int64) ([]int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("list removal accounts: %w", err)
 	}
@@ -294,8 +292,8 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	// Deleting the forgotten row first takes the write lock at once (see ForgetIdentity) and
-	// says whether the removal is still due; deleting the user would cascade to it anyway.
+	// Deleting the forgotten row first says whether the removal is still due; deleting the
+	// user would cascade to it anyway.
 	res, err := tx.ExecContext(ctx, `DELETE FROM forgotten WHERE user_id = ? AND remove_at <= ?`, userID, now)
 	if err != nil {
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)

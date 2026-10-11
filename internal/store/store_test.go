@@ -114,6 +114,28 @@ func TestOpenInAnyDataDir(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, "Mail ")); err == nil {
 				t.Error("a database was made in a cut-short path")
 			}
+			// The connection settings survive the escaping: a transaction holds the write lock
+			// from its BEGIN (_txlock=immediate), so another connection cannot take it.
+			tx, err := db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			other, err := db.Conn(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = other.Close() }()
+			if _, err := other.ExecContext(t.Context(), "PRAGMA busy_timeout = 0"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := other.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err == nil {
+				_, _ = other.ExecContext(t.Context(), "ROLLBACK")
+				t.Error("a transaction began without the write lock: _txlock=immediate was lost")
+			}
+			if _, err := other.ExecContext(t.Context(), "PRAGMA busy_timeout = 5000"); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }

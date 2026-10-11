@@ -19,7 +19,11 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Open opens (creating if needed) the database in dataDir, in WAL mode.
+// Open opens (creating if needed) the database in dataDir, in WAL mode. Every transaction
+// not begun read-only begins IMMEDIATE, holding the write lock from its first statement:
+// a deferred one that read first could not write once another connection had committed
+// meanwhile (SQLITE_BUSY_SNAPSHOT), which mailbox supervisors do all the time. Begin one
+// that only reads with sql.TxOptions{ReadOnly: true}, so that it waits for no writer.
 func Open(ctx context.Context, dataDir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -52,7 +56,7 @@ func dataSource(path string) (string, error) {
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p // a Windows drive: file:///C:/...
 	}
-	u := url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"}
+	u := url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate"}
 	return u.String(), nil
 }
 
