@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -60,13 +61,17 @@ func (l *mailLogins) login(ctx context.Context, provider, secret string) (ext.Ma
 }
 
 // stored is imap.Config.Token for a stored mailbox: each call reads its secret, asks the
-// module, and stores a rotated secret before the token is used.
+// module, and stores a rotated secret before the token is used. A secret that was deleted
+// (store.ErrNoSecret) needs the person to sign in to the provider again (mail.ErrReconnect).
 func (l *mailLogins) stored(acct store.Account) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		mu := l.lock(acct.ID)
 		mu.Lock()
 		defer mu.Unlock()
 		secret, err := l.st.AccountSecret(ctx, l.master, acct.ID)
+		if errors.Is(err, store.ErrNoSecret) {
+			return "", fmt.Errorf("%w: %w", mail.ErrReconnect, err)
+		}
 		if err != nil {
 			return "", err
 		}

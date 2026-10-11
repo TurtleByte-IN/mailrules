@@ -316,6 +316,10 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if a.SecretGone {
+		secretGone(w, a)
+		return
+	}
 	var secret string
 	if !a.OAuth { // a one-click mailbox's secret goes to the module that signs in to it, nowhere else
 		var err error
@@ -331,6 +335,19 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username": c.account.Username, "folders": foldersJSON(c.folders), "can_move": c.caps.CanMove(), "idle": c.caps.Idle,
 	})
+}
+
+// secretGone answers for a mailbox whose secret was deleted (its owner's sign-in was
+// deleted, then they signed in again): nothing can log in to it until they enter a new
+// password, or, for a one-click mailbox, sign in to the provider again.
+func secretGone(w http.ResponseWriter, a store.Account) {
+	if a.OAuth {
+		writeError(w, http.StatusUnprocessableEntity, "reconnect_needed",
+			"This mailbox's sign-in was deleted with your previous MailRules sign-in. Sign in to the provider again.", "")
+		return
+	}
+	writeError(w, http.StatusUnprocessableEntity, "auth_failed",
+		"This mailbox's password was deleted with your previous sign-in. Enter a new app password.", "password")
 }
 
 func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
@@ -497,12 +514,18 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case paused:
 		a.Status = worker.StatusPaused
+	case a.SecretGone && a.OAuth:
+		a.Status = worker.StatusReconnectNeeded // nothing starts it until the person signs in to the provider again
+	case a.SecretGone && !sent["password"]:
+		a.Status = worker.StatusAuthFailed // nothing starts it until a new password comes
 	case wasPaused, certChanged:
 		a.Status = "new" // until the supervisor reports
 	}
 	err := s.store.UpdateAccount(ctx, a)
 	if err == nil && sent["password"] {
-		err = s.store.SetAccountSecret(ctx, s.Master, a.ID, password)
+		if err = s.store.SetAccountSecret(ctx, s.Master, a.ID, password); err == nil {
+			a.SecretGone = false
+		}
 	}
 	if err == nil && certChanged {
 		err = s.store.SetAccountCert(ctx, a.ID, a.CertFingerprint)
@@ -539,7 +562,12 @@ func (s *server) tryMove(w http.ResponseWriter, r *http.Request, a store.Account
 		}
 	}
 	if password == "" {
-		if password, err = s.store.AccountSecret(r.Context(), s.Master, a.ID); err != nil {
+		password, err = s.store.AccountSecret(r.Context(), s.Master, a.ID)
+		if errors.Is(err, store.ErrNoSecret) {
+			secretGone(w, a)
+			return false
+		}
+		if err != nil {
 			internalError(w, r, err)
 			return false
 		}
@@ -581,6 +609,10 @@ func (s *server) handleAccountReconnect(w http.ResponseWriter, r *http.Request) 
 	}
 	if a.Status == worker.StatusPaused {
 		writeError(w, http.StatusConflict, "account_paused", "This account is paused. Resume it first.", "")
+		return
+	}
+	if a.SecretGone {
+		secretGone(w, a)
 		return
 	}
 	s.StartAccount(a)

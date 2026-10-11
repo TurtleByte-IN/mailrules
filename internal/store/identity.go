@@ -24,7 +24,8 @@ type Identity struct {
 // SignInIdentity finds the user an identity belongs to, or makes one, in one transaction.
 // The tenant is the one of (Provider, Tenant), made when there is none yet. A new identity
 // gets a user in that tenant who cannot sign in with a password; a known one keeps its user,
-// whose email becomes id.Email. It fails, changing nothing, with ErrTenantMismatch when a
+// whose email becomes id.Email, and a known one that was forgotten (ForgetIdentity) has its
+// removal called off. It fails, changing nothing, with ErrTenantMismatch when a
 // known identity's user is in another tenant, and with ErrEmailInUse when another user has
 // the email.
 func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (User, error) {
@@ -64,6 +65,10 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 			return User{}, fmt.Errorf("sign in identity: update email: %w", err)
 		}
 		u.Email = id.Email
+		// A forgotten identity signing in again keeps its data: its removal is called off.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM forgotten WHERE user_id = ?`, u.ID); err != nil {
+			return User{}, fmt.Errorf("sign in identity: cancel removal: %w", err)
+		}
 	} else {
 		if tenantID == 0 {
 			res, err := tx.ExecContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?)`, id.Provider, id.Tenant, now)

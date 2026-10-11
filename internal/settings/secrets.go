@@ -30,6 +30,9 @@ func CheckSecrets(ctx context.Context, st *store.Store, master []byte) (SecretsC
 		return c, fmt.Errorf("check stored secrets: %w", err)
 	}
 	for _, a := range accounts {
+		if a.SecretGone { // deleted, not stored
+			continue
+		}
 		c.Total++
 		if master == nil {
 			c.Unreadable++

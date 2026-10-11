@@ -209,6 +209,14 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		defer close(watching)
 		watcher.Run(ctx, accountPollInterval)
 	}()
+	// The removal job removes the data of people a sign-in module forgot, once their wait
+	// is over: now, and then every hour. It stops their mailboxes first.
+	removals := make(chan struct{})
+	defer func() { stopAll(); <-removals }()
+	go func() {
+		defer close(removals)
+		worker.Removal{Store: st, Stop: supervisors.Stop, Start: watcher.Start, Hub: hub}.Run(ctx)
+	}()
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
 		return err
@@ -314,12 +322,17 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 
 // openAccount returns how a supervisor connects to an account. The password is decrypted
 // for each connection and kept nowhere else; a one-click mailbox signs in through logins.
+// A mailbox whose secret was deleted (store.ErrNoSecret) fails as a refused sign-in: the
+// supervisor stops on auth_failed (reconnect_needed for a one-click mailbox, in logins).
 func openAccount(logins *mailLogins, acct store.Account) func(context.Context) (mail.Mailbox, error) {
 	return func(ctx context.Context) (mail.Mailbox, error) {
 		if acct.OAuth {
 			return logins.open(ctx, acct, nil)
 		}
 		password, err := logins.st.AccountSecret(ctx, logins.master, acct.ID)
+		if errors.Is(err, store.ErrNoSecret) {
+			return nil, fmt.Errorf("%w: %w", mail.ErrAuth, err)
+		}
 		if err != nil {
 			return nil, err
 		}

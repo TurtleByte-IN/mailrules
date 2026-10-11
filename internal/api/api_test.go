@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +52,7 @@ type env struct {
 	doc        map[string]any
 	summary    *summary.Service   // the summary email, sending to mail
 	mail       *mailertest.Sender // what the summary email sent
+	logins     *atomic.Int64      // how many times a supervisor logged in to a mailbox
 }
 
 // Live, RouterFor and Composer make env the daemon's source of models (ModelSource), with
@@ -102,7 +104,8 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 		t.Fatal(err)
 	}
 	e := &env{t: t, db: db, st: store.New(db), ck: &clock{t: time.Unix(1_800_000_000, 0)}, hub: events.NewHub(),
-		mb: mailtest.New(1), boxes: map[string]*mailtest.Mailbox{}, mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t)}
+		mb: mailtest.New(1), boxes: map[string]*mailtest.Mailbox{}, mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t),
+		logins: &atomic.Int64{}}
 	for name, role := range map[string]string{"Trash": mail.RoleTrash, "Archive": mail.RoleArchive, "Sent": mail.RoleSent} {
 		e.mb.AddFolder(name, role)
 	}
@@ -117,7 +120,10 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	start := func(acct store.Account) {
 		e.mgr.Start(runCtx, &worker.Supervisor{
 			Account: acct, Store: e.st, Hub: e.hub,
-			Open:       func(context.Context) (mail.Mailbox, error) { return e.box(acct), nil },
+			Open: func(context.Context) (mail.Mailbox, error) {
+				e.logins.Add(1)
+				return e.box(acct), nil
+			},
 			Pipeline:   pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now, Live: e.Live, Override: e.RouterFor},
 			BackoffMin: time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 		})

@@ -41,9 +41,14 @@ type running struct {
 }
 
 // Start runs a supervisor until ctx is done or Stop is called for its account. An
-// account that is already running is stopped first.
+// account that is already running is stopped first. An account whose secret was deleted
+// (store.Account.SecretGone) is only stopped: it cannot log in until its owner enters a
+// new password, which starts it again.
 func (m *Manager) Start(ctx context.Context, s *Supervisor) {
 	m.Stop(s.Account.ID)
+	if s.Account.SecretGone {
+		return
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	r := &running{sup: s, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	m.mu.Lock()

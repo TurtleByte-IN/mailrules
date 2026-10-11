@@ -39,16 +39,20 @@ type Account struct {
 	// OAuth marks a mailbox connected with one-click sign-in: the module that signs in to its
 	// preset turns the stored secret (a refresh token) into an access token before every login.
 	OAuth bool
+	// SecretGone: the mailbox's password or token was deleted (ForgetIdentity), so nothing
+	// can log in to it and no supervisor is started for it until its owner enters a new one.
+	SecretGone bool
 }
 
 const accountCols = `a.id, a.user_id, a.tenant_id, a.shared, a.label, a.preset, a.host, a.port, a.tls_mode, a.username, a.watch_folder, a.status,
-	COALESCE(a.last_error, ''), COALESCE(a.last_event_at, 0), COALESCE(a.capabilities, '[]'), a.created_at, a.cert_fingerprint, a.oauth`
+	COALESCE(a.last_error, ''), COALESCE(a.last_event_at, 0), COALESCE(a.capabilities, '[]'), a.created_at, a.cert_fingerprint, a.oauth,
+	length(a.secret_enc) = 0`
 
 func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var a Account
 	var caps string
 	if err := row.Scan(&a.ID, &a.UserID, &a.TenantID, &a.Shared, &a.Label, &a.Preset, &a.Host, &a.Port, &a.TLSMode, &a.Username,
-		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt, &a.CertFingerprint, &a.OAuth); err != nil {
+		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt, &a.CertFingerprint, &a.OAuth, &a.SecretGone); err != nil {
 		return Account{}, err
 	}
 	if err := json.Unmarshal([]byte(caps), &a.Capabilities); err != nil {
@@ -222,8 +226,12 @@ func (s *Store) SetAccountShared(ctx context.Context, id int64, shared bool) err
 	return nil
 }
 
+// ErrNoSecret is the answer for a mailbox whose secret was deleted (Account.SecretGone).
+var ErrNoSecret = errors.New("the mailbox's password was deleted; enter it again")
+
 // AccountSecret decrypts an account's app password or token. It returns crypto.ErrDecrypt
-// when the master key is not the one the secret was sealed under.
+// when the master key is not the one the secret was sealed under, and ErrNoSecret when the
+// secret was deleted.
 func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (string, error) {
 	var secretEnc, dekEnc []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secret_enc, dek_enc FROM accounts WHERE id = ?`, id).Scan(&secretEnc, &dekEnc)
@@ -232,6 +240,9 @@ func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (str
 	}
 	if err != nil {
 		return "", fmt.Errorf("get account secret: %w", err)
+	}
+	if len(secretEnc) == 0 {
+		return "", ErrNoSecret
 	}
 	secret, err := crypto.Open(master, id, secretEnc, dekEnc)
 	if err != nil {

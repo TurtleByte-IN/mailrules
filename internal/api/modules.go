@@ -181,6 +181,35 @@ func (h host) EndSessions(ctx context.Context, provider, subject string) error {
 	return h.s.store.EndIdentitySessions(ctx, provider, subject)
 }
 
+// ForgetIdentity ends the identity's sessions, frees its email, deletes its secrets and
+// schedules the removal of the rest of its data (ext.Host). The person's mailboxes are
+// stopped first, so nothing is logged in to them when their secrets go, and again after,
+// for one started meanwhile (it could no longer log in; this ends a session it has).
+func (h host) ForgetIdentity(ctx context.Context, provider, subject string) error {
+	before, err := h.s.store.IdentityMailboxes(ctx, provider, subject)
+	if err != nil {
+		return err
+	}
+	for _, id := range before {
+		h.s.StopAccount(id)
+	}
+	f, err := h.s.store.ForgetIdentity(ctx, provider, subject, h.s.now().Unix())
+	if err != nil {
+		return err
+	}
+	for _, id := range f.Accounts {
+		h.s.StopAccount(id)
+		if a, err := h.s.store.Account(ctx, id); err == nil {
+			h.s.Hub.Publish(f.TenantID, id, events.AccountStatus, a)
+		}
+	}
+	if f.UserID != 0 {
+		slog.InfoContext(ctx, "forgot a person the sign-in service deleted", "user_id", f.UserID, "tenant_id", f.TenantID,
+			"mailbox_secrets_deleted", len(f.Accounts), "model_keys_deleted", f.Keys)
+	}
+	return nil
+}
+
 // SignInFailed sends the browser to the sign-in screen with code (ext.Host).
 func (h host) SignInFailed(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/?signin_error="+url.QueryEscape(code), http.StatusSeeOther)
