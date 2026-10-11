@@ -24,6 +24,7 @@ type mailLogins struct {
 	master    []byte
 	signIn    *ext.MailboxSignIn // nil: the build connects no mailbox this way
 	tlsConfig *tls.Config        // nil outside tests: verify against the system roots
+	cloud     bool               // MAILRULES_MODE=cloud: a server the person named is reached only on the public internet (publicDial)
 
 	mu    sync.Mutex
 	locks map[int64]*sync.Mutex // per mailbox: its connections log in one at a time
@@ -115,7 +116,7 @@ func (l *mailLogins) open(ctx context.Context, acct store.Account, secret *strin
 	}
 	preset, _ := presets.Get(acct.Preset)
 	mb, err := imap.Open(ctx, imap.Config{
-		AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+		AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode, Dial: publicDial(l.cloud, acct),
 		Username: acct.Username, Token: token, Preset: preset, TLSConfig: l.tlsConfig, CertFingerprint: acct.CertFingerprint,
 	})
 	if err != nil {

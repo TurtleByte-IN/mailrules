@@ -58,6 +58,10 @@ type Config struct {
 	// mail.ErrReconnect too: the only fix is signing in to the provider again.
 	Token func(ctx context.Context) (string, error)
 
+	// Dial makes the TCP connection to Host:Port, before TLS; nil is a plain net.Dialer.
+	// The hosted build passes one that connects only to public addresses (publicnet).
+	Dial func(ctx context.Context, network, address string) (net.Conn, error)
+
 	// Timers. Zero means the default; tests shrink them to milliseconds.
 	IdleRestart     time.Duration // leave IDLE and check the connection (25 min)
 	PollInterval    time.Duration // search for new mail when the server lacks IDLE (60 s)
@@ -135,26 +139,31 @@ func (m *Mailbox) dial(ctx context.Context, handler *imapclient.UnilateralDataHa
 	tlsCfg.InsecureSkipVerify = true // #nosec G402 -- verifyCert checks the chain and the name, or the pin
 	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error { return verifyCert(cs, roots, name, pin) }
 	opts := &imapclient.Options{TLSConfig: tlsCfg, UnilateralDataHandler: handler}
-	nd := &net.Dialer{Timeout: 30 * time.Second}
+	if m.cfg.TLSMode != presets.TLSImplicit && m.cfg.TLSMode != presets.TLSStartTLS {
+		return nil, fmt.Errorf("tls mode %q must be %s or %s", m.cfg.TLSMode, presets.TLSImplicit, presets.TLSStartTLS)
+	}
+	connect := m.cfg.Dial
+	if connect == nil {
+		connect = (&net.Dialer{}).DialContext
+	}
+	// The connection and, with implicit TLS, its handshake get 30 seconds.
+	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	conn, err := connect(dctx, "tcp", addr)
+	if err != nil {
+		return nil, classify("connect to "+addr, err)
+	}
 
 	var c *imapclient.Client
-	switch m.cfg.TLSMode {
-	case presets.TLSImplicit:
-		conn, err := (&tls.Dialer{NetDialer: nd, Config: tlsCfg}).DialContext(ctx, "tcp", addr)
-		if err != nil {
+	if m.cfg.TLSMode == presets.TLSImplicit {
+		tc := tls.Client(conn, tlsCfg)
+		if err := tc.HandshakeContext(dctx); err != nil {
+			_ = conn.Close()
 			return nil, classify("connect to "+addr, err)
 		}
-		c = imapclient.New(conn, opts)
-	case presets.TLSStartTLS:
-		conn, err := nd.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			return nil, classify("connect to "+addr, err)
-		}
-		if c, err = imapclient.NewStartTLS(conn, opts); err != nil {
-			return nil, classify("starttls with "+addr, err)
-		}
-	default:
-		return nil, fmt.Errorf("tls mode %q must be %s or %s", m.cfg.TLSMode, presets.TLSImplicit, presets.TLSStartTLS)
+		c = imapclient.New(tc, opts)
+	} else if c, err = imapclient.NewStartTLS(conn, opts); err != nil {
+		return nil, classify("starttls with "+addr, err)
 	}
 	// go-imap commands take no context; closing the connection is how a cancel lands.
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
@@ -270,7 +279,7 @@ func kindOf(err error) error {
 		return mail.ErrTLS
 	}
 	for _, s := range []error{mail.ErrAuth, mail.ErrReconnect, mail.ErrTLS, mail.ErrConnection, mail.ErrThrottled,
-		mail.ErrUnsupported, mail.ErrNoFolder, mail.ErrNotFound, context.Canceled, context.DeadlineExceeded} {
+		mail.ErrUnsupported, mail.ErrNoFolder, mail.ErrNotFound, mail.ErrNotPublic, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, s) {
 			return nil // already classified
 		}

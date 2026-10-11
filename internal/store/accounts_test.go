@@ -3,10 +3,13 @@ package store
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 )
@@ -96,6 +99,95 @@ func TestAccountsCRUD(t *testing.T) {
 	}
 	if _, err := s.Account(ctx, b.ID); err != nil {
 		t.Errorf("deleting one account removed another: %v", err)
+	}
+}
+
+// A mailbox a module added keeps its mark through edits that leave its server alone, and
+// loses it when it moves: the new server is the person's.
+func TestAccountModuleMark(t *testing.T) {
+	s, _ := open(t)
+	ctx := t.Context()
+	person := newAccount(t, s, "me@icloud.com", "pw")
+	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: person.UserID, Label: "Bridge", Preset: "proton", Host: "127.0.0.1", Port: 1143,
+		TLSMode: "starttls", Username: "me@proton.me", Module: true}, "bridge-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Account(ctx, person.ID); got.Module {
+		t.Errorf("a mailbox the person added is marked: %+v", got)
+	}
+	for _, tc := range []struct {
+		name   string
+		edit   func(*Account)
+		module bool
+	}{
+		{"a new label keeps it", func(a *Account) { a.Label = "Proton" }, true},
+		{"a new folder and status keep it", func(a *Account) { a.WatchFolder, a.Status = "Work", "live" }, true},
+		{"a new port clears it", func(a *Account) { a.Port = 1144 }, false},
+		{"moving back does not restore it", func(a *Account) { a.Port = 1143 }, false},
+	} {
+		got, _ := s.Account(ctx, a.ID)
+		tc.edit(&got)
+		if err := s.UpdateAccount(ctx, got); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ = s.Account(ctx, a.ID); got.Module != tc.module {
+			t.Errorf("%s: module = %v", tc.name, got.Module)
+		}
+	}
+	for _, edit := range []func(*Account){func(a *Account) { a.Host = "10.0.0.2" }, func(a *Account) { a.TLSMode = "implicit" }} {
+		b, err := s.CreateAccount(ctx, testMaster, Account{UserID: person.UserID, Label: "B", Preset: "proton", Host: "127.0.0.1", Port: 1143,
+			TLSMode: "starttls", Username: "b@proton.me", Module: true}, "pw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		edit(&b)
+		if err := s.UpdateAccount(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := s.Account(ctx, b.ID); got.Module {
+			t.Errorf("a move to %s:%d %s kept the mark", got.Host, got.Port, got.TLSMode)
+		}
+		if _, err := s.DeleteAccount(ctx, b.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Every one-click mailbox there was before the module mark existed was added by a module.
+func TestMigrationModuleMark(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 5)
+	user := legacyUser(t, db)
+	password := legacyAccount(t, db, user)
+	res, err := db.ExecContext(ctx, `INSERT INTO accounts (user_id, label, preset, host, port, tls_mode, username, secret_enc, dek_enc, watch_folder, status, created_at)
+		 VALUES (?, 'Work', 'gmail', 'imap.gmail.com', 993, 'implicit', 'me@gmail.com', x'', x'', 'INBOX', 'new', 1)`, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneClick, _ := res.LastInsertId()
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 15); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE accounts SET oauth = 1 WHERE id = ?`, oneClick); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s := New(db)
+	for id, want := range map[int64]bool{password: false, oneClick: true} {
+		if a, err := s.Account(ctx, id); err != nil || a.Module != want {
+			t.Errorf("account %d: module = %v, %v; want %v", id, a.Module, err, want)
+		}
 	}
 }
 

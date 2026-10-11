@@ -1,6 +1,6 @@
 ---
 title: Security
-description: MailRules' safe defaults, how sign-in works, how to put it behind a reverse proxy with TLS, how mail server certificates are checked, what is never logged, and how to report a vulnerability.
+description: MailRules' safe defaults, how sign-in works, how to put it behind a reverse proxy with TLS, how mail server certificates are checked, which mail servers the hosted version connects to, what is never logged, and how to report a vulnerability.
 order: 90
 ---
 
@@ -128,6 +128,14 @@ MailRules only talks to mail servers over TLS (implicit, or STARTTLS), and check
 - **With an accepted certificate**, the fingerprint is the whole check: the server must present exactly that certificate. The system's roots, the host name and the dates are not checked, because a certificate a server made for itself may pass none of them (Bridge's need not even be made out to `127.0.0.1`). Someone who could put another server in its place cannot present that certificate without its private key, so the check still keeps them out.
 - **If the server presents any other certificate**, MailRules refuses it, does not send the password, stops retrying and shows **Certificate changed** until you check the new one and accept it. A server replaced on purpose, such as Bridge after a reinstall, needs this once; a change you did not expect is a reason to stop and find out why.
 - Accept a certificate only if you know it is your server's. For Bridge, it is the one presented on `127.0.0.1` while Bridge runs on your own machine.
+
+## Mail servers in the hosted version
+
+The hosted version of MailRules (`MAILRULES_MODE=cloud`) connects only to mail servers on the public internet. A server you name for a mailbox, in the add-mailbox wizard or in Edit, is refused when it is, or its name resolves to, an address that is not: the machine's own (`127.0.0.1`, `::1`), a private network (`10.x`, `172.16.x` to `172.31.x`, `192.168.x`, IPv6 `fc00::/7`), link-local (`169.254.x`, `fe80::/10`), carrier-grade NAT (`100.64.x` to `100.127.x`), unspecified, multicast, broadcast and other ranges reserved for special uses, in their IPv6 forms too. The wizard and Edit then say beside the Host field that the hosted version can only connect to mail servers on the public internet. The answer is the same whether anything runs at that address or not, because nothing is dialed.
+
+Every connection the hosted version makes to such a server checks the address it is about to connect to, not only the name, so a name that changes to a private address after it was tested is refused too. A mailbox in that state stops with that sentence instead of connecting. Mailboxes the hosted version connects for you itself, such as a one-click Gmail or Outlook mailbox, are on servers it chose and are not checked.
+
+A MailRules you run yourself connects to any server you name, your own network included.
 
 ## Reporting a vulnerability
 

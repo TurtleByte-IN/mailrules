@@ -39,6 +39,10 @@ type Account struct {
 	// OAuth marks a mailbox connected with one-click sign-in: the module that signs in to its
 	// preset turns the stored secret (a refresh token) into an access token before every login.
 	OAuth bool
+	// Module marks a mailbox a module added (ext.Host.AddMailbox): its server is the
+	// module's, so the hosted build connects to it even when it is not on the public
+	// internet (publicnet). Moving the mailbox to another server clears it.
+	Module bool
 	// SecretGone: the mailbox's password or token was deleted (ForgetIdentity), so nothing
 	// can log in to it and no supervisor is started for it until its owner enters a new one.
 	SecretGone bool
@@ -46,13 +50,13 @@ type Account struct {
 
 const accountCols = `a.id, a.user_id, a.tenant_id, a.shared, a.label, a.preset, a.host, a.port, a.tls_mode, a.username, a.watch_folder, a.status,
 	COALESCE(a.last_error, ''), COALESCE(a.last_event_at, 0), COALESCE(a.capabilities, '[]'), a.created_at, a.cert_fingerprint, a.oauth,
-	length(a.secret_enc) = 0`
+	a.module, length(a.secret_enc) = 0`
 
 func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var a Account
 	var caps string
 	if err := row.Scan(&a.ID, &a.UserID, &a.TenantID, &a.Shared, &a.Label, &a.Preset, &a.Host, &a.Port, &a.TLSMode, &a.Username,
-		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt, &a.CertFingerprint, &a.OAuth, &a.SecretGone); err != nil {
+		&a.WatchFolder, &a.Status, &a.LastError, &a.LastEventAt, &caps, &a.CreatedAt, &a.CertFingerprint, &a.OAuth, &a.Module, &a.SecretGone); err != nil {
 		return Account{}, err
 	}
 	if err := json.Unmarshal([]byte(caps), &a.Capabilities); err != nil {
@@ -122,11 +126,11 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 	a.Shared = NewAccountShared
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
-		                       watch_folder, status, capabilities, created_at, cert_fingerprint, oauth)
-		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ?, ?, ? FROM users WHERE id = ?
+		                       watch_folder, status, capabilities, created_at, cert_fingerprint, oauth, module)
+		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ?, ?, ?, ? FROM users WHERE id = ?
 		 RETURNING id, tenant_id`,
 		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt,
-		a.CertFingerprint, a.OAuth, a.UserID).
+		a.CertFingerprint, a.OAuth, a.Module, a.UserID).
 		Scan(&a.ID, &a.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, fmt.Errorf("create account: user %d: %w", a.UserID, ErrNotFound)
@@ -466,10 +470,13 @@ func (s *Store) IsContact(ctx context.Context, accountID int64, address string) 
 }
 
 // UpdateAccount stores an account's label, watch folder, server (host, port and TLS mode)
-// and status (the fields the user edits).
+// and status (the fields the user edits). A new server clears Module: the server is then
+// the person's, not the module's.
 func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?, host = ?, port = ?, tls_mode = ?, status = ? WHERE id = ?`,
-		a.Label, a.WatchFolder, a.Host, a.Port, a.TLSMode, a.Status, a.ID)
+	// The right-hand sides read the row as it was, so module stays only on the same server.
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?,
+		module = (module AND host = ? AND port = ? AND tls_mode = ?), host = ?, port = ?, tls_mode = ?, status = ? WHERE id = ?`,
+		a.Label, a.WatchFolder, a.Host, a.Port, a.TLSMode, a.Host, a.Port, a.TLSMode, a.Status, a.ID)
 	if err != nil {
 		return fmt.Errorf("update account: %w", err)
 	}
