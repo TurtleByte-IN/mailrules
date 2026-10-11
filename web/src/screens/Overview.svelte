@@ -2,14 +2,15 @@
   import { link } from 'svelte-spa-router';
   import type { Account } from '../lib/api/accounts';
   import { clock, money } from '../lib/format';
-  import { accounts, loadPresets, reconnect, reconnectURL, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { accounts, loadPresets, reconnect, reconnectsByForm, reconnectURL, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { kind, outcome } from '../lib/state/activity.svelte';
   import { callsLine, health, healthLine, load, overview, split } from '../lib/state/overview.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import LoadError from './activity/LoadError.svelte';
 
   load();
-  // A one-click mailbox's Reconnect goes to its provider's sign-in, which the presets name.
+  // A one-click mailbox's Reconnect goes to its provider's sign-in, and one a module's sign-in form connected to
+  // that form; the presets name both.
   if (!accounts.presets.length) loadPresets();
 
   const stats = $derived(overview.stats);
@@ -106,6 +107,8 @@
           <span class="min-w-0 flex-[1_1_200px] text-[12.5px] text-secondary">{h.detail}</span>
           {#if h.action === 'sign-in' && reconnectURL(a)}
             <a href={reconnectURL(a)} class="btn min-h-9 px-3 text-[13px] no-underline" aria-label="Reconnect {a.label}">{h.label}</a>
+          {:else if h.action === 'sign-in' && a.mine && reconnectsByForm(a)}
+            <a href="/accounts?reconnect={a.id}" use:link class="btn min-h-9 px-3 text-[13px] no-underline" aria-label="Reconnect {a.label}">{h.label}</a>
           {:else if h.action === 'go' || h.action === 'sign-in'}
             <a href="/accounts" use:link class="btn min-h-9 px-3 text-[13px] no-underline">{h.label}</a>
           {:else if h.action === 'wait'}

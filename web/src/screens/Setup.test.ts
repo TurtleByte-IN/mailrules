@@ -181,7 +181,7 @@ it("sends Gmail's one-click tile to the provider's sign-in, noting that the answ
 
 it('goes on at Rules for the mailbox a one-click sign-in from setup connected, then to Done', async () => {
   accounts.list = [{ id: 7, label: 'jo@gmail.com', preset: 'gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', username: 'jo@gmail.com', watch_folder: 'INBOX',
-    status: 'live', last_error: '', last_event_at: null, last_mail_at: null, capabilities: [], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: true }];
+    status: 'live', last_error: '', last_event_at: null, last_mail_at: null, capabilities: [], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: true, module: true }];
   vi.mocked(addTemplatesByName).mockResolvedValue(3);
   location.hash = '#/setup?added=7';
   await vi.waitFor(() => expect(router.querystring).toBe('added=7'));

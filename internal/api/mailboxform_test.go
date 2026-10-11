@@ -13,6 +13,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
 // What the fake Bridge of formModule knows. Each word is distinct, so a test can look for
@@ -22,13 +23,14 @@ const (
 	formCode            = "424242"                 // the two-factor code
 	formMailboxPassword = "proton-mailbox-pw-77"   // #nosec G101 -- a test value
 	formBridgePassword  = "bridge-made-imap-pw-55" // #nosec G101 -- what Bridge gives mail apps
+	formBridgePassword2 = "bridge-made-imap-pw-66" // #nosec G101 -- what Bridge gives after signing in again
 	formFingerprint     = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
 )
 
 // formModule answers a Proton sign-in form the way the cloud module does with the
 // operator's Bridge: free@ is on the free plan, which Bridge refuses; two@ has two-factor
 // sign-in and a separate mailbox password; every other address signs in with the password
-// alone.
+// alone. Posted with account_id (Reconnect), it gives that mailbox Bridge's new password.
 func formModule() ext.Module {
 	return ext.Module{
 		Name: "proton_cloud",
@@ -40,6 +42,14 @@ func formModule() ext.Module {
 				}
 				answer := func(s ext.MailboxFormStep) { h.WriteJSON(w, http.StatusOK, s) }
 				add := func(address string) {
+					if in.AccountID != 0 {
+						if err := h.ReconnectMailbox(r.Context(), in.AccountID, address, formBridgePassword2); err != nil {
+							answer(ext.MailboxFormStep{Step: ext.MailboxStepSignIn, Message: "failed: " + err.Error()})
+							return
+						}
+						answer(ext.MailboxFormStep{AccountID: in.AccountID})
+						return
+					}
 					id, err := h.AddMailbox(r.Context(), ext.NewMailbox{Provider: "proton", Address: address, Secret: formBridgePassword,
 						Password: true, TLSMode: "starttls", CertFingerprint: formFingerprint})
 					switch {
@@ -231,6 +241,134 @@ func TestMailboxForm(t *testing.T) {
 		if strings.Contains(fmt.Sprint(view), secret) {
 			t.Errorf("the account view holds %q", secret)
 		}
+	}
+}
+
+// A mailbox a module's form added logs in with Bridge's password, which the person never
+// saw: Edit offers neither it nor the server, a refused login asks them to reconnect, and
+// Reconnect opens the form again with the mailbox's id. The module then gives that mailbox,
+// and only that one of its owner, as its own address, the new password, which the daemon
+// tries, stores encrypted in place of the old one, and starts the same mailbox with.
+func TestReconnectFormMailbox(t *testing.T) {
+	var passwords []string // what each IMAP login was given
+	var e *env
+	e = newEnvWith(t, func(o *Options) {
+		o.Connect = func(_ context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
+			e.dialed, passwords = acct, append(passwords, password)
+			if e.connectErr != nil {
+				return nil, "", e.connectErr
+			}
+			return e.box(acct), acct.Username, nil
+		}
+	}, formModule(), signInModule())
+	e.signInAs("owner", "owner@corp.test", "org-1")
+	post := func(b *env, in ext.MailboxFormInput) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(in)
+		var sent map[string]any
+		_ = json.Unmarshal(raw, &sent)
+		conform(t, e.doc, "MailboxFormInput", sent)
+		out := b.call(http.MethodPost, "/api/proton/sign-in", string(raw), http.StatusOK)
+		conform(t, e.doc, "MailboxFormStep", out)
+		return out
+	}
+	if a := post(e, ext.MailboxFormInput{Step: "sign_in", Username: "jo@proton.test", Password: formProtonPassword}); a["account_id"] != float64(1) {
+		t.Fatalf("add = %v", a)
+	}
+	e.live()
+	before, _ := e.st.Account(t.Context(), 1)
+	view := e.call(http.MethodGet, "/api/accounts/1", "", http.StatusOK)["account"].(map[string]any)
+	conform(t, e.doc, "Account", view)
+	if view["module"] != true || view["one_click"] != false {
+		t.Errorf("account = %v, want a module's mailbox that is not one-click", view)
+	}
+
+	// Edit: the password and the server are the module's; the rest is the person's.
+	for _, f := range []string{`"password":"pw"`, `"host":"imap.example.test"`, `"port":143`, `"tls_mode":"implicit"`} {
+		e.refuse(http.MethodPatch, "/api/accounts/1", "{"+f+"}", http.StatusBadRequest, "invalid_input", strings.Trim(strings.Split(f, ":")[0], `"`))
+	}
+	e.call(http.MethodPatch, "/api/accounts/1", `{"label":"Jo at Proton","watch_folder":"INBOX"}`, http.StatusOK)
+	if a, _ := e.st.Account(t.Context(), 1); a.Label != "Jo at Proton" || a.Host != before.Host || a.Port != before.Port || !a.Module {
+		t.Errorf("after Edit = %+v", a)
+	}
+	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword {
+		t.Errorf("Edit changed the secret to %q", got)
+	}
+
+	// Bridge lost the account's session: its password is refused, and the person is sent
+	// to Reconnect, not to a password they never had.
+	e.connectErr = fmt.Errorf("login: %w", mail.ErrAuth)
+	r := e.do(http.MethodPost, "/api/accounts/1/test", "")
+	if r.status != http.StatusUnprocessableEntity || r.body.Error.Code != "reconnect_needed" || r.body.Error.Path != "" ||
+		r.body.Error.Message != "Proton Mail no longer accepts MailRules' sign-in. Reconnect to sign in again." {
+		t.Errorf("stored test with the old password = %d %s", r.status, r.raw)
+	}
+	if err := e.st.SetAccountStatus(t.Context(), 1, worker.StatusReconnectNeeded, "authentication failed", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reconnecting is refused for a mailbox that does not exist, as another address, for
+	// someone else's mailbox (another team's, or a teammate's even when shared), and while
+	// the new password does not work; none of it changes the secret.
+	other, mate := e.browser(), e.browser()
+	other.signInAs("stranger", "stranger@else.test", "org-2")
+	mate.signInAs("mate", "mate@corp.test", "org-1")
+	e.call(http.MethodPatch, "/api/accounts/1", `{"shared":true}`, http.StatusOK)
+	jo := ext.MailboxFormInput{Step: "sign_in", Username: "jo@proton.test", Password: formProtonPassword, AccountID: 1}
+	for _, c := range []struct {
+		name string
+		b    *env
+		in   ext.MailboxFormInput
+		want string
+	}{
+		{"an unknown mailbox", e, ext.MailboxFormInput{Step: "sign_in", Username: "jo@proton.test", Password: formProtonPassword, AccountID: 9}, ext.ErrNoMailbox.Error()},
+		{"another address", e, ext.MailboxFormInput{Step: "sign_in", Username: "someone@proton.test", Password: formProtonPassword, AccountID: 1}, ext.ErrMailboxMismatch.Error()},
+		{"another team", other, jo, ext.ErrNoMailbox.Error()},
+		{"a teammate", mate, jo, ext.ErrNoMailbox.Error()},
+		{"a new password Bridge refuses", e, jo, "authentication failed"},
+	} {
+		if a := post(c.b, c.in); a["account_id"] != nil || !strings.Contains(fmt.Sprint(a["message"]), c.want) {
+			t.Errorf("reconnect with %s = %v, want a message with %q", c.name, a, c.want)
+		}
+	}
+	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword {
+		t.Errorf("a refused reconnect changed the secret to %q", got)
+	}
+	if a, _ := e.st.Account(t.Context(), 1); a.Status != worker.StatusReconnectNeeded {
+		t.Errorf("a refused reconnect left the mailbox %s", a.Status)
+	}
+
+	// Through the form, as its own address: the new password is tried, then stored,
+	// encrypted, and the same mailbox starts again.
+	e.connectErr = nil
+	passwords = nil
+	logins := e.logins.Load()
+	if a := post(e, jo); a["account_id"] != float64(1) || a["step"] != nil || a["message"] != nil {
+		t.Fatalf("reconnect = %v", a)
+	}
+	if len(passwords) != 1 || passwords[0] != formBridgePassword2 {
+		t.Errorf("the reconnect logged in with %q", passwords)
+	}
+	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword2 {
+		t.Errorf("secret after reconnecting = %q", got)
+	}
+	var sealed []byte
+	if err := e.db.QueryRowContext(t.Context(), `SELECT secret_enc FROM accounts WHERE id = 1`).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(sealed), formBridgePassword2) {
+		t.Error("the new password is stored in the clear")
+	}
+	e.live()
+	if e.logins.Load() == logins {
+		t.Error("the mailbox was not started again")
+	}
+	after, _ := e.st.Account(t.Context(), 1)
+	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.Label != "Jo at Proton" || after.Host != before.Host || !after.Module || after.LastError != "" {
+		t.Errorf("after reconnecting = %+v, want the same mailbox", after)
+	}
+	if list := e.call(http.MethodGet, "/api/accounts", "", http.StatusOK)["items"].([]any); len(list) != 1 {
+		t.Errorf("accounts after reconnecting = %d", len(list))
 	}
 }
 

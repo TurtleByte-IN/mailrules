@@ -64,6 +64,10 @@ type accountJSON struct {
 	// OneClick: the mailbox signs in with one-click sign-in, through the module that signs
 	// in to its preset, not with a password.
 	OneClick bool `json:"one_click"`
+	// Module: a module connected the mailbox, with one-click sign-in or through its sign-in
+	// form, so its password and server are the module's and it reconnects through the
+	// module (store.Account.Module).
+	Module bool `json:"module"`
 }
 
 // certJSON is a server certificate as the person checks it before accepting it.
@@ -86,7 +90,7 @@ func (s *server) accountJSON(ctx context.Context, v store.Viewer, a store.Accoun
 	out := accountJSON{ID: a.ID, Label: a.Label, Preset: a.Preset, Host: a.Host, Port: a.Port, TLSMode: a.TLSMode,
 		Username: a.Username, WatchFolder: a.WatchFolder, Status: a.Status, LastError: a.LastError,
 		LastEventAt: ts(a.LastEventAt), Capabilities: append([]string{}, a.Capabilities...), CreatedAt: a.CreatedAt,
-		Shared: a.Shared, Mine: a.UserID == v.UserID, CertFingerprint: a.CertFingerprint, OneClick: a.OAuth}
+		Shared: a.Shared, Mine: a.UserID == v.UserID, CertFingerprint: a.CertFingerprint, OneClick: a.OAuth, Module: a.Module || a.OAuth}
 	for _, c := range a.Capabilities {
 		out.CanMove = out.CanMove || c == "MOVE" || c == "UIDPLUS"
 	}
@@ -274,7 +278,9 @@ func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Acco
 	switch {
 	case errors.Is(err, mail.ErrNotPublic): // the name resolved elsewhere when it was dialed
 		return refuse("host_not_public", notPublicMessage, "host")
-	case errors.Is(err, mail.ErrReconnect):
+	case errors.Is(err, mail.ErrReconnect), errors.Is(err, mail.ErrAuth) && a.Module:
+		// A mailbox a module's form connected logs in with a password the person never saw
+		// (Bridge's): only signing in through the form again fixes it, as for one-click.
 		p, _ := presets.Get(a.Preset)
 		return refuse("reconnect_needed", p.Label+" no longer accepts MailRules' sign-in. Reconnect to sign in again.", "")
 	case errors.Is(err, mail.ErrAuth):
@@ -360,9 +366,9 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 
 // secretGone answers for a mailbox whose secret was deleted (its owner's sign-in was
 // deleted, then they signed in again): nothing can log in to it until they enter a new
-// password, or, for a one-click mailbox, sign in to the provider again.
+// password, or, for a mailbox a module connected, sign in to the provider again.
 func secretGone(w http.ResponseWriter, a store.Account) {
-	if a.OAuth {
+	if a.OAuth || a.Module {
 		writeError(w, http.StatusUnprocessableEntity, "reconnect_needed",
 			"This mailbox's sign-in was deleted with your previous MailRules sign-in. Sign in to the provider again.", "")
 		return
@@ -463,7 +469,8 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 
 // handleAccountPatch edits the label, the watched folder, the app password, the server
 // (host, port and TLS mode), the accepted server certificate, whether the account is shared
-// with the tenant, or pauses and resumes the account. Only the owner may: to anyone else the
+// with the tenant, or pauses and resumes the account; the password and server of a mailbox a
+// module connected are the module's and are refused. Only the owner may: to anyone else the
 // account answers as missing. A new server is logged in to first, as the wizard's test does,
 // and nothing is saved unless that works; it drops the accepted certificate unless one is
 // sent with it. A change of server, folder, password, certificate or pause restarts the
@@ -483,12 +490,19 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Label, a.WatchFolder, a.Host = strings.TrimSpace(a.Label), strings.TrimSpace(a.WatchFolder), strings.TrimSpace(a.Host)
-	if a.OAuth {
-		// A one-click mailbox's sign-in and server are the module's: they change only by
-		// signing in to the provider again (Reconnect).
-		for _, f := range []string{"password", "host", "port", "tls_mode", "cert_fingerprint"} {
+	if a.OAuth || a.Module {
+		// The sign-in and server of a mailbox a module connected are the module's: they
+		// change only by signing in through the module again (Reconnect). The certificate
+		// of a one-click mailbox is its provider's; that of a form's server (Bridge's) may
+		// still be accepted when it changes.
+		msg, fields := "This mailbox signs in with one-click sign-in. To sign in again, use Reconnect.", []string{"password", "host", "port", "tls_mode", "cert_fingerprint"}
+		if !a.OAuth {
+			p, _ := presets.Get(a.Preset)
+			msg, fields = "MailRules signs in to this mailbox through "+p.Label+"'s sign-in. To sign in again, use Reconnect.", fields[:4]
+		}
+		for _, f := range fields {
 			if sent[f] {
-				invalid(w, f, "This mailbox signs in with one-click sign-in. To sign in again, use Reconnect.")
+				invalid(w, f, msg)
 				return
 			}
 		}
@@ -516,7 +530,6 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	moved := a.Host != oldHost || a.Port != oldPort || a.TLSMode != oldTLS
 	if moved {
 		a.CertFingerprint = "" // accepted for the old server
-		a.Module = false       // the new server is the person's (UpdateAccount stores the same)
 	}
 	if sent["cert_fingerprint"] {
 		if a.CertFingerprint, ok = certFingerprint(w, cert); !ok {
@@ -536,8 +549,8 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case paused:
 		a.Status = worker.StatusPaused
-	case a.SecretGone && a.OAuth:
-		a.Status = worker.StatusReconnectNeeded // nothing starts it until the person signs in to the provider again
+	case a.SecretGone && (a.OAuth || a.Module):
+		a.Status = worker.StatusReconnectNeeded // nothing starts it until the person signs in through the module again
 	case a.SecretGone && !sent["password"]:
 		a.Status = worker.StatusAuthFailed // nothing starts it until a new password comes
 	case wasPaused, certChanged:

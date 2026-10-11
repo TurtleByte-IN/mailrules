@@ -6,11 +6,12 @@ order: 100
 
 ## A mailbox says Reconnect needed
 
-Only a mailbox connected with one-click sign-in (Gmail or Outlook, in a build that offers it) can say this. Google or Microsoft no longer accepts MailRules' sign-in: you removed its access in your account's security settings, the access expired, or the provider refused it (for example, IMAP was switched off for the account). MailRules stops trying, and no rule acts on the mailbox, until you sign in again. Mail that arrives meanwhile is sorted once it reconnects.
+Only a mailbox MailRules signs in to for you can say this: one connected with one-click sign-in (Gmail or Outlook, in a build that offers it), or a Proton Mail mailbox connected with your Proton address and password in the hosted MailRules. The provider no longer accepts MailRules' sign-in: you removed its access in your account's security settings, the access expired, or the provider refused it (for example, IMAP was switched off for the account); for Proton, the Bridge MailRules runs for you lost your account's session. MailRules stops trying, and no rule acts on the mailbox, until you sign in again. Mail that arrives meanwhile is sorted once it reconnects.
 
-- Click **Reconnect** on the mailbox, on **Mailboxes** or **Overview**. Sign in to Google or Microsoft as the mailbox's own address and allow access. MailRules connects again at once.
+- Click **Reconnect** on the mailbox, on **Mailboxes** or **Overview**. For Gmail or Outlook, sign in to Google or Microsoft as the mailbox's own address and allow access. For Proton Mail, the Proton sign-in form opens on the mailbox (also from **Sign in again** in its warning): enter your Proton password, then the two-factor code or mailbox password if your account asks for them. MailRules connects again at once.
+- Reconnecting keeps the mailbox as it was: its name, watched folder, rules, activity and undo history. There is no need to remove it and add it again.
 - Signing in as another address is refused, and the mailbox stays as it was.
-- On a hosted MailRules, deleting your sign-in account deletes your one-click mailboxes' sign-ins at once. If you sign in again with the same account within 30 days, each says "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it". Click **Reconnect** to sign in to the provider again.
+- On a hosted MailRules, deleting your sign-in account deletes these mailboxes' sign-ins at once. If you sign in again with the same account within 30 days, each says "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it". Click **Reconnect** to sign in to the provider again.
 - Google and Microsoft end each IMAP session about once an hour, when its access token expires. That is not this: MailRules reconnects with a new token on its own and the mailbox stays **Live**.
 
 ## A mailbox says Sign-in failed
@@ -34,7 +35,7 @@ When adding a mailbox, the same problem reads: "The mail server refused the sign
 ### Proton Mail
 
 - MailRules reaches Proton Mail only through Proton Mail Bridge, which must be running and signed in on the same machine. While Bridge is closed, the mailbox says **Reconnecting** and catches up once Bridge is back.
-- The password is the one in Bridge's **Mailbox details**, not your Proton password. If Bridge shows a different one than you entered, click **New app password** on the mailbox and paste it.
+- The password is the one in Bridge's **Mailbox details**, not your Proton password. If Bridge shows a different one than you entered, click **New app password** on the mailbox and paste it. In the hosted MailRules there is no Bridge password to enter: a refused sign-in says **Reconnect needed** (see [above](#a-mailbox-says-reconnect-needed)).
 - "Could not reach Proton Mail Bridge at 127.0.0.1:1143": Bridge is not running, or uses another port. Check the IMAP port in Bridge's Mailbox details.
 - If you changed Bridge's IMAP port, or switched it from STARTTLS to SSL, click **Edit** on the mailbox, set the new **Port** or **Encryption** and **Save**; there is no need to remove and add it again. MailRules tests the new settings first and saves them only if that works. If Bridge's certificate is new as well, accept it there.
 - MailRules in Docker cannot reach Bridge; see [Install](./install.md#docker).

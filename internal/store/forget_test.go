@@ -317,8 +317,12 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 func TestForgetIdentityDeletesSecrets(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
-	// The leaver's shared mailbox is a one-click one: it lands in reconnect_needed.
+	// The leaver's shared mailbox is a one-click one, and their private one a module's
+	// sign-in form added with a password: both land in reconnect_needed.
 	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET oauth = 1 WHERE id = ?`, w.leaverShared); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = 1 WHERE id = ?`, w.leaverPriv); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -350,7 +354,7 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 		status, msg string
 	}{
 		{w.soloBox, "auth_failed", forgottenMessage},
-		{w.leaverPriv, "auth_failed", forgottenMessage},
+		{w.leaverPriv, "reconnect_needed", forgottenOAuthMessage},
 		{w.leaverShared, "reconnect_needed", forgottenOAuthMessage},
 	} {
 		id := c.id

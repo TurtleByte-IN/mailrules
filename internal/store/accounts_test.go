@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -187,6 +188,43 @@ func TestMigrationModuleMark(t *testing.T) {
 	for id, want := range map[int64]bool{password: false, oneClick: true} {
 		if a, err := s.Account(ctx, id); err != nil || a.Module != want {
 			t.Errorf("account %d: module = %v, %v; want %v", id, a.Module, err, want)
+		}
+	}
+}
+
+// A mailbox a module's form added that had already stopped on a refused password waits
+// for the person to reconnect it instead; every other mailbox keeps its status.
+func TestMigrationModuleMailboxesReconnect(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 16)
+	s := New(db)
+	u, err := s.CreateFirstUser(ctx, "me@example.test", "hash", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{}
+	for i, c := range []struct {
+		module bool
+		status string
+		want   string
+	}{
+		{true, "auth_failed", "reconnect_needed"},
+		{false, "auth_failed", "auth_failed"},
+		{true, "error", "error"},
+	} {
+		a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "m", Preset: "proton", Host: "127.0.0.1", Port: 1143, TLSMode: "starttls",
+			Username: fmt.Sprintf("me%d@proton.test", i), WatchFolder: "INBOX", Status: c.status, Module: c.module}, "pw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[a.ID] = c.want
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for id, status := range want {
+		if a, err := s.Account(ctx, id); err != nil || a.Status != status {
+			t.Errorf("account %d: status %q, %v; want %q", id, a.Status, err, status)
 		}
 	}
 }

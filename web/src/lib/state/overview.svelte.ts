@@ -55,7 +55,8 @@ export function healthLine(list: Account[]) {
 
 /**
  * What a mailbox's row says and offers. `go` sends the user to Mailboxes; `sign-in` to the provider's sign-in
- * for a one-click mailbox (`reconnectURL`); the other actions run in place.
+ * for a one-click mailbox (`reconnectURL`), or to the provider's sign-in form on Mailboxes for one a module's
+ * form connected (`reconnectsByForm`); the other actions run in place.
  */
 export function health(a: Account): { detail: string; chip: string; action?: 'test' | 'reconnect' | 'resume' | 'go' | 'sign-in' | 'wait'; label?: string } {
   switch (a.status) {

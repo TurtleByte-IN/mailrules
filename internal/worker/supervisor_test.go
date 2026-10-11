@@ -223,6 +223,29 @@ func TestSupervisorStatuses(t *testing.T) {
 	}
 }
 
+// A password a module gave the daemon (Bridge's, for a mailbox its sign-in form added) is
+// one the person never saw: when the server refuses it, the mailbox waits for them to sign
+// in through the module again (reconnect_needed), not for a new password.
+func TestSupervisorModuleMailboxRefused(t *testing.T) {
+	e := newEnv(t)
+	e.sup.Account.Module = true
+	var calls atomic.Int32
+	e.sup.Open = func(context.Context) (mail.Mailbox, error) {
+		calls.Add(1)
+		return nil, fmt.Errorf("log in to 127.0.0.1:1143: %w", mail.ErrAuth)
+	}
+	stop := e.run(t)
+	defer stop()
+	eventually(t, "status reconnect_needed", func() bool {
+		a, _ := e.st.Account(t.Context(), e.sup.Account.ID)
+		return a.Status == StatusReconnectNeeded && a.LastError != ""
+	})
+	time.Sleep(20 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Errorf("connected %d times; a refused password must not be retried", n)
+	}
+}
+
 // A server that resolves off the public internet in the hosted build stops the account in
 // error without retrying, and the person reads only the sentence, not the address.
 func TestSupervisorServerNotPublic(t *testing.T) {

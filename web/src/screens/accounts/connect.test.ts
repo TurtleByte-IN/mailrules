@@ -20,7 +20,7 @@ const presets: Preset[] = [
 const found = { username: 'new', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Junk', delimiter: '/', special_use: '\\Junk' }], can_move: true, idle: true };
 const created: Account = {
   id: 3, label: 'new@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'new', watch_folder: 'INBOX',
-  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: false,
+  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: false, module: false,
 };
 
 type Reply = [status: number, body?: unknown];
@@ -341,7 +341,7 @@ it("sends a one-click tile to the provider's sign-in instead of the Sign in step
 });
 
 it('goes on at Rules for a mailbox a one-click sign-in connected, and saves only the starter rules', async () => {
-  accounts.list = [{ ...created, id: 7, label: 'jo@gmail.com', preset: 'gmail', one_click: true }];
+  accounts.list = [{ ...created, id: 7, label: 'jo@gmail.com', preset: 'gmail', one_click: true, module: true }];
   vi.mocked(addTemplatesByName).mockResolvedValue(2);
   const w = new Wizard(7);
   expect([w.step, w.first]).toEqual([2, 2]);
@@ -429,5 +429,31 @@ describe("a module's sign-in form", () => {
     expect(w.formStep).toBe('code');
     w.choose('proton', 'form');
     expect([w.formStep, w.formMessage]).toEqual(['sign_in', '']);
+  });
+
+  it("signs in to a mailbox the form connected again, with its id on every step, and ends without Rules", async () => {
+    const box = { ...created, id: 9, label: 'Jo at Proton', preset: 'proton' as const, username: 'me@proton.me', module: true, status: 'reconnect_needed' as const };
+    const w = new Wizard(undefined, 'accounts', box);
+    expect([w.step, w.first, w.via, w.presetId, w.email, w.nextLabel]).toEqual([1, 1, 'form', 'proton', 'me@proton.me', 'Sign in']);
+
+    answer({ step: 'sign_in', message: 'Sign in as me@proton.me, the address of this mailbox.' });
+    w.password = 'pw';
+    expect(await w.next()).toBe(false);
+    expect([w.formMessage, w.password]).toEqual(['Sign in as me@proton.me, the address of this mailbox.', '']);
+
+    answer({ step: 'code', state: 's1' });
+    w.password = 'pw';
+    expect(await w.submitForm()).toBe(false);
+    answer({ account_id: 9 });
+    w.code = '424242';
+    expect(await w.submitForm()).toBe(true);
+    expect([w.step, w.accountId, w.code]).toEqual([1, undefined, '']);
+    expect(toast.text).toBe('Jo at Proton is connected again');
+    expect(bodies(form)).toEqual([
+      { step: 'sign_in', username: 'me@proton.me', password: 'pw', account_id: 9 },
+      { step: 'sign_in', username: 'me@proton.me', password: 'pw', account_id: 9 },
+      { step: 'code', state: 's1', code: '424242', account_id: 9 },
+    ]);
+    expect(fetchMock.mock.calls.filter((c) => c[1].method === 'POST' && c[0] === '/api/accounts')).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@
   import type { Account, AccountPatch, ServerCert } from '../lib/api/accounts';
   import { ApiError } from '../lib/api/client';
   import { clock, day } from '../lib/format';
-  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectsByForm, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { mailboxReturn } from '../lib/state/oneclick';
   import { auth } from '../lib/state/auth.svelte';
   import { flash } from '../lib/state/toast.svelte';
@@ -13,15 +13,19 @@
   import { editableServer, zohoRegions } from './accounts/connect.svelte';
   import Wizard from './accounts/Wizard.svelte';
 
-  // A one-click sign-in comes back here (#/accounts?added=<id>, ?reconnected=<id> or ?mailbox_error=<code>):
-  // read it once, then clear the address bar.
+  // A one-click sign-in comes back here (#/accounts?added=<id>, ?reconnected=<id> or ?mailbox_error=<code>), and
+  // Overview's Reconnect of a mailbox a module's sign-in form connected arrives as ?reconnect=<id>: read it once,
+  // then clear the address bar.
   const back = mailboxReturn(router.querystring ?? '');
+  const reconnectAsked = Number(new URLSearchParams(router.querystring ?? '').get('reconnect')) || undefined;
   if (router.querystring) replace('/accounts');
   if (back.reconnected) flash((accounts.list.find((a) => a.id === back.reconnected)?.label ?? 'Your mailbox') + ' is connected again');
   let returnError = $state(back.error);
   /** A mailbox a one-click sign-in just connected: the wizard goes on at Rules for it. */
   let added = $state(back.added);
   let connecting = $state(!!back.added);
+  /** The mailbox whose provider's sign-in form is open to reconnect it, in its row. */
+  let reconnecting = $state(reconnectAsked);
   let removing = $state<number>();
   let editing = $state<number>();
   // Joined here, not in the markup: a separator at the start of an {#if} block loses its leading space.
@@ -63,10 +67,15 @@
       ? a.capabilities.includes('IDLE') ? 'push (IDLE) connected' : 'checked once a minute'
       : a.status === 'cert_changed' || a.status === 'reconnect_needed' ? '' : a.last_error || statuses[a.status].label.toLowerCase();
 
-  /** A one-click mailbox reconnects by signing in to its provider again; any other one by connecting again. */
+  /**
+   * A mailbox a module connected that needs reconnecting signs in through the module again: a one-click one at
+   * its provider's sign-in, one a module's sign-in form connected through that form, opened in its row. Any other
+   * mailbox connects again with what is stored.
+   */
   function reconnectMailbox(a: Account) {
     const url = a.status === 'reconnect_needed' ? reconnectURL(a) : undefined;
     if (url) window.location.assign(url);
+    else if (a.status === 'reconnect_needed' && reconnectsByForm(a)) [reconnecting, editing, removing] = [a.id, undefined, undefined];
     else reconnect(a.id);
   }
 
@@ -93,9 +102,10 @@
 
   /**
    * What of the server Edit can change, as the wizard asked for it: host and port for a server the person
-   * named (Other IMAP server, Proton Mail Bridge), the region's host for Zoho, nothing for a provider's own.
+   * named (Other IMAP server, Proton Mail Bridge), the region's host for Zoho, nothing for a provider's own or
+   * for a mailbox a module connected, whose server is the module's.
    */
-  const serverEdit = (a: Account) => (a.preset === 'zoho' ? 'region' : a.preset === 'generic' || editableServer.includes(a.preset) ? 'server' : '');
+  const serverEdit = (a: Account) => (a.module ? '' : a.preset === 'zoho' ? 'region' : a.preset === 'generic' || editableServer.includes(a.preset) ? 'server' : '');
 
   async function openEdit(a: Account, focus: 'name' | 'password') {
     form = { label: a.label, folder: a.watch_folder, password: '', shared: a.shared, host: a.host, port: a.port, tls: a.tls_mode, portEdited: false, folders: [a.watch_folder], error: '', errorPath: '', busy: false, cert: undefined };
@@ -256,7 +266,7 @@
                   {@render fieldError('host')}
                 </label>
               {/if}
-              {#if !a.one_click}
+              {#if !a.module}
                 <label class="flex flex-[1_1_180px] flex-col gap-1.5">
                   <span class="text-[13px] font-semibold">New app password</span>
                   <input id="edit-password" class="field h-11 font-mono" type="password" autocomplete="new-password" aria-invalid={form.errorPath === 'password'} bind:value={form.password} />
@@ -275,6 +285,8 @@
               {/if}
               {#if serverEdit(a)}
                 <span class="flex-[1_1_100%] text-[12.5px] text-secondary">A new server is tested before it is saved; if the test fails, nothing changes.</span>
+              {:else if a.module}
+                <span class="flex-[1_1_100%] text-[12.5px] text-secondary">MailRules signs in to this mailbox through {provider(a)}'s sign-in. To sign in again, use Reconnect.</span>
               {/if}
               {#if form.cert}
                 <div class="flex-[1_1_100%]">
@@ -286,6 +298,10 @@
                 <button class="btn-primary" disabled={form.busy}>{form.busy ? 'Saving…' : 'Save'}</button>
               </span>
             </form>
+          {:else if reconnecting === a.id && a.mine && reconnectsByForm(a)}
+            <div class="flex-[1_1_100%]">
+              <Wizard reconnect={a} onclose={() => (reconnecting = undefined)} />
+            </div>
           {:else if a.mine}
             <div class="flex flex-wrap gap-2">
               {#if a.status === 'paused'}
@@ -307,7 +323,12 @@
                 <button type="button" class="btn" aria-label="New app password for {a.label}" onclick={() => openEdit(a, 'password')}>New app password</button>
               </div>
             {/if}
-            {#if a.status === 'reconnect_needed'}
+            {#if a.status === 'reconnect_needed' && reconnectsByForm(a)}
+              <div class="flex flex-[1_1_100%] flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-3 py-2 text-trash">
+                <span>{provider(a)} no longer accepts MailRules' sign-in. Sign in to {provider(a)} again to start sorting; the mailbox's rules, activity and undo history stay.</span>
+                <button type="button" class="btn" aria-label="Sign in to {provider(a)} again for {a.label}" onclick={() => reconnectMailbox(a)}>Sign in again</button>
+              </div>
+            {:else if a.status === 'reconnect_needed'}
               <p class="flex-[1_1_100%] rounded bg-trash-bg px-3 py-2 text-trash">{provider(a)} no longer accepts MailRules' sign-in: access was revoked or has expired. Reconnect to sign in again.</p>
             {/if}
             {#if a.status === 'cert_changed'}

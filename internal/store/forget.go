@@ -22,8 +22,9 @@ func forgottenEmail(userID int64) string {
 }
 
 // forgottenMessage is the last error a forgotten person's mailboxes show: their secret is
-// gone, and they need a new one if the same person signs in again. A one-click mailbox
-// (oauth) shows forgottenOAuthMessage and reconnect_needed instead of auth_failed.
+// gone, and they need a new one if the same person signs in again. A mailbox a module
+// connected (oauth or module: one-click, or through its sign-in form) shows
+// forgottenOAuthMessage and reconnect_needed instead of auth_failed.
 const (
 	forgottenMessage      = "Your MailRules sign-in was deleted, so this mailbox's password was deleted with it. Enter a new app password to start sorting again."
 	forgottenOAuthMessage = "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it. Reconnect to sign in to the provider again."
@@ -121,8 +122,8 @@ func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, no
 	// keeps its status, so a second call changes nothing.
 	for _, id := range out.Accounts {
 		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = X'', dek_enc = X'',
-			status = CASE oauth WHEN 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
-			last_error = CASE oauth WHEN 1 THEN ? ELSE ? END, last_event_at = ?
+			status = CASE WHEN oauth = 1 OR module = 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
+			last_error = CASE WHEN oauth = 1 OR module = 1 THEN ? ELSE ? END, last_event_at = ?
 			WHERE id = ? AND length(secret_enc) > 0`, forgottenOAuthMessage, forgottenMessage, now, id); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: delete mailbox secret: %w", err)
 		}

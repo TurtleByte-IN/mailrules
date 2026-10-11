@@ -177,7 +177,9 @@ export interface paths {
          * @description Anything but the label restarts the account's connection, so the change is in force when the response arrives.
          *     A new `host`, `port` or `tls_mode` is logged in to first, with `password` if sent and the stored one otherwise, as
          *     `/api/accounts/test` does; if that fails, nothing is saved and the answer is the test's 422. A new server
-         *     drops the accepted certificate unless `cert_fingerprint` is sent with it.
+         *     drops the accepted certificate unless `cert_fingerprint` is sent with it. A mailbox a module connected
+         *     (`Account.module`) takes no `password`, `host`, `port` or `tls_mode` (400 `invalid_input` at that field), nor,
+         *     one-click, `cert_fingerprint`: it signs in again only through the module (Reconnect).
          */
         patch: operations["updateAccount"];
         trace?: never;
@@ -195,7 +197,7 @@ export interface paths {
         put?: never;
         /**
          * Drop the connection and connect again
-         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. A one-click mailbox in `reconnect_needed` comes back only when the person signs in to the provider again, through the module's one-click URL with `&account=<id>` (`Preset.one_click_url`). The outcome arrives over `account.status`. A mailbox whose secret was deleted (its owner's sign-in was deleted, then they signed in again) answers 422 `auth_failed` (path `password`) until `PATCH /api/accounts/{id}` sends a new password, or 422 `reconnect_needed` for a one-click mailbox until the person signs in to the provider again.
+         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. A mailbox a module connected that is in `reconnect_needed` comes back only when the person signs in to the provider again through the module, with the mailbox's id - a one-click mailbox through the module's one-click URL with `&account=<id>` (`Preset.one_click_url`), one a module's sign-in form connected through that form with `account_id` (`Preset.form_url`, `MailboxFormInput.account_id`). The outcome arrives over `account.status`. A mailbox whose secret was deleted (its owner's sign-in was deleted, then they signed in again) answers 422 `auth_failed` (path `password`) until `PATCH /api/accounts/{id}` sends a new password, or 422 `reconnect_needed` for a mailbox a module connected until the person signs in to the provider again.
          */
         post: operations["reconnectAccount"];
         delete?: never;
@@ -1406,8 +1408,13 @@ export interface components {
             password?: string;
             /** @description `code`: the two-factor code */
             code?: string;
+            /**
+             * Format: int64
+             * @description On every step of the form opened by Reconnect on a mailbox the form connected (`Account.module`, not `one_click`): that mailbox. The module signs the person in again and gives it its new password, as the same address; the daemon refuses another address. Absent when the form adds a mailbox
+             */
+            account_id?: number;
         };
-        /** @description What a module's mailbox sign-in form answers for one step, with 200: the step to ask for next (the one just posted again, with `message`, to type it again), or `account_id` once the mailbox is connected, when the wizard goes on at Rules. Errors of the daemon (not signed in, CSRF, invalid JSON) come as `Error` */
+        /** @description What a module's mailbox sign-in form answers for one step, with 200: the step to ask for next (the one just posted again, with `message`, to type it again), or `account_id` once the mailbox is connected, when the wizard goes on at Rules (or, for a form opened by Reconnect, closes: the mailbox is connected again). Errors of the daemon (not signed in, CSRF, invalid JSON) come as `Error` */
         MailboxFormStep: {
             step?: components["schemas"]["MailboxFormStepName"];
             /** @description Posted back with the next step */
@@ -1416,7 +1423,7 @@ export interface components {
             message?: string;
             /**
              * Format: int64
-             * @description The mailbox just connected
+             * @description The mailbox just connected, or reconnected
              */
             account_id?: number;
         };
@@ -1430,7 +1437,7 @@ export interface components {
         /** @enum {string} */
         TLSMode: "implicit" | "starttls";
         /**
-         * @description `auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again, for a one-click mailbox whose sign-in was revoked or refused; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`. In the hosted build, a mailbox whose server now resolves to an address off the public internet stops in `error` without connecting, with `last_error` saying that the hosted version can only connect to mail servers on the public internet
+         * @description `auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again through the module, for a mailbox a module connected (`Account.module`) whose sign-in was revoked or refused - a one-click one, or one a module's sign-in form connected whose server refuses its password; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`. In the hosted build, a mailbox whose server now resolves to an address off the public internet stops in `error` without connecting, with `last_error` saying that the hosted version can only connect to mail servers on the public internet
          * @enum {string}
          */
         AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "reconnect_needed" | "cert_changed" | "error" | "paused";
@@ -1496,6 +1503,8 @@ export interface components {
             cert_fingerprint: string;
             /** @description The mailbox signs in with one-click sign-in, through the module that connected it: it has no password, its server is the provider's, and PATCH refuses `password`, `host`, `port`, `tls_mode` and `cert_fingerprint` for it */
             one_click: boolean;
+            /** @description A module connected the mailbox: with one-click sign-in (`one_click`), or through its sign-in form (`Preset.form_url`), with a password the person never saw. Its password and server are the module's: PATCH refuses `password`, `host`, `port` and `tls_mode` for it, and in `reconnect_needed` it comes back by signing in through the module again (the one-click URL, or the form with `account_id`) */
+            module: boolean;
         };
         AccountEnvelope: {
             account: components["schemas"]["Account"];
@@ -2715,8 +2724,8 @@ export interface components {
         };
         /**
          * @description The mail server could not be used with these details: `auth_failed` (path `password`),
-         *     `reconnect_needed` (a one-click mailbox whose provider no longer accepts its sign-in: sign in
-         *     again), `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
+         *     `reconnect_needed` (a mailbox a module connected whose provider no longer accepts its sign-in: sign in
+         *     again through the module), `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
          *     or a server certificate to accept (path `cert_fingerprint`, with `cert` set):
          *     `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
          *     stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).

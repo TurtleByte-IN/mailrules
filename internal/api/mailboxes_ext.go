@@ -69,6 +69,18 @@ func (s *server) formURL(preset string) *string {
 	return nil
 }
 
+// byModule reports whether a is a mailbox a module of this build connected and still
+// connects: a one-click mailbox of one of the providers it signs in to, or one its sign-in
+// form for a's provider added. Only those reconnect through the module (ext.Host
+// ReconnectMailbox).
+func (s *server) byModule(a store.Account) bool {
+	if a.OAuth {
+		sign := s.mailboxSignIn()
+		return sign != nil && slices.Contains(sign.Providers, a.Preset)
+	}
+	return a.Module && s.mailboxForm(a.Preset) != nil
+}
+
 // AddMailbox connects a mailbox a module signs in to for the signed-in user (ext.Host):
 // a one-click mailbox, or with m.Password one a module's sign-in form connected.
 func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
@@ -141,8 +153,9 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 	return acct.ID, nil
 }
 
-// ReconnectMailbox gives a one-click mailbox of the signed-in user a new secret and
-// connects it again (ext.Host).
+// ReconnectMailbox gives a mailbox the signed-in user added through a module a new secret
+// and connects it again (ext.Host): a one-click mailbox a new refresh token, one a module's
+// sign-in form connected a new password.
 func (h host) ReconnectMailbox(ctx context.Context, accountID int64, address, secret string) error {
 	who, ok := ctxUser(ctx)
 	if !ok {
@@ -155,8 +168,7 @@ func (h host) ReconnectMailbox(ctx context.Context, accountID int64, address, se
 	if err != nil {
 		return fmt.Errorf("reconnect mailbox: %w", err)
 	}
-	sign := h.s.mailboxSignIn()
-	if a.UserID != who.ID || !a.OAuth || sign == nil || !slices.Contains(sign.Providers, a.Preset) {
+	if a.UserID != who.ID || !h.s.byModule(a) {
 		return ext.ErrNoMailbox
 	}
 	if !strings.EqualFold(strings.TrimSpace(address), a.Username) {
@@ -166,7 +178,12 @@ func (h host) ReconnectMailbox(ctx context.Context, accountID int64, address, se
 		return errors.New("reconnect mailbox: a secret is needed")
 	}
 	// The new secret is tried before it replaces the stored one.
-	mb, err := h.s.ConnectOAuth(ctx, a, &secret)
+	var mb mail.Mailbox
+	if a.OAuth {
+		mb, err = h.s.ConnectOAuth(ctx, a, &secret)
+	} else {
+		mb, _, err = h.s.Connect(ctx, a, secret)
+	}
 	if err != nil {
 		return fmt.Errorf("reconnect mailbox: %w", err)
 	}
