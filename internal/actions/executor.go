@@ -200,7 +200,9 @@ func (x *Exec) do(ctx context.Context, mb mail.Mailbox, accountID int64, a rules
 			// trash_to_folder off, only ever move to the folder the server marks for that use.
 			dest, err = x.roleFolder(ctx, accountID, role)
 		default:
-			err = mb.EnsureFolder(ctx, dest)
+			// A rule's own folder: made on first use and put on record, so folder menus
+			// list it without waiting for the next folder discovery.
+			err = x.ensureFolder(ctx, mb, accountID, dest)
 		}
 		if err != nil {
 			return after, err
