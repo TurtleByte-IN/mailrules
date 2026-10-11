@@ -156,6 +156,12 @@ func (m *Mailbox) watchOnce(ctx context.Context, folder string, validity, lastUI
 			case <-c.Closed():
 			case <-ctx.Done():
 			}
+			// The search would not see mail delivered since the last command on a server
+			// that announces it only as a command completes (see syncFolder); IDLE has
+			// announced it already, a poll has not.
+			if err := c.Noop().Wait(); err != nil {
+				return classify("noop", err)
+			}
 		}
 		if err := catchUp("wake"); err != nil {
 			return err

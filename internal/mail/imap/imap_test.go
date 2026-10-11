@@ -454,6 +454,81 @@ func TestWorkerSeesMailArrivedSinceSelect(t *testing.T) {
 	}
 }
 
+// UID STORE and UID SEARCH answer OK without touching or finding mail the session has not
+// been told of yet, so there is no empty answer to retry on: the worker must sync before
+// sending them to a folder it already had selected (MAI-202).
+func TestWorkerActsOnMailArrivedSinceSelect(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error
+	}{
+		{"set flags", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			if err := m.SetFlags(ctx, ref, []string{`\Flagged`}, nil); err != nil {
+				return err
+			}
+			flags, err := m.Flags(ctx, ref)
+			if err == nil && !slices.Contains(flags, `\Flagged`) {
+				return fmt.Errorf("flags = %v, want \\Flagged among them", flags)
+			}
+			return err
+		}},
+		{"find by message-id", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			got, err := m.FindByMessageID(ctx, "INBOX", "<msg-2@example.test>")
+			if err == nil && got != ref {
+				return fmt.Errorf("found %+v, want %+v", got, ref)
+			}
+			return err
+		}},
+		{"fetch since", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			refs, matched, err := m.FetchSince(ctx, "INBOX", time.Time{}, 0)
+			if err == nil && (matched != 2 || !slices.Contains(refs, ref)) {
+				return fmt.Errorf("found %d: %+v, want %+v among them", matched, refs, ref)
+			}
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			s := imaptest.Start(t, capsMove)
+			s.DelayNewMail(true)
+			s.Append(t, "INBOX", eml(1))
+			m := open(t, config(s))
+			st := mustStatus(t, m, "INBOX")
+			ref := mail.MsgRef{AccountID: 7, Folder: "INBOX", UIDValidity: st.UIDValidity, UID: 1}
+			if err := m.SetFlags(ctx, ref, []string{`\Seen`}, nil); err != nil { // INBOX is now selected
+				t.Fatal(err)
+			}
+			ref.UID = s.Append(t, "INBOX", eml(2))
+			if err := tt.run(ctx, m, ref); err != nil {
+				t.Errorf("%s on a message that arrived since the folder was selected: %v", tt.name, err)
+			}
+		})
+	}
+}
+
+// Without IDLE, Watch searches for new mail every PollInterval. The search must see mail
+// that arrived since the last one, not only once a later search has synced the session.
+func TestWatchPollSeesMailArrivedSinceLastSearch(t *testing.T) {
+	const interval = time.Second
+	s := imaptest.Start(t, capsMove)
+	s.DelayNewMail(true)
+	s.Append(t, "INBOX", eml(1))
+	cfg := config(s)
+	cfg.forcePoll, cfg.PollInterval = true, interval
+	out := watch(t, open(t, cfg), 0)
+	expect(t, out, 1) // the first search has run; the next is one interval away
+	uid := s.Append(t, "INBOX", eml(2))
+	select {
+	case nm := <-out:
+		if nm.Ref.UID != uid {
+			t.Fatalf("got uid %d, want %d", nm.Ref.UID, uid)
+		}
+	case <-time.After(interval * 3 / 2):
+		t.Fatal("the first poll after the message arrived did not find it")
+	}
+}
+
 func TestFoldersAndEnsureFolder(t *testing.T) {
 	ctx := t.Context()
 	s := imaptest.Start(t, capsMove)
