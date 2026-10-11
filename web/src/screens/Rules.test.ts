@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Destination } from '../lib/api/notifications';
 import type { Rule } from '../lib/api/rules';
+import { notifications } from '../lib/state/notifications.svelte';
 import { load, rules } from '../lib/state/rules.svelte';
 import { settings } from '../lib/state/settings.svelte';
 import Rules from './Rules.svelte';
@@ -26,6 +28,7 @@ const rule = (id: number, name: string): Rule => ({
   updated_at: 1791276732,
   hits_week: 3,
   mailbox_removed: false,
+  notify: [],
   last_match_at: null,
 });
 
@@ -179,4 +182,61 @@ it('marks a rule whose mailbox was removed and keeps its switch off until All ma
   expect((screen.getAllByRole('checkbox', { name: 'On' })[0] as HTMLInputElement).disabled).toBe(false);
   expect(screen.queryByRole('note')).toBeNull();
   expect(screen.getByRole('region', { name: 'Rule list' }).querySelector('li')!.textContent).not.toContain('Its mailbox was removed');
+});
+
+describe('Notify', () => {
+  const dest = (id: number, name: string): Destination => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [] });
+  const group = () => screen.queryByRole('group', { name: 'Notify' });
+
+  beforeEach(() => {
+    settings.value.features.notifications = true;
+    Object.assign(notifications, { kinds: ['slack'], destinations: [dest(1, 'Team'), dest(2, 'Ops')], loaded: true, error: '' });
+  });
+  afterEach(() => {
+    settings.value.features.notifications = false;
+    Object.assign(notifications, { kinds: [], destinations: [], loaded: false, error: '' });
+  });
+
+  it('shows no Notify group in a build without the notifications module', () => {
+    settings.value.features.notifications = false;
+    Object.assign(rules, { list: [{ ...rule(1, 'Food'), notify: [1] }], loaded: true, error: '' });
+    render(Rules);
+    expect(group()).toBeNull();
+  });
+
+  it('ticks the destinations a rule tells, names them in the list, and saves a ticked one', async () => {
+    Object.assign(rules, { list: [{ ...rule(1, 'Food'), notify: [2] }], loaded: true, error: '' });
+    render(Rules);
+    expect(screen.getByRole('region', { name: 'Rule list' }).querySelector('li')!.textContent).toContain('Then: Move to Food · notifies Ops · 3 this week');
+    const boxes = within(group()!).getAllByRole('checkbox') as HTMLInputElement[];
+    expect(boxes.map((b) => [b.parentElement!.textContent, b.checked])).toEqual([['Team', false], ['Ops', true]]);
+
+    const f = respond(200, { rule: { ...rule(1, 'Food'), notify: [1, 2] } });
+    await fireEvent.click(within(group()!).getByRole('checkbox', { name: 'Team' }));
+    expect(f.mock.calls[0][0]).toBe('/api/rules/1');
+    expect(f.mock.calls[0][1].method).toBe('PATCH');
+    expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ notify: [1, 2] });
+    await vi.waitFor(() => expect(rules.list[0].notify).toEqual([1, 2]));
+    expect(screen.getByRole('region', { name: 'Rule list' }).querySelector('li')!.textContent).toContain('notifies Team, Ops');
+  });
+
+  it('shows a refused notify under the Notify group', async () => {
+    Object.assign(rules, { list: [rule(1, 'Food')], loaded: true, error: '' });
+    render(Rules);
+    const message = 'Destination 1 is not one of yours.';
+    respond(400, { error: { code: 'invalid_input', message, path: 'notify' } });
+    const box = within(group()!).getByRole('checkbox', { name: 'Team' });
+    await fireEvent.click(box);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(message);
+    expect(box.getAttribute('aria-describedby')).toBe(alert.id);
+  });
+
+  it('with no destinations, says where to add one', () => {
+    notifications.destinations = [];
+    Object.assign(rules, { list: [rule(1, 'Food')], loaded: true, error: '' });
+    render(Rules);
+    expect(group()!.textContent).toContain('No destinations yet.');
+    expect(within(group()!).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('#/settings');
+  });
 });

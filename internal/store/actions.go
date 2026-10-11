@@ -98,7 +98,10 @@ func setLocation(ctx context.Context, tx *sql.Tx, messageID int64, ref mail.MsgR
 
 // FinishAction stores how an action ended. For a done action, after is the message's
 // state afterwards, and the message's location is updated with it in the same transaction.
-func (s *Store) FinishAction(ctx context.Context, a Action) error {
+// last says a is the last action of its rule's run on the message (done, or the failure
+// that stopped the run): the run's notices are then queued in the same transaction
+// (queueNotices), so they exist exactly when the actions they tell of do.
+func (s *Store) FinishAction(ctx context.Context, a Action, last bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("finish action: %w", err)
@@ -117,6 +120,11 @@ func (s *Store) FinishAction(ctx context.Context, a Action) error {
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE actions SET status = ?, error = ?, after = ? WHERE id = ?`, a.Status, null(a.Error), after, a.ID); err != nil {
 		return fmt.Errorf("finish action: %w", err)
+	}
+	if last {
+		if err := queueNotices(ctx, tx, a); err != nil {
+			return fmt.Errorf("finish action: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("finish action: %w", err)

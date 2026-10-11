@@ -67,9 +67,13 @@ type Rule struct {
 	// may not be switched on until it is given a mailbox, or All mailboxes, or new
 	// conditions, which clears the mark.
 	MailboxRemoved bool
-	Version        int
-	CreatedAt      int64
-	UpdatedAt      int64
+	// Notify are the tenant's notification destinations told each time the rule acts on an
+	// email live (store notify_destinations ids); nil = none. A rules file does not carry
+	// them: they name this install's destinations.
+	Notify    []int64
+	Version   int
+	CreatedAt int64
+	UpdatedAt int64
 }
 
 // ValidationError is a rule problem. Path is the offending key as the API reports it,

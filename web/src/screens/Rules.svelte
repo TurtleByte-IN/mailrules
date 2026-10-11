@@ -29,7 +29,7 @@
   let result = $state<{ text: string; ok: boolean } | null>(null);
   // The field the daemon refused in the last edit, and why; shown beside that field.
   let refused = $state<{ path: string; message: string } | null>(null);
-  const editorFields = ['name', 'intent', 'account_id', 'stack', 'model', 'min_confidence'];
+  const editorFields = ['name', 'intent', 'account_id', 'stack', 'notify', 'model', 'min_confidence'];
   let picker: HTMLInputElement;
   let imported = $state<{ ok: boolean; text: string } | null>(null);
   // What the daemon is being waited on for, one thing at a time per control.
@@ -296,9 +296,7 @@
         {/if}
         <div class="text-[13px]"><span class="font-semibold">Then</span> <span class="text-nav">{actionsText(sel.actions, trashTo)}</span></div>
         <div class="flex flex-col gap-2.5 rounded-md border border-line-divider bg-selected-row p-3">
-          <MoreOptions id="rule" value={sel} onchange={save} stackLabel="Stacks: also applies after another rule matched" />
-          {@render problem('account_id')}
-          {@render problem('stack')}
+          <MoreOptions id="rule" value={sel} onchange={save} stackLabel="Stacks: also applies after another rule matched" problem={refused && { part: refused.path, message: refused.message }} />
         </div>
         <div class="flex flex-wrap gap-3.5">
           <div class="flex flex-[1_1_160px] flex-col gap-1.5">

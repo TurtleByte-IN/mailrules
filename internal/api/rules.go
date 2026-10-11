@@ -34,19 +34,21 @@ type ruleJSON struct {
 	MinConfidence *float64       `json:"min_confidence"`
 	Enabled       bool           `json:"enabled"`
 	// MailboxRemoved is read-only: the rule's mailbox was removed (rules.Rule.MailboxRemoved).
-	MailboxRemoved bool   `json:"mailbox_removed"`
-	Version        int    `json:"version"`
-	CreatedAt      int64  `json:"created_at"`
-	UpdatedAt      int64  `json:"updated_at"`
-	HitsWeek       int    `json:"hits_week"`
-	LastMatchAt    *int64 `json:"last_match_at"`
+	MailboxRemoved bool `json:"mailbox_removed"`
+	// Notify are the destinations told when the rule acts live; never null.
+	Notify      []int64 `json:"notify"`
+	Version     int     `json:"version"`
+	CreatedAt   int64   `json:"created_at"`
+	UpdatedAt   int64   `json:"updated_at"`
+	HitsWeek    int     `json:"hits_week"`
+	LastMatchAt *int64  `json:"last_match_at"`
 }
 
 func toRuleJSON(r rules.Rule, st store.RuleStat) ruleJSON {
 	return ruleJSON{ID: r.ID, AccountID: ts(r.AccountID), Name: r.Name, Said: r.Said, Template: r.Template, Intent: r.Intent,
 		Conditions: r.Conditions, Exceptions: r.Exceptions, Actions: r.Actions, Priority: r.Priority, Stack: r.Stack,
-		Model: r.Model, MinConfidence: r.MinConfidence, Enabled: r.Enabled, MailboxRemoved: r.MailboxRemoved, Version: r.Version,
-		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, HitsWeek: st.Hits, LastMatchAt: ts(st.LastMatchAt)}
+		Model: r.Model, MinConfidence: r.MinConfidence, Enabled: r.Enabled, MailboxRemoved: r.MailboxRemoved, Notify: append([]int64{}, r.Notify...),
+		Version: r.Version, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, HitsWeek: st.Hits, LastMatchAt: ts(st.LastMatchAt)}
 }
 
 // rulesJSON lists the user's rules in priority order with this week's hit counts.
@@ -174,9 +176,12 @@ func (s *server) handleRulePatch(w http.ResponseWriter, r *http.Request) {
 	sent, ok := readPatch(w, r, map[string]any{
 		"name": &rule.Name, "said": &rule.Said, "intent": &rule.Intent, "conditions": &rule.Conditions,
 		"exceptions": &rule.Exceptions, "actions": &rule.Actions, "account_id": &accountID, "stack": &rule.Stack,
-		"model": &rule.Model, "min_confidence": &rule.MinConfidence, "enabled": &rule.Enabled,
+		"model": &rule.Model, "min_confidence": &rule.MinConfidence, "enabled": &rule.Enabled, "notify": &rule.Notify,
 	})
 	if !ok {
+		return
+	}
+	if sent["notify"] && !s.notifyProblem(w, r, "notify", rule.Notify) {
 		return
 	}
 	if rule.AccountID = 0; accountID != nil {

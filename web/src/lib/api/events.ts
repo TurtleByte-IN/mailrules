@@ -15,6 +15,7 @@ export interface Events {
   'check.progress': Schemas['CleanupCheck'];
   'rules.changed': Schemas['EventEmpty'];
   'usage.updated': Schemas['EventEmpty'];
+  'notifications.changed': Schemas['EventEmpty'];
 }
 
 // A record, not an array, so the compiler fails when an event is added above and not here.
@@ -27,6 +28,7 @@ const names: Record<keyof Events, true> = {
   'check.progress': true,
   'rules.changed': true,
   'usage.updated': true,
+  'notifications.changed': true,
 };
 
 const handlers = new Map<string, Set<(data: never) => void>>();

@@ -168,6 +168,10 @@ func (s *server) routes() []route {
 		on(get, "/api/summary/preview", s.handleSummaryPreview),
 		on(get, "/api/summary/preview.html", s.handleSummaryPreviewPage),
 		on(post, "/api/summary/test", s.handleSummaryTest),
+
+		on(get, "/api/notifications", s.notificationsOnly(s.handleNotifications)),
+		on(post, "/api/notifications/destinations", s.notificationsOnly(s.handleDestinationCreate)),
+		on(del, "/api/notifications/destinations/{id}", s.notificationsOnly(s.handleDestinationDelete)),
 	}
 	return append(builtIn, s.moduleRoutes()...)
 }

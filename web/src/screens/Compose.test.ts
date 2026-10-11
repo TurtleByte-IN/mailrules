@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Draft } from '../lib/api/compose';
 import { accounts } from '../lib/state/accounts.svelte';
 import { compose } from '../lib/state/compose.svelte';
+import { notifications } from '../lib/state/notifications.svelte';
 import { rules } from '../lib/state/rules.svelte';
 import { settings } from '../lib/state/settings.svelte';
 import { toast } from '../lib/state/toast.svelte';
@@ -346,4 +347,43 @@ it('offers Suggest from my mail only when the daemon has its module', async () =
   expect(tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent)).toEqual(['Templates']);
   await fireEvent.keyDown(tabs[2], { key: 'ArrowRight' });
   expect(tabs.filter((t) => t.getAttribute('aria-selected') === 'true').map((t) => t.textContent)).toEqual(['Describe it']);
+});
+
+it('a condition rule tells the destinations ticked under More options, once the daemon has the notifications module', async () => {
+  settings.value.features.notifications = true;
+  try {
+    const dest = (id: number, name: string) => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [] });
+    const f = serve({
+      'GET /api/notifications': [200, { kinds: ['slack'], destinations: [dest(4, 'Team'), dest(6, 'Ops')] }],
+      'POST /api/rules/batch': [200, { rules: [{ ...drafted('Invoices'), id: 3 }] }],
+    });
+    render(Compose);
+    await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
+    expect(screen.getByText('More options: mailbox, stacking, notify')).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText('Rule name'), { target: { value: 'Invoices' } });
+    await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'an invoice' } });
+    await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
+    await fireEvent.click(await screen.findByRole('checkbox', { name: 'Ops' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+
+    await vi.waitFor(() => expect(f.mock.calls.some((c) => c[0] === '/api/rules/batch')).toBe(true));
+    const sent = JSON.parse(f.mock.calls.find((c) => c[0] === '/api/rules/batch')![1].body as string).rules[0];
+    expect(sent.notify).toEqual([6]);
+  } finally {
+    settings.value.features.notifications = false;
+    Object.assign(notifications, { kinds: [], destinations: [], loaded: false, error: '' });
+  }
+});
+
+it('a condition rule tells no one in a build without the notifications module', async () => {
+  const f = serve({ 'POST /api/rules/batch': [200, { rules: [{ ...drafted('Invoices'), id: 3 }] }] });
+  render(Compose);
+  await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
+  expect(screen.queryByRole('group', { name: 'Notify' })).toBeNull();
+  await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'an invoice' } });
+  await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+  await vi.waitFor(() => expect(f).toHaveBeenCalledOnce());
+  expect(JSON.parse(f.mock.calls[0][1].body as string).rules[0].notify).toEqual([]);
+  expect(f.mock.calls.some((c) => c[0] === '/api/notifications')).toBe(false);
 });

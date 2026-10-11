@@ -85,8 +85,9 @@ func forgetWorld(t *testing.T) fworld {
 
 // seed gives the user a mailbox and, in their tenant, one of everything: a folder, a
 // contact, an email decided, acted on and corrected, a rule for the mailbox and one for
-// every mailbox, a sender rule, a batch, a setting, a usage row, a session and a summary.
-// It returns the mailbox.
+// every mailbox, a sender rule, a batch, a setting, a usage row, a session, a summary, and a
+// notification destination with a notice about the email and a delivery of it. It returns
+// the mailbox.
 func (w fworld) seed(t *testing.T, u User, name string) int64 {
 	t.Helper()
 	s, ctx := w.s, t.Context()
@@ -129,6 +130,15 @@ func (w fworld) seed(t *testing.T, u User, name string) int64 {
 	must(s.CreateSession(ctx, "session-"+name, u.ID, 1000, fDue*2))
 	_, _, _, err = s.ClaimSummary(ctx, u.ID, 2000, 2000, 3)
 	must(err)
+	dest, err := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "Hook " + name, Kind: DestinationWebhook},
+		DestinationSecret{URL: "https://hooks.test/" + name, Secret: "whsec_" + name}, 1000)
+	must(err)
+	res, err := w.db.ExecContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
+		VALUES (?, ?, ?, ?, ?, 'Box', '{}', 1000, 1000)`, u.TenantID, dest.ID, a.ID, m.ID, scoped.ID)
+	must(err)
+	notice, _ := res.LastInsertId()
+	_, err = s.RecordDelivery(ctx, notice, true, "", 1000)
+	must(err)
 	return a.ID
 }
 
@@ -142,24 +152,27 @@ func (w fworld) tenantRows(t *testing.T, tenantID int64) map[string]int {
 	)
 	out := map[string]int{}
 	for table, where := range map[string]string{
-		"tenants":      `id = ?1`,
-		"users":        `tenant_id = ?1`,
-		"sessions":     `user_id IN ` + users,
-		"identities":   `user_id IN ` + users,
-		"summaries":    `user_id IN ` + users,
-		"forgotten":    `user_id IN ` + users,
-		"accounts":     `tenant_id = ?1`,
-		"folders":      `account_id IN ` + accounts,
-		"contacts":     `account_id IN ` + accounts,
-		"messages":     `account_id IN ` + accounts,
-		"actions":      `account_id IN ` + accounts,
-		"decisions":    `message_id IN ` + messages,
-		"corrections":  `message_id IN ` + messages,
-		"rules":        `tenant_id = ?1`,
-		"sender_rules": `tenant_id = ?1`,
-		"batches":      `tenant_id = ?1`,
-		"settings":     `tenant_id = ?1`,
-		"usage_daily":  `tenant_id = ?1`,
+		"tenants":             `id = ?1`,
+		"users":               `tenant_id = ?1`,
+		"sessions":            `user_id IN ` + users,
+		"identities":          `user_id IN ` + users,
+		"summaries":           `user_id IN ` + users,
+		"forgotten":           `user_id IN ` + users,
+		"accounts":            `tenant_id = ?1`,
+		"folders":             `account_id IN ` + accounts,
+		"contacts":            `account_id IN ` + accounts,
+		"messages":            `account_id IN ` + accounts,
+		"actions":             `account_id IN ` + accounts,
+		"decisions":           `message_id IN ` + messages,
+		"corrections":         `message_id IN ` + messages,
+		"rules":               `tenant_id = ?1`,
+		"sender_rules":        `tenant_id = ?1`,
+		"batches":             `tenant_id = ?1`,
+		"settings":            `tenant_id = ?1`,
+		"usage_daily":         `tenant_id = ?1`,
+		"notify_destinations": `tenant_id = ?1`,
+		"notices":             `tenant_id = ?1`,
+		"notify_deliveries":   `tenant_id = ?1`,
 	} {
 		var n int
 		if err := w.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table+` WHERE `+where, tenantID).Scan(&n); err != nil {
@@ -345,6 +358,16 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 		if gone := errors.Is(err, ErrNotFound); gone != c.keys {
 			t.Errorf("%s: model key gone = %v (%v), want %v", c.sub, gone, err, c.keys)
 		}
+		ds, err := s.Destinations(ctx, c.tenant)
+		if err != nil || len(ds) == 0 {
+			t.Fatalf("%s: destinations = %v, %v", c.sub, ds, err)
+		}
+		for _, d := range ds {
+			_, err := s.DestinationSecret(ctx, testMaster, d.ID)
+			if gone := errors.Is(err, ErrNoSecret); gone != c.keys || d.AddressDeleted != c.keys {
+				t.Errorf("%s: destination %+v address gone = %v (%v), want %v", c.sub, d, gone, err, c.keys)
+			}
+		}
 		if _, err := s.Setting(ctx, c.tenant, "seed_"+strings.TrimPrefix(c.sub, "user_")+map[bool]string{true: "", false: "priv"}[c.keys]); err != nil {
 			t.Errorf("%s: an ordinary setting went: %v", c.sub, err)
 		}
@@ -376,6 +399,11 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 	}
 	if _, err := s.Setting(ctx, w.other.TenantID, "key.anthropic_api_key"); err != nil {
 		t.Errorf("another tenant's model key: %v", err)
+	}
+	if ds, _ := s.Destinations(ctx, w.other.TenantID); len(ds) != 1 || ds[0].AddressDeleted {
+		t.Errorf("another tenant's destinations = %+v", ds)
+	} else if sec, err := s.DestinationSecret(ctx, testMaster, ds[0].ID); err != nil || sec.URL != "https://hooks.test/other" || sec.Secret != "whsec_other" {
+		t.Errorf("another tenant's destination secret = %+v, %v", sec, err)
 	}
 	ids, err := s.IdentityMailboxes(ctx, "workos", "user_leaver")
 	if err != nil || !slices.Equal(ids, []int64{w.leaverPriv, w.leaverShared}) {
@@ -480,6 +508,9 @@ func TestRemoveForgottenTeamMember(t *testing.T) {
 		"tenants": 1, "users": 1, "identities": 1, "sessions": 1, "summaries": 1, "forgotten": 0,
 		"accounts": 1, "messages": 1, "settings": before["settings"], "usage_daily": before["usage_daily"],
 		"batches": before["batches"], "rules": before["rules"],
+		// The team's destinations and their log stay; the notices about the leaver's mail go.
+		"notify_destinations": before["notify_destinations"], "notify_deliveries": before["notify_deliveries"],
+		"notices": before["notices"] - 2,
 	} {
 		if got[table] != want {
 			t.Errorf("team %s: %d rows, want %d", table, got[table], want)

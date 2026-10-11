@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Condition, Rule, RuleInput } from '../../lib/api/rules';
+import { notifications } from '../../lib/state/notifications.svelte';
 import { condText } from '../rules/text';
 import { emptyBuilder, english, fromRule, refusedPart, toCondition, toRow, toRule, type Builder, type Row } from './builder';
 
@@ -41,6 +42,7 @@ const full: Builder = {
   markRead: true,
   account_id: 2,
   stack: true,
+  notify: [3, 5],
 };
 
 describe('builder', () => {
@@ -77,9 +79,20 @@ describe('builder', () => {
     expect(fromRule(saved)).toEqual({ ...b, editingId: 9 });
   });
 
-  it('is a RuleInput once it has its wording', () => {
+  it('is a RuleInput once it has its wording, with the destinations it tells', () => {
     const input: RuleInput = { ...toRule(full), said: 'Built with conditions', enabled: true };
-    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'enabled', 'exceptions', 'intent', 'min_confidence', 'name', 'said', 'stack']);
+    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'enabled', 'exceptions', 'intent', 'min_confidence', 'name', 'notify', 'said', 'stack']);
+    expect(input.notify).toEqual([3, 5]);
+    expect(toRule(emptyBuilder()).notify).toEqual([]);
+  });
+
+  it('names the destinations it tells, leaving out any no longer known', () => {
+    notifications.destinations = [3, 4].map((id) => ({ id, name: 'Dest ' + id, kind: 'slack' as const, url: '', address_deleted: false, created_at: 0, deliveries: [] }));
+    try {
+      expect(english({ ...full, notify: [3, 5] }, 'me@icloud.com')).toMatch(/ · stacks · only me@icloud\.com · notifies Dest 3\.$/);
+    } finally {
+      notifications.destinations = [];
+    }
   });
 
   it('leaves out rows with no value and names an unnamed rule', () => {
@@ -126,6 +139,8 @@ describe('refusedPart', () => {
     ['rules[0].name', { part: 'name' }],
     ['rules[0].stack', { part: 'stack' }],
     ['rules[0].account_id', { part: 'account_id' }],
+    ['rules[0].notify', { part: 'notify' }],
+    ['notify', { part: 'notify' }],
     ['intent', { part: 'intent' }],
     ['rules[0].model', undefined],
     ['rules[0].conditions', undefined],

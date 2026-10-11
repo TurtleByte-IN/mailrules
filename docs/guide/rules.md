@@ -130,12 +130,28 @@ The **Rules** screen lists every rule in the order it is checked, with what it d
   - **Name**, and the plain-English description under **When the email is about**.
   - **Applies to**: **All mailboxes**, or one mailbox.
   - **Stacks: also applies after another rule matched** (condition-only rules).
+  - **Notify** (hosted version only): the destinations told each time this rule acts on an email. See [Notifications](#notifications-hosted-version) below.
   - **Model**: **Default**, or a specific decision model for this rule: Jev, Clef, Claude Haiku 4.5, **OpenAI-compatible…** (`openai:<model>`), **Ollama…** (`ollama:<model>`) or **Other (name:model)…**. The last three ask for the model name and save it when you click **Set model**; MailRules shows its own message if the value is not accepted. A model set another way, such as in an imported YAML file, is shown as it is and is not changed unless you set another. The key or URL for that model must be set too. When several candidate rules name a model, the highest one in the list decides which model is asked.
   - **Act when sure above**: this rule's threshold, from 50% to 99%. It applies only to rules with a description.
   - **Edit conditions** opens the rule in the builder.
   - **Rewrite with AI**: say what should change ("also skip anything from my bank"), compare **Current rule** and **New draft**, then **Update rule** or **Discard**.
   - **Undo what it did today** puts back every email this rule moved today (see [Undo and activity](./undo-and-activity.md)).
   - **Delete rule**. Past decisions stay in Activity under the old name.
+
+## Notifications (hosted version)
+
+The hosted version can tell you, or another program, when a rule acts. The free self-hosted build has no notifications, and shows none of this.
+
+1. In **Settings**, under **Notifications and webhooks**, add a destination: a name, the kind, and its address.
+   - **Slack**: the incoming webhook URL of a Slack channel, `https://hooks.slack.com/services/…`.
+   - **Webhook**: any https address. MailRules sends it JSON for every email a rule that names it acts on, signed with a secret shown once, when you add it. Copy the secret to the server that receives the webhook, which uses it to tell that the notice came from MailRules; you cannot see it again.
+2. Open a rule, and under **Notify** tick the destinations it should tell. In the builder, the same boxes are under **More options**. A rule can tell several destinations.
+
+A notice says which mailbox, which rule, what it did and to which folder, who sent the email, its subject, when, and a link to the email in **Activity**. It never contains the email's text.
+
+A rule notifies only when it really acts on new mail: not in dry-run, not when **Cleanup** sorts mail you already have, not when you undo or correct something, and not when one of your sender rules settled the email.
+
+Settings shows the address of each destination cut short, never in full, and lists its **Recent deliveries**: the last 20, with the rule and whether it was sent or why it failed. Deliveries are kept for 30 days. Removing a destination takes it off every rule that named it.
 
 ## Testing a rule on recent mail
 
@@ -250,7 +266,7 @@ An `account` condition, in `match` or `unless` and at any depth, names mailboxes
 How an import works:
 
 - It is all or nothing. If any rule is invalid, nothing is saved, and every problem is listed.
-- A rule whose name already exists is replaced. It keeps its place in the list; whether it is on comes from the file. It keeps its mailbox unless the file has `applies_to`. A rule here that is marked **Its mailbox was removed** stays switched off and marked when the file has neither `applies_to` nor different `match` or `unless` for it, since the file chose no mailbox and no new conditions for it.
+- A rule whose name already exists is replaced. It keeps its place in the list; whether it is on comes from the file. It keeps its mailbox unless the file has `applies_to`, and it keeps the destinations it notifies, which a file never carries. A rule here that is marked **Its mailbox was removed** stays switched off and marked when the file has neither `applies_to` nor different `match` or `unless` for it, since the file chose no mailbox and no new conditions for it.
 - Rules with new names are added at the bottom, for the mailbox in `applies_to` or, without it, all mailboxes.
 - Rules that are not in the file are left alone. An import never deletes a rule.
 - A file can be at most 1 MB.

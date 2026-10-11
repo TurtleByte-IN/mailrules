@@ -113,9 +113,9 @@ MAILRULES_TRUSTED_PROXIES=172.18.0.0/16,10.0.0.5
 
 ## Secrets and logs
 
-- Mailbox passwords and model keys entered in the browser are encrypted with AES-256-GCM under the master key before they are stored. See [Backup and the master key](./backup.md).
-- They are write-only: no API response contains them. Settings only says whether a key is set, and where from.
-- Logs never contain passwords, keys, tokens or the text of an email, at any `LOG_LEVEL`.
+- Mailbox passwords and model keys entered in the browser, and the addresses and signing secrets of notification destinations (hosted version), are encrypted with AES-256-GCM under the master key before they are stored. See [Backup and the master key](./backup.md).
+- They are write-only: no API response contains them. Settings only says whether a key is set, and where from, and shows a destination's address cut short; a webhook's signing secret is shown once, when it is added.
+- Logs never contain passwords, keys, tokens, notification addresses or the text of an email, at any `LOG_LEVEL`.
 - `mailrules accounts add` and `mailrules users reset-password` never take a password as a flag, where other users of the machine could see it in the process list.
 - Mail that a model needs to read is sent to the provider of that model. [What is sent to a model](./models.md#what-is-sent-to-a-model) lists exactly what, and Ollama keeps it on your own server.
 

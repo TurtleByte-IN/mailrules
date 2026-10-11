@@ -238,6 +238,7 @@ type ruleInput struct {
 	MinConfidence *float64       `json:"min_confidence"`
 	Enabled       *bool          `json:"enabled"`
 	NewFolders    []string       `json:"new_folders"`
+	Notify        []int64        `json:"notify"`
 	Position      *int           `json:"position"`
 }
 
@@ -256,7 +257,10 @@ func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.R
 		in := ins[i]
 		rule := rules.Rule{UserID: user(r).ID, Name: strings.TrimSpace(in.Name), Said: in.Said, Template: strings.TrimSpace(in.Template), Conditions: in.Conditions,
 			Exceptions: in.Exceptions, Actions: in.Actions, Stack: in.Stack, Model: strings.TrimSpace(in.Model),
-			MinConfidence: in.MinConfidence, Enabled: in.Enabled == nil || *in.Enabled}
+			MinConfidence: in.MinConfidence, Enabled: in.Enabled == nil || *in.Enabled, Notify: in.Notify}
+		if !s.notifyProblem(w, r, at+".notify", in.Notify) {
+			return nil, nil, false
+		}
 		if in.Intent != nil {
 			rule.Intent = strings.TrimSpace(*in.Intent)
 		}
