@@ -310,10 +310,14 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 }
 
 // openAccount returns how a supervisor connects to an account. The password is decrypted
-// for each connection and kept nowhere else.
+// for each connection and kept nowhere else. A mailbox whose password was deleted
+// (store.ErrNoSecret) fails as a refused sign-in: the supervisor stops on auth_failed.
 func openAccount(st *store.Store, master []byte, acct store.Account) func(context.Context) (mail.Mailbox, error) {
 	return func(ctx context.Context) (mail.Mailbox, error) {
 		password, err := st.AccountSecret(ctx, master, acct.ID)
+		if errors.Is(err, store.ErrNoSecret) {
+			return nil, fmt.Errorf("%w: %w", mail.ErrAuth, err)
+		}
 		if err != nil {
 			return nil, err
 		}

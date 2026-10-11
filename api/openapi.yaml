@@ -306,7 +306,7 @@ paths:
       tags: [Accounts]
       operationId: reconnectAccount
       summary: Drop the connection and connect again
-      description: Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`.
+      description: Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`. A mailbox whose password was deleted (its owner's sign-in was deleted, then they signed in again) answers 422 `auth_failed` (path `password`) until `PATCH /api/accounts/{id}` sends a new one.
       responses:
         '200':
           description: Reconnecting; the body is the account as stored at this moment
@@ -317,6 +317,7 @@ paths:
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # account_paused
+        '422': { $ref: '#/components/responses/Invalid' } # auth_failed: the password was deleted
   /api/accounts/{id}/test:
     parameters:
       - { $ref: '#/components/parameters/Id' }

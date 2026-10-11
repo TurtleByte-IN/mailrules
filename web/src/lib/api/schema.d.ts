@@ -195,7 +195,7 @@ export interface paths {
         put?: never;
         /**
          * Drop the connection and connect again
-         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`.
+         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. The outcome arrives over `account.status`. A mailbox whose password was deleted (its owner's sign-in was deleted, then they signed in again) answers 422 `auth_failed` (path `password`) until `PATCH /api/accounts/{id}` sends a new one.
          */
         post: operations["reconnectAccount"];
         delete?: never;
@@ -3084,6 +3084,7 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["Invalid"];
         };
     };
     testStoredAccount: {

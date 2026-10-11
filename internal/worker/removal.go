@@ -81,7 +81,8 @@ func (r Removal) remove(ctx context.Context, f store.Forgotten, now int64) (bool
 	return true, nil
 }
 
-// restart starts again each of the accounts that still exists and is not paused.
+// restart starts again each of the accounts that still exists, is not paused and still has
+// its secret (a forgotten person's mailboxes lost theirs when they were forgotten).
 func (r Removal) restart(ctx context.Context, ids []int64) {
 	for _, id := range ids {
 		a, err := r.Store.Account(ctx, id)
@@ -92,7 +93,7 @@ func (r Removal) restart(ctx context.Context, ids []int64) {
 			slog.ErrorContext(ctx, "could not restart a mailbox stopped for a removal", "account", id, "error", err.Error())
 			continue
 		}
-		if a.Status != StatusPaused {
+		if a.Status != StatusPaused && !a.SecretGone {
 			r.Start(a)
 		}
 	}

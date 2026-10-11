@@ -161,16 +161,19 @@ type Host interface {
 	EndSessions(ctx context.Context, provider, subject string) error
 
 	// ForgetIdentity is for a person the sign-in service deleted. In one step that changes
-	// all or nothing, it ends their sessions as EndSessions does and frees their email, so a
-	// new identity with that email signs up at once and gets a new user, not their data.
-	// Their data is removed ForgetDays later, unless the same identity (Provider, Subject)
-	// signs in again first, which calls the removal off and gives it all back. A person
-	// who is their tenant's only member takes the whole tenant with them: its mailboxes,
-	// with their credentials and everything MailRules recorded of them, rules, sender
-	// rules, settings and keys, and usage ledger. A member of a team takes only the
-	// mailboxes they own and did not share; the team keeps the rest. An identity nobody
-	// has is not an error, and forgetting one again changes nothing, the date of the
-	// removal included. The self-host admin, who has no identity, cannot be forgotten.
+	// all or nothing, it ends their sessions as EndSessions does, frees their email (a new
+	// identity with that email signs up at once and gets a new user, not their data) and
+	// deletes their secrets: their mailboxes are stopped first, then their passwords and
+	// tokens are deleted, with, when they are their tenant's only member, the tenant's
+	// stored model API keys. The rest of their data is removed ForgetDays later, unless the
+	// same identity (Provider, Subject) signs in again first, which calls the removal off
+	// and gives their rules and history back; their mailboxes then wait for a new password
+	// and the model keys stay unset. A person who is their tenant's only member takes the
+	// whole tenant with them: its mailboxes and everything MailRules recorded of them,
+	// rules, sender rules, settings, and usage ledger. A member of a team takes all the
+	// mailboxes they own, shared or not; the team keeps the rest. An identity nobody has is
+	// not an error, and forgetting one again changes nothing, the date of the removal
+	// included. The self-host admin, who has no identity, cannot be forgotten.
 	ForgetIdentity(ctx context.Context, provider, subject string) error
 
 	// SignInFailed sends the browser back to the sign-in screen with code, one of the

@@ -69,12 +69,13 @@ func supervise(ctx context.Context, m *Manager, st *store.Store, acct store.Acco
 }
 
 // A person forgotten before the daemon stopped is removed by the daemon that starts next,
-// once the wait is over: their mailbox is stopped first, and nobody else's is touched.
+// once the wait is over: their mailbox, its secret deleted when they were forgotten, is not
+// started (no login) and is stopped before it goes; nobody else's is touched.
 func TestRemovalJobSurvivesARestart(t *testing.T) {
 	w, st, db := newRemovalWorld(t)
 	ctx := t.Context()
 	now := time.Unix(1_800_000_000, 0)
-	if err := st.ForgetIdentity(ctx, "workos", "user_gone", now.Unix()); err != nil {
+	if _, err := st.ForgetIdentity(ctx, "workos", "user_gone", now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close() // the daemon stops in the middle of the wait
@@ -84,8 +85,15 @@ func TestRemovalJobSurvivesARestart(t *testing.T) {
 	m := &Manager{}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer func() { cancel(); m.Wait() }()
-	supervise(runCtx, m, st, w.goneAcct)
+	gone, err := st.Account(ctx, w.goneAcct.ID) // as the daemon reads it when it starts
+	if err != nil || !gone.SecretGone {
+		t.Fatalf("the forgotten mailbox = %+v, %v; want its secret gone", gone, err)
+	}
+	supervise(runCtx, m, st, gone)
 	supervise(runCtx, m, st, w.keptAcct)
+	if m.supervisor(w.goneAcct.ID) != nil || m.supervisor(w.keptAcct.ID) == nil {
+		t.Fatal("a mailbox without its secret was started, or the other one was not")
+	}
 
 	var stopped []int64
 	job := Removal{Store: st, Hub: events.NewHub(),
@@ -125,13 +133,14 @@ func TestRemovalJobSurvivesARestart(t *testing.T) {
 }
 
 // A person who signs in again after their mailbox was stopped for the removal, and before
-// it happened, keeps everything, and their mailbox runs again.
-func TestRemovalCalledOffRestartsTheMailbox(t *testing.T) {
+// it happened, keeps everything; their mailbox, whose secret went when they were
+// forgotten, stays stopped until they enter a new password.
+func TestRemovalCalledOffKeepsTheMailboxStopped(t *testing.T) {
 	w, st, db := newRemovalWorld(t)
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := t.Context()
 	now := time.Unix(1_800_000_000, 0)
-	if err := st.ForgetIdentity(ctx, "workos", "user_gone", now.Unix()); err != nil {
+	if _, err := st.ForgetIdentity(ctx, "workos", "user_gone", now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	var started []int64
@@ -148,10 +157,10 @@ func TestRemovalCalledOffRestartsTheMailbox(t *testing.T) {
 	if removed, err := job.Once(ctx); err != nil || removed != 0 {
 		t.Errorf("removed %d, %v; want 0", removed, err)
 	}
-	if len(started) != 1 || started[0] != w.goneAcct.ID {
-		t.Errorf("started %v, want the mailbox %d again", started, w.goneAcct.ID)
+	if len(started) != 0 {
+		t.Errorf("started %v, want none: the mailbox has no secret", started)
 	}
-	if _, err := st.Account(ctx, w.goneAcct.ID); err != nil {
-		t.Errorf("the mailbox of the person who came back: %v", err)
+	if a, err := st.Account(ctx, w.goneAcct.ID); err != nil || a.Status != StatusAuthFailed || !a.SecretGone {
+		t.Errorf("the mailbox of the person who came back = %+v, %v; want it kept, auth_failed", a, err)
 	}
 }

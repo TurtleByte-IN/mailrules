@@ -3,7 +3,9 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
@@ -65,6 +67,13 @@ func forgetWorld(t *testing.T) fworld {
 	w.leaverShared = w.seed(t, w.leaver, "leavershared")
 	if err := s.SetAccountShared(ctx, w.leaverShared, true); err != nil {
 		t.Fatal(err)
+	}
+	// Stored model API keys (settings rows under "key."): the solo tenant's go with its only
+	// member; the team's stay when a member leaves.
+	for _, tenant := range []int64{w.solo.TenantID, w.leaver.TenantID, w.other.TenantID} {
+		if err := s.SetSetting(ctx, tenant, "key.anthropic_api_key", `{"sealed":"x"}`); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.otherBox = w.seed(t, w.other, "other")
 	if w.scopedRule, err = s.CreateRule(ctx, w.leaver.TenantID, rules.Rule{UserID: w.leaver.ID, AccountID: w.leaverPriv,
@@ -164,7 +173,7 @@ func (w fworld) tenantRows(t *testing.T, tenantID int64) map[string]int {
 func TestForgetIdentityFreesEmailAndEndsSessions(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
-	if err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow); err != nil {
+	if _, err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.SessionUser(ctx, "session-solo", fNow); !errors.Is(err, ErrNotFound) {
@@ -206,7 +215,7 @@ func TestForgetIdentityIsIdempotentAndMissesTheAdmin(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
 	for _, at := range []int64{fNow, fNow + 5*day} {
-		if err := s.ForgetIdentity(ctx, "workos", "user_solo", at); err != nil {
+		if _, err := s.ForgetIdentity(ctx, "workos", "user_solo", at); err != nil {
 			t.Fatalf("forget at %d: %v", at, err)
 		}
 	}
@@ -225,9 +234,15 @@ func TestForgetIdentityIsIdempotentAndMissesTheAdmin(t *testing.T) {
 	}
 	// Identities nobody has, the admin's address and the empty identity reach no one.
 	for _, id := range [][2]string{{"workos", "nobody"}, {"", ""}, {"workos", w.admin.Email}, {"password", strconv.FormatInt(w.admin.ID, 10)}} {
-		if err := s.ForgetIdentity(ctx, id[0], id[1], fNow); err != nil {
-			t.Errorf("forget %v: %v", id, err)
+		if f, err := s.ForgetIdentity(ctx, id[0], id[1], fNow); err != nil || f.UserID != 0 || len(f.Accounts) != 0 {
+			t.Errorf("forget %v: %+v, %v", id, f, err)
 		}
+	}
+	if a, err := s.Account(ctx, w.soloBox); err != nil || a.LastEventAt != fNow {
+		t.Errorf("the second call touched the mailbox: %+v, %v", a, err)
+	}
+	if a, err := s.Account(ctx, w.adminBox); err != nil || a.SecretGone || a.Status != "new" {
+		t.Errorf("the admin's mailbox = %+v, %v", a, err)
 	}
 	if due, _ := s.DueForRemoval(ctx, fDue*2); len(due) != 1 || due[0].UserID != w.solo.ID {
 		t.Errorf("due = %+v, want only the solo user", due)
@@ -242,8 +257,13 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
 	before := w.tenantRows(t, w.solo.TenantID)
-	if err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow); err != nil {
+	f, err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow)
+	if err != nil {
 		t.Fatal(err)
+	}
+	before["settings"]-- // the model key went at once and does not come back
+	if len(f.Accounts) != 1 || !f.Keys {
+		t.Errorf("forget = %+v", f)
 	}
 	back, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue-1)
 	if err != nil {
@@ -265,8 +285,88 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 			t.Errorf("%s: %d rows, want %d", table, after[table], n)
 		}
 	}
-	if as, _ := s.VisibleAccounts(ctx, back.Viewer()); len(as) != 1 || as[0].ID != w.soloBox {
-		t.Errorf("accounts after coming back = %+v", as)
+	as, _ := s.VisibleAccounts(ctx, back.Viewer())
+	if len(as) != 1 || as[0].ID != w.soloBox {
+		t.Fatalf("accounts after coming back = %+v", as)
+	}
+	// The mailbox stays stopped and asks for its password again.
+	if a := as[0]; !a.SecretGone || a.Status != "auth_failed" || a.LastError != forgottenMessage {
+		t.Errorf("the mailbox after coming back = %+v", a)
+	}
+	if _, err := s.AccountSecret(ctx, testMaster, w.soloBox); !errors.Is(err, ErrNoSecret) {
+		t.Errorf("its secret: %v, want ErrNoSecret", err)
+	}
+	if _, err := s.Setting(ctx, w.solo.TenantID, "key.anthropic_api_key"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the model key came back: %v", err)
+	}
+	// A new password brings the mailbox back.
+	if err := s.SetAccountSecret(ctx, testMaster, w.soloBox, "new-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := s.Account(ctx, w.soloBox); a.SecretGone {
+		t.Errorf("the mailbox has no secret after a new one: %+v", a)
+	}
+	if pw, err := s.AccountSecret(ctx, testMaster, w.soloBox); err != nil || pw != "new-pw" {
+		t.Errorf("secret = %q, %v", pw, err)
+	}
+}
+
+// Forgetting deletes the person's secrets at once: their mailboxes' passwords (all of
+// them when they are their tenant's only member, else every one they own, shared or not)
+// and, for an only member, the tenant's model keys. Nobody else's are touched.
+func TestForgetIdentityDeletesSecrets(t *testing.T) {
+	w := forgetWorld(t)
+	s, ctx := w.s, t.Context()
+	for _, c := range []struct {
+		sub      string
+		tenant   int64
+		accounts []int64
+		keys     bool
+	}{
+		{"user_solo", w.solo.TenantID, []int64{w.soloBox}, true},
+		{"user_leaver", w.leaver.TenantID, []int64{w.leaverPriv, w.leaverShared}, false},
+	} {
+		f, err := s.ForgetIdentity(ctx, "workos", c.sub, fNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.TenantID != c.tenant || f.Keys != c.keys || !slices.Equal(f.Accounts, c.accounts) {
+			t.Errorf("forget %s = %+v, want accounts %v keys %v", c.sub, f, c.accounts, c.keys)
+		}
+		_, err = s.Setting(ctx, c.tenant, "key.anthropic_api_key")
+		if gone := errors.Is(err, ErrNotFound); gone != c.keys {
+			t.Errorf("%s: model key gone = %v (%v), want %v", c.sub, gone, err, c.keys)
+		}
+		if _, err := s.Setting(ctx, c.tenant, "seed_"+strings.TrimPrefix(c.sub, "user_")+map[bool]string{true: "", false: "priv"}[c.keys]); err != nil {
+			t.Errorf("%s: an ordinary setting went: %v", c.sub, err)
+		}
+	}
+	for _, id := range []int64{w.soloBox, w.leaverPriv, w.leaverShared} {
+		a, err := s.Account(ctx, id)
+		if err != nil || !a.SecretGone || a.Status != "auth_failed" || a.LastError != forgottenMessage {
+			t.Errorf("mailbox %d = %+v, %v; want its secret gone and auth_failed", id, a, err)
+		}
+		if _, err := s.AccountSecret(ctx, testMaster, id); !errors.Is(err, ErrNoSecret) {
+			t.Errorf("mailbox %d secret: %v, want ErrNoSecret", id, err)
+		}
+	}
+	for _, id := range []int64{w.adminBox, w.mateBox, w.otherBox} {
+		if a, err := s.Account(ctx, id); err != nil || a.SecretGone || a.Status != "new" {
+			t.Errorf("someone else's mailbox %d = %+v, %v", id, a, err)
+		}
+		if _, err := s.AccountSecret(ctx, testMaster, id); err != nil {
+			t.Errorf("someone else's secret %d: %v", id, err)
+		}
+	}
+	if _, err := s.Setting(ctx, w.other.TenantID, "key.anthropic_api_key"); err != nil {
+		t.Errorf("another tenant's model key: %v", err)
+	}
+	ids, err := s.IdentityMailboxes(ctx, "workos", "user_leaver")
+	if err != nil || !slices.Equal(ids, []int64{w.leaverPriv, w.leaverShared}) {
+		t.Errorf("IdentityMailboxes = %v, %v", ids, err)
+	}
+	if ids, err := s.IdentityMailboxes(ctx, "workos", "nobody"); err != nil || len(ids) != 0 {
+		t.Errorf("IdentityMailboxes of nobody = %v, %v", ids, err)
 	}
 }
 
@@ -279,7 +379,7 @@ func TestRemoveForgottenOnlyMember(t *testing.T) {
 	for _, tenant := range []int64{SelfHostTenant, w.leaver.TenantID, w.other.TenantID} {
 		others[tenant] = w.tenantRows(t, tenant)
 	}
-	if err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow); err != nil {
+	if _, err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RemoveForgotten(ctx, w.solo.ID, fDue-1); !errors.Is(err, ErrNotFound) {
@@ -317,36 +417,34 @@ func TestRemoveForgottenOnlyMember(t *testing.T) {
 	}
 }
 
-// A member leaving a team takes their private mailbox; the team keeps its tenant, its
-// rules (the one naming the private mailbox rewritten), and the leaver's shared mailbox,
-// now the teammate's.
+// A member leaving a team takes all their mailboxes, the shared one too; the team keeps
+// its tenant, its model keys and its rules (the ones naming a removed mailbox rewritten),
+// now authored by the teammate.
 func TestRemoveForgottenTeamMember(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
 	team := w.leaver.TenantID
 	before := w.tenantRows(t, team)
-	if err := s.ForgetIdentity(ctx, "workos", "user_leaver", fNow); err != nil {
+	if _, err := s.ForgetIdentity(ctx, "workos", "user_leaver", fNow); err != nil {
 		t.Fatal(err)
 	}
 	gone, err := s.RemoveForgotten(ctx, w.leaver.ID, fDue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gone.Tenant || len(gone.Accounts) != 1 || gone.Accounts[0] != w.leaverPriv {
-		t.Errorf("removal = %+v, want only the private mailbox", gone)
+	if gone.Tenant || !slices.Equal(gone.Accounts, []int64{w.leaverPriv, w.leaverShared}) {
+		t.Errorf("removal = %+v, want both of the leaver's mailboxes", gone)
 	}
-	if len(gone.Rules) != 2 {
-		t.Errorf("rules rewritten = %+v, want the two naming the private mailbox", gone.Rules)
+	if len(gone.Rules) != 3 {
+		t.Errorf("rules rewritten = %+v, want the three naming one of them", gone.Rules)
 	}
 	if _, err := s.User(ctx, w.leaver.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the leaver's user row: %v", err)
 	}
-	if _, err := s.Account(ctx, w.leaverPriv); !errors.Is(err, ErrNotFound) {
-		t.Errorf("the private mailbox: %v", err)
-	}
-	shared, err := s.Account(ctx, w.leaverShared)
-	if err != nil || shared.UserID != w.mate.ID || !shared.Shared {
-		t.Errorf("the shared mailbox = %+v, %v; want it shared and the teammate's", shared, err)
+	for _, id := range []int64{w.leaverPriv, w.leaverShared} {
+		if _, err := s.Account(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("the leaver's mailbox %d: %v", id, err)
+		}
 	}
 	scoped, err := s.Rule(ctx, team, w.scopedRule.ID)
 	if err != nil || !scoped.MailboxRemoved || scoped.Enabled || scoped.UserID != w.mate.ID {
@@ -364,7 +462,7 @@ func TestRemoveForgottenTeamMember(t *testing.T) {
 	got := w.tenantRows(t, team)
 	for table, want := range map[string]int{
 		"tenants": 1, "users": 1, "identities": 1, "sessions": 1, "summaries": 1, "forgotten": 0,
-		"accounts": 2, "messages": 2, "settings": before["settings"], "usage_daily": before["usage_daily"],
+		"accounts": 1, "messages": 1, "settings": before["settings"], "usage_daily": before["usage_daily"],
 		"batches": before["batches"], "rules": before["rules"],
 	} {
 		if got[table] != want {
