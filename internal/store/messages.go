@@ -285,6 +285,10 @@ type Decision struct {
 	// Probabilities is what the decision model gave each candidate rule, by rule id, with
 	// 0 for "none of these". nil when the model gives no such spread, or none was asked.
 	Probabilities map[int64]float64
+	// SenderSource is who made the sender rule that settled the email (Stage sender): user
+	// or learned. Empty for other stages, and for a sender decision recorded before it was
+	// kept whose origin cannot be told.
+	SenderSource string
 }
 
 // The columns tolerate a missing row, so a LEFT JOIN scans into a zero Decision.
@@ -292,7 +296,7 @@ const decisionCols = `COALESCE(d.id, 0), COALESCE(d.message_id, 0), COALESCE(d.s
 	COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, ''),
 	COALESCE(d.rule_version, 0), COALESCE(d.confidence, 0), COALESCE(d.reason, ''), COALESCE(d.model, ''),
 	COALESCE(d.tokens_in, 0), COALESCE(d.tokens_out, 0), COALESCE(d.cost_usd, 0), COALESCE(d.latency_ms, 0), COALESCE(d.created_at, 0),
-	COALESCE(d.probabilities, '')`
+	COALESCE(d.probabilities, ''), COALESCE(d.sender_source, '')`
 
 // probabilities scans decisions.probabilities, a JSON object keyed by rule id.
 type probabilities map[int64]float64
@@ -306,7 +310,7 @@ func (p *probabilities) Scan(v any) error {
 
 func decisionDest(d *Decision) []any {
 	return []any{&d.ID, &d.MessageID, &d.Stage, &d.RuleID, &d.RuleName, &d.RuleVersion, &d.Confidence, &d.Reason, &d.Model,
-		&d.TokensIn, &d.TokensOut, &d.CostUSD, &d.LatencyMS, &d.CreatedAt, (*probabilities)(&d.Probabilities)}
+		&d.TokensIn, &d.TokensOut, &d.CostUSD, &d.LatencyMS, &d.CreatedAt, (*probabilities)(&d.Probabilities), &d.SenderSource}
 }
 
 // AddDecision records a decision and moves its message to state in one transaction, and
@@ -327,10 +331,10 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO decisions (message_id, stage, rule_id, rule_name, rule_version, confidence, reason, model,
-		                        tokens_in, tokens_out, cost_usd, latency_ms, created_at, probabilities)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                        tokens_in, tokens_out, cost_usd, latency_ms, created_at, probabilities, sender_source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.MessageID, d.Stage, null(d.RuleID), null(d.RuleName), null(d.RuleVersion), d.Confidence, d.Reason, null(d.Model),
-		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt, probs)
+		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt, probs, null(d.SenderSource))
 	if err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
 	}

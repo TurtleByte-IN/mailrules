@@ -13,7 +13,9 @@ MailRules records every decision and every change it makes to your mailbox, befo
 Filter the list by **Rule**, **Mailbox** and **Outcome** (Sorted, Left in Inbox, Needs review, Trashed). Each row shows the time, sender, subject, why it was decided that way, which rule took it, and how:
 
 - **condition · free**: the rule's conditions decided it;
-- **sender · learned**: a sender rule decided it;
+- **sender · set by you**: a sender rule you set decided it, on **Senders** or with **Always do this for …**;
+- **sender · learned**: a sender rule MailRules learned decided it (see [Sender rules](./rules.md#sender-rules));
+- **sender**: a sender rule decided it before MailRules recorded who made the rule (mail sorted by an earlier version);
 - **you · reviewed** or **you · corrected**: you decided it;
 - a model name and a confidence: the decision model or the fallback decided it.
 

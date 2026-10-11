@@ -637,7 +637,7 @@ func TestLearnedSenderRule(t *testing.T) {
 	// From now on the sender is routed without a model call.
 	calls := len(e.primary.Requests())
 	row := e.process(sender, "order 7")
-	if row.Decision.Stage != "sender" || row.Decision.RuleID != e.food.ID || len(e.primary.Requests()) != calls {
+	if d := row.Decision; d.Stage != "sender" || d.RuleID != e.food.ID || d.SenderSource != "learned" || len(e.primary.Requests()) != calls {
 		t.Errorf("after learning: %+v, %d new model calls", row.Decision, len(e.primary.Requests())-calls)
 	}
 
@@ -661,7 +661,7 @@ func TestLearnedSenderRule(t *testing.T) {
 	if got := learned(); len(got) != 1 || got[0].Source != "user" || got[0].RuleID != e.receipts.ID {
 		t.Fatalf("user sender rule = %+v", got)
 	}
-	if row := e.process(sender, "order 9"); row.Decision.Stage != "sender" || row.Decision.RuleID != e.receipts.ID {
+	if row := e.process(sender, "order 9"); row.Decision.Stage != "sender" || row.Decision.RuleID != e.receipts.ID || row.Decision.SenderSource != "user" {
 		t.Errorf("user sender rule not used: %+v", row.Decision)
 	}
 }

@@ -575,14 +575,33 @@ func (m *Mailbox) FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int
 		if validity != m.selValidity {
 			return nil // every UID now means another message, or none
 		}
-		msgs, err := c.Fetch(uids, items.opts).Collect()
-		if err != nil {
-			return err
-		}
-		for _, b := range msgs {
-			for _, i := range at[b.UID] {
-				out[i] = items.raw(b)
+		for try := 0; len(uids) > 0; try++ {
+			msgs, err := c.Fetch(uids, items.opts).Collect()
+			if err != nil {
+				return err
 			}
+			for _, b := range msgs {
+				for _, i := range at[b.UID] {
+					out[i] = items.raw(b)
+				}
+			}
+			if try > 0 {
+				break
+			}
+			// A UID that did not come back may be one the session has not been told of
+			// yet (see fetchOne): sync with NOOP and ask once more for those alone.
+			var missing imap.UIDSet
+			for uid, is := range at {
+				if out[is[0]] == nil {
+					missing.AddNum(uid)
+				}
+			}
+			if len(missing) > 0 {
+				if err := c.Noop().Wait(); err != nil {
+					return err
+				}
+			}
+			uids = missing
 		}
 		return nil
 	})
@@ -592,18 +611,28 @@ func (m *Mailbox) FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int
 	return out, nil
 }
 
-// fetchOne returns the FETCH data for exactly the UID asked for, or ErrNotFound.
+// fetchOne returns the FETCH data for exactly the UID asked for, or ErrNotFound. A server
+// may answer nothing for a UID it has not yet told this session about, as Dovecot does for
+// mail delivered since the session last synced, so before calling the message gone it
+// sends NOOP, which brings the session up to date, and asks once more.
 func fetchOne(c *imapclient.Client, uid imap.UIDSet, opts *imap.FetchOptions) (*imapclient.FetchMessageBuffer, error) {
-	msgs, err := c.Fetch(uid, opts).Collect()
-	if err != nil {
-		return nil, err
-	}
-	for _, b := range msgs {
-		if uid.Contains(b.UID) {
-			return b, nil
+	for try := 0; ; try++ {
+		msgs, err := c.Fetch(uid, opts).Collect()
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range msgs {
+			if uid.Contains(b.UID) {
+				return b, nil
+			}
+		}
+		if try > 0 {
+			return nil, fmt.Errorf("%w: uid %s", mail.ErrNotFound, uid.String())
+		}
+		if err := c.Noop().Wait(); err != nil {
+			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("%w: uid %s", mail.ErrNotFound, uid.String())
 }
 
 func flagStrings(flags []imap.Flag) []string {

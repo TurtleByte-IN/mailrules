@@ -76,7 +76,11 @@
     const d = r.decision;
     if (r.correction) return r.correction.kind === 'review' ? 'you · reviewed' : 'you · corrected';
     if (!d) return '';
-    if (d.stage === 'sender') return 'sender · learned';
+    if (d.stage === 'sender') {
+      if (d.sender_source === 'user') return 'sender · set by you';
+      if (d.sender_source === 'learned') return 'sender · learned';
+      return 'sender'; // decided before MailRules kept who made the sender rule
+    }
     if (d.stage === 'condition') return 'condition · free';
     // No model was asked (none is set): there is no confidence to show.
     if (!d.model) return '';

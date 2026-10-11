@@ -33,6 +33,12 @@ func TestSenders(t *testing.T) {
 			"List-Unsubscribe: <https://news.example/u>\r\nMessage-ID: <issue-%d@example.test>\r\n\r\nNews.\r\n", i, i))
 		e.item(fmt.Sprintf("issue %d", i), "acted")
 	}
+	// Activity says which emails the learned rule settled, and that MailRules made it (MAI-169).
+	for subject, want := range map[string]any{"issue 2": nil, "issue 3": "learned", "issue 4": "learned"} {
+		if d := e.item(subject, "acted")["decision"].(map[string]any); d["sender_source"] != want {
+			t.Errorf("%s: decision %v, want sender_source %v", subject, d, want)
+		}
+	}
 
 	list := e.call(http.MethodGet, "/api/senders", "", http.StatusOK)
 	items := list["items"].([]any)
@@ -57,8 +63,8 @@ func TestSenders(t *testing.T) {
 		t.Fatalf("after PUT = %v", set)
 	}
 	e.deliver("Swiggy <noreply@swiggy.in>", "order kept")
-	if it := e.item("order kept", "acted"); it["decision"].(map[string]any)["stage"] != "sender" || e.folderOf("order kept") != "INBOX" {
-		t.Errorf("a kept sender's mail: %v in %q", it["decision"], e.folderOf("order kept"))
+	if d := e.item("order kept", "acted")["decision"].(map[string]any); d["stage"] != "sender" || d["sender_source"] != "user" || e.folderOf("order kept") != "INBOX" {
+		t.Errorf("a kept sender's mail: %v in %q", d, e.folderOf("order kept"))
 	}
 	// A domain can be routed too, and a quiet address blocked before it ever writes.
 	domain := e.call(http.MethodPut, "/api/senders/domain/News.Example", `{"verdict":"route","rule_id":1}`, http.StatusOK)["sender"].(map[string]any)
