@@ -11,6 +11,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/publicnet"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
@@ -224,14 +225,32 @@ func firstConnect(ctx context.Context, mb mail.Mailbox, a store.Account) (connec
 	return c, nil
 }
 
+// notPublicMessage answers a server the hosted build does not connect to (mail.ErrNotPublic).
+const notPublicMessage = "The hosted version of MailRules can only connect to mail servers on the public internet."
+
+// publicOnly reports whether a's server must be on the public internet: in the hosted build
+// (MAILRULES_MODE=cloud), for a server the person named rather than one a module chose
+// (store.Account.Module). The daemon's connections hold to the same at dial time.
+func (s *server) publicOnly(a store.Account) bool {
+	return s.Settings.Env.Mode == "cloud" && !a.Module
+}
+
 // tryAccount logs in with credentials that are not stored yet, or with a one-click
 // mailbox's stored secret, and reads what first connect needs. On failure it has answered
 // already. The password is used for the login and nothing else; the error text sent to
-// the browser is ours, not the server's.
+// the browser is ours, not the server's. In the hosted build a server the person named
+// that is not on the public internet is refused before anything is dialed, so the answer
+// says nothing of what listens there.
 func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Account, password string) (connected, bool) {
 	refuse := func(code, message, path string) (connected, bool) {
 		writeError(w, http.StatusUnprocessableEntity, code, message, path)
 		return connected{}, false
+	}
+	if s.publicOnly(a) {
+		if err := publicnet.Check(r.Context(), s.Resolver, a.Host); errors.Is(err, mail.ErrNotPublic) {
+			slog.InfoContext(r.Context(), "account server refused: not on the public internet", "host", a.Host, "error", err.Error())
+			return refuse("host_not_public", notPublicMessage, "host")
+		}
 	}
 	var (
 		mb       mail.Mailbox
@@ -253,6 +272,8 @@ func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Acco
 	slog.InfoContext(r.Context(), "account connection test failed", "host", a.Host, "error", err.Error())
 	var certErr *mail.CertError
 	switch {
+	case errors.Is(err, mail.ErrNotPublic): // the name resolved elsewhere when it was dialed
+		return refuse("host_not_public", notPublicMessage, "host")
 	case errors.Is(err, mail.ErrReconnect):
 		p, _ := presets.Get(a.Preset)
 		return refuse("reconnect_needed", p.Label+" no longer accepts MailRules' sign-in. Reconnect to sign in again.", "")
@@ -495,6 +516,7 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	moved := a.Host != oldHost || a.Port != oldPort || a.TLSMode != oldTLS
 	if moved {
 		a.CertFingerprint = "" // accepted for the old server
+		a.Module = false       // the new server is the person's (UpdateAccount stores the same)
 	}
 	if sent["cert_fingerprint"] {
 		if a.CertFingerprint, ok = certFingerprint(w, cert); !ok {

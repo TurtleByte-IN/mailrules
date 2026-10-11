@@ -21,7 +21,8 @@ import (
 //
 // It returns when ctx is done, or early for errors that reconnecting cannot fix: wrong
 // credentials (mail.ErrAuth), a one-click sign-in to renew (mail.ErrReconnect), a TLS
-// failure (mail.ErrTLS) or a missing folder (mail.ErrNoFolder). A server that closes the
+// failure (mail.ErrTLS), a missing folder (mail.ErrNoFolder) or a server the hosted build
+// does not connect to (mail.ErrNotPublic). A server that closes the
 // connection, as Gmail and Outlook do when an access token expires, is reconnected to like
 // any lost connection, with a fresh token (Config.Token).
 func (m *Mailbox) Watch(ctx context.Context, folder string, lastUID uint32, out chan<- mail.NewMail) error {
@@ -32,7 +33,8 @@ func (m *Mailbox) Watch(ctx context.Context, folder string, lastUID uint32, out 
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if errors.Is(err, mail.ErrAuth) || errors.Is(err, mail.ErrReconnect) || errors.Is(err, mail.ErrTLS) || errors.Is(err, mail.ErrNoFolder) {
+		if errors.Is(err, mail.ErrAuth) || errors.Is(err, mail.ErrReconnect) || errors.Is(err, mail.ErrTLS) || errors.Is(err, mail.ErrNoFolder) ||
+			errors.Is(err, mail.ErrNotPublic) {
 			return err
 		}
 		wait := backoff + rand.N(backoff/2+1) // #nosec G404 -- jitter, not a secret

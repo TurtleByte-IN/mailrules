@@ -90,8 +90,10 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 	if address == "" || m.Secret == "" {
 		return 0, errors.New("add mailbox: an address and a secret are needed")
 	}
+	// Module: the server is the module's choice, so the hosted build connects to it even off
+	// the public internet (store.Account.Module).
 	a := store.Account{Label: address, Preset: preset.Name, Host: preset.Host, Port: preset.Port, TLSMode: preset.TLSMode,
-		Username: address, WatchFolder: "INBOX", OAuth: !m.Password}
+		Username: address, WatchFolder: "INBOX", OAuth: !m.Password, Module: true}
 	if m.Host != "" {
 		a.Host = m.Host
 	}

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/publicnet"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
@@ -46,6 +48,7 @@ type accountsCLI struct {
 	stdout    io.Writer
 	getenv    func(string) string
 	tlsConfig *tls.Config // nil outside tests: verify against the system roots
+	cloud     bool        // MAILRULES_MODE=cloud, set by run from the environment (publicDial)
 }
 
 func (a accountsCLI) run(ctx context.Context, args []string) error {
@@ -57,6 +60,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	a.cloud = cfg.Mode == "cloud"
 	fs := flag.NewFlagSet("accounts "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "")
@@ -184,13 +188,14 @@ func (a accountsCLI) password(file string, preset presets.Preset) (string, error
 // dial logs in with credentials that are not stored yet, trying each username the
 // account's preset allows, and returns the connection with the username that worked. The
 // CLI's `accounts add` and the HTTP API's connection test and account creation share it.
-func dial(ctx context.Context, acct store.Account, password string, tlsConfig *tls.Config) (*imap.Mailbox, string, error) {
+// cloud is MAILRULES_MODE=cloud (publicDial).
+func dial(ctx context.Context, acct store.Account, password string, tlsConfig *tls.Config, cloud bool) (*imap.Mailbox, string, error) {
 	preset, _ := presets.Get(acct.Preset)
 	var err error
 	for _, name := range preset.Usernames(acct.Username) {
 		var mb *imap.Mailbox
 		mb, err = imap.Open(ctx, imap.Config{
-			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode, Dial: publicDial(cloud, acct),
 			Username: name, Password: password, Preset: preset, TLSConfig: tlsConfig, CertFingerprint: acct.CertFingerprint,
 		})
 		if err == nil {
@@ -205,9 +210,21 @@ func dial(ctx context.Context, acct store.Account, password string, tlsConfig *t
 
 func (a accountsCLI) open(ctx context.Context, acct store.Account, preset presets.Preset, username, password string) (*imap.Mailbox, error) {
 	return imap.Open(ctx, imap.Config{
-		AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+		AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode, Dial: publicDial(a.cloud, acct),
 		Username: username, Password: password, Preset: preset, TLSConfig: a.tlsConfig, CertFingerprint: acct.CertFingerprint,
 	})
+}
+
+// publicDial is imap.Config.Dial for acct. In the hosted build (cloud), a mailbox whose
+// server the person named, rather than a module (store.Account.Module), is reached only on
+// the public internet, checked on the address each connection goes to, so a name that
+// resolves elsewhere by the time it is dialed is refused too (publicnet). Otherwise it is
+// nil, a plain dial, as self-host always does.
+func publicDial(cloud bool, acct store.Account) func(ctx context.Context, network, address string) (net.Conn, error) {
+	if !cloud || acct.Module {
+		return nil
+	}
+	return publicnet.Dialer{}.DialContext
 }
 
 // certHelp adds to a certificate error what the certificate is and how to accept it.
@@ -233,7 +250,7 @@ func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, ac
 	}
 	acct.UserID = user.ID
 
-	mb, username, err := dial(ctx, acct, password, a.tlsConfig)
+	mb, username, err := dial(ctx, acct, password, a.tlsConfig, a.cloud)
 	if err != nil {
 		if errors.Is(err, mail.ErrAuth) && preset.HelpURL != "" {
 			return fmt.Errorf("%w\nthis provider needs an app password, not your account password: %s", err, preset.HelpURL)

@@ -187,7 +187,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
 	// One-click mailboxes sign in through the module that connects them.
 	logins := newMailLogins(st, master, modules)
-	logins.tlsConfig = imapTLS
+	logins.tlsConfig, logins.cloud = imapTLS, cfg.Mode == "cloud"
 	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
 	start := func(acct store.Account) {
 		supervisors.Start(ctx, &worker.Supervisor{
@@ -238,7 +238,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett, Master: master,
 		Metrics: telemetry.NewMetrics(version), Version: version,
 		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
-			mb, username, err := dial(ctx, acct, password, imapTLS)
+			mb, username, err := dial(ctx, acct, password, imapTLS, logins.cloud)
 			if err != nil {
 				return nil, "", err // not mb: a nil *imap.Mailbox is not a nil mail.Mailbox
 			}
@@ -338,7 +338,7 @@ func openAccount(logins *mailLogins, acct store.Account) func(context.Context) (
 		}
 		preset, _ := presets.Get(acct.Preset)
 		mb, err := imap.Open(ctx, imap.Config{
-			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
+			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode, Dial: publicDial(logins.cloud, acct),
 			Username: acct.Username, Password: password, Preset: preset, TLSConfig: logins.tlsConfig, CertFingerprint: acct.CertFingerprint,
 		})
 		if err != nil {

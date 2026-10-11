@@ -1581,6 +1581,11 @@ components:
         `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
         stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).
         Sending `cert.fingerprint` as `cert_fingerprint` accepts it.
+        In the hosted build (`MAILRULES_MODE=cloud`), `host_not_public` (path `host`): the server
+        the person named is, or its name resolves to, an address off the public internet
+        (loopback, a private network, link-local, carrier-grade NAT and the like). It is
+        refused before anything is dialed, with the same message whatever listens there. A
+        mailbox a module added is on the module's server and is not refused.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -1698,7 +1703,7 @@ components:
     AccountStatus:
       type: string
       enum: [new, live, reconnecting, auth_failed, reconnect_needed, cert_changed, error, paused]
-      description: '`auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again, for a one-click mailbox whose sign-in was revoked or refused; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`'
+      description: '`auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again, for a one-click mailbox whose sign-in was revoked or refused; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`. In the hosted build, a mailbox whose server now resolves to an address off the public internet stops in `error` without connecting, with `last_error` saying that the hosted version can only connect to mail servers on the public internet'
     AccountInput:
       type: object
       required: [preset, username, password]
