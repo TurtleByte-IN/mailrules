@@ -10,6 +10,7 @@ Only a mailbox connected with one-click sign-in (Gmail or Outlook, in a build th
 
 - Click **Reconnect** on the mailbox, on **Mailboxes** or **Overview**. Sign in to Google or Microsoft as the mailbox's own address and allow access. MailRules connects again at once.
 - Signing in as another address is refused, and the mailbox stays as it was.
+- On a hosted MailRules, deleting your sign-in account deletes your one-click mailboxes' sign-ins at once. If you sign in again with the same account within 30 days, each says "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it". Click **Reconnect** to sign in to the provider again.
 - Google and Microsoft end each IMAP session about once an hour, when its access token expires. That is not this: MailRules reconnects with a new token on its own and the mailbox stays **Live**.
 
 ## A mailbox says Sign-in failed
@@ -18,6 +19,7 @@ The mail server refused the user name or password. MailRules stops trying for th
 
 - Use an app password, not the password you sign in to your provider with. iCloud, Gmail, Fastmail and Yahoo require one. See [App passwords](./first-run.md#app-passwords).
 - App passwords stop working when you revoke them or change your main password. Make a new one.
+- On a hosted MailRules, deleting your sign-in account deletes your mailboxes' passwords and your saved model keys at once. If you sign in again with the same account within 30 days, your rules and history are back, but each mailbox says "Your MailRules sign-in was deleted, so this mailbox's password was deleted with it" and waits for a new app password, and your model keys need entering again.
 - Click **New app password** on the mailbox (or **Edit** → **New app password**), paste it, and **Save**. MailRules reconnects at once.
 
 When adding a mailbox, the same problem reads: "The mail server refused the sign-in. Check the username and use an app password, not your account password."

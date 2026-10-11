@@ -24,12 +24,13 @@ const (
 	signInPath   = "/api/testsso/start"
 	signOutPath  = "/api/testsso/end"
 	webhookPath  = "/api/testsso/webhook"
-	pingPath     = "/api/testsso/ping" // a public POST that is not a webhook
+	pingPath     = "/api/testsso/ping"   // a public POST that is not a webhook
+	forgetPath   = "/api/testsso/forget" // a webhook: the service deleted ?sub=
 )
 
 // signInModule stands in for the hosted build's sign-in module. Its sign-in route trusts
 // the identity in the query (sub, email, org), where the real one asks the sign-in service;
-// its webhook ends the sessions of ?sub=.
+// its webhook ends the sessions of ?sub=, and its forget webhook forgets ?sub=.
 func signInModule() ext.Module {
 	return ext.Module{
 		Name: "testsso", SignIn: signInPath, SignOut: signOutPath,
@@ -54,6 +55,13 @@ func signInModule() ext.Module {
 				}},
 				{Method: http.MethodPost, Path: webhookPath, Public: true, Webhook: true, Handler: func(w http.ResponseWriter, r *http.Request) {
 					if err := h.EndSessions(r.Context(), testProvider, r.URL.Query().Get("sub")); err != nil {
+						h.Fail(w, r, err)
+						return
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}},
+				{Method: http.MethodPost, Path: forgetPath, Public: true, Webhook: true, Handler: func(w http.ResponseWriter, r *http.Request) {
+					if err := h.ForgetIdentity(r.Context(), testProvider, r.URL.Query().Get("sub")); err != nil {
 						h.Fail(w, r, err)
 						return
 					}

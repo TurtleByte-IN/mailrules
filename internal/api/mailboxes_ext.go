@@ -122,6 +122,7 @@ func (h host) ReconnectMailbox(ctx context.Context, accountID int64, address, se
 	if err := h.s.store.SetAccountSecret(ctx, h.s.Master, a.ID, secret); err != nil {
 		return fmt.Errorf("reconnect mailbox: %w", err)
 	}
+	a.SecretGone = false
 	if a.Status != worker.StatusPaused {
 		a.Status, a.LastError, a.LastEventAt = "new", "", h.s.now().Unix() // until the supervisor reports
 		if err := h.s.store.SetAccountStatus(ctx, a.ID, a.Status, "", a.LastEventAt); err != nil {

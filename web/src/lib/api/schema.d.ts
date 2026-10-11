@@ -195,7 +195,7 @@ export interface paths {
         put?: never;
         /**
          * Drop the connection and connect again
-         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. A one-click mailbox in `reconnect_needed` comes back only when the person signs in to the provider again, through the module's one-click URL with `&account=<id>` (`Preset.one_click_url`). The outcome arrives over `account.status`.
+         * @description Also how an account that stopped on `auth_failed`, `cert_changed` or `error` is started again. A one-click mailbox in `reconnect_needed` comes back only when the person signs in to the provider again, through the module's one-click URL with `&account=<id>` (`Preset.one_click_url`). The outcome arrives over `account.status`. A mailbox whose secret was deleted (its owner's sign-in was deleted, then they signed in again) answers 422 `auth_failed` (path `password`) until `PATCH /api/accounts/{id}` sends a new password, or 422 `reconnect_needed` for a one-click mailbox until the person signs in to the provider again.
          */
         post: operations["reconnectAccount"];
         delete?: never;
@@ -3092,6 +3092,7 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["Invalid"];
         };
     };
     testStoredAccount: {
