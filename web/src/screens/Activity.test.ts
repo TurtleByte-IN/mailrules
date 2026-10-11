@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clock, dayHeading, weekday } from '../lib/format';
-import { detail, error, inReview, item, serve, stats } from '../lib/state/activity.fixtures';
+import { decision, detail, error, inReview, item, serve, stats } from '../lib/state/activity.fixtures';
 import { activity } from '../lib/state/activity.svelte';
 import { review } from '../lib/state/review.svelte';
 import { accounts } from '../lib/state/accounts.svelte';
@@ -196,6 +196,17 @@ it('a row the user had the last word on says whether it was a correction or a re
   const rows = await within(screen.getByRole('region', { name: 'Activity feed' })).findAllByRole('listitem');
   expect(within(rows[0]).getByText('you · corrected')).toBeTruthy();
   expect(within(rows[1]).getByText('you · reviewed')).toBeTruthy();
+});
+
+it('a row a sender rule settled says whether the user set that rule or MailRules learned it', async () => {
+  const bySender = (id: number, sender_source: 'user' | 'learned' | null) => item({ id, decision: decision({ stage: 'sender', model: '', sender_source }) });
+  daemon([bySender(1, 'user'), bySender(2, 'learned'), bySender(3, null)]);
+  render(Activity);
+  const rows = await within(screen.getByRole('region', { name: 'Activity feed' })).findAllByRole('listitem');
+  expect(within(rows[0]).getByText('sender · set by you')).toBeTruthy();
+  expect(within(rows[1]).getByText('sender · learned')).toBeTruthy();
+  // Decided before MailRules kept who made the rule: no claim either way.
+  expect(within(rows[2]).getByText('sender')).toBeTruthy();
 });
 
 describe('Always do this', () => {

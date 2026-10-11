@@ -211,6 +211,56 @@ func TestMigrationActedAt(t *testing.T) {
 	}
 }
 
+// Migration 0019 (MAI-169): a sender decision recorded before decisions kept who made the
+// sender rule is marked as the user's only when that is certain, because it named no rule
+// and MailRules only ever learns routes to a rule. Every other one stays unknown.
+func TestMigrationSenderSource(t *testing.T) {
+	ctx := t.Context()
+	db := migratedTo(t, 18)
+	s := New(db)
+	a := newAccount(t, s, "me@icloud.com", "pw")
+	m, _, err := s.IngestMessage(ctx, mail.MsgRef{AccountID: a.ID, Folder: "INBOX", UIDValidity: 1, UID: 1}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := s.FirstUser(ctx)
+	rule, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: "Food", Intent: "food", Actions: []rules.Action{{Type: rules.ActKeep}}, Enabled: true}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name, stage string
+		ruleID      any
+		ruleName    any
+		ruleVersion any
+		want        string
+	}{
+		{"a kept, trashed or moved sender", "sender", nil, nil, nil, "user"},
+		{"a sender routed to a rule", "sender", rule.ID, "Food", 1, ""},
+		{"a sender routed to a rule since deleted", "sender", nil, "Gone", 2, ""},
+		{"a sender routed to a rule deleted before names were kept", "sender", nil, nil, 3, ""},
+		{"a model decision with no rule", "decider", nil, nil, nil, ""},
+	}
+	for _, tt := range tests {
+		if _, err := db.ExecContext(ctx, `INSERT INTO decisions (message_id, stage, rule_id, rule_name, rule_version, created_at) VALUES (?, ?, ?, ?, ?, 500)`,
+			m.ID, tt.stage, tt.ruleID, tt.ruleName, tt.ruleVersion); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := s.MessageDecisions(ctx, m.ID)
+	if err != nil || len(ds) != len(tests) {
+		t.Fatalf("decisions = %+v, %v", ds, err)
+	}
+	for i, tt := range tests {
+		if ds[i].SenderSource != tt.want {
+			t.Errorf("%s: sender source %q, want %q", tt.name, ds[i].SenderSource, tt.want)
+		}
+	}
+}
+
 // migratedTo opens a database migrated up to version n only.
 func migratedTo(t *testing.T, n int64) *sql.DB {
 	t.Helper()

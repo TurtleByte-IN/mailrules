@@ -2195,7 +2195,7 @@ components:
       enum: [done, dry_run, failed, undone]
     Decision:
       type: object
-      required: [id, stage, rule_id, rule_name, confidence, reason, model, tokens_in, tokens_out, cost_usd, latency_ms, created_at]
+      required: [id, stage, rule_id, rule_name, confidence, reason, model, tokens_in, tokens_out, cost_usd, latency_ms, created_at, sender_source]
       properties:
         id: { type: integer, format: int64 }
         stage: { $ref: '#/components/schemas/Stage' }
@@ -2209,6 +2209,7 @@ components:
         cost_usd: { type: number }
         latency_ms: { type: integer }
         created_at: { type: integer, format: int64 }
+        sender_source: { type: [string, 'null'], enum: [user, learned, null], description: 'For stage sender: who made the sender rule that settled the email, the user (on Senders, or with "Always do this for this sender") or MailRules, which learned it. null for every other stage, and for a sender decision recorded before this was kept whose maker cannot be told' }
     MessageAction:
       type: object
       required: [id, message_id, account_id, decision_id, batch_id, kind, folder, from_folder, to_folder, status, error, created_at, undone_at]

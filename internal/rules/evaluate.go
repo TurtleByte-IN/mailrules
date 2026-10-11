@@ -56,8 +56,10 @@ type Result struct {
 	Actions     []Action // the primary rule's actions, then each stacking rule's
 	Stacked     []int64  // stacking rules whose actions were appended
 	Review      bool     // below threshold: take no action, show in Needs review
-	// SenderRuleID is the sender rule that settled the email (Stage is StageSender); 0 otherwise.
+	// SenderRuleID is the sender rule that settled the email (Stage is StageSender), and
+	// SenderSource who made it (user | learned); 0 and empty otherwise.
 	SenderRuleID int64
+	SenderSource string
 }
 
 // Options are the per-run settings Evaluate needs.
@@ -104,31 +106,27 @@ func Evaluate(e message.Summary, rs []Rule, senders []SenderRule, opt Options) E
 
 	// Step 1: sender rules.
 	if sr := matchSender(&e, senders); sr != nil {
+		var res Result
 		switch sr.Verdict {
 		case VerdictKeep:
-			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActKeep}}, SenderRuleID: sr.ID}
-			return ev
+			res = Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActKeep}}}
 		case VerdictBlock:
-			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActTrash}}, SenderRuleID: sr.ID}
-			return ev
+			res = Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActTrash}}}
 		case VerdictMove:
-			ev.Final = &Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActMove, Folder: sr.Folder}}, SenderRuleID: sr.ID}
-			return ev
+			res = Result{Stage: StageSender, Confidence: 1, Actions: []Action{{Type: ActMove, Folder: sr.Folder}}}
 		case VerdictRoute:
 			// A route to a rule that is gone or switched off falls through to the walk.
 			routed := func(r Rule) bool { return r.ID == sr.RuleID && r.Enabled }
 			if i := slices.IndexFunc(rs, routed); i >= 0 {
-				res := ev.result(&rs[i], StageSender, 1)
-				res.SenderRuleID = sr.ID
-				ev.Final = &res
-				return ev
+				res = ev.result(&rs[i], StageSender, 1)
+			} else if i := slices.IndexFunc(opt.RouteOnly, routed); i >= 0 {
+				res = ev.result(&opt.RouteOnly[i], StageSender, 1)
 			}
-			if i := slices.IndexFunc(opt.RouteOnly, routed); i >= 0 {
-				res := ev.result(&opt.RouteOnly[i], StageSender, 1)
-				res.SenderRuleID = sr.ID
-				ev.Final = &res
-				return ev
-			}
+		}
+		if res.Stage == StageSender {
+			res.SenderRuleID, res.SenderSource = sr.ID, sr.Source
+			ev.Final = &res
+			return ev
 		}
 	}
 

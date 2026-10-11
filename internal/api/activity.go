@@ -29,6 +29,9 @@ type decisionJSON struct {
 	CostUSD    float64 `json:"cost_usd"`
 	LatencyMS  int64   `json:"latency_ms"`
 	CreatedAt  int64   `json:"created_at"`
+	// SenderSource is who made the sender rule that settled the email: user | learned. null
+	// for other stages, and for a sender decision too old to say.
+	SenderSource *string `json:"sender_source"`
 }
 
 type actionJSON struct {
@@ -143,8 +146,12 @@ func toDecisionJSON(d store.Decision) decisionJSON {
 	if d.RuleID == 0 && d.RuleVersion != 0 && name == "" {
 		name = "Deleted rule" // decided before rule names were kept with the decision
 	}
-	return decisionJSON{ID: d.ID, Stage: d.Stage, RuleID: ts(d.RuleID), RuleName: name, Confidence: d.Confidence, Reason: d.Reason,
+	out := decisionJSON{ID: d.ID, Stage: d.Stage, RuleID: ts(d.RuleID), RuleName: name, Confidence: d.Confidence, Reason: d.Reason,
 		Model: d.Model, TokensIn: d.TokensIn, TokensOut: d.TokensOut, CostUSD: d.CostUSD, LatencyMS: d.LatencyMS, CreatedAt: d.CreatedAt}
+	if d.SenderSource != "" {
+		out.SenderSource = &d.SenderSource
+	}
+	return out
 }
 
 func toActionJSON(a store.Action) actionJSON {
