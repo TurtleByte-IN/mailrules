@@ -73,3 +73,17 @@ it.each([
   expect((await screen.findByRole('link', { name: 'Reconnect me@example.com' })).getAttribute('href')).toBe(href);
   accounts.presets = [];
 });
+
+it("gives a teammate's one-click Gmail mailbox that needs reconnecting no Reconnect, so no Google sign-in starts without the note", async () => {
+  daemon(() => true);
+  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password',
+    password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null }];
+  accounts.list = [{ id: 6, label: 'jo@gmail.com', preset: 'gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', username: 'jo@gmail.com', watch_folder: 'INBOX',
+    status: 'reconnect_needed', last_error: '', last_event_at: null, last_mail_at: null, capabilities: [], can_move: true, folder_count: 2, created_at: 1, shared: true, mine: false,
+    cert_fingerprint: '', one_click: true, module: true }];
+  render(Overview);
+  expect(await screen.findByText('Sign-in revoked or expired. The person who added this mailbox needs to reconnect it.')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: /Reconnect/ })).toBeNull();
+  expect([...document.querySelectorAll('a')].some((l) => l.getAttribute('href')?.startsWith('/api/'))).toBe(false);
+  accounts.presets = [];
+});
