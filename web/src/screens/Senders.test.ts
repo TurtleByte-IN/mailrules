@@ -53,6 +53,13 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+it('a sender with one email says "1 email", not "1 emails"', async () => {
+  routes[LIST] = page([sender('once@example.test', { messages: 1 })]);
+  render(Senders);
+  expect(await screen.findByText('1 email')).toBeTruthy();
+  expect(screen.queryByText('1 emails')).toBeNull();
+});
+
 it('a failed load shows an alert, and Retry fetches again', async () => {
   routes[LIST] = [500, { error: { code: 'internal', message: 'Something went wrong.' } }];
   render(Senders);
