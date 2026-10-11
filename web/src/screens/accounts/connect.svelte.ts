@@ -2,6 +2,7 @@ import type { AccountInput, Preset, ServerCert, TestResult } from '../../lib/api
 import * as accountsApi from '../../lib/api/accounts';
 import { ApiError } from '../../lib/api/client';
 import { accounts, connect } from '../../lib/state/accounts.svelte';
+import { startOneClick } from '../../lib/state/oneclick';
 import { addTemplatesByName } from '../../lib/state/compose.svelte';
 import { flash } from '../../lib/state/toast.svelte';
 
@@ -68,8 +69,13 @@ export class Wizard {
   templates = $state(starterTemplates.map((t) => ({ ...t })));
   #run = 0;
 
-  /** `added`: the id of a mailbox a one-click sign-in just connected, to go on with at Rules. */
-  constructor(added?: number) {
+  /**
+   * `added`: the id of a mailbox a one-click sign-in just connected, to go on with at Rules. `from`: where a
+   * one-click sign-in this run starts should come back to.
+   */
+  readonly from: 'setup' | 'accounts';
+  constructor(added?: number, from: 'setup' | 'accounts' = 'accounts') {
+    this.from = from;
     if (added) [this.accountId, this.step, this.test] = [added, 2, 'ok'];
   }
 
@@ -198,7 +204,7 @@ export class Wizard {
   async next(): Promise<boolean> {
     if (this.step === 0 && !this.preset) return false;
     if (this.step === 0 && this.oneClick && this.preset?.one_click_url) {
-      window.location.assign(this.preset.one_click_url);
+      startOneClick(this.preset.one_click_url, this.from);
       return false;
     }
     if (this.step === 1 && this.test !== 'ok') {

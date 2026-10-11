@@ -72,6 +72,15 @@ it('says so when no mailbox is connected', async () => {
   expect(screen.getByText('No mailbox connected yet.')).toBeTruthy();
 });
 
+it.each([
+  ['a free build', null, 'Any IMAP mailbox that signs in with a password or app password. MailRules sorts on the server, so every app you use sees the result.'],
+  ['a build that offers one-click sign-in', '/api/oauth/start?provider=gmail', 'Any IMAP mailbox. MailRules sorts on the server, so every app you use sees the result.'],
+])('says which mailboxes it takes in %s', async (_, url, said) => {
+  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: url }];
+  await show();
+  expect(screen.getByRole('heading', { name: 'Mailboxes' }).nextElementSibling!.textContent!.trim()).toBe(said);
+});
+
 it('asks for a new app password on a mailbox whose sign-in failed, and opens Edit on that field', async () => {
   await show(failed);
   expect(screen.getByText('Sign-in failed. Enter a new app password.')).toBeTruthy();

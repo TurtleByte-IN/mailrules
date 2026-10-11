@@ -1,16 +1,25 @@
 <script lang="ts">
-  import Router from 'svelte-spa-router';
+  import Router, { replace } from 'svelte-spa-router';
   import { close as closeEvents, open as openEvents } from './lib/api/events';
   import Nav from './lib/components/Nav.svelte';
   import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
   import { auth, start } from './lib/state/auth.svelte';
   import { firstRun, settle } from './lib/state/firstrun.svelte';
+  import { setupReturn } from './lib/state/oneclick';
   import { load as loadReview } from './lib/state/review.svelte';
   import { load as loadRules } from './lib/state/rules.svelte';
   import { load as loadSettings, settings, toggleDryRun } from './lib/state/settings.svelte';
   import { toast } from './lib/state/toast.svelte';
   import { routes } from './routes';
   import Login from './screens/Login.svelte';
+
+  // A one-click sign-in started from first-run setup comes back to Mailboxes like any other:
+  // the guide takes it up again at its mailbox step, before the screens are drawn.
+  const resume = setupReturn(location.hash);
+  if (resume) {
+    firstRun.step = 'mailbox';
+    replace(resume.slice(1));
+  }
 
   start();
 

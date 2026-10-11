@@ -7,12 +7,19 @@
   /**
    * `onclose` runs when the first step's `cancelLabel` button is pressed, and once the mailbox
    * is saved unless `onconnected` is given. `added` is a mailbox a one-click sign-in just
-   * connected: the wizard opens at Rules for it.
+   * connected: the wizard opens at Rules for it. `from` is the screen a one-click sign-in
+   * started here comes back to.
    */
-  let { onclose, onconnected, cancelLabel = 'Cancel', added }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number } = $props();
+  let {
+    onclose,
+    onconnected,
+    cancelLabel = 'Cancel',
+    added,
+    from = 'accounts',
+  }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number; from?: 'setup' | 'accounts' } = $props();
 
   // svelte-ignore state_referenced_locally -- read once: the wizard is made again for another mailbox
-  const w = new Wizard(added);
+  const w = new Wizard(added, from);
   const apple = $derived(w.presetId === 'icloud');
   const proton = $derived(w.presetId === 'proton');
   const chosen = $derived(w.templates.filter((t) => t.on));

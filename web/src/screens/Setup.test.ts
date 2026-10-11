@@ -1,10 +1,20 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { router } from 'svelte-spa-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { Preset } from '../lib/api/accounts';
 import type { Settings as Saved } from '../lib/api/settings';
 import { accounts } from '../lib/state/accounts.svelte';
+import { addTemplatesByName } from '../lib/state/compose.svelte';
 import { firstRun, type Step } from '../lib/state/firstrun.svelte';
+import { setupReturn } from '../lib/state/oneclick';
 import { load, settings } from '../lib/state/settings.svelte';
 import Setup from './Setup.svelte';
+
+vi.mock('../lib/state/compose.svelte', () => ({ addTemplatesByName: vi.fn() }));
+
+// GET /api/presets in a build whose module offers one-click sign-in for Gmail.
+const gmail: Preset = { name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
+  secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail' };
 
 // GET /api/settings from a fresh daemon with no keys anywhere.
 const fresh = (over: Partial<Saved> = {}): Saved => ({
@@ -155,6 +165,42 @@ it('shows the mail server refusing the sign-in on the mailbox step, and stays th
   await fireEvent.input(screen.getByLabelText('App-specific password'), { target: { value: 'wrong-wrong-wrong' } });
   await fireEvent.click(screen.getByRole('button', { name: 'Test and continue' }));
   expect((await screen.findByRole('alert')).textContent).toBe('The mail server refused the sign-in.');
+  expect(firstRun.step).toBe('mailbox');
+});
+
+it("sends Gmail's one-click tile to the provider's sign-in, noting that the answer comes back to setup", async () => {
+  routes['GET /api/presets'] = [200, { items: [gmail] }];
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  await show('mailbox');
+  await fireEvent.click(await screen.findByRole('button', { name: /^Gmail One-click sign-in/ }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail');
+  expect(setupReturn('#/accounts?added=7')).toBe('#/setup?added=7');
+});
+
+it('goes on at Rules for the mailbox a one-click sign-in from setup connected, then to Done', async () => {
+  accounts.list = [{ id: 7, label: 'jo@gmail.com', preset: 'gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', username: 'jo@gmail.com', watch_folder: 'INBOX',
+    status: 'live', last_error: '', last_event_at: null, last_mail_at: null, capabilities: [], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: true }];
+  vi.mocked(addTemplatesByName).mockResolvedValue(3);
+  location.hash = '#/setup?added=7';
+  await vi.waitFor(() => expect(router.querystring).toBe('added=7'));
+  await show('mailbox');
+  // The guide stays on First mailbox; its wizard is at Rules.
+  expect(screen.getAllByRole('listitem', { current: 'step' }).map((l) => l.textContent?.replace(/\d/, '').trim())).toEqual(['First mailbox', 'Rules']);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Preview with 3 rules' }).hasAttribute('disabled')).toBe(false));
+  await fireEvent.click(screen.getByRole('button', { name: 'Preview with 3 rules' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Finish' }));
+  await waitFor(() => expect(firstRun.step).toBe('done'));
+  expect(screen.getByRole('heading', { name: "You're set" })).toBeTruthy();
+  expect(fetchMock.mock.calls.some((c) => c[0] === '/api/accounts')).toBe(false);
+});
+
+it('shows a one-click sign-in that failed from setup on the mailbox step', async () => {
+  location.hash = '#/setup?mailbox_error=connect_failed';
+  await vi.waitFor(() => expect(router.querystring).toBe('mailbox_error=connect_failed'));
+  await show('mailbox');
+  expect((await screen.findByRole('alert')).textContent).toContain("The mail server didn't accept the sign-in");
   expect(firstRun.step).toBe('mailbox');
 });
 
