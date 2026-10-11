@@ -170,6 +170,9 @@ func TestSupervisorStatuses(t *testing.T) {
 		stay bool // Run returns on its own
 	}{
 		{"wrong password stops for good", func(*env, int) (mail.Mailbox, error) { return nil, mail.ErrAuth }, StatusAuthFailed, true},
+		{"a revoked one-click sign-in stops for good", func(*env, int) (mail.Mailbox, error) {
+			return nil, fmt.Errorf("sign in: %w", mail.ErrReconnect)
+		}, StatusReconnectNeeded, true},
 		{"tls failure stops for good", func(*env, int) (mail.Mailbox, error) { return nil, mail.ErrTLS }, StatusError, true},
 		{"a changed certificate stops for good", func(*env, int) (mail.Mailbox, error) {
 			return nil, fmt.Errorf("connect: %w", &mail.CertError{Host: "127.0.0.1", Cert: mail.Cert{Fingerprint: "AA"}, Pinned: "BB"})

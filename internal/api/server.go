@@ -54,6 +54,11 @@ type Options struct {
 	// Connect logs in to a mail server with credentials that are not stored yet, trying
 	// the usernames the preset allows, and returns the connection with the username that worked.
 	Connect func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error)
+	// ConnectOAuth logs in to a one-click mailbox (store.Account.OAuth) through the module
+	// that signs in to its preset. secret nil: the account's stored secret, replaced in the
+	// store when the module rotates it. Otherwise a secret not stored yet, replaced in place
+	// when the module rotates it, so what is stored afterwards is the one that works.
+	ConnectOAuth func(ctx context.Context, acct store.Account, secret *string) (mail.Mailbox, error)
 	// StartAccount (re)starts watching an account; StopAccount stops it and waits until
 	// mail already queued is finished.
 	StartAccount func(acct store.Account)
@@ -174,6 +179,11 @@ func NewHandler(o Options) http.Handler {
 	}
 	if s.Metrics == nil {
 		s.Metrics = telemetry.NewMetrics(o.Version)
+	}
+	if s.ConnectOAuth == nil {
+		s.ConnectOAuth = func(context.Context, store.Account, *string) (mail.Mailbox, error) {
+			return nil, fmt.Errorf("%w: this build has no one-click sign-in", mail.ErrReconnect)
+		}
 	}
 	if s.Summary == nil {
 		s.Summary = summary.New(o.Store, o.Settings.Env, nil)
@@ -386,7 +396,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error, what string) {
 }
 
 func isMailError(err error) bool {
-	for _, target := range []error{mail.ErrAuth, mail.ErrTLS, mail.ErrConnection, mail.ErrThrottled, mail.ErrUnsupported, mail.ErrNoFolder, mail.ErrNotFound} {
+	for _, target := range []error{mail.ErrAuth, mail.ErrReconnect, mail.ErrTLS, mail.ErrConnection, mail.ErrThrottled, mail.ErrUnsupported, mail.ErrNoFolder, mail.ErrNotFound} {
 		if errors.Is(err, target) {
 			return true
 		}

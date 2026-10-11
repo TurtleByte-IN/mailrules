@@ -15,6 +15,10 @@ import (
 var (
 	// ErrAuth means the server refused the credentials. Do not retry; ask the user.
 	ErrAuth = errors.New("authentication failed")
+	// ErrReconnect means a mailbox that signs in with OAuth (one-click sign-in) can no longer
+	// get in: the person revoked MailRules' access, the grant expired, or the server refused
+	// the access token. Do not retry; the person must sign in to the provider again.
+	ErrReconnect = errors.New("one-click sign-in needs to be renewed")
 	// ErrTLS means the TLS handshake or certificate check failed. Do not retry. A
 	// certificate the person could accept, or one that replaced the accepted one, is a
 	// *CertError, which wraps ErrTLS.

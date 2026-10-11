@@ -3,8 +3,9 @@
 // routes, served behind the same sign-in and CSRF checks as the built-in ones unless it
 // marks one Public (served before sign-in) or Webhook (a call from another server), a
 // capability the web app reads in GET /api/settings `features`, and optionally the way
-// people sign in (Module.SignIn). ext/daemon runs the daemon with the modules a build
-// compiles in.
+// people sign in (Module.SignIn) and the way mailboxes of some providers are connected
+// with one-click sign-in (Module.Mailboxes). ext/daemon runs the daemon with the modules a
+// build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
 // mail it may read (read-only, with BODY.PEEK), the models it may call, the rules and
@@ -16,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -47,7 +49,92 @@ type Module struct {
 	// SignOut is the path of the module's Public GET route the browser goes to after the
 	// daemon has ended its session, so the sign-in service ends its own. It needs SignIn.
 	SignOut string
+	// Mailboxes, when set, connects mailboxes of some providers with one-click sign-in: the
+	// person signs in to the provider (OAuth) instead of pasting an app password, and the
+	// daemon logs in to IMAP with an access token the module gives it (SASL XOAUTH2).
+	// Reading, rules, moving, IDLE and undo are the daemon's own IMAP code, as for every
+	// mailbox. At most one module of a build sets it.
+	Mailboxes *MailboxSignIn
 }
+
+// MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
+// The module holds no connection, and the daemon knows nothing of OAuth: it stores the
+// secret the module gives it (Host.AddMailbox, Host.ReconnectMailbox), encrypted like an app
+// password, never returns it in the API and never logs it, and hands it back to Login just
+// before each login.
+type MailboxSignIn struct {
+	// Providers are the presets whose mailboxes the module signs in to: "gmail", "outlook"
+	// or both. GET /api/presets offers a one-click tile for each, and lists the Outlook
+	// preset only when it is here: Outlook takes no app password. A build without the
+	// module has no Outlook tile, and its Gmail tile is the app-password one.
+	Providers []string
+	// Connect is the path of the module's GET route, served to a signed-in user (not
+	// Public), that starts the provider's sign-in. The wizard's one-click tile sends the
+	// browser to Connect?provider=<preset>; the Reconnect button of a mailbox in
+	// reconnect_needed to Connect?provider=<preset>&account=<id>. The route ends with
+	// Host.MailboxAdded, Host.MailboxReconnected or Host.MailboxFailed.
+	Connect string
+	// Login is called just before every IMAP login to a mailbox the module connected, with
+	// the mailbox's provider and the secret stored for it (such as a refresh token), and
+	// returns the access token the daemon authenticates with as the mailbox's address. It
+	// is called for one mailbox at a time, and again for each new connection: a session the
+	// provider closes when its token expires (Gmail and Outlook do after about an hour) is
+	// a normal reconnect with a fresh token. ErrReconnect (or an error that wraps it) means
+	// the secret no longer works, revoked or expired: the mailbox stops in
+	// reconnect_needed, and no action runs, until the person signs in again. Any other
+	// error is retried as a lost connection. Errors are shown to the person and logged, so
+	// they must not contain the secret or a token.
+	Login func(ctx context.Context, provider, secret string) (MailToken, error)
+}
+
+// MailToken is what MailboxSignIn.Login returns.
+type MailToken struct {
+	AccessToken string
+	// Secret, when not empty, replaces the stored secret (a rotated refresh token). The
+	// daemon stores it, encrypted, before it authenticates with AccessToken.
+	Secret string
+}
+
+// NewMailbox is a mailbox a module connects with Host.AddMailbox.
+type NewMailbox struct {
+	Provider string // one of MailboxSignIn.Providers
+	Address  string // the mailbox's email address, which IMAP signs in as
+	Host     string // the IMAP server; empty = the preset's (imap.gmail.com, outlook.office365.com)
+	Port     int    // 0 = the preset's (993); the connection is always implicit TLS
+	Secret   string // what Login turns into an access token, such as a refresh token
+}
+
+var (
+	// ErrReconnect is what MailboxSignIn.Login returns when the stored secret no longer
+	// works: the mailbox waits in reconnect_needed until the person signs in again. The
+	// mail server refusing the access token puts the mailbox there too.
+	ErrReconnect = mail.ErrReconnect
+	// ErrMailboxExists is what Host.AddMailbox returns when the signed-in user's team
+	// already has the mailbox. Nothing changed.
+	ErrMailboxExists = errors.New("this mailbox is already connected")
+	// ErrMailboxMismatch is what Host.ReconnectMailbox returns when the person signed in to
+	// the provider as another address than the mailbox's. Nothing changed.
+	ErrMailboxMismatch = errors.New("signed in as another address than the mailbox's")
+	// ErrNoMailbox is what Host.ReconnectMailbox returns for a mailbox that is not a
+	// one-click mailbox of the module's providers that the signed-in user added.
+	ErrNoMailbox = errors.New("no such one-click mailbox")
+)
+
+// The codes Host.MailboxFailed sends the browser back to Mailboxes with.
+const (
+	// MailboxRefused: the person declined, or the provider refused the sign-in (a bad or
+	// expired code, a state mismatch, a permission not granted).
+	MailboxRefused = "refused"
+	// MailboxUnavailable: the provider's sign-in could not be reached.
+	MailboxUnavailable = "unavailable"
+	// MailboxExists: Host.AddMailbox returned ErrMailboxExists.
+	MailboxExists = "exists"
+	// MailboxMismatch: Host.ReconnectMailbox returned ErrMailboxMismatch.
+	MailboxMismatch = "mismatch"
+	// MailboxConnectFailed: Host.AddMailbox or Host.ReconnectMailbox failed otherwise: the
+	// mail server refused the login or could not be reached.
+	MailboxConnectFailed = "connect_failed"
+)
 
 // Route is one API endpoint of a module, as http.ServeMux patterns it: a method and a
 // path such as "/api/rules/suggest".
@@ -179,6 +266,34 @@ type Host interface {
 	// SignInFailed sends the browser back to the sign-in screen with code, one of the
 	// SignIn* codes (303 to /?signin_error=<code>).
 	SignInFailed(w http.ResponseWriter, r *http.Request, code string)
+
+	// AddMailbox connects a mailbox the module signs in to (Module.Mailboxes) for the
+	// signed-in user, from the module's Connect route; ctx must be the request's. It does
+	// what the add-mailbox wizard does with an app password: it logs in once (calling
+	// MailboxSignIn.Login with m.Secret), reads the folders, stores the mailbox with its
+	// secret encrypted, sorts only mail that arrives from now on, and starts watching it,
+	// in dry-run while the team's dry-run is on (as it is until the person turns it off).
+	// It returns the mailbox's id, for MailboxAdded. It fails, storing nothing, with
+	// ErrMailboxExists, with an error that wraps ErrReconnect when the provider refused the
+	// secret or the token, or with an error of the mail server or the database (answer
+	// those with MailboxFailed and the matching code).
+	AddMailbox(ctx context.Context, m NewMailbox) (accountID int64, err error)
+	// ReconnectMailbox gives a one-click mailbox the signed-in user added a new secret,
+	// from the module's Connect route called with account=<id>; ctx must be the
+	// request's. address is the one the person just signed in to the provider as. It logs
+	// in once with the new secret, then stores it and connects the mailbox again: how a
+	// mailbox in reconnect_needed comes back. It fails, changing nothing, with
+	// ErrNoMailbox, ErrMailboxMismatch, or as AddMailbox does.
+	ReconnectMailbox(ctx context.Context, accountID int64, address, secret string) error
+	// MailboxAdded sends the browser to the add-mailbox wizard at its Rules step for the
+	// mailbox AddMailbox connected (303 to /#/accounts?added=<id>).
+	MailboxAdded(w http.ResponseWriter, r *http.Request, accountID int64)
+	// MailboxReconnected sends the browser to Mailboxes, which says the mailbox is
+	// connected again (303 to /#/accounts?reconnected=<id>).
+	MailboxReconnected(w http.ResponseWriter, r *http.Request, accountID int64)
+	// MailboxFailed sends the browser back to Mailboxes with code, one of the Mailbox*
+	// codes, which it explains (303 to /#/accounts?mailbox_error=<code>).
+	MailboxFailed(w http.ResponseWriter, r *http.Request, code string)
 }
 
 // ScopeInput is a selection of mail as a request sends it: the fields of the contract's

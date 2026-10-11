@@ -105,7 +105,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		return a.list(ctx, st)
 	case "add":
 		preset, ok := presets.Get(*presetName)
-		if !ok {
+		if !ok || preset.OAuthOnly {
 			return fmt.Errorf("accounts add: --preset %q must be icloud, gmail, fastmail, yahoo, zoho, proton or generic", *presetName)
 		}
 		acct := store.Account{
@@ -316,6 +316,10 @@ func (a accountsCLI) test(ctx context.Context, st *store.Store, master []byte, i
 	}
 	if err != nil {
 		return err
+	}
+	if acct.OAuth {
+		// Only the module that connected it can sign in to it, and the command line runs none.
+		return fmt.Errorf("accounts test: account %d signs in with one-click sign-in; test it in the web UI: Mailboxes, then Test", id)
 	}
 	password, err := st.AccountSecret(ctx, master, id)
 	if err != nil {

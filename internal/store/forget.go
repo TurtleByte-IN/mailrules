@@ -22,8 +22,12 @@ func forgottenEmail(userID int64) string {
 }
 
 // forgottenMessage is the last error a forgotten person's mailboxes show: their secret is
-// gone, and they need a new one if the same person signs in again.
-const forgottenMessage = "Your MailRules sign-in was deleted, so this mailbox's password was deleted with it. Enter a new app password to start sorting again."
+// gone, and they need a new one if the same person signs in again. A one-click mailbox
+// (oauth) shows forgottenOAuthMessage and reconnect_needed instead of auth_failed.
+const (
+	forgottenMessage      = "Your MailRules sign-in was deleted, so this mailbox's password was deleted with it. Enter a new app password to start sorting again."
+	forgottenOAuthMessage = "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it. Reconnect to sign in to the provider again."
+)
 
 // providerKeys matches the settings rows that hold a tenant's stored model API keys
 // (settings.keyPrefix).
@@ -112,11 +116,14 @@ func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, no
 	if out.Keys, out.Accounts, err = removalAccounts(ctx, tx, out.UserID, out.TenantID); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: list mailboxes: %w", err)
 	}
-	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone). A mailbox
-	// whose secret is already gone keeps its status, so a second call changes nothing.
+	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
+	// one-click mailbox that is its refresh token. A mailbox whose secret is already gone
+	// keeps its status, so a second call changes nothing.
 	for _, id := range out.Accounts {
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = X'', dek_enc = X'', status = 'auth_failed',
-			last_error = ?, last_event_at = ? WHERE id = ? AND length(secret_enc) > 0`, forgottenMessage, now, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = X'', dek_enc = X'',
+			status = CASE oauth WHEN 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
+			last_error = CASE oauth WHEN 1 THEN ? ELSE ? END, last_event_at = ?
+			WHERE id = ? AND length(secret_enc) > 0`, forgottenOAuthMessage, forgottenMessage, now, id); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: delete mailbox secret: %w", err)
 		}
 	}

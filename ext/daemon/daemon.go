@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -104,6 +105,12 @@ func Run(args []string, version string, modules ...ext.Module) error {
 }
 
 func serve(ctx context.Context, cfg *config.Config, version string, modules []ext.Module) error {
+	return serveIMAP(ctx, cfg, version, modules, nil)
+}
+
+// serveIMAP is serve with the TLS settings of every IMAP connection: nil verifies servers
+// against the system's roots, as the daemon does; tests pass the test server's.
+func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules []ext.Module, imapTLS *tls.Config) error {
 	slog.SetDefault(telemetry.NewLogger(os.Stderr, cfg.LogLevel))
 	if !cfg.ListensLocally() {
 		slog.Warn("web UI is reachable from other machines; put it behind a reverse proxy with TLS", "listen", cfg.Listen)
@@ -178,10 +185,13 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 	// The executor is the one place that changes a mailbox; the HTTP layer reaches it for
 	// undo and corrections.
 	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
+	// One-click mailboxes sign in through the module that connects them.
+	logins := newMailLogins(st, master, modules)
+	logins.tlsConfig = imapTLS
 	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
 	start := func(acct store.Account) {
 		supervisors.Start(ctx, &worker.Supervisor{
-			Account: acct, Store: st, Hub: hub, Open: openAccount(st, master, acct),
+			Account: acct, Store: st, Hub: hub, Open: openAccount(logins, acct),
 			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
 		})
 	}
@@ -228,12 +238,13 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett, Master: master,
 		Metrics: telemetry.NewMetrics(version), Version: version,
 		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
-			mb, username, err := dial(ctx, acct, password, nil)
+			mb, username, err := dial(ctx, acct, password, imapTLS)
 			if err != nil {
 				return nil, "", err // not mb: a nil *imap.Mailbox is not a nil mail.Mailbox
 			}
 			return mb, username, nil
 		},
+		ConnectOAuth: logins.open,
 		StartAccount: watcher.Start, StopAccount: supervisors.Stop, Summary: sum,
 		StartCheck: supervisors.StartCheck, Checks: supervisors.Checks(), SortAll: supervisors.SortAll,
 		Modules: modules,
@@ -310,11 +321,15 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 }
 
 // openAccount returns how a supervisor connects to an account. The password is decrypted
-// for each connection and kept nowhere else. A mailbox whose password was deleted
-// (store.ErrNoSecret) fails as a refused sign-in: the supervisor stops on auth_failed.
-func openAccount(st *store.Store, master []byte, acct store.Account) func(context.Context) (mail.Mailbox, error) {
+// for each connection and kept nowhere else; a one-click mailbox signs in through logins.
+// A mailbox whose secret was deleted (store.ErrNoSecret) fails as a refused sign-in: the
+// supervisor stops on auth_failed (reconnect_needed for a one-click mailbox, in logins).
+func openAccount(logins *mailLogins, acct store.Account) func(context.Context) (mail.Mailbox, error) {
 	return func(ctx context.Context) (mail.Mailbox, error) {
-		password, err := st.AccountSecret(ctx, master, acct.ID)
+		if acct.OAuth {
+			return logins.open(ctx, acct, nil)
+		}
+		password, err := logins.st.AccountSecret(ctx, logins.master, acct.ID)
 		if errors.Is(err, store.ErrNoSecret) {
 			return nil, fmt.Errorf("%w: %w", mail.ErrAuth, err)
 		}
@@ -324,7 +339,7 @@ func openAccount(st *store.Store, master []byte, acct store.Account) func(contex
 		preset, _ := presets.Get(acct.Preset)
 		mb, err := imap.Open(ctx, imap.Config{
 			AccountID: acct.ID, Host: acct.Host, Port: acct.Port, TLSMode: acct.TLSMode,
-			Username: acct.Username, Password: password, Preset: preset, CertFingerprint: acct.CertFingerprint,
+			Username: acct.Username, Password: password, Preset: preset, TLSConfig: logins.tlsConfig, CertFingerprint: acct.CertFingerprint,
 		})
 		if err != nil {
 			return nil, err

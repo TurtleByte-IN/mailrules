@@ -24,8 +24,9 @@ type Preset struct {
 	// Folders maps a special-use role to folder names to look for, most likely first,
 	// when the server does not report the role itself. Matching ignores case.
 	Folders map[string][]string
-	HelpURL string // where the user creates an app password
-	// PasteLabel is what the provider calls the secret the user pastes into the wizard.
+	HelpURL string // where the user creates an app password; for an OAuthOnly preset, the provider's IMAP settings
+	// PasteLabel is what the provider calls the secret the user pastes into the wizard;
+	// empty for an OAuthOnly preset, which takes none.
 	PasteLabel string
 	// LocalPartLogin: the server may want the part before "@" as the username.
 	LocalPartLogin bool
@@ -33,6 +34,10 @@ type Preset struct {
 	// before "@" receives mail at each of them. Empty = not known, and only a username that
 	// is a full address says what the account's address is.
 	Domains []string
+	// OAuthOnly: the provider takes no password or app password over IMAP, only its own
+	// sign-in (OAuth), so a mailbox here is connected only by a module that signs in to it
+	// (one-click sign-in, ext.MailboxSignIn). Without one the preset is not offered.
+	OAuthOnly bool
 }
 
 // commonFolders are names seen across providers; every preset falls back to them.
@@ -62,8 +67,8 @@ var generic = Preset{
 	PasteLabel: "Password",
 }
 
-// All returns every preset, generic last.
-func All() []Preset { return []Preset{icloud, gmail, fastmail, yahoo, zoho, proton, generic} }
+// All returns every preset, generic last. accounts.preset holds one of their names.
+func All() []Preset { return []Preset{icloud, gmail, outlook, fastmail, yahoo, zoho, proton, generic} }
 
 // Get looks a preset up by name.
 func Get(name string) (Preset, bool) {

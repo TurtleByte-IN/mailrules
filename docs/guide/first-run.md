@@ -56,7 +56,7 @@ Use an app password (a password made for one program), not the password you sign
 | Zoho Mail | `imap.zoho.com` (or your region's host), port 993, TLS | Switch on [IMAP access](https://www.zoho.com/mail/help/imap-access.html) in Zoho's webmail first. The wizard asks which Zoho region your account is in, and for an app password. |
 | Proton Mail | `127.0.0.1`, port 1143, STARTTLS: [Proton Mail Bridge](https://proton.me/support/protonmail-bridge-install) on this machine | See [Proton Mail](#proton-mail) below. Not yet tested with a real Bridge. |
 | Other IMAP server | You enter it | Choose **TLS (port 993)** or **STARTTLS (port 143)**, and the port if it differs. |
-| Outlook.com, Hotmail, Microsoft 365 | — | Can't connect. Microsoft no longer accepts passwords or app passwords over IMAP, only its own sign-in, which this build does not include. |
+| Outlook.com, Hotmail, Microsoft 365 | `outlook.office365.com`, port 993, TLS | Can't connect in this build. Microsoft no longer accepts passwords or app passwords over IMAP, only its own sign-in. A build with one-click sign-in (a module, as in the hosted MailRules) shows an **Outlook** tile, and a one-click **Gmail** tile beside the app-password one: you sign in to Microsoft or Google, come back to the **Rules** step (in the setup guide too, which then goes on to its last step), and no password is stored, only the sign-in's renewable token, encrypted. |
 
 The Zoho Mail choice in the wizard asks where your account is: United States (`imap.zoho.com`), Europe (`imap.zoho.eu`), India (`imap.zoho.in`), Australia (`imap.zoho.com.au`), Japan (`imap.zoho.jp`) or China (`imap.zoho.com.cn`). Use the one you see in the address bar when you sign in to Zoho Mail. Paid Zoho organisations use `imappro.zoho.com`: pick **Other IMAP server** and enter it, or add the mailbox from the command line with `--preset zoho --host imappro.zoho.com`.
 
@@ -96,12 +96,12 @@ The last step of the guide, **You're set**, suggests the next move: watch **Acti
 
 ## Managing mailboxes
 
-**Mailboxes** lists every connected mailbox with its status: Connecting, Live, Reconnecting, Paused, Sign-in failed, Certificate changed or Error. For each one:
+**Mailboxes** lists every connected mailbox with its status: Connecting, Live, Reconnecting, Paused, Sign-in failed, Reconnect needed, Certificate changed or Error. For each one:
 
 - **Test** logs in once more and reports what it found, without touching the running connection.
 - **Pause** stops sorting that mailbox until you click **Resume**.
 - **Edit** changes its **Name**, the **Watched folder**, or the app password (**New app password**; leave it empty to keep the current one). For **Other IMAP server** and **Proton Mail** it also changes the **Host**, the **Encryption** (TLS or STARTTLS; SSL or STARTTLS for Proton) and the **Port**, and for **Zoho Mail** the **Zoho region**. For **Other IMAP server**, choosing another encryption moves the port to 993 or 143 unless you have typed a port yourself; for **Proton Mail** the port stays as it is. A new server is tested before it is saved, as in the wizard: if the test fails, nothing changes and the mailbox keeps its old settings. If the new server's certificate is not one your system trusts, Edit shows it with **Accept certificate**, and a certificate accepted for the old server no longer counts.
-- **Reconnect** appears when a mailbox is not live, and starts it again.
+- **Reconnect** appears when a mailbox is not live, and starts it again. On a one-click mailbox that says **Reconnect needed** (its Google or Microsoft sign-in was revoked or refused), it opens the provider's sign-in instead; once you sign in as the same address, MailRules connects again. A one-click mailbox has no app password to edit, and its server is the provider's. The session Google and Microsoft end about every hour is reconnected on its own, without a status change.
 - **Check certificate** appears when the mailbox says **Certificate changed**. It shows the certificate the server presents now, to accept or not (see [Troubleshooting](./troubleshooting.md#a-mailbox-says-certificate-changed)).
 - **Remove** deletes the mailbox from MailRules: its password, folder list, contacts, activity and undo history. Rules that apply only to it are kept but switched off, marked so you can give them another mailbox, and rules whose conditions name it are adjusted (see [When a mailbox is removed](./rules.md#when-a-mailbox-is-removed)). Nothing in the mailbox itself changes.
 

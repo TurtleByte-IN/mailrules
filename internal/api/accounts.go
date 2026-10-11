@@ -24,6 +24,12 @@ type presetJSON struct {
 	HelpURL        string `json:"help_url"`
 	LocalPartLogin bool   `json:"local_part_login"`
 	PasteLabel     string `json:"secret_label"` // what the provider calls the secret the user pastes
+	// Password: the wizard connects it with a pasted password or app password. False for a
+	// provider that takes only its own sign-in (Outlook).
+	Password bool `json:"password"`
+	// OneClickURL is where the browser starts the provider's sign-in, when a module of
+	// this build signs in to the preset (ext.MailboxSignIn); null otherwise.
+	OneClickURL *string `json:"one_click_url"`
 }
 
 // accountJSON is an account as the API shows it. The password is not a field of
@@ -50,6 +56,9 @@ type accountJSON struct {
 	// CertFingerprint is the server certificate accepted for the account; empty when the
 	// system's trust store decides.
 	CertFingerprint string `json:"cert_fingerprint"`
+	// OneClick: the mailbox signs in with one-click sign-in, through the module that signs
+	// in to its preset, not with a password.
+	OneClick bool `json:"one_click"`
 }
 
 // certJSON is a server certificate as the person checks it before accepting it.
@@ -72,7 +81,7 @@ func (s *server) accountJSON(ctx context.Context, v store.Viewer, a store.Accoun
 	out := accountJSON{ID: a.ID, Label: a.Label, Preset: a.Preset, Host: a.Host, Port: a.Port, TLSMode: a.TLSMode,
 		Username: a.Username, WatchFolder: a.WatchFolder, Status: a.Status, LastError: a.LastError,
 		LastEventAt: ts(a.LastEventAt), Capabilities: append([]string{}, a.Capabilities...), CreatedAt: a.CreatedAt,
-		Shared: a.Shared, Mine: a.UserID == v.UserID, CertFingerprint: a.CertFingerprint}
+		Shared: a.Shared, Mine: a.UserID == v.UserID, CertFingerprint: a.CertFingerprint, OneClick: a.OAuth}
 	for _, c := range a.Capabilities {
 		out.CanMove = out.CanMove || c == "MOVE" || c == "UIDPLUS"
 	}
@@ -93,10 +102,16 @@ func foldersJSON(folders []store.Folder) []folderJSON {
 	return out
 }
 
+// handlePresets lists the presets the wizard offers: every one that takes a password, and
+// one that takes only its provider's sign-in (Outlook) when a module signs in to it.
 func (s *server) handlePresets(w http.ResponseWriter, _ *http.Request) {
 	var out []presetJSON
 	for _, p := range presets.All() {
-		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel})
+		oneClick := s.oneClickURL(p.Name)
+		if p.OAuthOnly && oneClick == nil {
+			continue
+		}
+		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel, !p.OAuthOnly, oneClick})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -133,6 +148,10 @@ func (in accountInput) account(w http.ResponseWriter) (store.Account, bool) {
 	preset, ok := presets.Get(in.Preset)
 	if !ok {
 		invalid(w, "preset", "Choose a provider: icloud, gmail, fastmail, yahoo, zoho, proton or generic.")
+		return store.Account{}, false
+	}
+	if preset.OAuthOnly {
+		invalid(w, "preset", preset.Label+" takes no app password: connect it with one-click sign-in.")
 		return store.Account{}, false
 	}
 	a := store.Account{Label: strings.TrimSpace(in.Label), Preset: preset.Name, Host: preset.Host, Port: preset.Port,
@@ -178,33 +197,57 @@ type connected struct {
 	caps    mail.Caps
 }
 
-// tryAccount logs in with credentials that are not stored yet and reads what first
-// connect needs. On failure it has answered already. The password is used for the login
-// and nothing else; the error text sent to the browser is ours, not the server's.
+// firstConnect reads on a connection just made what first connect needs: the server's
+// capabilities, the folders and the watch folder's position. It closes mb.
+func firstConnect(ctx context.Context, mb mail.Mailbox, a store.Account) (connected, error) {
+	defer mb.Close()
+	c := connected{account: a, caps: mb.Capabilities()}
+	c.account.Capabilities = c.caps.All
+	folders, err := mb.Folders(ctx)
+	if err != nil {
+		return connected{}, err
+	}
+	for _, f := range folders {
+		c.folders = append(c.folders, store.Folder{Name: f.Name, Delimiter: f.Delimiter, SpecialUse: f.SpecialUse})
+	}
+	if c.status, err = mb.Status(ctx, a.WatchFolder); err != nil {
+		return connected{}, err
+	}
+	return c, nil
+}
+
+// tryAccount logs in with credentials that are not stored yet, or with a one-click
+// mailbox's stored secret, and reads what first connect needs. On failure it has answered
+// already. The password is used for the login and nothing else; the error text sent to
+// the browser is ours, not the server's.
 func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Account, password string) (connected, bool) {
 	refuse := func(code, message, path string) (connected, bool) {
 		writeError(w, http.StatusUnprocessableEntity, code, message, path)
 		return connected{}, false
 	}
-	mb, username, err := s.Connect(r.Context(), a, password)
+	var (
+		mb       mail.Mailbox
+		username = a.Username
+		err      error
+	)
+	if a.OAuth {
+		mb, err = s.ConnectOAuth(r.Context(), a, nil)
+	} else {
+		mb, username, err = s.Connect(r.Context(), a, password)
+	}
 	if err == nil {
-		defer mb.Close()
 		a.Username = username
-		c := connected{account: a, caps: mb.Capabilities()}
-		c.account.Capabilities = c.caps.All
-		var folders []mail.Folder
-		if folders, err = mb.Folders(r.Context()); err == nil {
-			for _, f := range folders {
-				c.folders = append(c.folders, store.Folder{Name: f.Name, Delimiter: f.Delimiter, SpecialUse: f.SpecialUse})
-			}
-			if c.status, err = mb.Status(r.Context(), a.WatchFolder); err == nil {
-				return c, true
-			}
+		var c connected
+		if c, err = firstConnect(r.Context(), mb, a); err == nil {
+			return c, true
 		}
 	}
 	slog.InfoContext(r.Context(), "account connection test failed", "host", a.Host, "error", err.Error())
 	var certErr *mail.CertError
 	switch {
+	case errors.Is(err, mail.ErrReconnect):
+		p, _ := presets.Get(a.Preset)
+		return refuse("reconnect_needed", p.Label+" no longer accepts MailRules' sign-in. Reconnect to sign in again.", "")
 	case errors.Is(err, mail.ErrAuth):
 		msg := "The mail server refused the sign-in. Check the username and use an app password, not your account password."
 		if a.Preset == "proton" {
@@ -265,14 +308,17 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	secret, err := s.store.AccountSecret(r.Context(), s.Master, a.ID)
-	if errors.Is(err, store.ErrNoSecret) {
-		secretGone(w)
+	if a.SecretGone {
+		secretGone(w, a)
 		return
 	}
-	if err != nil {
-		internalError(w, r, err)
-		return
+	var secret string
+	if !a.OAuth { // a one-click mailbox's secret goes to the module that signs in to it, nowhere else
+		var err error
+		if secret, err = s.store.AccountSecret(r.Context(), s.Master, a.ID); err != nil {
+			internalError(w, r, err)
+			return
+		}
 	}
 	c, ok := s.tryAccount(w, r, a, secret)
 	if !ok {
@@ -283,9 +329,15 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// secretGone answers for a mailbox whose password was deleted (its owner's sign-in was
-// deleted, then they signed in again): nothing can log in to it until they enter a new one.
-func secretGone(w http.ResponseWriter) {
+// secretGone answers for a mailbox whose secret was deleted (its owner's sign-in was
+// deleted, then they signed in again): nothing can log in to it until they enter a new
+// password, or, for a one-click mailbox, sign in to the provider again.
+func secretGone(w http.ResponseWriter, a store.Account) {
+	if a.OAuth {
+		writeError(w, http.StatusUnprocessableEntity, "reconnect_needed",
+			"This mailbox's sign-in was deleted with your previous MailRules sign-in. Sign in to the provider again.", "")
+		return
+	}
 	writeError(w, http.StatusUnprocessableEntity, "auth_failed",
 		"This mailbox's password was deleted with your previous sign-in. Enter a new app password.", "password")
 }
@@ -321,22 +373,46 @@ func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A mailbox connected twice in one tenant would be sorted twice by the same rules, so
-	// the check spans the tenant, teammates' private mailboxes included. What it finds is
-	// only ever this refusal, never the other mailbox.
-	existing, err := s.store.TenantAccounts(ctx, viewer(r).TenantID)
+	exists, err := s.alreadyConnected(ctx, viewer(r).TenantID, c.account.Host, c.account.Username)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
+	if exists {
+		writeError(w, http.StatusConflict, "account_exists", "This mailbox is already connected.", "username")
+		return
+	}
+	acct, err := s.saveAccount(ctx, user(r).ID, c, in.Password)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"account": s.accountJSON(ctx, viewer(r), acct)})
+}
+
+// alreadyConnected reports whether the tenant has a mailbox with this username on this
+// host. A mailbox connected twice in one tenant would be sorted twice by the same rules, so
+// the check spans the tenant, teammates' private mailboxes included. What it finds is only
+// ever a refusal, never the other mailbox.
+func (s *server) alreadyConnected(ctx context.Context, tenantID int64, host, username string) (bool, error) {
+	existing, err := s.store.TenantAccounts(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
 	for _, e := range existing {
-		if strings.EqualFold(e.Host, c.account.Host) && strings.EqualFold(e.Username, c.account.Username) {
-			writeError(w, http.StatusConflict, "account_exists", "This mailbox is already connected.", "username")
-			return
+		if strings.EqualFold(e.Host, host) && strings.EqualFold(e.Username, username) {
+			return true, nil
 		}
 	}
-	c.account.UserID, c.account.CreatedAt = user(r).ID, s.now().Unix()
-	acct, err := s.store.CreateAccount(ctx, s.Master, c.account, in.Password)
+	return false, nil
+}
+
+// saveAccount stores a mailbox for userID with its secret and what first connect found
+// (folders, and the watch position: only mail that arrives from now on is sorted), and
+// starts watching it.
+func (s *server) saveAccount(ctx context.Context, userID int64, c connected, secret string) (store.Account, error) {
+	c.account.UserID, c.account.CreatedAt = userID, s.now().Unix()
+	acct, err := s.store.CreateAccount(ctx, s.Master, c.account, secret)
 	if err == nil {
 		err = s.store.SaveFolders(ctx, acct.ID, c.folders)
 	}
@@ -344,11 +420,10 @@ func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		err = s.store.SetFolderPosition(ctx, acct.ID, acct.WatchFolder, c.status.UIDValidity, c.status.UIDNext-1)
 	}
 	if err != nil {
-		internalError(w, r, err)
-		return
+		return store.Account{}, err
 	}
 	s.StartAccount(acct)
-	writeJSON(w, http.StatusCreated, map[string]any{"account": s.accountJSON(ctx, viewer(r), acct)})
+	return acct, nil
 }
 
 func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +454,16 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Label, a.WatchFolder, a.Host = strings.TrimSpace(a.Label), strings.TrimSpace(a.WatchFolder), strings.TrimSpace(a.Host)
+	if a.OAuth {
+		// A one-click mailbox's sign-in and server are the module's: they change only by
+		// signing in to the provider again (Reconnect).
+		for _, f := range []string{"password", "host", "port", "tls_mode", "cert_fingerprint"} {
+			if sent[f] {
+				invalid(w, f, "This mailbox signs in with one-click sign-in. To sign in again, use Reconnect.")
+				return
+			}
+		}
+	}
 	switch {
 	case a.Label == "":
 		invalid(w, "label", "The label cannot be empty.")
@@ -421,6 +506,8 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case paused:
 		a.Status = worker.StatusPaused
+	case a.SecretGone && a.OAuth:
+		a.Status = worker.StatusReconnectNeeded // nothing starts it until the person signs in to the provider again
 	case a.SecretGone && !sent["password"]:
 		a.Status = worker.StatusAuthFailed // nothing starts it until a new password comes
 	case wasPaused, certChanged:
@@ -469,7 +556,7 @@ func (s *server) tryMove(w http.ResponseWriter, r *http.Request, a store.Account
 	if password == "" {
 		password, err = s.store.AccountSecret(r.Context(), s.Master, a.ID)
 		if errors.Is(err, store.ErrNoSecret) {
-			secretGone(w)
+			secretGone(w, a)
 			return false
 		}
 		if err != nil {
@@ -517,7 +604,7 @@ func (s *server) handleAccountReconnect(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if a.SecretGone {
-		secretGone(w)
+		secretGone(w, a)
 		return
 	}
 	s.StartAccount(a)

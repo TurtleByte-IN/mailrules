@@ -317,6 +317,10 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 func TestForgetIdentityDeletesSecrets(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
+	// The leaver's shared mailbox is a one-click one: it lands in reconnect_needed.
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET oauth = 1 WHERE id = ?`, w.leaverShared); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		sub      string
 		tenant   int64
@@ -341,10 +345,18 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 			t.Errorf("%s: an ordinary setting went: %v", c.sub, err)
 		}
 	}
-	for _, id := range []int64{w.soloBox, w.leaverPriv, w.leaverShared} {
+	for _, c := range []struct {
+		id          int64
+		status, msg string
+	}{
+		{w.soloBox, "auth_failed", forgottenMessage},
+		{w.leaverPriv, "auth_failed", forgottenMessage},
+		{w.leaverShared, "reconnect_needed", forgottenOAuthMessage},
+	} {
+		id := c.id
 		a, err := s.Account(ctx, id)
-		if err != nil || !a.SecretGone || a.Status != "auth_failed" || a.LastError != forgottenMessage {
-			t.Errorf("mailbox %d = %+v, %v; want its secret gone and auth_failed", id, a, err)
+		if err != nil || !a.SecretGone || a.Status != c.status || a.LastError != c.msg {
+			t.Errorf("mailbox %d = %+v, %v; want its secret gone and %s", id, a, err, c.status)
 		}
 		if _, err := s.AccountSecret(ctx, testMaster, id); !errors.Is(err, ErrNoSecret) {
 			t.Errorf("mailbox %d secret: %v, want ErrNoSecret", id, err)

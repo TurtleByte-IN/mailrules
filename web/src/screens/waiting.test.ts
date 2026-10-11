@@ -244,7 +244,7 @@ it('Wizard: testing the connection says what the daemon is doing, with the secon
   try {
     Object.assign(accounts, {
       list: [],
-      presets: [{ name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true, secret_label: 'App-specific password' }],
+      presets: [{ name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true, secret_label: 'App-specific password', password: true, one_click_url: null }],
     });
     const d = serve({ 'POST /api/accounts/test': 'hold' });
     const { container } = render(Wizard, { onclose: () => {} });

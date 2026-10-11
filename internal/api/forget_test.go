@@ -1,14 +1,73 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
+
+// A forgotten person's one-click mailbox loses its refresh token at once and waits in
+// reconnect_needed; coming back, Reconnect through the API is refused and signing in to
+// the provider again (the module's reconnect) starts it.
+func TestModuleForgetOneClickMailbox(t *testing.T) {
+	var e *env
+	e = newEnvWith(t, func(o *Options) {
+		o.ConnectOAuth = func(_ context.Context, acct store.Account, _ *string) (mail.Mailbox, error) { return e.box(acct), nil }
+	}, signInModule(), oneClickModule())
+	e.signInAs("sub-jo", "jo@example.test", "org-jo")
+	r := e.do(http.MethodGet, "/api/oneclick/connect?provider=outlook&address=jo@outlook.test&secret=refresh-1", "")
+	if r.status != http.StatusSeeOther {
+		t.Fatalf("add = %d %s", r.status, r.raw)
+	}
+	var acct int64 = 1
+	eventually(t, "the one-click mailbox to be live", func() bool {
+		a, err := e.st.Account(t.Context(), acct)
+		return err == nil && a.OAuth && a.Status == worker.StatusLive
+	})
+
+	server := &client{t: t, h: e.h, cookies: map[string]string{}, noCSRF: true}
+	if r := server.do(http.MethodPost, forgetPath+"?sub=sub-jo", ""); r.status != http.StatusNoContent {
+		t.Fatalf("forget = %d %s", r.status, r.raw)
+	}
+	if _, err := e.mgr.Mailbox(acct); err == nil {
+		t.Error("the one-click mailbox is still running")
+	}
+	if _, err := e.st.AccountSecret(t.Context(), e.sett.Master, acct); !errors.Is(err, store.ErrNoSecret) {
+		t.Errorf("its refresh token: %v, want ErrNoSecret", err)
+	}
+	logins := e.logins.Load()
+
+	back := e.browser()
+	back.signInAs("sub-jo", "jo@example.test", "org-jo")
+	a := back.call(http.MethodGet, fmt.Sprintf("/api/accounts/%d", acct), "", http.StatusOK)["account"].(map[string]any)
+	if a["status"] != worker.StatusReconnectNeeded {
+		t.Errorf("the one-click mailbox after coming back = %v, want reconnect_needed", a)
+	}
+	back.refuse(http.MethodPost, fmt.Sprintf("/api/accounts/%d/reconnect", acct), "", http.StatusUnprocessableEntity, "reconnect_needed", "")
+	back.refuse(http.MethodPost, fmt.Sprintf("/api/accounts/%d/test", acct), "", http.StatusUnprocessableEntity, "reconnect_needed", "")
+	if n := e.logins.Load(); n != logins {
+		t.Errorf("%d logins after forget", n-logins)
+	}
+
+	// Signing in to the provider again brings it back.
+	r = back.do(http.MethodGet, fmt.Sprintf("/api/oneclick/connect?account=%d&address=jo@outlook.test&secret=refresh-2", acct), "")
+	if r.status != http.StatusSeeOther {
+		t.Fatalf("reconnect = %d %s", r.status, r.raw)
+	}
+	eventually(t, "the reconnected mailbox to be live", func() bool {
+		a, err := e.st.Account(t.Context(), acct)
+		_, mbErr := e.mgr.Mailbox(acct)
+		return err == nil && a.Status == worker.StatusLive && !a.SecretGone && mbErr == nil
+	})
+}
 
 // A person the sign-in service deleted, forgotten through ext.Host.ForgetIdentity: signed
 // out at once, their mailbox stopped and its password deleted, their tenant's model keys

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/ext"
@@ -50,11 +51,15 @@ func (s *server) moduleRoutes() []route {
 }
 
 // features are the flags GET /api/settings reports: the later-phase ones, then each
-// module's name, on.
+// module's name, on, and oauth_providers while a module connects mailboxes with one-click
+// sign-in (GET /api/presets says for which providers).
 func (s *server) features() map[string]bool {
 	out := maps.Clone(features)
 	for _, m := range s.Modules {
 		out[m.Name] = true
+		if m.Mailboxes != nil {
+			out["oauth_providers"] = true
+		}
 	}
 	return out
 }
@@ -223,21 +228,38 @@ func (s *server) signIn() *ext.Module {
 // CheckModules refuses a build whose modules, or mode (MAILRULES_MODE), the daemon cannot
 // serve: a Webhook route that is not Public, a SignIn or SignOut that does not name one of
 // its module's Public GET routes, a SignOut without SignIn, more than one module with
-// SignIn, and cloud mode with no module that signs people in. The daemon calls it before
-// it serves anything.
+// SignIn, and cloud mode with no module that signs people in; and a Mailboxes with no
+// Login, with a provider other than gmail or outlook, or whose Connect is not one of its
+// module's signed-in GET routes, and more than one module with Mailboxes. The daemon calls
+// it before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn []string
+	var signIn, mailboxes []string
 	for _, m := range modules {
-		publicGet := map[string]bool{}
+		publicGet, signedInGet := map[string]bool{}, map[string]bool{}
 		if m.Routes != nil {
 			for _, r := range m.Routes(host{&server{}}) {
 				if r.Webhook && !r.Public {
 					return fmt.Errorf("module %s: route %s %s is a Webhook but not Public", m.Name, r.Method, r.Path)
 				}
-				if r.Public && r.Method == http.MethodGet {
-					publicGet[r.Path] = true
+				if r.Method == http.MethodGet {
+					publicGet[r.Path] = publicGet[r.Path] || r.Public
+					signedInGet[r.Path] = signedInGet[r.Path] || !r.Public
 				}
 			}
+		}
+		if mb := m.Mailboxes; mb != nil {
+			if mb.Login == nil || len(mb.Providers) == 0 {
+				return fmt.Errorf("module %s: Mailboxes needs Login and at least one provider", m.Name)
+			}
+			for _, p := range mb.Providers {
+				if !slices.Contains(oneClickPresets, p) {
+					return fmt.Errorf("module %s: Mailboxes provider %q must be one of %s", m.Name, p, strings.Join(oneClickPresets, ", "))
+				}
+			}
+			if !signedInGet[mb.Connect] {
+				return fmt.Errorf("module %s: Mailboxes Connect %q is not one of its GET routes served to a signed-in user", m.Name, mb.Connect)
+			}
+			mailboxes = append(mailboxes, m.Name)
 		}
 		if m.SignOut != "" && m.SignIn == "" {
 			return fmt.Errorf("module %s: SignOut is set without SignIn", m.Name)
@@ -253,6 +275,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 	}
 	if len(signIn) > 1 {
 		return fmt.Errorf("more than one module signs people in: %s", strings.Join(signIn, ", "))
+	}
+	if len(mailboxes) > 1 {
+		return fmt.Errorf("more than one module connects mailboxes with one-click sign-in: %s", strings.Join(mailboxes, ", "))
 	}
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")
