@@ -97,6 +97,27 @@ func TestCheckSecretsDamagedRow(t *testing.T) {
 	}
 }
 
+// A notification destination's address is a stored secret too; one deleted with a sign-in
+// is not.
+func TestCheckSecretsDestinations(t *testing.T) {
+	ctx := t.Context()
+	st := sealedStore(t, 0, nil)
+	for _, name := range []string{"a", "b"} {
+		if _, err := st.CreateDestination(ctx, key(1), store.Destination{TenantID: 1, Name: name, Kind: store.DestinationWebhook},
+			store.DestinationSecret{URL: "https://x.test/" + name, Secret: "whsec_x"}, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		master []byte
+		want   SecretsCheck
+	}{{key(1), SecretsCheck{Total: 2}}, {key(9), SecretsCheck{Total: 2, Unreadable: 2}}, {nil, SecretsCheck{Total: 2, Unreadable: 2}}} {
+		if got, err := CheckSecrets(ctx, st, c.master); err != nil || got != c.want {
+			t.Errorf("CheckSecrets = %+v, %v; want %+v", got, err, c.want)
+		}
+	}
+}
+
 // A provider key sealed under a master key that is gone does not take the other settings
 // down: it reads as not set, the screen says so, and entering the key again replaces it.
 func TestUnreadableStoredKeyIsNotSet(t *testing.T) {

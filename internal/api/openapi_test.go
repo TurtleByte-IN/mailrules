@@ -270,8 +270,9 @@ func TestSuggestDefaultsAgreeWithTheWebUI(t *testing.T) {
 	}
 }
 
-// The routes a module provides are marked x-module in the contract, with the module's
-// name, and only those: the daemon refuses each one while no module serves it.
+// The routes a module provides, and the daemon's own that work only with a module, are
+// marked x-module in the contract, with the feature's name, and only those: the daemon
+// refuses each one while no module serves or enables it.
 func TestModuleRoutesAreMarked(t *testing.T) {
 	var inSpec, optional []string
 	for path, item := range spec(t)["paths"].(map[string]any) {
@@ -285,6 +286,9 @@ func TestModuleRoutesAreMarked(t *testing.T) {
 		}
 	}
 	for _, o := range optionalRoutes {
+		optional = append(optional, o.method+" "+o.path+" "+o.module)
+	}
+	for _, o := range gatedRoutes {
 		optional = append(optional, o.method+" "+o.path+" "+o.module)
 	}
 	sort.Strings(inSpec)

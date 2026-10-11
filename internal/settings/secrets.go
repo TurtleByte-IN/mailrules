@@ -11,7 +11,7 @@ import (
 )
 
 // SecretsCheck counts the secrets the database holds sealed under a master key: mailbox
-// passwords and provider keys.
+// passwords, provider keys and the addresses of notification destinations.
 type SecretsCheck struct {
 	Total      int // every stored secret
 	Unreadable int // the ones the master key cannot open
@@ -39,6 +39,22 @@ func CheckSecrets(ctx context.Context, st *store.Store, master []byte) (SecretsC
 			continue
 		}
 		if _, err := st.AccountSecret(ctx, master, a.ID); errors.Is(err, crypto.ErrDecrypt) {
+			c.Unreadable++
+		} else if err != nil {
+			return c, fmt.Errorf("check stored secrets: %w", err)
+		}
+	}
+	sealed, err := st.SealedDestinations(ctx)
+	if err != nil {
+		return c, fmt.Errorf("check stored secrets: %w", err)
+	}
+	for _, id := range sealed {
+		c.Total++
+		if master == nil {
+			c.Unreadable++
+			continue
+		}
+		if _, err := st.DestinationSecret(ctx, master, id); errors.Is(err, crypto.ErrDecrypt) {
 			c.Unreadable++
 		} else if err != nil {
 			return c, fmt.Errorf("check stored secrets: %w", err)

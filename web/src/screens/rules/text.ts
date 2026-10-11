@@ -1,8 +1,9 @@
 // How a rule reads on screen: wording from the prototype over the rule shape in lib/api/rules.ts.
 import { leaves, type Action, type Condition, type Rule } from '../../lib/api/rules';
+import { notifications } from '../../lib/state/notifications.svelte';
 
 /** The "more options" of a rule. `mailbox_removed` is set on a saved rule whose mailbox was removed. */
-export type Extras = Pick<Rule, 'account_id' | 'stack'> & { mailbox_removed?: boolean };
+export type Extras = Pick<Rule, 'account_id' | 'stack' | 'notify'> & { mailbox_removed?: boolean };
 
 /** Why a rule whose mailbox was removed cannot be switched on: the daemon's own words for it. */
 export const MAILBOX_REMOVED = 'Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on.';
@@ -65,8 +66,14 @@ export const actionsText = (actions: Action[], trashTo?: string) =>
     .map((a) => (a.type === 'move' ? 'Move to ' + (a.folder || '[folder]') : a.type === 'trash' && trashTo ? 'Move to ' + trashTo : (actionWords[a.type] ?? a.type)))
     .join(', ');
 
-/** The tail after the actions. `only` is the mailbox address when the rule applies to one. */
-export const extrasText = (x: Extras, only?: string) => (x.stack ? ' · stacks' : '') + (only ? ' · only ' + only : '');
+/**
+ * The tail after the actions. `only` is the mailbox address when the rule applies to one. A
+ * destination the rule names that is not known here (not loaded, or since removed) is left out.
+ */
+export function extrasText(x: Extras, only?: string) {
+  const told = notifications.destinations.filter((d) => x.notify.includes(d.id)).map((d) => d.name);
+  return (x.stack ? ' · stacks' : '') + (only ? ' · only ' + only : '') + (told.length ? ' · notifies ' + told.join(', ') : '');
+}
 
 /** One line for the rule list: conditions, then intent, then the exception. */
 export function summary(r: Pick<Rule, 'intent' | 'conditions' | 'exceptions'>) {

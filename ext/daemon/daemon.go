@@ -217,6 +217,25 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		defer close(removals)
 		worker.Removal{Store: st, Stop: supervisors.Stop, Start: watcher.Start, Hub: hub}.Run(ctx)
 	}()
+	// Notices of what rules did go to the module that delivers them, when the build has one:
+	// those still waiting now, then each within seconds of the rule acting.
+	if n := notifications(modules); n != nil {
+		notices := newNoticeWorker(st, master, n, hub, cfg.PublicURL)
+		handing := make(chan struct{})
+		defer func() { stopAll(); <-handing }()
+		go func() {
+			defer close(handing)
+			notices.Run(ctx)
+		}()
+		if n.Start != nil {
+			started := make(chan struct{})
+			defer func() { stopAll(); <-started }()
+			go func() {
+				defer close(started)
+				n.Start(ctx, notices.deliveries)
+			}()
+		}
+	}
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
 		return err

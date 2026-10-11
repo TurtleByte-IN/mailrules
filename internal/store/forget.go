@@ -40,8 +40,9 @@ type Forget struct {
 	// Accounts are the person's mailboxes whose secrets it deleted: every mailbox of the
 	// tenant when they are its only member, else the ones they own, shared or not.
 	Accounts []int64
-	// Keys is whether it deleted the tenant's stored model API keys: the person is the
-	// tenant's only member.
+	// Keys is whether it deleted the tenant's stored model API keys, and the addresses and
+	// signing secrets of its notification destinations: the person is the tenant's only
+	// member.
 	Keys bool
 }
 
@@ -131,6 +132,11 @@ func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, no
 	if out.Keys {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = ? AND `+providerKeys, out.TenantID); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: delete model keys: %w", err)
+		}
+		// The destinations stay, named, for the same person signing in again; nothing can be
+		// delivered to them until they are added again.
+		if _, err := tx.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = X'', dek_enc = X'' WHERE tenant_id = ?`, out.TenantID); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: delete notification addresses: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -244,12 +250,14 @@ type Removal struct {
 // whose removal time has come by now. When they are their tenant's only member the whole
 // tenant goes: its mailboxes with their credentials, folders, contacts, messages,
 // decisions, actions and corrections, its rules, sender rules, batches, settings (provider
-// keys included) and usage ledger, the user with their sessions, identity and summaries,
-// and the tenant itself. A member of a team takes all their mailboxes, shared or not (the
-// team's rules naming one are rewritten as DeleteAccount does), their sessions, identity,
-// summaries and user row; the authorship of their rules and sender rules passes to the
-// team (handOver). It answers ErrNotFound, changing nothing, for a user who is not
-// forgotten or not yet due: one who signed in again, or was removed already.
+// keys included), usage ledger, and notification destinations with their notices and
+// delivery log, the user with their sessions, identity and summaries, and the tenant
+// itself. A member of a team takes all their mailboxes, shared or not (the team's rules
+// naming one are rewritten as DeleteAccount does), with the notices about their mail,
+// their sessions, identity, summaries and user row; the authorship of their rules and
+// sender rules passes to the team (handOver). It answers ErrNotFound, changing nothing,
+// for a user who is not forgotten or not yet due: one who signed in again, or was removed
+// already.
 func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -291,12 +299,14 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 }
 
 // removeTenant deletes, in tx, a tenant and everything in it. Deleting a mailbox cascades
-// to its folders, contacts, messages, decisions, actions and corrections (and to its rules,
-// which go anyway); deleting a user cascades to their sessions, identity, summaries and
-// forgotten row.
+// to its folders, contacts, messages, decisions, actions, corrections and notices (and to
+// its rules, which go anyway); deleting a notification destination to its delivery log;
+// deleting a user to their sessions, identity, summaries and forgotten row.
 func removeTenant(ctx context.Context, tx *sql.Tx, tenantID int64) error {
 	for _, q := range []struct{ what, query string }{
 		{"mailboxes", `DELETE FROM accounts WHERE tenant_id = ?`},
+		{"notices", `DELETE FROM notices WHERE tenant_id = ?`},
+		{"notification destinations", `DELETE FROM notify_destinations WHERE tenant_id = ?`},
 		{"sender rules", `DELETE FROM sender_rules WHERE tenant_id = ?`},
 		{"rules", `DELETE FROM rules WHERE tenant_id = ?`},
 		{"batches", `DELETE FROM batches WHERE tenant_id = ?`},

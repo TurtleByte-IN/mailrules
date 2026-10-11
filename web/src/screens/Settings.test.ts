@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Destination } from '../lib/api/notifications';
 import type { Settings as Saved } from '../lib/api/settings';
+import { notifications } from '../lib/state/notifications.svelte';
 import { load, settings } from '../lib/state/settings.svelte';
 import Settings from './Settings.svelte';
 
@@ -428,5 +430,108 @@ describe('Summary email', () => {
     expect(card().getByText(/^Dry-run is on/)).toBeTruthy();
     await fireEvent.click(card().getByRole('button', { name: 'Hide preview' }));
     expect(card().queryByTitle('Summary email preview')).toBeNull();
+  });
+});
+
+describe('Notifications and webhooks', () => {
+  const on = () => fresh({ features: { ...fresh().features, notifications: true } });
+  const card = () => within(screen.getByRole('region', { name: 'Notifications and webhooks' }));
+  const dest = (over: Partial<Destination> = {}): Destination => ({ id: 1, name: 'Team channel', kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [], ...over });
+
+  beforeEach(() => {
+    Object.assign(notifications, { kinds: [], destinations: [], loaded: false, error: '' });
+    routes['GET /api/notifications'] = [200, { kinds: ['webhook', 'slack'], destinations: [] }];
+  });
+
+  it.each([
+    [false, false],
+    [true, true],
+  ])('with features.notifications %s, the section is shown: %s', async (feature, shown) => {
+    await show(feature ? on() : fresh());
+    await waitFor(() => expect(!!screen.queryByRole('region', { name: 'Notifications and webhooks' })).toBe(shown));
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/notifications')).toBe(shown);
+  });
+
+  it('adds a webhook and shows its signing secret once, until Done', async () => {
+    await show(on());
+    routes['POST /api/notifications/destinations'] = [201, { destination: dest({ id: 4, name: 'My server', kind: 'webhook', url: 'https://example.com/…ules' }), secret: 'whsec_abc123' }];
+    await card().findByLabelText('Name');
+    expect((card().getByLabelText('Kind') as HTMLSelectElement).value).toBe('webhook');
+    expect(card().getByLabelText('Address').getAttribute('placeholder')).toBe('https://example.com/mailrules');
+    await fireEvent.input(card().getByLabelText('Name'), { target: { value: ' My server ' } });
+    await fireEvent.input(card().getByLabelText('Address'), { target: { value: 'https://example.com/mailrules' } });
+    await fireEvent.click(card().getByRole('button', { name: 'Add' }));
+
+    const box = await card().findByRole('status');
+    const post = fetchMock.mock.calls.find((c) => c[0] === '/api/notifications/destinations')!;
+    expect(JSON.parse(post[1].body as string)).toEqual({ name: 'My server', kind: 'webhook', url: 'https://example.com/mailrules' });
+    expect(box.textContent).toContain('Signing secret for My server. It is shown only now');
+    expect(within(box).getByText('whsec_abc123')).toBeTruthy();
+    expect(card().getByRole('article', { name: 'My server' })).toBeTruthy();
+    expect((card().getByLabelText('Name') as HTMLInputElement).value).toBe('');
+
+    await fireEvent.click(within(box).getByRole('button', { name: 'Done' }));
+    expect(card().queryByRole('status')).toBeNull();
+    expect(card().queryByText('whsec_abc123')).toBeNull();
+  });
+
+  it('shows a refused address at the address field', async () => {
+    await show(on());
+    const message = 'A Slack destination must be a Slack incoming webhook, https://hooks.slack.com/….';
+    routes['POST /api/notifications/destinations'] = [400, { error: { code: 'invalid_input', message, path: 'url' } }];
+    await card().findByLabelText('Kind');
+    await fireEvent.change(card().getByLabelText('Kind'), { target: { value: 'slack' } });
+    expect(card().getByLabelText('Address').getAttribute('placeholder')).toBe('https://hooks.slack.com/services/…');
+    await fireEvent.input(card().getByLabelText('Name'), { target: { value: 'Team' } });
+    await fireEvent.input(card().getByLabelText('Address'), { target: { value: 'https://example.com' } });
+    await fireEvent.click(card().getByRole('button', { name: 'Add' }));
+
+    const alert = await card().findByRole('alert');
+    expect(alert.textContent).toBe(message);
+    const field = card().getByLabelText('Address');
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(field.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(card().getByLabelText('Name').getAttribute('aria-invalid')).toBeNull();
+    expect(JSON.parse(fetchMock.mock.calls.find((c) => c[0] === '/api/notifications/destinations')![1].body as string).kind).toBe('slack');
+  });
+
+  it('lists each destination with its recent deliveries, sent and failed', async () => {
+    routes['GET /api/notifications'] = [200, {
+      kinds: ['webhook', 'slack'],
+      destinations: [
+        dest({ deliveries: [
+          { at: 1791276732, rule_id: 3, rule_name: 'Invoices', status: 'failed', reason: 'Slack answered 404.' },
+          { at: 1791276000, rule_id: null, rule_name: 'Old rule', status: 'sent', reason: '' },
+        ] }),
+        dest({ id: 2, name: 'Gone', kind: 'webhook', url: 'https://example.com/…ules', address_deleted: true }),
+      ],
+    }];
+    await show(on());
+    const team = within(await card().findByRole('article', { name: 'Team channel' }));
+    expect(team.getByText('https://hooks.slack.com/…bX9z')).toBeTruthy();
+    expect(team.getByText(/^Slack/)).toBeTruthy();
+    const rows = team.getAllByRole('listitem').map((li) => li.textContent);
+    expect(rows[0]).toContain('Invoices');
+    expect(rows[0]).toContain('Failed: Slack answered 404.');
+    expect(rows[1]).toContain('Old rule');
+    expect(rows[1]).toContain('Sent');
+    expect(team.getByText('Failed: Slack answered 404.').className).toContain('text-trash');
+
+    const gone = within(card().getByRole('article', { name: 'Gone' }));
+    expect(gone.getByText('Nothing delivered yet.')).toBeTruthy();
+    expect(gone.getByText(/Its address was deleted/).className).toContain('text-review');
+    expect(team.queryByText(/Its address was deleted/)).toBeNull();
+  });
+
+  it('removes a destination once confirmed', async () => {
+    routes['GET /api/notifications'] = [200, { kinds: ['slack'], destinations: [dest()] }];
+    routes['DELETE /api/notifications/destinations/1'] = [204];
+    await show(on());
+    await fireEvent.click(await card().findByRole('button', { name: 'Remove Team channel' }));
+    expect(fetchMock.mock.calls.some((c) => c[1].method === 'DELETE')).toBe(false);
+    await fireEvent.click(card().getByRole('button', { name: 'Yes, remove it' }));
+    await waitFor(() => expect(card().queryByRole('article', { name: 'Team channel' })).toBeNull());
+    expect(fetchMock.mock.calls.filter((c) => c[1].method === 'DELETE').map((c) => c[0])).toEqual(['/api/notifications/destinations/1']);
+    expect(card().getByText('No destinations yet.')).toBeTruthy();
   });
 });

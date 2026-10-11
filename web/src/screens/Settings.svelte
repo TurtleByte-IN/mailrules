@@ -4,13 +4,12 @@
   import DeciderFields from './settings/DeciderFields.svelte';
   import KeyFields from './settings/KeyFields.svelte';
   import { keyOrder, keysInUse } from './settings/keysInUse';
+  import NotificationsCard from './settings/NotificationsCard.svelte';
   import SummaryCard from './settings/SummaryCard.svelte';
   import { confidence } from '../lib/format';
   import { rules } from '../lib/state/rules.svelte';
   import { findWorkspace, load, patch, settings, toggleDryRun } from '../lib/state/settings.svelte';
   import { choose, stored, type Choice } from '../lib/theme';
-
-  // Notification channels (P2) are added here with their backend, behind features.notifications.
 
   const s = $derived(settings.value);
   // Each follows the saved value; the control overrides it while it is being edited.
@@ -131,6 +130,10 @@
       <p class="text-[13.5px] text-secondary">Keys are encrypted with your master key and never logged.</p>
       <KeyFields shown={keyOrder.filter((k) => inUse.has(k))} other={keyOrder.filter((k) => !inUse.has(k))} />
     </section>
+
+    {#if s.features.notifications}
+      <NotificationsCard />
+    {/if}
 
     {#if s.server.mode === 'selfhost'}
       <section aria-label="Self-hosting" class="card p-5">

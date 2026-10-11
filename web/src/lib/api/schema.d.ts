@@ -1232,6 +1232,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where rule notifications go, with each destination's recent deliveries
+         * @description Provided with a module that delivers notifications (`x-module`), which the hosted
+         *     build includes and the free self-host build does not. Without it this route answers
+         *     404 `not_available` and `features.notifications` in GET /api/settings is false.
+         *
+         *     A rule that names destinations in `notify` sends one notice to each of them for every
+         *     email it acts on live: not in dry-run, not in a cleanup, not for an undo, and not when a
+         *     sender rule settled the email. The notice carries the mailbox, the rule, what was done
+         *     and to which folder, the sender, the subject, the time and a link to the email in
+         *     Activity; never the body. The module delivers it and reports how that went, which
+         *     `deliveries` lists. A destination's address and signing secret are never returned:
+         *     `url` is cut short.
+         */
+        get: operations["listNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/destinations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a place rule notifications go
+         * @description Stores the destination with its address encrypted under the master key. A webhook is
+         *     given a signing secret, returned here once and never again: the module signs every
+         *     delivery with it, so the receiving server can tell the notice came from MailRules.
+         */
+        post: operations["createNotificationDestination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/destinations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a destination
+         * @description Its address, secret and delivery log go with it, and every rule stops naming it. Notices still waiting for it are dropped.
+         */
+        delete: operations["deleteNotificationDestination"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -1254,6 +1328,7 @@ export interface paths {
          *     | `check.progress` | `CleanupCheck` | a cleanup check moved forward or ended; `done`, `total`, `model_calls` and `cost_usd` grow, then `status` is `ready`, `failed` or `stale`. Rows are not carried; GET the check for them |
          *     | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
          *     | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
+         *     | `notifications.changed` | `EventEmpty` | a notification destination was added or removed, or a delivery recorded: refetch `/api/notifications` |
          *
          *     The daemon keeps the last 200 events. A client that reconnects sends the last id it saw
          *     in `Last-Event-ID` (EventSource does this by itself) and is first sent what it missed;
@@ -1586,6 +1661,8 @@ export interface components {
             enabled: boolean;
             /** @description The rule's mailbox was removed: it is off and cannot be switched on until it is given a mailbox (account_id, or null for every mailbox) or new conditions or exceptions, which clears this */
             readonly mailbox_removed: boolean;
+            /** @description The notification destinations (`/api/notifications`) told each time the rule acts on an email live; empty = none */
+            notify: number[];
             /** @description Goes up by one with every edit */
             version: number;
             /** Format: int64 */
@@ -1626,6 +1703,8 @@ export interface components {
             model?: string;
             min_confidence?: number | null;
             enabled?: boolean;
+            /** @description Notification destinations of the tenant, each at most once; an empty list = none. An id that is not one is refused with `invalid_input` at `notify` */
+            notify?: number[];
         };
         /** @description A rule as the client sends it when creating or testing one. The same validation as RulePatch. */
         RuleInput: {
@@ -1647,6 +1726,8 @@ export interface components {
             enabled?: boolean;
             /** @description Folders to create on the server when the rule is saved */
             new_folders?: string[];
+            /** @description Notification destinations to tell when the rule acts, as in RulePatch; left out = none */
+            notify?: number[];
             /** @description Where in the priority order to insert it (0 = first); left out = at the end */
             position?: number;
         };
@@ -1659,7 +1740,7 @@ export interface components {
              */
             account_id?: number | null;
         };
-        /** @description A draft carries every field of RuleInput, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything */
+        /** @description A draft carries every field of RuleInput but `notify`, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything */
         RuleDraft: {
             name: string;
             /** @description The user's exact words this rule came from, cut from the text by the server (separate parts joined with ' … '). A re-optimized rule keeps its wording, with the new words on a line under it */
@@ -2468,6 +2549,57 @@ export interface components {
             /** @description For `one` and `several`, the organisation's workspaces, the Default Workspace included; otherwise empty */
             workspaces: components["schemas"]["AnthropicWorkspace"][];
         };
+        NotificationList: {
+            /** @description The kinds of destination the module of this build delivers to */
+            kinds: components["schemas"]["NotificationKind"][];
+            destinations: components["schemas"]["NotificationDestination"][];
+        };
+        /**
+         * @description `webhook`: a POST of JSON, signed with the destination's secret. `slack`: a message through a Slack incoming webhook
+         * @enum {string}
+         */
+        NotificationKind: "webhook" | "slack";
+        NotificationDestination: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            kind: components["schemas"]["NotificationKind"];
+            /** @description The address cut short, such as `https://hooks.slack.com/…bX9z`: the whole address is never returned */
+            url: string;
+            /** @description The address and secret were deleted with the sign-in of the person who was the team's only member; nothing is delivered to it. Remove it and add it again */
+            address_deleted: boolean;
+            /** Format: int64 */
+            created_at: number;
+            /** @description The last 20 deliveries the module reported */
+            deliveries: components["schemas"]["NotificationDelivery"][];
+        };
+        NotificationDelivery: {
+            /** Format: int64 */
+            at: number;
+            /**
+             * Format: int64
+             * @description null once the rule was deleted
+             */
+            rule_id: number | null;
+            /** @description The rule's name when it acted */
+            rule_name: string;
+            /** @enum {string} */
+            status: "sent" | "failed";
+            /** @description Why it failed, as the module said; empty when sent */
+            reason: string;
+        };
+        NotificationDestinationInput: {
+            /** @description How Settings and the rule editor name it; 1 to 100 characters */
+            name: string;
+            kind: components["schemas"]["NotificationKind"];
+            /** @description An http or https address (https for a `slack` one, which must be a Slack incoming webhook, `https://hooks.slack.com/…`), with no user name or password in it */
+            url: string;
+        };
+        NotificationDestinationCreated: {
+            destination: components["schemas"]["NotificationDestination"];
+            /** @description A webhook's signing secret, shown this once; null for a `slack` destination */
+            secret: string | null;
+        };
         Settings: {
             /** @description While true */
             dry_run: boolean;
@@ -2524,6 +2656,7 @@ export interface components {
             summary: components["schemas"]["SummarySettings"];
             /** @description Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module */
             readonly features: {
+                /** @description A module of this build delivers rule notifications, so `/api/notifications` works and rules may name destinations in `notify` */
                 notifications: boolean;
                 timed_actions: boolean;
                 draft_replies: boolean;
@@ -2646,7 +2779,7 @@ export interface components {
         EventAccountStatus: components["schemas"]["Account"];
         /** @description Data of `batch.progress` */
         EventBatchProgress: components["schemas"]["Batch"];
-        /** @description Data of `rules.changed` and `usage.updated`; refetch */
+        /** @description Data of `rules.changed`, `usage.updated` and `notifications.changed`; refetch */
         EventEmpty: Record<string, never>;
     };
     responses: {
@@ -4340,6 +4473,79 @@ export interface operations {
             403: components["responses"]["CsrfFailed"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
+        };
+    };
+    listNotifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The destination kinds this build offers and the tenant's destinations, oldest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationList"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotAvailable"];
+        };
+    };
+    createNotificationDestination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationDestinationInput"];
+            };
+        };
+        responses: {
+            /** @description The destination, and for a webhook its signing secret */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDestinationCreated"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotAvailable"];
+        };
+    };
+    deleteNotificationDestination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
         };
     };
     streamEvents: {

@@ -37,6 +37,7 @@ export const emptyBuilder = (): Builder => ({
   editingId: null,
   account_id: null,
   stack: false,
+  notify: [],
 });
 
 export function opsFor(type: FieldDef['type']): [id: string, name: string][] {
@@ -69,7 +70,7 @@ export const filled = (b: Builder) => b.rows.filter((r) => fields[r.field].type 
  * The rule this form describes, without the fields the builder does not own (wording, model).
  * It is a patch as it stands; with `said` and `enabled` it is a RuleInput.
  */
-export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' | 'conditions' | 'exceptions' | 'actions' | 'account_id' | 'stack' | 'min_confidence'>> {
+export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' | 'conditions' | 'exceptions' | 'actions' | 'account_id' | 'stack' | 'notify' | 'min_confidence'>> {
   const rows = filled(b);
   const folder = b.folder.trim();
   const first: Action[] = b.action === 'flag' ? [{ type: 'keep' }, { type: 'flag' }] : b.action === 'move' ? [{ type: 'move', folder }] : [{ type: b.action }];
@@ -81,6 +82,7 @@ export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' |
     actions: b.markRead && b.action !== 'trash' ? [...first, { type: 'read' }] : first,
     account_id: b.account_id,
     stack: b.stack,
+    notify: b.notify,
     // Only the decision model reads it, so a rule without "is about" has none.
     min_confidence: b.intent.trim() ? b.min_confidence : null,
   };
@@ -104,7 +106,7 @@ export function refusedPart(b: Builder, path: string): { part: string; leaf?: st
   // A rule that trashes on meaning needs a higher threshold than the default; the daemon names min_confidence.
   if (p === 'min_confidence') return { part: 'min_confidence' };
   if (p.startsWith('actions')) return { part: 'action' };
-  if (['name', 'intent', 'account_id', 'stack'].includes(p)) return { part: p };
+  if (['name', 'intent', 'account_id', 'stack', 'notify'].includes(p)) return { part: p };
 }
 
 // ponytail: an exception richer than "replied before" collapses to that checkbox; add an
@@ -125,6 +127,7 @@ export function fromRule(r: Rule): Builder {
     editingId: r.id,
     account_id: r.account_id,
     stack: r.stack,
+    notify: r.notify,
   };
 }
 

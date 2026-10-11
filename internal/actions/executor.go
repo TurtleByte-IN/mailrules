@@ -91,7 +91,9 @@ func isMove(kind string) bool { return kind == rules.ActMove || moveRole[kind] !
 // first, then changes the mailbox, then stores the outcome, so there is no change without
 // a row. A failure stops the remaining actions and is returned; whoever asked decides
 // about a retry. With trash_to_folder on, a trash row names TrashFolder as its folder,
-// in dry-run too, so what it says it did (or would do) is where the mail went.
+// in dry-run too, so what it says it did (or would do) is where the mail went. The row
+// that ends a live run also queues the notifications of the rule that decided it, when it
+// names destinations (store.FinishAction).
 func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action, batchID int64) ([]ActionRecord, error) {
 	tenant, err := x.Store.AccountTenant(ctx, d.Ref.AccountID)
 	if err != nil {
@@ -129,7 +131,8 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 	}
 	// What follows a mailbox change must be recorded even if the daemon is stopping.
 	recCtx := context.WithoutCancel(ctx)
-	for _, a := range acts {
+	for i, a := range acts {
+		last := i == len(acts)-1
 		rec := row(a, store.ActionFailed)
 		rec.Error = "interrupted before it finished"
 		if snapErr != nil {
@@ -144,10 +147,10 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 		after, err := x.do(ctx, mb, d.Ref.AccountID, a, cur)
 		if err != nil {
 			rec.Error = err.Error()
-			return append(recs, rec), errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec))
+			return append(recs, rec), errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec, true))
 		}
 		rec.Status, rec.Error, rec.After = store.ActionDone, "", &after
-		if err := x.Store.FinishAction(recCtx, rec); err != nil {
+		if err := x.Store.FinishAction(recCtx, rec, last); err != nil {
 			return append(recs, rec), err
 		}
 		recs = append(recs, rec)

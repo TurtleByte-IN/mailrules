@@ -5,6 +5,7 @@
   import TestRunner from '../../lib/components/TestRunner.svelte';
   import { accounts } from '../../lib/state/accounts.svelte';
   import { add, edit, rules } from '../../lib/state/rules.svelte';
+  import { settings } from '../../lib/state/settings.svelte';
   import { flash } from '../../lib/state/toast.svelte';
   import MoreOptions from '../rules/MoreOptions.svelte';
   import Threshold from '../rules/Threshold.svelte';
@@ -76,7 +77,7 @@
       const at = e instanceof ApiError && e.path ? refusedPart(b, e.path) : undefined;
       if (!at) return flash((e as Error).message);
       refused = { ...at, message: (e as Error).message, was: snapshot(at.part) };
-      if (at.part === 'account_id' || at.part === 'stack' || at.part === 'min_confidence') more = true;
+      if (['account_id', 'stack', 'notify', 'min_confidence'].includes(at.part)) more = true;
     } finally {
       saving = false;
     }
@@ -172,7 +173,7 @@
     </div>
 
     <details class="border-t border-line-divider pt-3.5" bind:open={more}>
-      <summary class="min-h-8 cursor-pointer font-semibold max-md:min-h-11">More options: mailbox, stacking{b.intent.trim() ? ', threshold' : ''}</summary>
+      <summary class="min-h-8 cursor-pointer font-semibold max-md:min-h-11">More options: mailbox, stacking{settings.value.features.notifications ? ', notify' : ''}{b.intent.trim() ? ', threshold' : ''}</summary>
       <div class="flex flex-col gap-3.5 pt-3">
         <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" {problem} />
         {#if b.intent.trim()}

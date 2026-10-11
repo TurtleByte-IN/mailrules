@@ -4,14 +4,14 @@
 // marks one Public (served before sign-in) or Webhook (a call from another server), a
 // capability the web app reads in GET /api/settings `features`, and optionally the way
 // people sign in (Module.SignIn), the way mailboxes of some providers are connected with
-// one-click sign-in (Module.Mailboxes), and sign-in forms for mailboxes of providers the
-// module connects itself (Module.MailboxForms). ext/daemon runs the daemon with the
-// modules a build compiles in.
+// one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of providers the
+// module connects itself (Module.MailboxForms), and the delivery of rule notifications
+// (Module.Notifications). ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
 // mail it may read (read-only, with BODY.PEEK), the models it may call, the rules and
-// folders it may read, and the helpers that answer HTTP requests the way the built-in
-// routes do. A change to it means the modules follow.
+// folders it may read, the notices of what rules did, and the helpers that answer HTTP
+// requests the way the built-in routes do. A change to it means the modules follow.
 package ext
 
 import (
@@ -67,6 +67,13 @@ type Module struct {
 	// button opens the form again (MailboxForm.Path). At most one form per provider in a
 	// build.
 	MailboxForms []MailboxForm
+	// Notifications, when set, delivers rule notifications. The daemon then offers Settings'
+	// Notifications and webhooks, where a team adds destinations of the module's Kinds, and
+	// a rule's More options, where a rule chooses the destinations to tell; it stores the
+	// destinations, their addresses and secrets encrypted, and for every email a rule with
+	// destinations acts on live it writes one notice per destination and hands each to
+	// Notify. At most one module of a build sets it.
+	Notifications *Notifications
 }
 
 // MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
@@ -226,6 +233,106 @@ const (
 	MailboxConnectFailed = "connect_failed"
 )
 
+// Notifications is how a module delivers rule notifications (Module.Notifications). The
+// daemon decides what is told: a notice for every email a rule acts on live, one per
+// destination the rule names, written in the transaction that records the rule's actions,
+// so a restart loses none. Nothing is told of dry-run, of a cleanup, of an undo or a
+// correction, or of an email a sender rule settled. The module only delivers.
+type Notifications struct {
+	// Kinds are the destination kinds the module delivers to: DestinationWebhook,
+	// DestinationSlack or both. Settings offers only these.
+	Kinds []string
+	// Notify takes one notice for one destination. One worker calls it, one notice at a
+	// time, within a few seconds of the rule acting, with a ctx that ends after 30 seconds,
+	// and calls it again for the same notice (the same Notice.ID) until it returns nil:
+	// every notice reaches the module at least once, so a module that must not deliver one
+	// twice tells them apart by ID. nil means the module has the notice: the daemon no
+	// longer keeps the email's details, and delivering it, retries included, is the
+	// module's job. Report each outcome with d.Record, then or later (d stays valid while
+	// the daemon runs). An error is logged and the notice handed over again, after a few
+	// seconds at first and at most an hour apart, until NoticeDays have passed. Errors, like
+	// a Delivery's Reason, must not contain the destination's URL or secret, nor the email's
+	// sender or subject.
+	Notify func(ctx context.Context, n Notice, d Deliveries) error
+	// Start, when set, is called once as the daemon starts, in a goroutine of its own, with
+	// a ctx that ends when the daemon stops; the daemon waits for it to return before it
+	// closes the database. A module that retries deliveries on its own runs its loop here.
+	Start func(ctx context.Context, d Deliveries)
+}
+
+// The kinds of destination a module may deliver to (Notifications.Kinds, Destination.Kind).
+const (
+	// DestinationWebhook: a POST of JSON to the destination's URL, signed with its Secret, so
+	// the receiving server can tell the notice came from MailRules.
+	DestinationWebhook = store.DestinationWebhook
+	// DestinationSlack: a message through a Slack incoming webhook (https://hooks.slack.com/…).
+	DestinationSlack = store.DestinationSlack
+)
+
+// NoticeDays is how long the daemon keeps a notice and what was reported of delivering it.
+const NoticeDays = store.NoticeDays
+
+// Destination is where one notice goes, as a team added it in Settings.
+type Destination struct {
+	ID   int64
+	Name string
+	Kind string // DestinationWebhook or DestinationSlack
+	URL  string // the address: never log it
+	// Secret is a webhook's signing secret, shown to the person once when they added the
+	// destination: sign every delivery with it. Empty for DestinationSlack. Never log it.
+	Secret string
+}
+
+// Notice is what one rule did to one email, for one destination. It never carries the
+// email's text. Marshalled as JSON it leaves the destination out: it is a webhook body as
+// it stands.
+type Notice struct {
+	// ID is the notice's own: the same on every hand-over of it, and what Delivery names.
+	ID          int64       `json:"id"`
+	TenantID    int64       `json:"tenant_id"`
+	Destination Destination `json:"-"`
+	// Mailbox is the address of the mailbox the email is in, as Mailboxes names it.
+	Mailbox  string `json:"mailbox"`
+	RuleID   int64  `json:"rule_id"` // 0 once the rule was deleted
+	RuleName string `json:"rule_name"`
+	// Actions are the rule's actions that were done, in order: move, archive, trash, junk,
+	// flag, unflag, read, unread or keep. A run a failure cut short lists those done before.
+	Actions []string `json:"actions"`
+	Folder  string   `json:"folder"` // where the email is after them
+	From    string   `json:"from"`   // the sender's address
+	// FromName is the sender's display name; empty when the email gave none.
+	FromName string    `json:"from_name"`
+	Subject  string    `json:"subject"`
+	At       time.Time `json:"at"` // when the rule acted
+	// ActivityID is the email in the web app's Activity; Link opens it there
+	// (MAILRULES_PUBLIC_URL + #/activity?id=<ActivityID>).
+	ActivityID int64  `json:"activity_id"`
+	Link       string `json:"link"`
+}
+
+// Deliveries is where a module reports what became of the notices it took.
+type Deliveries interface {
+	// Record stores the outcome of delivering a notice, which Settings lists under the
+	// destination's Recent deliveries (the last 20, kept NoticeDays). A module that retries
+	// may record each attempt or only the last. ErrNoNotice when the notice is no longer
+	// kept: its destination or mailbox was removed, or it is older than NoticeDays.
+	Record(ctx context.Context, d Delivery) error
+}
+
+// Delivery is one outcome of delivering a notice.
+type Delivery struct {
+	NoticeID int64
+	Sent     bool
+	// Reason, when not Sent, is why, as a short sentence the person reads in Settings
+	// ("Slack answered 404: the webhook was removed."). Never the URL, the secret, the
+	// sender or the subject.
+	Reason string
+	At     time.Time // when it happened; zero = now
+}
+
+// ErrNoNotice is what Deliveries.Record returns for a notice the daemon no longer keeps.
+var ErrNoNotice = errors.New("no such notice is kept")
+
 // Route is one API endpoint of a module, as http.ServeMux patterns it: a method and a
 // path such as "/api/rules/suggest".
 type Route struct {
@@ -342,12 +449,14 @@ type Host interface {
 	// identity with that email signs up at once and gets a new user, not their data) and
 	// deletes their secrets: their mailboxes are stopped first, then their passwords and
 	// tokens are deleted, with, when they are their tenant's only member, the tenant's
-	// stored model API keys. The rest of their data is removed ForgetDays later, unless the
-	// same identity (Provider, Subject) signs in again first, which calls the removal off
-	// and gives their rules and history back; their mailboxes then wait for a new password
-	// and the model keys stay unset. A person who is their tenant's only member takes the
-	// whole tenant with them: its mailboxes and everything MailRules recorded of them,
-	// rules, sender rules, settings, and usage ledger. A member of a team takes all the
+	// stored model API keys and the addresses and secrets of its notification destinations.
+	// The rest of their data is removed ForgetDays later, unless the same identity
+	// (Provider, Subject) signs in again first, which calls the removal off and gives their
+	// rules and history back; their mailboxes then wait for a new password, the model keys
+	// stay unset and the destinations must be added again. A person who is their tenant's
+	// only member takes the whole tenant with them: its mailboxes and everything MailRules
+	// recorded of them, rules, sender rules, settings, usage ledger, and notification
+	// destinations with their notices and delivery log. A member of a team takes all the
 	// mailboxes they own, shared or not; the team keeps the rest. An identity nobody has is
 	// not an error, and forgetting one again changes nothing, the date of the removal
 	// included. The self-host admin, who has no identity, cannot be forgotten.

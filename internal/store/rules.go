@@ -20,18 +20,21 @@ func null[T comparable](v T) any {
 	return v
 }
 
-// ruleJSON encodes the three JSON columns of a rule.
-func ruleJSON(r rules.Rule) (conditions, exceptions, actions []byte, err error) {
+// ruleJSON encodes the four JSON columns of a rule.
+func ruleJSON(r rules.Rule) (conditions, exceptions, actions, notify []byte, err error) {
 	if conditions, err = json.Marshal(r.Conditions); err != nil {
-		return nil, nil, nil, fmt.Errorf("encode conditions: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("encode conditions: %w", err)
 	}
 	if exceptions, err = json.Marshal(r.Exceptions); err != nil {
-		return nil, nil, nil, fmt.Errorf("encode exceptions: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("encode exceptions: %w", err)
 	}
 	if actions, err = json.Marshal(r.Actions); err != nil {
-		return nil, nil, nil, fmt.Errorf("encode actions: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("encode actions: %w", err)
 	}
-	return conditions, exceptions, actions, nil
+	if notify, err = json.Marshal(append([]int64{}, r.Notify...)); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("encode notify: %w", err)
+	}
+	return conditions, exceptions, actions, notify, nil
 }
 
 // CreateRule inserts a rule of the tenant at version 1 and returns it with its id.
@@ -46,16 +49,16 @@ type execer interface {
 }
 
 func createRule(ctx context.Context, q execer, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
-	conditions, exceptions, actions, err := ruleJSON(r)
+	conditions, exceptions, actions, notify, err := ruleJSON(r)
 	if err != nil {
 		return rules.Rule{}, err
 	}
 	res, err := q.ExecContext(ctx,
 		`INSERT INTO rules (tenant_id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
-		                    priority, stack, model, min_confidence, enabled, mailbox_removed, version, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		                    priority, stack, model, min_confidence, enabled, mailbox_removed, notify, version, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		tenantID, r.UserID, null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, now, now)
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), now, now)
 	if err != nil {
 		return rules.Rule{}, fmt.Errorf("create rule: %w", err)
 	}
@@ -72,17 +75,17 @@ func (s *Store) UpdateRule(ctx context.Context, tenantID int64, r rules.Rule, no
 }
 
 func updateRule(ctx context.Context, q execer, tenantID int64, r rules.Rule, now int64) error {
-	conditions, exceptions, actions, err := ruleJSON(r)
+	conditions, exceptions, actions, notify, err := ruleJSON(r)
 	if err != nil {
 		return err
 	}
 	res, err := q.ExecContext(ctx,
 		`UPDATE rules SET account_id = ?, name = ?, said = ?, template = ?, intent = ?, conditions = ?, exceptions = ?, actions = ?,
-		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?, mailbox_removed = ?,
+		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?, mailbox_removed = ?, notify = ?,
 		                  version = version + 1, updated_at = ?
 		 WHERE id = ? AND tenant_id = ?`,
 		null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, now, r.ID, tenantID)
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), now, r.ID, tenantID)
 	if err != nil {
 		return fmt.Errorf("update rule: %w", err)
 	}
@@ -93,7 +96,7 @@ func updateRule(ctx context.Context, q execer, tenantID int64, r rules.Rule, now
 }
 
 const ruleColumns = `id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
-	priority, stack, model, min_confidence, enabled, mailbox_removed, version, created_at, updated_at`
+	priority, stack, model, min_confidence, enabled, mailbox_removed, notify, version, created_at, updated_at`
 
 // scanRule reads ruleColumns, then into more whatever the query selects after them.
 func scanRule(row interface{ Scan(...any) error }, more ...any) (rules.Rule, error) {
@@ -101,9 +104,9 @@ func scanRule(row interface{ Scan(...any) error }, more ...any) (rules.Rule, err
 	var accountID sql.NullInt64
 	var said, template, intent, model sql.NullString
 	var minConfidence sql.NullFloat64
-	var conditions, exceptions, actions string
+	var conditions, exceptions, actions, notify string
 	if err := row.Scan(append([]any{&r.ID, &r.UserID, &accountID, &r.Name, &said, &template, &intent, &conditions, &exceptions, &actions,
-		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.MailboxRemoved, &r.Version, &r.CreatedAt, &r.UpdatedAt}, more...)...); err != nil {
+		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.MailboxRemoved, &notify, &r.Version, &r.CreatedAt, &r.UpdatedAt}, more...)...); err != nil {
 		return rules.Rule{}, err
 	}
 	r.AccountID, r.Said, r.Template, r.Intent, r.Model = accountID.Int64, said.String, template.String, intent.String, model.String
@@ -114,8 +117,12 @@ func scanRule(row interface{ Scan(...any) error }, more ...any) (rules.Rule, err
 		json.Unmarshal([]byte(conditions), &r.Conditions),
 		json.Unmarshal([]byte(exceptions), &r.Exceptions),
 		json.Unmarshal([]byte(actions), &r.Actions),
+		json.Unmarshal([]byte(notify), &r.Notify),
 	); err != nil {
 		return rules.Rule{}, fmt.Errorf("decode rule %d: %w", r.ID, err)
+	}
+	if len(r.Notify) == 0 {
+		r.Notify = nil
 	}
 	return r, nil
 }
@@ -484,7 +491,7 @@ func (s *Store) ImportRules(ctx context.Context, tenantID, userID int64, importe
 	for _, r := range imported {
 		r.UserID = userID
 		if old, ok := byName[r.Name]; ok {
-			r.ID, r.Priority, r.UserID = old.ID, old.Priority, old.UserID
+			r.ID, r.Priority, r.UserID, r.Notify = old.ID, old.Priority, old.UserID, old.Notify // a rules file carries no destinations
 			if err := updateRule(ctx, tx, tenantID, r, now); err != nil {
 				return 0, 0, err
 			}

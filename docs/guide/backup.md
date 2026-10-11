@@ -8,7 +8,7 @@ Everything MailRules keeps is in its data directory: `/data` in the Docker image
 
 ## What is in the data directory
 
-- `mailrules.db`, with `mailrules.db-wal` and `mailrules.db-shm` next to it while MailRules runs: the SQLite database. It holds your rules, sender rules, settings, decisions, the action log used for undo, the contacts learned from your Sent folder, short email snippets, and your mailbox passwords and model keys in encrypted form.
+- `mailrules.db`, with `mailrules.db-wal` and `mailrules.db-shm` next to it while MailRules runs: the SQLite database. It holds your rules, sender rules, settings, decisions, the action log used for undo, the contacts learned from your Sent folder, short email snippets, and your mailbox passwords and model keys (and, in the hosted version, the addresses of notification destinations) in encrypted form.
 - `master.key`: the key that encrypts those passwords and keys. It is generated on first run, readable only by the user MailRules runs as, and never stored in the database.
 
 The database never holds full email bodies. Your email itself stays on your mail server.

@@ -51,14 +51,18 @@ func (s *server) moduleRoutes() []route {
 }
 
 // features are the flags GET /api/settings reports: the later-phase ones, then each
-// module's name, on, and oauth_providers while a module connects mailboxes with one-click
-// sign-in (GET /api/presets says for which providers).
+// module's name, on, oauth_providers while a module connects mailboxes with one-click
+// sign-in (GET /api/presets says for which providers), and notifications while a module
+// delivers rule notifications.
 func (s *server) features() map[string]bool {
 	out := maps.Clone(features)
 	for _, m := range s.Modules {
 		out[m.Name] = true
 		if m.Mailboxes != nil {
 			out["oauth_providers"] = true
+		}
+		if m.Notifications != nil {
+			out["notifications"] = true
 		}
 	}
 	return out
@@ -230,12 +234,13 @@ func (s *server) signIn() *ext.Module {
 // its module's Public GET routes, a SignOut without SignIn, more than one module with
 // SignIn, and cloud mode with no module that signs people in; a Mailboxes with no
 // Login, with a provider other than gmail or outlook, or whose Connect is not one of its
-// module's signed-in GET routes, and more than one module with Mailboxes; and a
+// module's signed-in GET routes, and more than one module with Mailboxes; a
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
-// signed-in POST routes under /api/, and two forms for one provider. The daemon calls it
-// before it serves anything.
+// signed-in POST routes under /api/, and two forms for one provider; and a Notifications
+// with no Notify or no kind, or a kind other than webhook or slack, and more than one
+// module with Notifications. The daemon calls it before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn, mailboxes []string
+	var signIn, mailboxes, notifiers []string
 	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
 		publicGet, signedInGet, signedInPost := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -279,6 +284,17 @@ func CheckModules(mode string, modules []ext.Module) error {
 			}
 			forms[f.Provider] = m.Name
 		}
+		if n := m.Notifications; n != nil {
+			if n.Notify == nil || len(n.Kinds) == 0 {
+				return fmt.Errorf("module %s: Notifications needs Notify and at least one kind", m.Name)
+			}
+			for _, k := range n.Kinds {
+				if !slices.Contains(notificationKinds, k) {
+					return fmt.Errorf("module %s: Notifications kind %q must be one of %s", m.Name, k, strings.Join(notificationKinds, ", "))
+				}
+			}
+			notifiers = append(notifiers, m.Name)
+		}
 		if m.SignOut != "" && m.SignIn == "" {
 			return fmt.Errorf("module %s: SignOut is set without SignIn", m.Name)
 		}
@@ -296,6 +312,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 	}
 	if len(mailboxes) > 1 {
 		return fmt.Errorf("more than one module connects mailboxes with one-click sign-in: %s", strings.Join(mailboxes, ", "))
+	}
+	if len(notifiers) > 1 {
+		return fmt.Errorf("more than one module delivers rule notifications: %s", strings.Join(notifiers, ", "))
 	}
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")

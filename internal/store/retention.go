@@ -22,7 +22,8 @@ const day = 24 * 3600
 // retention_days), and deletes the tenant's messages first seen more than KeepMessagesDays
 // ago that have no action left to undo, that is, none in effect from the last UndoDays
 // (their decisions, actions and corrections go with them). It returns how many rows each
-// part touched.
+// part touched. It also deletes the tenant's notices and delivery records older than
+// NoticeDays, which it does not count.
 func (s *Store) Retain(ctx context.Context, tenantID, now int64, retentionDays int) (blanked, deleted int64, err error) {
 	const ofTenant = `account_id IN (SELECT id FROM accounts WHERE tenant_id = ?)`
 	res, err := s.db.ExecContext(ctx,
@@ -41,5 +42,5 @@ func (s *Store) Retain(ctx context.Context, tenantID, now int64, retentionDays i
 		return blanked, 0, fmt.Errorf("delete old messages: %w", err)
 	}
 	deleted, _ = res.RowsAffected()
-	return blanked, deleted, nil
+	return blanked, deleted, s.retainNotices(ctx, tenantID, now)
 }

@@ -41,6 +41,7 @@ const rule = (id: number, over: Partial<Rule> = {}): Rule => ({
   updated_at: 1791276732,
   hits_week: 0,
   mailbox_removed: false,
+  notify: [],
   last_match_at: null,
   ...over,
 });

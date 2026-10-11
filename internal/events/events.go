@@ -16,6 +16,9 @@ const (
 	CheckProgress    = "check.progress" // a cleanup check moved forward or ended; Data: worker.CheckState (rows omitted)
 	RulesChanged     = "rules.changed"
 	UsageUpdated     = "usage.updated" // Data: nil
+	// NotificationsChanged: a notification destination was added or removed, or a module
+	// reported a delivery. Data: nil
+	NotificationsChanged = "notifications.changed"
 )
 
 // Keep is how many past events a reconnecting subscriber can replay.
