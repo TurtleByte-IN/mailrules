@@ -108,6 +108,7 @@ type Check struct {
 	Since       int64   // 0 = all mail
 	Limit       int     // 0 = no limit
 	RuleIDs     []int64 // the rules the check was limited to; nil = every enabled rule (MAI-43)
+	RouteOnly   []int64 // the unpicked rules a sender rule routed to as the check began
 	Fingerprint string
 	StartedAt   int64
 
@@ -145,6 +146,7 @@ type CheckState struct {
 	Since       int64
 	Limit       int
 	RuleIDs     []int64 // nil = every enabled rule
+	RouteOnly   []int64 // the unpicked rules a sender rule routed to as the check began
 	Fingerprint string
 	Status      string
 	Done        int
@@ -202,6 +204,7 @@ func (c *Check) State() CheckState {
 
 func (c *Check) state(withRows bool) CheckState {
 	st := CheckState{ID: c.ID, AccountID: c.AccountID, Folder: c.Folder, Since: c.Since, Limit: c.Limit, RuleIDs: slices.Clone(c.RuleIDs),
+		RouteOnly:   slices.Clone(c.RouteOnly),
 		Fingerprint: c.Fingerprint, Status: c.status, Done: c.done, Total: c.total, Matched: c.matched, ModelCalls: c.modelCalls,
 		Tokens: c.tokens, CostUSD: c.costUSD, Error: c.errMsg}
 	if withRows {
@@ -248,6 +251,7 @@ func (m *Manager) StartCheck(c Cleanup, fingerprint string, run CheckFunc) (*Che
 	}
 	checks := m.Checks()
 	chk := &Check{ID: checks.newID(), AccountID: c.AccountID, Folder: c.Folder, Limit: c.Limit, RuleIDs: slices.Clone(c.RuleIDs),
+		RouteOnly:   slices.Clone(c.RouteOnly),
 		Fingerprint: fingerprint, StartedAt: now().Unix(), status: CheckRunning, cancel: cancel}
 	if !c.Since.IsZero() {
 		chk.Since = c.Since.Unix()
