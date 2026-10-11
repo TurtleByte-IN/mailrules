@@ -269,7 +269,8 @@ func (p *Pipeline) cameBack(ctx context.Context, m *store.Message) (bool, error)
 func decisionFrom(out Outcome, messageID int64, now time.Time) store.Decision {
 	res := out.Result
 	d := store.Decision{MessageID: messageID, CreatedAt: now.Unix(), Stage: string(res.Stage), RuleID: res.RuleID,
-		RuleVersion: res.RuleVersion, Confidence: res.Confidence, Reason: out.Reason, RuleName: out.RuleName, Probabilities: out.Probabilities}
+		RuleVersion: res.RuleVersion, Confidence: res.Confidence, Reason: out.Reason, RuleName: out.RuleName, Probabilities: out.Probabilities,
+		SenderSource: res.SenderSource}
 	if out.Asked {
 		u := out.Usage
 		d.Model, d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS = u.Model, u.TokensIn, u.TokensOut, u.CostUSD, u.Latency.Milliseconds()

@@ -4,7 +4,7 @@ import type { ActivityItem, MessageAction, MessageDetail, StatsSummary } from '.
 
 export const decision = (over: Partial<NonNullable<ActivityItem['decision']>> = {}): NonNullable<ActivityItem['decision']> => ({
   id: 11, stage: 'decider', rule_id: 3, rule_name: 'Recruiters', confidence: 0.91, reason: 'Recruiter outreach; you have never replied to this sender',
-  model: 'jev', tokens_in: 400, tokens_out: 12, cost_usd: 0.00002, latency_ms: 380, created_at: 1000, ...over,
+  model: 'jev', tokens_in: 400, tokens_out: 12, cost_usd: 0.00002, latency_ms: 380, created_at: 1000, sender_source: null, ...over,
 });
 
 export const action = (over: Partial<MessageAction> = {}): MessageAction => ({
