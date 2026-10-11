@@ -23,6 +23,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
+	"github.com/emersion/go-sasl"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 )
@@ -40,9 +41,14 @@ type Server struct {
 	TLS  *tls.Config         // client config that trusts the server's certificate
 	User *imapmemserver.User // create folders and inspect state directly
 
-	mu       sync.Mutex
-	conns    []net.Conn
-	noCreate atomic.Bool
+	mu        sync.Mutex
+	conns     []net.Conn
+	imapConns []*imapserver.Conn
+	// tokens are the OAuth access tokens AUTHENTICATE XOAUTH2 accepts (AllowToken), and
+	// tokenLogins the ones it was given and accepted, in order.
+	tokens      map[string]bool
+	tokenLogins []string
+	noCreate    atomic.Bool
 	// special holds the folders made with CreateSpecial; once there is one, LIST is
 	// answered here (see session.List).
 	special map[string][]imap.MailboxAttr
@@ -114,6 +120,84 @@ type session struct {
 	s *Server
 }
 
+// AllowToken makes AUTHENTICATE XOAUTH2 accept token for the one account, as a provider
+// accepts an access token it issued, until ExpireSessions.
+func (s *Server) AllowToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tokens == nil {
+		s.tokens = map[string]bool{}
+	}
+	s.tokens[token] = true
+}
+
+// TokenLogins are the access tokens of the XOAUTH2 logins the server accepted, in order.
+func (s *Server) TokenLogins() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.tokenLogins)
+}
+
+// ExpireSessions does what Gmail and Outlook do when an access token expires, about an
+// hour after it was issued: every token accepted so far stops working, and every open
+// session is closed with "* BYE".
+func (s *Server) ExpireSessions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens = nil
+	for _, c := range s.imapConns {
+		_ = c.Bye("Session expired, please login again.")
+	}
+	s.imapConns = nil
+}
+
+// AuthenticateMechanisms offers XOAUTH2; LOGIN with the password works as before.
+func (x session) AuthenticateMechanisms() []string { return []string{"XOAUTH2"} }
+
+// Authenticate runs XOAUTH2 as Gmail does
+// (https://developers.google.com/workspace/gmail/imap/xoauth2-protocol): a token it does
+// not accept gets a challenge describing the error, then NO once the client answers it.
+func (x session) Authenticate(mech string) (sasl.Server, error) {
+	if mech != "XOAUTH2" {
+		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "SASL mechanism not supported"}
+	}
+	return &xoauth2Server{x: x}, nil
+}
+
+type xoauth2Server struct {
+	x       session
+	refused bool
+}
+
+func (a *xoauth2Server) Next(resp []byte) ([]byte, bool, error) {
+	if a.refused {
+		return nil, false, &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeAuthenticationFailed, Text: "Invalid credentials (Failure)"}
+	}
+	if resp == nil {
+		return []byte{}, false, nil // ask for the initial response
+	}
+	var user, token string
+	for _, field := range bytes.Split(resp, []byte{1}) {
+		if v, ok := bytes.CutPrefix(field, []byte("user=")); ok {
+			user = string(v)
+		} else if v, ok := bytes.CutPrefix(field, []byte("auth=Bearer ")); ok {
+			token = string(v)
+		}
+	}
+	s := a.x.s
+	s.mu.Lock()
+	ok := user == Username && s.tokens[token]
+	if ok {
+		s.tokenLogins = append(s.tokenLogins, token)
+	}
+	s.mu.Unlock()
+	if !ok {
+		a.refused = true
+		return []byte(`{"status":"401","schemes":"bearer","scope":"https://mail.google.com/"}`), false, nil
+	}
+	return nil, true, a.x.Login(Username, Password)
+}
+
 func (x session) Create(name string, options *imap.CreateOptions) error {
 	if x.s.noCreate.Load() {
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "Folders cannot be created here"}
@@ -150,7 +234,10 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 	mem.AddUser(user)
 	var s *Server
 	srv := imapserver.New(&imapserver.Options{
-		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+		NewSession: func(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			s.mu.Lock()
+			s.imapConns = append(s.imapConns, c)
+			s.mu.Unlock()
 			return session{mem.NewSession().(imapserver.SessionIMAP4rev2), s}, nil, nil
 		},
 		Caps:   caps,

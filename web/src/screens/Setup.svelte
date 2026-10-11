@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { replace } from 'svelte-spa-router';
+  import { replace, router } from 'svelte-spa-router';
   import type { Decider } from '../lib/api/settings';
   import { close, firstRun, next, skip, stepNames } from '../lib/state/firstrun.svelte';
+  import { mailboxReturn } from '../lib/state/oneclick';
   import { findWorkspace, load, settings } from '../lib/state/settings.svelte';
   import Wizard from './accounts/Wizard.svelte';
   import DeciderFields from './settings/DeciderFields.svelte';
@@ -18,6 +19,13 @@
   ]);
   const ready = $derived(!s.warnings.some((w) => w.code === 'decider_not_ready'));
   const current = $derived(firstRun.step === 'ai' ? 1 : firstRun.step === 'mailbox' ? 2 : 3);
+
+  // A one-click sign-in started at the mailbox step comes back here (#/setup?added=<id> or
+  // ?mailbox_error=<code>, see App): read it once, then clear the address bar. An added mailbox
+  // goes on at Rules; once it is connected, skipping its rules still moves on to Done.
+  const back = mailboxReturn(router.querystring ?? '');
+  if (router.querystring) replace('/setup');
+  let returnError = $state(back.error);
 
   // The guide only exists right after the admin account was created; opened any other way
   // (a reload, a typed link) it gives way to Overview. Closing it opens a screen of its own.
@@ -79,7 +87,13 @@
         <h2>Connect your first mailbox</h2>
         <p class="mt-1 text-secondary">Pick your provider, sign in with an app password and test the connection. Dry-run stays on: nothing in your mailbox changes until you switch it off.</p>
       </div>
-      <Wizard cancelLabel="Skip for now" onclose={skip} onconnected={next} />
+      {#if returnError}
+        <div role="alert" class="flex flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-[18px] py-3 text-trash">
+          <span>{returnError}</span>
+          <button type="button" class="btn" onclick={() => (returnError = undefined)}>Dismiss</button>
+        </div>
+      {/if}
+      <Wizard cancelLabel="Skip for now" added={back.added} from="setup" onclose={back.added ? next : skip} onconnected={next} />
     {:else}
       <section aria-labelledby="setup-done" class="card flex flex-col gap-3.5 p-5">
         <h2 id="setup-done">You're set</h2>

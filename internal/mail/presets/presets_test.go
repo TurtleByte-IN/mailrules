@@ -20,8 +20,9 @@ func TestPresets(t *testing.T) {
 		if p.Name == "proton" {
 			wantPort, wantTLS = 1143, TLSStartTLS
 		}
-		if p.Port != wantPort || p.TLSMode != wantTLS || p.Label == "" || p.PasteLabel == "" {
-			t.Errorf("%s: port %d, tls %q, label %q, secret label %q", p.Name, p.Port, p.TLSMode, p.Label, p.PasteLabel)
+		// Outlook takes no pasted secret: only one-click sign-in.
+		if p.Port != wantPort || p.TLSMode != wantTLS || p.Label == "" || (p.PasteLabel == "") != p.OAuthOnly || p.OAuthOnly != (p.Name == "outlook") {
+			t.Errorf("%s: port %d, tls %q, label %q, secret label %q, oauth only %v", p.Name, p.Port, p.TLSMode, p.Label, p.PasteLabel, p.OAuthOnly)
 		}
 		if (p.Host == "") != (p.Name == "generic") || (p.HelpURL == "") != (p.Name == "generic") {
 			t.Errorf("%s: host %q, help %q", p.Name, p.Host, p.HelpURL)
@@ -33,10 +34,10 @@ func TestPresets(t *testing.T) {
 		}
 	}
 	// These are the values accounts.preset may hold.
-	if want := []string{"icloud", "gmail", "fastmail", "yahoo", "zoho", "proton", "generic"}; !slices.Equal(names, want) {
+	if want := []string{"icloud", "gmail", "outlook", "fastmail", "yahoo", "zoho", "proton", "generic"}; !slices.Equal(names, want) {
 		t.Errorf("presets = %v, want %v", names, want)
 	}
-	if _, ok := Get("outlook"); ok {
+	if _, ok := Get("hotmail"); ok {
 		t.Error("unknown preset found")
 	}
 }
@@ -62,6 +63,7 @@ func TestUsernames(t *testing.T) {
 func TestFillRoles(t *testing.T) {
 	icloud, _ := Get("icloud")
 	gmail, _ := Get("gmail")
+	outlook, _ := Get("outlook")
 	for _, tc := range []struct {
 		name   string
 		preset Preset
@@ -82,6 +84,12 @@ func TestFillRoles(t *testing.T) {
 				"[Gmail]/Sent Mail": mail.RoleSent, "[Gmail]/Drafts": mail.RoleDrafts}},
 		{"google mail names", gmail, []mail.Folder{{Name: "[Google Mail]/All Mail"}, {Name: "[Google Mail]/Bin"}},
 			map[string]string{"[Google Mail]/All Mail": mail.RoleArchive, "[Google Mail]/Bin": mail.RoleTrash}},
+		{"outlook names without SPECIAL-USE", outlook, []mail.Folder{{Name: "INBOX"}, {Name: "Junk Email"}, {Name: "Deleted Items"},
+			{Name: "Archive"}, {Name: "Sent Items"}, {Name: "Drafts"}, {Name: "Notes"}},
+			map[string]string{"Junk Email": mail.RoleJunk, "Deleted Items": mail.RoleTrash, "Archive": mail.RoleArchive,
+				"Sent Items": mail.RoleSent, "Drafts": mail.RoleDrafts}},
+		{"outlook's own roles are kept", outlook, []mail.Folder{{Name: "Courrier indésirable", SpecialUse: mail.RoleJunk}, {Name: "Junk Email"}},
+			map[string]string{"Courrier indésirable": mail.RoleJunk}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.preset.FillRoles(tc.in)

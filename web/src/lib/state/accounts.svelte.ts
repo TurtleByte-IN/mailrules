@@ -19,9 +19,20 @@ export const statuses: Record<accountsApi.AccountStatus, { label: string; dot: s
   reconnecting: { label: 'Reconnecting', dot: 'bg-warn-strong' },
   paused: { label: 'Paused', dot: 'bg-warn-strong' },
   auth_failed: { label: 'Sign-in failed', dot: 'bg-trash' },
+  reconnect_needed: { label: 'Reconnect needed', dot: 'bg-trash' },
   cert_changed: { label: 'Certificate changed', dot: 'bg-trash' },
   error: { label: 'Error', dot: 'bg-trash' },
 };
+
+/**
+ * Where the browser goes to sign a one-click mailbox in to its provider again: the module's
+ * one-click URL for the mailbox's provider, with the mailbox's id. Undefined when this build
+ * has no one-click sign-in for it.
+ */
+export function reconnectURL(a: accountsApi.Account) {
+  const url = accounts.presets.find((p) => p.name === a.preset)?.one_click_url;
+  return a.one_click && url ? url + '&account=' + a.id : undefined;
+}
 
 const message = (e: unknown) => (e instanceof Error && e.message) || 'The daemon did not answer.';
 

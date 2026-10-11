@@ -2,6 +2,7 @@ import type { AccountInput, Preset, ServerCert, TestResult } from '../../lib/api
 import * as accountsApi from '../../lib/api/accounts';
 import { ApiError } from '../../lib/api/client';
 import { accounts, connect } from '../../lib/state/accounts.svelte';
+import { startOneClick } from '../../lib/state/oneclick';
 import { addTemplatesByName } from '../../lib/state/compose.svelte';
 import { flash } from '../../lib/state/toast.svelte';
 
@@ -39,6 +40,13 @@ export const editableServer: Preset['name'][] = ['proton'];
 export class Wizard {
   step = $state(0);
   presetId = $state<Preset['name']>('icloud');
+  /** The tile picked signs in with the provider through a module (one-click sign-in), not with a pasted secret. */
+  oneClick = $state(false);
+  /**
+   * The mailbox a one-click sign-in already connected: the wizard went to the provider and came back to
+   * Rules for it, so Provider and Sign in are behind it and the last step saves only the starter rules.
+   */
+  accountId: number | undefined;
   email = $state('');
   password = $state('');
   host = $state('');
@@ -61,6 +69,21 @@ export class Wizard {
   templates = $state(starterTemplates.map((t) => ({ ...t })));
   #run = 0;
 
+  /**
+   * `added`: the id of a mailbox a one-click sign-in just connected, to go on with at Rules. `from`: where a
+   * one-click sign-in this run starts should come back to.
+   */
+  readonly from: 'setup' | 'accounts';
+  constructor(added?: number, from: 'setup' | 'accounts' = 'accounts') {
+    this.from = from;
+    if (added) [this.accountId, this.step, this.test] = [added, 2, 'ok'];
+  }
+
+  /** The first step this run shows: Rules when it goes on for a mailbox already connected. */
+  get first() {
+    return this.accountId ? 2 : 0;
+  }
+
   get preset() {
     return accounts.presets.find((p) => p.name === this.presetId);
   }
@@ -78,6 +101,7 @@ export class Wizard {
 
   get nextLabel() {
     const n = this.templates.filter((t) => t.on).length;
+    if (this.step === 3 && this.accountId) return this.busy ? 'Saving…' : 'Finish';
     if (this.step === 3) return this.busy ? 'Connecting…' : 'Connect';
     if (this.step === 1 && this.test !== 'ok') return 'Test and continue';
     if (this.step === 2) return `Preview with ${n} ${n === 1 ? 'rule' : 'rules'}`;
@@ -88,9 +112,10 @@ export class Wizard {
     return this.test === 'testing' ? 'Testing connection…' : this.test === 'ok' ? 'Connection works' : 'Test connection';
   }
 
-  /** Picks a provider; a preset whose server is on the form fills it in. */
-  choose(name: Preset['name']) {
+  /** Picks a provider and how to sign in to it; a preset whose server is on the form fills it in. */
+  choose(name: Preset['name'], oneClick = false) {
     this.presetId = name;
+    this.oneClick = oneClick;
     const p = this.preset;
     if (p && this.serverFields) {
       [this.host, this.port, this.tls] = [p.host, p.port, p.tls_mode];
@@ -172,9 +197,16 @@ export class Wizard {
     await this.runTest();
   }
 
-  /** Moves on one step; on the last one saves the mailbox. Resolves true once it is saved. */
+  /**
+   * Moves on one step; on the last one saves the mailbox. Resolves true once it is saved. A one-click tile
+   * leaves for the provider's sign-in instead, and the wizard comes back at Rules (`accountId`).
+   */
   async next(): Promise<boolean> {
     if (this.step === 0 && !this.preset) return false;
+    if (this.step === 0 && this.oneClick && this.preset?.one_click_url) {
+      startOneClick(this.preset.one_click_url, this.from);
+      return false;
+    }
     if (this.step === 1 && this.test !== 'ok') {
       await this.runTest();
       return false;
@@ -185,16 +217,17 @@ export class Wizard {
     }
     if (this.test !== 'ok' || this.busy) return false;
     this.busy = true;
+    if (this.accountId) {
+      try {
+        await this.#saveRules(accounts.list.find((a) => a.id === this.accountId)?.label ?? 'Your mailbox');
+        return true;
+      } finally {
+        this.busy = false;
+      }
+    }
     try {
       const a = await connect(this.#input()).finally(() => (this.password = ''));
-      // The mailbox is connected from here on, whatever happens to the starter rules.
-      const names = this.templates.filter((t) => t.on).map((t) => t.name);
-      try {
-        const n = names.length ? await addTemplatesByName(names) : 0;
-        if (n) flash(`${a.label} is connected with ${n} new ${n === 1 ? 'rule' : 'rules'}`);
-      } catch (e) {
-        flash(e instanceof Error ? e.message : String(e));
-      }
+      await this.#saveRules(a.label);
       return true;
     } catch (e) {
       if (!(e instanceof ApiError)) throw e;
@@ -204,6 +237,18 @@ export class Wizard {
       return false;
     } finally {
       this.busy = false;
+    }
+  }
+
+  /** Saves the starter rules left on. The mailbox is connected already, whatever happens to them. */
+  async #saveRules(label: string) {
+    const names = this.templates.filter((t) => t.on).map((t) => t.name);
+    try {
+      const n = names.length ? await addTemplatesByName(names) : 0;
+      if (n) flash(`${label} is connected with ${n} new ${n === 1 ? 'rule' : 'rules'}`);
+      else if (this.accountId) flash(label + ' is connected');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e));
     }
   }
 }

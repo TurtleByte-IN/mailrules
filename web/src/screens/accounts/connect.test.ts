@@ -12,15 +12,15 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 
 // GET /api/presets, first and last entry.
 const presets: Preset[] = [
-  { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.apple.com/en-us/102654', local_part_login: true, secret_label: 'App-specific password' },
-  { name: 'zoho', label: 'Zoho Mail', host: 'imap.zoho.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password' },
-  { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password' },
-  { name: 'generic', label: 'Other IMAP server', host: '', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'Password' },
+  { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.apple.com/en-us/102654', local_part_login: true, secret_label: 'App-specific password', password: true, one_click_url: null },
+  { name: 'zoho', label: 'Zoho Mail', host: 'imap.zoho.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: null },
+  { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password', password: true, one_click_url: null },
+  { name: 'generic', label: 'Other IMAP server', host: '', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'Password', password: true, one_click_url: null },
 ];
 const found = { username: 'new', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Junk', delimiter: '/', special_use: '\\Junk' }], can_move: true, idle: true };
 const created: Account = {
   id: 3, label: 'new@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'new', watch_folder: 'INBOX',
-  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '',
+  status: 'new', last_error: '', last_event_at: null, last_mail_at: null, capabilities: ['IDLE', 'MOVE'], can_move: true, folder_count: 2, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: false,
 };
 
 type Reply = [status: number, body?: unknown];
@@ -322,4 +322,34 @@ it('goes back to sign-in with the new certificate when the server presents anoth
   routes['POST /api/accounts'] = [422, certRefusal('cert_changed')];
   expect(await w.next()).toBe(false);
   expect([w.step, w.test, w.cert]).toEqual([1, 'err', cert]);
+});
+
+it("sends a one-click tile to the provider's sign-in instead of the Sign in step", async () => {
+  accounts.presets = [{ ...presets[0], name: 'gmail', label: 'Gmail', one_click_url: '/api/oauth/start?provider=gmail' }];
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  const w = new Wizard();
+  w.choose('gmail', true);
+  expect(await w.next()).toBe(false);
+  expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail');
+  expect(w.step).toBe(0);
+  // Its app-password tile goes on to Sign in as before.
+  w.choose('gmail');
+  await w.next();
+  expect(w.step).toBe(1);
+  expect(assign).toHaveBeenCalledTimes(1);
+});
+
+it('goes on at Rules for a mailbox a one-click sign-in connected, and saves only the starter rules', async () => {
+  accounts.list = [{ ...created, id: 7, label: 'jo@gmail.com', preset: 'gmail', one_click: true }];
+  vi.mocked(addTemplatesByName).mockResolvedValue(2);
+  const w = new Wizard(7);
+  expect([w.step, w.first]).toEqual([2, 2]);
+  await w.next();
+  expect(w.nextLabel).toBe('Finish');
+  expect(await w.next()).toBe(true);
+  expect(bodies('/api/accounts')).toEqual([]);
+  expect(bodies('/api/accounts/test')).toEqual([]);
+  expect(vi.mocked(addTemplatesByName)).toHaveBeenCalledWith(['Newsletters', 'Receipts', 'Login codes']);
+  expect(toast.text).toBe('jo@gmail.com is connected with 2 new rules');
 });
