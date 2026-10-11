@@ -85,6 +85,8 @@ export class Wizard {
   /** What the form's later steps ask for. Like `password`, cleared once posted. */
   code = $state('');
   mailboxPassword = $state('');
+  /** Gmail's one-click tile shows what MailRules does with the mailbox before it leaves for Google's sign-in. */
+  googleNotice = $state(false);
   templates = $state(starterTemplates.map((t) => ({ ...t })));
   #run = 0;
 
@@ -267,15 +269,22 @@ export class Wizard {
     return false;
   }
 
+  /** Leaves for the chosen provider's one-click sign-in. */
+  leave() {
+    if (this.preset?.one_click_url) startOneClick(this.preset.one_click_url, this.from);
+  }
+
   /**
    * Moves on one step; on the last one saves the mailbox. Resolves true once it is saved, or reconnected. A
-   * one-click tile leaves for the provider's sign-in instead, and the wizard comes back at Rules (`accountId`);
-   * a form tile's Sign in step posts the form, and goes on at Rules once the module has connected the mailbox.
+   * one-click tile leaves for the provider's sign-in instead (Gmail's shows `googleNotice` first), and the wizard
+   * comes back at Rules (`accountId`); a form tile's Sign in step posts the form, and goes on at Rules once the
+   * module has connected the mailbox.
    */
   async next(): Promise<boolean> {
     if (this.step === 0 && !this.preset) return false;
     if (this.step === 0 && this.via === 'one_click' && this.preset?.one_click_url) {
-      startOneClick(this.preset.one_click_url, this.from);
+      if (this.presetId === 'gmail') this.googleNotice = true;
+      else this.leave();
       return false;
     }
     if (this.step === 1 && this.via === 'form') return this.submitForm();

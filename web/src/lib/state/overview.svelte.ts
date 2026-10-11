@@ -76,6 +76,9 @@ export function health(a: Account): { detail: string; chip: string; action?: 'te
     case 'auth_failed':
       return { detail: a.last_error || 'Login rejected.', chip: 'chip-trash', action: 'go', label: 'Fix sign-in' };
     case 'reconnect_needed':
+      // Only the person who added the mailbox can sign it in again (ext.Host.ReconnectMailbox): a teammate gets no
+      // Reconnect, which would take them through the provider's consent only to be refused.
+      if (!a.mine) return { detail: 'Sign-in revoked or expired. The person who added this mailbox needs to reconnect it.', chip: 'chip-trash' };
       return { detail: 'Sign-in revoked or expired. Reconnect to sign in again.', chip: 'chip-trash', action: 'sign-in', label: 'Reconnect' };
     case 'cert_changed':
       return { detail: "The server's certificate changed.", chip: 'chip-trash', action: 'go', label: 'Check certificate' };

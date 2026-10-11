@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { router } from 'svelte-spa-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Preset } from '../lib/api/accounts';
@@ -168,13 +168,23 @@ it('shows the mail server refusing the sign-in on the mailbox step, and stays th
   expect(firstRun.step).toBe('mailbox');
 });
 
-it("sends Gmail's one-click tile to the provider's sign-in, noting that the answer comes back to setup", async () => {
+it("shows Gmail's one-click tile what MailRules does first, then sends it to Google's sign-in, noting that the answer comes back to setup", async () => {
   routes['GET /api/presets'] = [200, { items: [gmail] }];
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
   await show('mailbox');
   await fireEvent.click(await screen.findByRole('button', { name: /^Gmail One-click sign-in/ }));
   await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  const notice = within(screen.getByRole('region', { name: 'Before you sign in to Google' }));
+  for (const part of ['What MailRules reads', 'What it does', 'What leaves MailRules', 'How to remove access']) expect(notice.getByText(part)).toBeTruthy();
+  expect(notice.getByRole('link', { name: 'Privacy policy' }).getAttribute('href')).toBe('https://mailrules.app/privacy');
+  expect(assign).not.toHaveBeenCalled();
+
+  // Back returns to the tiles; the note is shown again every time.
+  await fireEvent.click(notice.getByRole('button', { name: 'Back' }));
+  expect(screen.queryByRole('region', { name: 'Before you sign in to Google' })).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue to Google' }));
   expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail');
   expect(setupReturn('#/accounts?added=7')).toBe('#/setup?added=7');
 });
