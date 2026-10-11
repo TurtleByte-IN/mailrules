@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { Destination } from '../lib/api/notifications';
 import type { Settings as Saved } from '../lib/api/settings';
 import { notifications } from '../lib/state/notifications.svelte';
+import { auth, navigate } from '../lib/state/auth.svelte';
 import { load, settings } from '../lib/state/settings.svelte';
 import Settings from './Settings.svelte';
 
@@ -15,7 +16,7 @@ const fresh = (over: Partial<Saved> = {}): Saved => ({
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   limits: { test_default: 200, test_max: 2000, check_max: 2000 },
-  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false },
+  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false, delete_account: false },
   summary: { enabled: false, frequency: 'daily', weekday: 'monday', time: '08:00', time_zone: 'UTC', to: '', to_default: '', smtp: { configured: false, missing: [] }, last_sent_at: null, next_at: null },
   ...over,
 });
@@ -533,5 +534,102 @@ describe('Notifications and webhooks', () => {
     await waitFor(() => expect(card().queryByRole('article', { name: 'Team channel' })).toBeNull());
     expect(fetchMock.mock.calls.filter((c) => c[1].method === 'DELETE').map((c) => c[0])).toEqual(['/api/notifications/destinations/1']);
     expect(card().getByText('No destinations yet.')).toBeTruthy();
+  });
+});
+
+describe('Delete my account', () => {
+  const on = () => fresh({ server: { version: 'dev', data_dir: '', listen: '', mode: 'cloud' }, features: { ...fresh().features, delete_account: true } });
+  const card = () => within(screen.getByRole('region', { name: 'Account' }));
+  const confirmButton = () => card().getAllByRole('button', { name: 'Delete my account' })[1] as HTMLButtonElement;
+  const type = (value: string) => fireEvent.input(card().getByLabelText(/^Type your email address/), { target: { value } });
+  let go: MockInstance<(url: string) => void>;
+
+  beforeEach(() => {
+    Object.assign(auth, { status: 'in', user: { id: 1, email: 'dee@example.com' }, members: 1, signIn: '/api/sso/start', signOut: '/api/sso/end' });
+    go = vi.spyOn(navigate, 'to').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    [false, false],
+    [true, true],
+  ])('with features.delete_account %s, the card is shown: %s', async (feature, shown) => {
+    await show(feature ? on() : fresh());
+    expect(!!screen.queryByRole('region', { name: 'Account' })).toBe(shown);
+    expect(!!screen.queryByRole('button', { name: 'Delete my account' })).toBe(shown);
+  });
+
+  it('says what goes now and within 30 days, and deletes only once the email typed matches', async () => {
+    routes['POST /api/auth/delete-account'] = [204];
+    await show(on());
+    expect(card().getByText('Signed in as dee@example.com.')).toBeTruthy();
+    await fireEvent.click(card().getByRole('button', { name: 'Delete my account' }));
+
+    const dialog = card().getByRole('alertdialog', { name: 'Delete your account?' });
+    expect(dialog.textContent).toContain('Right away: you are signed out, your mailboxes stop being sorted, and their passwords and sign-in tokens are deleted, with your model API keys and notification addresses.');
+    expect(dialog.textContent).toContain('Within 30 days: your rules, activity and settings are deleted.');
+    expect(dialog.textContent).toContain('This cannot be undone.');
+    expect(document.activeElement).toBe(card().getByLabelText('Type your email address, dee@example.com, to confirm'));
+
+    expect(confirmButton().disabled).toBe(true);
+    await type('dee@example.co');
+    expect(confirmButton().disabled).toBe(true);
+    await type('someone@example.com');
+    expect(confirmButton().disabled).toBe(true);
+    await fireEvent.submit(dialog.querySelector('form')!);
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/auth/delete-account')).toBe(false);
+
+    await type(' DEE@example.com ');
+    expect(confirmButton().disabled).toBe(false);
+    await fireEvent.click(confirmButton());
+    await waitFor(() => expect(auth.status).toBe('login'));
+    const post = fetchMock.mock.calls.find((c) => c[0] === '/api/auth/delete-account')!;
+    expect([post[1].method, JSON.parse(post[1].body as string)]).toEqual(['POST', { email: 'DEE@example.com' }]);
+    expect(auth.user).toBeNull();
+    expect(go.mock.calls.map((c) => c[0])).toEqual(['/api/sso/end']);
+  });
+
+  it('shows why nothing was deleted and keeps the person signed in', async () => {
+    const message = 'The sign-in service could not delete your account, so nothing was deleted. Try again in a few minutes.';
+    routes['POST /api/auth/delete-account'] = [502, { error: { code: 'sign_in_error', message } }];
+    await show(on());
+    await fireEvent.click(card().getByRole('button', { name: 'Delete my account' }));
+    await type('dee@example.com');
+    await fireEvent.click(confirmButton());
+
+    const alert = await card().findByRole('alert');
+    expect(alert.textContent).toBe(message);
+    expect(card().getByLabelText(/^Type your email address/).getAttribute('aria-describedby')).toBe(alert.id);
+    expect(auth.status).toBe('in');
+    expect(go).not.toHaveBeenCalled();
+    expect(confirmButton().disabled).toBe(false);
+  });
+
+  it('says a team member keeps the team its rules', async () => {
+    auth.members = 3;
+    await show(on());
+    await fireEvent.click(card().getByRole('button', { name: 'Delete my account' }));
+    const dialog = card().getByRole('alertdialog');
+    expect(dialog.textContent).toContain('Within 30 days: your mailboxes and their activity are deleted. Your team keeps its rules and settings.');
+    expect(dialog.textContent).not.toContain('model API keys');
+  });
+
+  it.each([
+    ['Cancel', (d: HTMLElement) => fireEvent.click(within(d).getByRole('button', { name: 'Cancel' }))],
+    ['Escape', (d: HTMLElement) => fireEvent.keyDown(within(d).getByLabelText(/^Type your email address/), { key: 'Escape' })],
+  ])('%s closes it, deleting nothing, and gives focus back', async (_how, close) => {
+    await show(on());
+    const opener = card().getByRole('button', { name: 'Delete my account' });
+    await fireEvent.click(opener);
+    expect(opener.getAttribute('aria-expanded')).toBe('true');
+    await type('dee@example.com');
+    await close(card().getByRole('alertdialog'));
+    expect(card().queryByRole('alertdialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/auth/delete-account')).toBe(false);
+
+    // Opened again, it starts empty.
+    await fireEvent.click(opener);
+    expect((card().getByLabelText(/^Type your email address/) as HTMLInputElement).value).toBe('');
   });
 });

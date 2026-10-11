@@ -21,15 +21,6 @@ var notificationKinds = []string{store.DestinationWebhook, store.DestinationSlac
 // recentDeliveries is how many deliveries Settings lists under each destination.
 const recentDeliveries = 20
 
-// gatedRoutes are the daemon's own routes that work only with a module of the build
-// (x-module in api/openapi.yaml names the feature): each answers 404 not_available while no
-// module provides it.
-var gatedRoutes = []struct{ method, path, module string }{
-	{http.MethodGet, "/api/notifications", "notifications"},
-	{http.MethodPost, "/api/notifications/destinations", "notifications"},
-	{http.MethodDelete, "/api/notifications/destinations/{id}", "notifications"},
-}
-
 // notifier is the module that delivers rule notifications, or nil in a build without one.
 func (s *server) notifier() *ext.Notifications {
 	for _, m := range s.Modules {

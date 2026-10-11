@@ -15,7 +15,7 @@ import (
 // until its flag is true; a flag turns true in the release that builds the feature, or, for
 // a feature a module provides (suggest), while the module is in the build (server.features).
 var features = map[string]bool{"notifications": false, "timed_actions": false, "draft_replies": false,
-	"billing": false, "unsubscribe": false, "oauth_providers": false, "suggest": false}
+	"billing": false, "unsubscribe": false, "oauth_providers": false, "suggest": false, "delete_account": false}
 
 // limits are the bounds the daemon enforces on how many emails one run reads, reported so
 // the UI's number boxes follow the daemon instead of repeating its numbers (MAI-41).

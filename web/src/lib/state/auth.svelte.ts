@@ -57,6 +57,20 @@ export const navigate = { to: (url: string) => window.location.assign(url) };
 
 export async function logout() {
   await authApi.logout();
+  signedOut();
+}
+
+/**
+ * Deletes the signed-in person's account, confirmed with their email, and lands where signing
+ * out does. A refusal (a wrong email, the sign-in service failing) throws and leaves them signed in.
+ */
+export async function deleteAccount(email: string) {
+  await authApi.deleteAccount(email);
+  signedOut();
+}
+
+/** The daemon ended the session: show the sign-in screen, or go to the module's sign-out page. */
+function signedOut() {
   const to = auth.signOut;
   auth.user = null;
   auth.status = 'login';
