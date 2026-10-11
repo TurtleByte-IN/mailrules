@@ -940,9 +940,10 @@ func TestSettings(t *testing.T) {
 	if l := got["limits"].(map[string]any); l["test_default"] != float64(composer.DefaultLimit) || l["test_max"] != float64(composer.MaxLimit) || l["check_max"] != float64(composer.MaxLimit) {
 		t.Errorf("limits = %v", l)
 	}
+	// Built features are on in every build; the rest stay off until their milestone.
 	for name, on := range got["features"].(map[string]any) {
-		if on != false {
-			t.Errorf("feature %s is on before its milestone", name)
+		if want := name == "unsubscribe"; on != want {
+			t.Errorf("feature %s = %v, want %v", name, on, want)
 		}
 	}
 	for name, set := range got["keys"].(map[string]any) {
