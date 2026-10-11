@@ -698,3 +698,35 @@ func TestUndoSince(t *testing.T) {
 		t.Errorf("UndoSince for a rule with no actions = batch %d, %+v, %v", batch, u, err)
 	}
 }
+
+// A move to a folder the mailbox lacks creates it and puts it on record, so folder menus
+// list it at once; a dry-run does neither.
+func TestMoveToNewFolderIsRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dry  bool
+		want bool
+	}{
+		{"live", false, true},
+		{"dry-run", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := t.Context()
+			if err := e.st.SetDryRun(ctx, 1, tc.dry); err != nil {
+				t.Fatal(err)
+			}
+			d := e.deliver("1")
+			if _, err := e.x.Apply(ctx, d, act("move:Receipts/2026"), 0); err != nil {
+				t.Fatal(err)
+			}
+			stored, _ := e.st.Folders(ctx, e.acct.ID)
+			onRecord := slices.ContainsFunc(stored, func(f store.Folder) bool { return f.Name == "Receipts/2026" })
+			folders, _ := e.raw.Folders(ctx)
+			onServer := slices.ContainsFunc(folders, func(f mail.Folder) bool { return f.Name == "Receipts/2026" })
+			if onRecord != tc.want || onServer != tc.want {
+				t.Errorf("on record %v, on server %v, want %v", onRecord, onServer, tc.want)
+			}
+		})
+	}
+}

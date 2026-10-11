@@ -55,6 +55,83 @@ type Server struct {
 	cert    atomic.Pointer[tls.Certificate] // what the server presents; see Rotate
 	// password is the one LOGIN accepts once ChangePassword set it; nil = Password.
 	password atomic.Pointer[string]
+	delayNew atomic.Bool // see DelayNewMail
+}
+
+// DelayNewMail makes the server behave as Dovecot does: a session that has a folder
+// selected sees mail delivered after the SELECT only once a later command has completed
+// (NOOP being the one meant for it). Until then a UID FETCH of the new UID answers
+// nothing, which IMAP allows. The in-memory server otherwise shows every message at once.
+func (s *Server) DelayNewMail(delay bool) { s.delayNew.Store(delay) }
+
+// view is what one session has been told about its selected folder.
+type view struct {
+	mu       sync.Mutex
+	selected string
+	known    imap.UID // the highest UID announced to the session
+}
+
+// announce brings the session up to the folder's current highest UID.
+func (x session) announce(folder string) {
+	known := imap.UID(0)
+	if folder != "" {
+		if st, err := x.s.User.Status(folder, &imap.StatusOptions{UIDNext: true}); err == nil && st.UIDNext > 0 {
+			known = st.UIDNext - 1
+		}
+	}
+	x.v.mu.Lock()
+	x.v.selected, x.v.known = folder, known
+	x.v.mu.Unlock()
+}
+
+func (x session) Select(name string, options *imap.SelectOptions) (*imap.SelectData, error) {
+	data, err := x.SessionIMAP4rev2.Select(name, options)
+	if err == nil {
+		x.announce(name)
+	}
+	return data, err
+}
+
+func (x session) Unselect() error {
+	x.announce("")
+	return x.SessionIMAP4rev2.Unselect()
+}
+
+// Poll runs once each command completes: what arrived since is announced from here on.
+func (x session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+	err := x.SessionIMAP4rev2.Poll(w, allowExpunge)
+	x.v.mu.Lock()
+	folder := x.v.selected
+	x.v.mu.Unlock()
+	x.announce(folder)
+	return err
+}
+
+// Fetch leaves out UIDs not yet announced to the session when DelayNewMail is on.
+func (x session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error {
+	if uids, ok := numSet.(imap.UIDSet); ok && x.s.delayNew.Load() {
+		x.v.mu.Lock()
+		known := x.v.known
+		x.v.mu.Unlock()
+		var seen imap.UIDSet
+		for _, r := range uids {
+			start, stop := r.Start, r.Stop
+			if stop == 0 || stop > known {
+				stop = known
+			}
+			if start == 0 {
+				start = known
+			}
+			if start != 0 && start <= stop {
+				seen.AddRange(start, stop)
+			}
+		}
+		if len(seen) == 0 {
+			return nil
+		}
+		numSet = seen
+	}
+	return x.SessionIMAP4rev2.Fetch(w, numSet, options)
 }
 
 // Fingerprint is the SHA-256 fingerprint of the certificate the server presents now, as
@@ -136,6 +213,7 @@ func (x session) Login(username, password string) error {
 type session struct {
 	imapserver.SessionIMAP4rev2
 	s *Server
+	v *view
 }
 
 // AllowToken makes AUTHENTICATE XOAUTH2 accept token for the one account, as a provider
@@ -270,7 +348,7 @@ func start(t testing.TB, caps imap.CapSet, starttls bool) *Server {
 			s.mu.Lock()
 			s.imapConns = append(s.imapConns, c)
 			s.mu.Unlock()
-			return session{mem.NewSession().(imapserver.SessionIMAP4rev2), s}, nil, nil
+			return session{mem.NewSession().(imapserver.SessionIMAP4rev2), s, &view{}}, nil, nil
 		},
 		Caps:   caps,
 		Logger: log.New(io.Discard, "", 0),
