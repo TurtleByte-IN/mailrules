@@ -202,6 +202,7 @@ func TestMailboxForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	cols, _ := rows.Columns()
 	for rows.Next() {
 		vals := make([]any, len(cols))
@@ -214,8 +215,12 @@ func TestMailboxForm(t *testing.T) {
 		}
 		fmt.Fprintf(&dump, "%s\n", vals)
 	}
-	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
 	logged := l.buf.String()
+	l.mu.Unlock()
 	for _, secret := range []string{formProtonPassword, formCode, formMailboxPassword, formBridgePassword} {
 		if strings.Contains(logged, secret) {
 			t.Errorf("the logs hold %q", secret)
@@ -283,7 +288,9 @@ func TestCheckModulesMailboxForm(t *testing.T) {
 		{"Path is a GET", []ext.Module{mod("p", "proton", "/api/p/sign-in", http.MethodGet, false)}, "POST routes"},
 		{"Path is public", []ext.Module{mod("p", "proton", "/api/p/sign-in", http.MethodPost, true)}, "signed-in user"},
 		{"Path outside /api/", []ext.Module{{Name: "p", MailboxForms: []ext.MailboxForm{{Provider: "proton", Path: "/p/sign-in"}},
-			Routes: func(ext.Host) []ext.Route { return []ext.Route{{Method: http.MethodPost, Path: "/p/sign-in", Handler: ok}} }}}, "under /api/"},
+			Routes: func(ext.Host) []ext.Route {
+				return []ext.Route{{Method: http.MethodPost, Path: "/p/sign-in", Handler: ok}}
+			}}}, "under /api/"},
 		{"two forms for proton", []ext.Module{mod("a", "proton", "/api/p/sign-in", http.MethodPost, false), mod("b", "proton", "/api/p/sign-in", http.MethodPost, false)},
 			"both have a sign-in form for proton"},
 	} {
