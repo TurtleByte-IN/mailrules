@@ -58,3 +58,18 @@ it("sends Reconnect of a mailbox a module's sign-in form connected to that form 
   expect((await screen.findByRole('link', { name: 'Reconnect me@proton.me' })).getAttribute('href')).toBe('#/accounts?reconnect=5');
   accounts.presets = [];
 });
+
+it.each([
+  ['gmail', 'Gmail', '#/accounts?reconnect=6'],
+  ['outlook', 'Outlook', '/api/oauth/start?provider=outlook&account=6'],
+] as const)("sends Reconnect of a one-click %s mailbox to Mailboxes for the note before Google's sign-in, or straight to the provider", async (name, label, href) => {
+  daemon(() => true);
+  accounts.presets = [{ name, label, host: 'imap.example.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password',
+    password: true, one_click_url: '/api/oauth/start?provider=' + name, form_url: null }];
+  accounts.list = [{ id: 6, label: 'me@example.com', preset: name, host: 'imap.example.com', port: 993, tls_mode: 'implicit', username: 'me@example.com', watch_folder: 'INBOX',
+    status: 'reconnect_needed', last_error: '', last_event_at: null, last_mail_at: null, capabilities: [], can_move: true, folder_count: 2, created_at: 1, shared: false, mine: true,
+    cert_fingerprint: '', one_click: true, module: true }];
+  render(Overview);
+  expect((await screen.findByRole('link', { name: 'Reconnect me@example.com' })).getAttribute('href')).toBe(href);
+  accounts.presets = [];
+});

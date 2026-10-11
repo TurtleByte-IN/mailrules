@@ -3,6 +3,7 @@
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
   import CertCheck from './CertCheck.svelte';
+  import GoogleNotice from './GoogleNotice.svelte';
   import { secretLabel, stepNames, Wizard, zohoRegions, type SignInVia } from './connect.svelte';
 
   /**
@@ -61,7 +62,9 @@
     </ol>
   {/if}
 
-  {#if w.step === 0}
+  {#if w.googleNotice}
+    <GoogleNotice oncontinue={() => w.leave()} onback={() => (w.googleNotice = false)} />
+  {:else if w.step === 0}
     <div class="flex flex-col gap-3">
       <h2>Where is your email?</h2>
       <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5">
@@ -259,20 +262,22 @@
     </div>
   {/if}
 
-  <div class="flex flex-wrap justify-between gap-2 border-t border-line-divider pt-3.5">
-    <button type="button" class="btn min-h-11" onclick={() => (w.step > w.first ? w.step-- : w.accountId && !added ? (onconnected ?? onclose)() : onclose())}>{w.step === w.first ? cancelLabel : 'Back'}</button>
-    <!-- A module's sign-in form has its own button: each of its steps is posted from there. -->
-    {#if !(w.step === 1 && w.via === 'form')}
-      <button
-        type="button"
-        class="btn-primary min-h-11 px-[18px]"
-        disabled={w.busy || w.test === 'testing' || !w.preset}
-        onclick={async () => {
-          if (await w.next()) (onconnected ?? onclose)();
-        }}
-      >
-        {w.nextLabel}
-      </button>
-    {/if}
-  </div>
+  {#if !w.googleNotice}
+    <div class="flex flex-wrap justify-between gap-2 border-t border-line-divider pt-3.5">
+      <button type="button" class="btn min-h-11" onclick={() => (w.step > w.first ? w.step-- : w.accountId && !added ? (onconnected ?? onclose)() : onclose())}>{w.step === w.first ? cancelLabel : 'Back'}</button>
+      <!-- A module's sign-in form has its own button: each of its steps is posted from there. -->
+      {#if !(w.step === 1 && w.via === 'form')}
+        <button
+          type="button"
+          class="btn-primary min-h-11 px-[18px]"
+          disabled={w.busy || w.test === 'testing' || !w.preset}
+          onclick={async () => {
+            if (await w.next()) (onconnected ?? onclose)();
+          }}
+        >
+          {w.nextLabel}
+        </button>
+      {/if}
+    </div>
+  {/if}
 </section>

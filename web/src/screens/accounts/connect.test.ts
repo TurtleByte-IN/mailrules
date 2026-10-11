@@ -324,20 +324,33 @@ it('goes back to sign-in with the new certificate when the server presents anoth
   expect([w.step, w.test, w.cert]).toEqual([1, 'err', cert]);
 });
 
-it("sends a one-click tile to the provider's sign-in instead of the Sign in step", async () => {
+it("shows Gmail's one-click tile what MailRules does with the mailbox, then leaves for Google's sign-in", async () => {
   accounts.presets = [{ ...presets[0], name: 'gmail', label: 'Gmail', one_click_url: '/api/oauth/start?provider=gmail' }];
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
   const w = new Wizard();
   w.choose('gmail', 'one_click');
   expect(await w.next()).toBe(false);
+  expect([w.googleNotice, w.step, assign.mock.calls.length]).toEqual([true, 0, 0]);
+  w.leave();
   expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail');
-  expect(w.step).toBe(0);
   // Its app-password tile goes on to Sign in as before.
+  w.googleNotice = false;
   w.choose('gmail');
   await w.next();
   expect(w.step).toBe(1);
   expect(assign).toHaveBeenCalledTimes(1);
+});
+
+it("sends Outlook's one-click tile straight to the provider's sign-in", async () => {
+  accounts.presets = [{ ...presets[0], name: 'outlook', label: 'Outlook', one_click_url: '/api/oauth/start?provider=outlook' }];
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  const w = new Wizard();
+  w.choose('outlook', 'one_click');
+  expect(await w.next()).toBe(false);
+  expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=outlook');
+  expect([w.googleNotice, w.step]).toEqual([false, 0]);
 });
 
 it('goes on at Rules for a mailbox a one-click sign-in connected, and saves only the starter rules', async () => {

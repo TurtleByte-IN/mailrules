@@ -4,17 +4,18 @@
   import type { Account, AccountPatch, ServerCert } from '../lib/api/accounts';
   import { ApiError } from '../lib/api/client';
   import { clock, day } from '../lib/format';
-  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectsByForm, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
+  import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectsByForm, reconnectsByGoogle, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { mailboxReturn } from '../lib/state/oneclick';
   import { auth } from '../lib/state/auth.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
   import CertCheck from './accounts/CertCheck.svelte';
   import { editableServer, zohoRegions } from './accounts/connect.svelte';
+  import GoogleNotice from './accounts/GoogleNotice.svelte';
   import Wizard from './accounts/Wizard.svelte';
 
   // A one-click sign-in comes back here (#/accounts?added=<id>, ?reconnected=<id> or ?mailbox_error=<code>), and
-  // Overview's Reconnect of a mailbox a module's sign-in form connected arrives as ?reconnect=<id>: read it once,
+  // Overview's Reconnect of a mailbox a module's sign-in form or Google's sign-in connected arrives as ?reconnect=<id>: read it once,
   // then clear the address bar.
   const back = mailboxReturn(router.querystring ?? '');
   const reconnectAsked = Number(new URLSearchParams(router.querystring ?? '').get('reconnect')) || undefined;
@@ -24,7 +25,7 @@
   /** A mailbox a one-click sign-in just connected: the wizard goes on at Rules for it. */
   let added = $state(back.added);
   let connecting = $state(!!back.added);
-  /** The mailbox whose provider's sign-in form is open to reconnect it, in its row. */
+  /** The mailbox whose provider's sign-in form, or the note before Google's sign-in, is open to reconnect it, in its row. */
   let reconnecting = $state(reconnectAsked);
   let removing = $state<number>();
   let editing = $state<number>();
@@ -69,12 +70,14 @@
 
   /**
    * A mailbox a module connected that needs reconnecting signs in through the module again: a one-click one at
-   * its provider's sign-in, one a module's sign-in form connected through that form, opened in its row. Any other
-   * mailbox connects again with what is stored.
+   * its provider's sign-in (a Gmail one after the note on what MailRules does with it, opened in its row), one a
+   * module's sign-in form connected through that form, opened in its row. Any other mailbox connects again with
+   * what is stored.
    */
   function reconnectMailbox(a: Account) {
     const url = a.status === 'reconnect_needed' ? reconnectURL(a) : undefined;
-    if (url) window.location.assign(url);
+    if (url && reconnectsByGoogle(a)) [reconnecting, editing, removing] = [a.id, undefined, undefined];
+    else if (url) window.location.assign(url);
     else if (a.status === 'reconnect_needed' && reconnectsByForm(a)) [reconnecting, editing, removing] = [a.id, undefined, undefined];
     else reconnect(a.id);
   }
@@ -298,6 +301,10 @@
                 <button class="btn-primary" disabled={form.busy}>{form.busy ? 'Saving…' : 'Save'}</button>
               </span>
             </form>
+          {:else if reconnecting === a.id && a.mine && reconnectsByGoogle(a)}
+            <div class="card flex-[1_1_100%] p-5">
+              <GoogleNotice again oncontinue={() => window.location.assign(reconnectURL(a)!)} onback={() => (reconnecting = undefined)} />
+            </div>
           {:else if reconnecting === a.id && a.mine && reconnectsByForm(a)}
             <div class="flex-[1_1_100%]">
               <Wizard reconnect={a} onclose={() => (reconnecting = undefined)} />

@@ -467,21 +467,44 @@ it('shows a refused encryption beside the Encryption field and keeps the mailbox
   expect(accounts.list[0].tls_mode).toBe('starttls');
 });
 
-it("sends a one-click mailbox that needs reconnecting to its provider's sign-in, and offers it no password", async () => {
-  routes['GET /api/presets'] = [200, { items: [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
-    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail' }] }];
+it.each([
+  ['Gmail', 'gmail', true],
+  ['Outlook', 'outlook', false],
+] as const)("sends a one-click %s mailbox that needs reconnecting to its provider's sign-in, and offers it no password", async (label, name, notice) => {
+  routes['GET /api/presets'] = [200, { items: [{ name, label, host: 'imap.example.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
+    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=' + name }] }];
   accounts.presets = [];
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
-  await show(acct({ label: 'me@icloud.com', preset: 'gmail', one_click: true, module: true, status: 'reconnect_needed', last_error: 'invalid_grant' }));
-  await waitFor(() => expect(screen.getByText(/Gmail no longer accepts MailRules' sign-in/)).toBeTruthy());
+  await show(acct({ label: 'me@icloud.com', preset: name, one_click: true, module: true, status: 'reconnect_needed', last_error: 'invalid_grant' }));
+  await waitFor(() => expect(screen.getByText(new RegExp(label + " no longer accepts MailRules' sign-in"))).toBeTruthy());
   expect(screen.getByText('Reconnect needed')).toBeTruthy();
   expect(screen.queryByText(/invalid_grant/)).toBeNull();
   await fireEvent.click(screen.getByRole('button', { name: 'Reconnect me@icloud.com' }));
-  expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail&account=1');
+  if (notice) {
+    // Google's sign-in comes after what MailRules does with the mailbox, every time.
+    expect(assign).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.queryByRole('region', { name: 'Before you sign in to Google' })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Reconnect me@icloud.com' }));
+    expect(screen.getByRole('heading', { name: 'Before you sign in to Google again' })).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue to Google' }));
+  }
+  expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=' + name + '&account=1');
+  // The test's browser stays on the page: close the note to reach Edit.
+  if (notice) await fireEvent.click(screen.getByRole('button', { name: 'Back' }));
   expect(fetchMock.mock.calls.some((c) => c[0] === '/api/accounts/1/reconnect')).toBe(false);
   const form = await openEdit();
   expect(form.queryByLabelText('New app password')).toBeNull();
+});
+
+it("opens the note before Google's sign-in that Overview's Reconnect of a one-click Gmail mailbox asked for", async () => {
+  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
+    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null }];
+  location.hash = '#/accounts?reconnect=1';
+  await vi.waitFor(() => expect(router.querystring).toBe('reconnect=1'));
+  await show(acct({ preset: 'gmail', one_click: true, module: true, status: 'reconnect_needed' }));
+  expect(await screen.findByRole('region', { name: 'Before you sign in to Google' })).toBeTruthy();
 });
 
 it('tells a teammate that the person who added a one-click mailbox needs to reconnect it', async () => {
