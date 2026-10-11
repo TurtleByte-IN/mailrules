@@ -70,7 +70,7 @@
             <div class="font-mono text-[12.5px] text-muted max-md:break-words">{s.type === 'domain' ? 'Domain: all its addresses' : s.value}</div>
           </div>
           <div class="w-[130px]">
-            <div class="font-semibold">{s.messages.toLocaleString()} emails</div>
+            <div class="font-semibold">{s.messages.toLocaleString()} {s.messages === 1 ? 'email' : 'emails'}</div>
             <div class="text-[12.5px] text-muted">30 days</div>
             {#if s.last_seen_at !== null}
               <div class="text-[12.5px] text-muted">last wrote {day(s.last_seen_at)}</div>
