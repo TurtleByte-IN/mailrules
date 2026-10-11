@@ -2043,6 +2043,11 @@ export interface components {
             latency_ms: number;
             /** Format: int64 */
             created_at: number;
+            /**
+             * @description For stage sender: who made the sender rule that settled the email, the user (on Senders, or with "Always do this for this sender") or MailRules, which learned it. null for every other stage, and for a sender decision recorded before this was kept whose maker cannot be told
+             * @enum {string|null}
+             */
+            sender_source: "user" | "learned" | null;
         };
         MessageAction: {
             /** Format: int64 */

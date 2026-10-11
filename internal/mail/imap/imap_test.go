@@ -395,6 +395,65 @@ func TestFetchManyLinesUpWithRefs(t *testing.T) {
 	}
 }
 
+// A server like Dovecot shows a session mail that arrived after it selected the folder only
+// once it next syncs: until then UID FETCH of the new UID answers nothing. The worker must
+// catch up before calling the message gone (MAI-191), and a message that is truly gone is
+// still not found.
+func TestWorkerSeesMailArrivedSinceSelect(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error
+	}{
+		{"fetch", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			raw, err := m.Fetch(ctx, ref, 0)
+			if err == nil && !strings.Contains(string(raw.Header), "Subject: message 2") {
+				return fmt.Errorf("fetched %q", raw.Header)
+			}
+			return err
+		}},
+		{"flags", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			_, err := m.Flags(ctx, ref)
+			return err
+		}},
+		{"move", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			_, err := m.Move(ctx, ref, "Food")
+			return err
+		}},
+		{"fetch many", func(ctx context.Context, m *Mailbox, ref mail.MsgRef) error {
+			raws, err := m.FetchMany(ctx, []mail.MsgRef{ref}, 0)
+			if err == nil && raws[0] == nil {
+				return mail.ErrNotFound
+			}
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			s := imaptest.Start(t, capsMove)
+			s.DelayNewMail(true)
+			if err := s.User.Create("Food", nil); err != nil {
+				t.Fatal(err)
+			}
+			s.Append(t, "INBOX", eml(1))
+			m := open(t, config(s))
+			st := mustStatus(t, m, "INBOX")
+			ref := mail.MsgRef{AccountID: 7, Folder: "INBOX", UIDValidity: st.UIDValidity, UID: 1}
+			if _, err := m.Fetch(ctx, ref, 0); err != nil { // the worker now has INBOX selected
+				t.Fatal(err)
+			}
+			ref.UID = s.Append(t, "INBOX", eml(2))
+			if err := tt.run(ctx, m, ref); err != nil {
+				t.Errorf("%s of a message that arrived since the folder was selected: %v", tt.name, err)
+			}
+			ref.UID = 99
+			if err := tt.run(ctx, m, ref); !errors.Is(err, mail.ErrNotFound) {
+				t.Errorf("%s of a missing uid: err = %v, want ErrNotFound", tt.name, err)
+			}
+		})
+	}
+}
+
 func TestFoldersAndEnsureFolder(t *testing.T) {
 	ctx := t.Context()
 	s := imaptest.Start(t, capsMove)
