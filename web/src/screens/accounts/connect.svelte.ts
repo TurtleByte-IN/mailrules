@@ -1,7 +1,7 @@
-import type { AccountInput, Preset, ServerCert, TestResult } from '../../lib/api/accounts';
+import type { AccountInput, FormInput, FormStepName, Preset, ServerCert, TestResult } from '../../lib/api/accounts';
 import * as accountsApi from '../../lib/api/accounts';
 import { ApiError } from '../../lib/api/client';
-import { accounts, connect } from '../../lib/state/accounts.svelte';
+import { accounts, connect, load } from '../../lib/state/accounts.svelte';
 import { startOneClick } from '../../lib/state/oneclick';
 import { addTemplatesByName } from '../../lib/state/compose.svelte';
 import { flash } from '../../lib/state/toast.svelte';
@@ -36,17 +36,23 @@ export const secretLabel = (p: Preset) => p.secret_label;
  */
 export const editableServer: Preset['name'][] = ['proton'];
 
+/**
+ * How a tile signs in: with a pasted password or app password, through the provider's own sign-in (one-click,
+ * `one_click_url`), or through a sign-in form a module answers (`form_url`).
+ */
+export type SignInVia = 'password' | 'one_click' | 'form';
+
 /** View state for one run of the connect wizard. Thrown away when the wizard closes. */
 export class Wizard {
   step = $state(0);
   presetId = $state<Preset['name']>('icloud');
-  /** The tile picked signs in with the provider through a module (one-click sign-in), not with a pasted secret. */
-  oneClick = $state(false);
+  /** How the tile picked signs in. */
+  via = $state<SignInVia>('password');
   /**
-   * The mailbox a one-click sign-in already connected: the wizard went to the provider and came back to
-   * Rules for it, so Provider and Sign in are behind it and the last step saves only the starter rules.
+   * The mailbox a one-click sign-in or a module's sign-in form already connected: the wizard goes on at Rules
+   * for it, so Provider and Sign in are behind it and the last step saves only the starter rules.
    */
-  accountId: number | undefined;
+  accountId = $state<number>();
   email = $state('');
   password = $state('');
   host = $state('');
@@ -66,6 +72,14 @@ export class Wizard {
   /** The fingerprint of the certificate the person accepted; sent with every test and the save. */
   certFingerprint = $state('');
   busy = $state(false);
+  /** The step of a module's sign-in form being asked for, and the module's note of which sign-in it belongs to. */
+  formStep = $state<FormStepName>('sign_in');
+  #formState = '';
+  /** The module's sentence about the last step, such as a refused password; empty when it said none. */
+  formMessage = $state('');
+  /** What the form's later steps ask for. Like `password`, cleared once posted. */
+  code = $state('');
+  mailboxPassword = $state('');
   templates = $state(starterTemplates.map((t) => ({ ...t })));
   #run = 0;
 
@@ -103,6 +117,7 @@ export class Wizard {
     const n = this.templates.filter((t) => t.on).length;
     if (this.step === 3 && this.accountId) return this.busy ? 'Saving…' : 'Finish';
     if (this.step === 3) return this.busy ? 'Connecting…' : 'Connect';
+    if (this.step === 1 && this.via === 'form') return this.busy ? 'Signing in…' : this.formStep === 'sign_in' ? 'Sign in' : 'Continue';
     if (this.step === 1 && this.test !== 'ok') return 'Test and continue';
     if (this.step === 2) return `Preview with ${n} ${n === 1 ? 'rule' : 'rules'}`;
     return 'Continue';
@@ -113,9 +128,10 @@ export class Wizard {
   }
 
   /** Picks a provider and how to sign in to it; a preset whose server is on the form fills it in. */
-  choose(name: Preset['name'], oneClick = false) {
+  choose(name: Preset['name'], via: SignInVia = 'password') {
     this.presetId = name;
-    this.oneClick = oneClick;
+    this.via = via;
+    [this.formStep, this.#formState, this.formMessage] = ['sign_in', '', ''];
     const p = this.preset;
     if (p && this.serverFields) {
       [this.host, this.port, this.tls] = [p.host, p.port, p.tls_mode];
@@ -198,13 +214,53 @@ export class Wizard {
   }
 
   /**
+   * Posts the step of the module's sign-in form being asked for. The module answers with the next step, the same
+   * one with a sentence to show, or the mailbox it connected, when the wizard goes on at Rules for it. What was
+   * typed is cleared once posted, whatever the answer.
+   */
+  async submitForm() {
+    const url = this.preset?.form_url;
+    if (!url || this.busy) return;
+    const input: FormInput = { step: this.formStep };
+    if (this.#formState) input.state = this.#formState;
+    if (this.formStep === 'sign_in') [input.username, input.password] = [this.email.trim(), this.password];
+    else if (this.formStep === 'code') input.code = this.code.trim();
+    else input.password = this.mailboxPassword;
+    const empty = this.formStep === 'sign_in' ? !input.username || !input.password : !(input.code || input.password);
+    if (empty) {
+      this.formMessage = { sign_in: 'Enter your address and password first.', code: 'Enter the code first.', mailbox_password: 'Enter your mailbox password first.' }[this.formStep];
+      return;
+    }
+    this.busy = true;
+    try {
+      const a = await accountsApi.formStep(url, input);
+      if (a.account_id) {
+        [this.accountId, this.test, this.step] = [a.account_id, 'ok', 2];
+        await load();
+        return;
+      }
+      [this.formStep, this.#formState, this.formMessage] = [a.step ?? 'sign_in', a.state ?? '', a.message ?? ''];
+    } catch (e) {
+      if (!(e instanceof ApiError)) throw e;
+      this.formMessage = e.message;
+    } finally {
+      [this.password, this.code, this.mailboxPassword, this.busy] = ['', '', '', false];
+    }
+  }
+
+  /**
    * Moves on one step; on the last one saves the mailbox. Resolves true once it is saved. A one-click tile
-   * leaves for the provider's sign-in instead, and the wizard comes back at Rules (`accountId`).
+   * leaves for the provider's sign-in instead, and the wizard comes back at Rules (`accountId`); a form tile's
+   * Sign in step posts the form, and goes on at Rules once the module has connected the mailbox.
    */
   async next(): Promise<boolean> {
     if (this.step === 0 && !this.preset) return false;
-    if (this.step === 0 && this.oneClick && this.preset?.one_click_url) {
+    if (this.step === 0 && this.via === 'one_click' && this.preset?.one_click_url) {
       startOneClick(this.preset.one_click_url, this.from);
+      return false;
+    }
+    if (this.step === 1 && this.via === 'form') {
+      await this.submitForm();
       return false;
     }
     if (this.step === 1 && this.test !== 'ok') {

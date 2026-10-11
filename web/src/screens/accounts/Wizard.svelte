@@ -2,12 +2,13 @@
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
   import CertCheck from './CertCheck.svelte';
-  import { secretLabel, stepNames, Wizard, zohoRegions } from './connect.svelte';
+  import { secretLabel, stepNames, Wizard, zohoRegions, type SignInVia } from './connect.svelte';
 
   /**
    * `onclose` runs when the first step's `cancelLabel` button is pressed, and once the mailbox
-   * is saved unless `onconnected` is given. `added` is a mailbox a one-click sign-in just
-   * connected: the wizard opens at Rules for it. `from` is the screen a one-click sign-in
+   * is saved unless `onconnected` is given; `onconnected` also runs for that button once a
+   * module's sign-in form has connected the mailbox. `added` is a mailbox a one-click sign-in
+   * just connected: the wizard opens at Rules for it. `from` is the screen a one-click sign-in
    * started here comes back to.
    */
   let {
@@ -23,8 +24,16 @@
   const apple = $derived(w.presetId === 'icloud');
   const proton = $derived(w.presetId === 'proton');
   const chosen = $derived(w.templates.filter((t) => t.on));
-  // A provider a module signs in to has a one-click tile, ahead of its app-password tile when it takes one.
-  const tiles = $derived(accounts.presets.flatMap((p) => [...(p.one_click_url ? [{ p, oneClick: true }] : []), ...(p.password ? [{ p, oneClick: false }] : [])]));
+  // A provider a module signs in to has a one-click tile, ahead of its app-password tile when it takes one; one a
+  // module's sign-in form connects has the form's tile instead of a password tile.
+  const tiles = $derived(
+    accounts.presets.flatMap((p) => [
+      ...(p.one_click_url ? [{ p, via: 'one_click' as SignInVia }] : []),
+      ...(p.form_url ? [{ p, via: 'form' as SignInVia }] : []),
+      ...(p.password ? [{ p, via: 'password' as SignInVia }] : []),
+    ]),
+  );
+  const tileNote: Record<SignInVia, string> = { one_click: 'One-click sign-in', form: 'Address and password', password: '' };
   if (!accounts.presets.length) loadPresets();
 </script>
 
@@ -51,16 +60,16 @@
     <div class="flex flex-col gap-3">
       <h2>Where is your email?</h2>
       <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5">
-        {#each tiles as { p, oneClick } (p.name + (oneClick ? ' one-click' : ''))}
-          {@const on = w.presetId === p.name && w.oneClick === oneClick}
+        {#each tiles as { p, via } (p.name + ' ' + via)}
+          {@const on = w.presetId === p.name && w.via === via}
           <button
             type="button"
             aria-pressed={on}
-            onclick={() => w.choose(p.name, oneClick)}
+            onclick={() => w.choose(p.name, via)}
             class="min-h-[72px] rounded-md px-3.5 py-3 text-left {on ? 'border-2 border-ink bg-selected-row' : 'border border-line-card bg-surface'}"
           >
             <div class="font-semibold">{p.label}</div>
-            <div class="text-[12.5px] text-muted">{oneClick ? 'One-click sign-in' : p.host ? secretLabel(p) : 'Host, port, password'}</div>
+            <div class="text-[12.5px] text-muted">{tileNote[via] || (p.host ? secretLabel(p) : 'Host, port, password')}</div>
           </button>
         {/each}
       </div>
@@ -70,6 +79,57 @@
           <button type="button" class="btn" onclick={loadPresets}>Retry</button>
         </div>
       {/if}
+    </div>
+  {:else if w.step === 1 && w.via === 'form'}
+    <div class="flex flex-wrap gap-5">
+      <div class="flex flex-[1_1_300px] flex-col gap-2.5 rounded-md border border-selected bg-selected-row p-3.5">
+        <div class="font-semibold">Sign in to {w.preset?.label}</div>
+        <ol class="m-0 flex list-decimal flex-col gap-1.5 pl-[18px] text-[13.5px] text-nav">
+          <li>Sign in with your {w.preset?.label} address and password.</li>
+          <li>If your account asks for a two-factor code or a separate mailbox password, enter it next.</li>
+          {#if proton}
+            <li>MailRules reads your mail through Proton Mail Bridge, which we run for you. Bridge needs a paid Proton plan.</li>
+          {/if}
+        </ol>
+        <div class="text-[12.5px] text-secondary">MailRules does not keep your password or codes. They are used once, to sign in.</div>
+      </div>
+      <form
+        class="flex flex-[1_1_300px] flex-col gap-3"
+        onsubmit={(e) => {
+          e.preventDefault();
+          w.submitForm();
+        }}
+      >
+        {#if w.formMessage}
+          <div role="alert" class="rounded bg-trash-bg px-3 py-2.5 text-[13px] text-trash">{w.formMessage}</div>
+        {/if}
+        {#if w.formStep === 'sign_in'}
+          <label class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-semibold">{w.preset?.label} address</span>
+            <input class="field h-11" type="email" autocomplete="username" placeholder="you@example.com" bind:value={w.email} />
+          </label>
+          <label class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-semibold">{w.preset?.label} password</span>
+            <input class="field h-11" type="password" autocomplete="current-password" bind:value={w.password} />
+          </label>
+        {:else if w.formStep === 'code'}
+          <label class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-semibold">Two-factor code</span>
+            <input class="field h-11 font-mono" inputmode="numeric" autocomplete="one-time-code" bind:value={w.code} />
+            <span class="text-[12.5px] text-secondary">From your authenticator app.</span>
+          </label>
+        {:else}
+          <label class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-semibold">Mailbox password</span>
+            <input class="field h-11" type="password" autocomplete="off" bind:value={w.mailboxPassword} />
+            <span class="text-[12.5px] text-secondary">Your account has a second password that unlocks your mailbox.</span>
+          </label>
+        {/if}
+        <button class="btn-primary min-h-11 font-semibold" disabled={w.busy}>{w.nextLabel}</button>
+        {#if w.busy}
+          <Waiting text={'Signing in to ' + w.preset?.label} />
+        {/if}
+      </form>
     </div>
   {:else if w.step === 1}
     <div class="flex flex-wrap gap-5">
@@ -191,16 +251,19 @@
   {/if}
 
   <div class="flex flex-wrap justify-between gap-2 border-t border-line-divider pt-3.5">
-    <button type="button" class="btn min-h-11" onclick={() => (w.step === w.first ? onclose() : w.step--)}>{w.step === w.first ? cancelLabel : 'Back'}</button>
-    <button
-      type="button"
-      class="btn-primary min-h-11 px-[18px]"
-      disabled={w.busy || w.test === 'testing' || !w.preset}
-      onclick={async () => {
-        if (await w.next()) (onconnected ?? onclose)();
-      }}
-    >
-      {w.nextLabel}
-    </button>
+    <button type="button" class="btn min-h-11" onclick={() => (w.step > w.first ? w.step-- : w.accountId && !added ? (onconnected ?? onclose)() : onclose())}>{w.step === w.first ? cancelLabel : 'Back'}</button>
+    <!-- A module's sign-in form has its own button: each of its steps is posted from there. -->
+    {#if !(w.step === 1 && w.via === 'form')}
+      <button
+        type="button"
+        class="btn-primary min-h-11 px-[18px]"
+        disabled={w.busy || w.test === 'testing' || !w.preset}
+        onclick={async () => {
+          if (await w.next()) (onconnected ?? onclose)();
+        }}
+      >
+        {w.nextLabel}
+      </button>
+    {/if}
   </div>
 </section>

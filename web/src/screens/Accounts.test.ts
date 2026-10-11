@@ -76,7 +76,7 @@ it.each([
   ['a free build', null, 'Any IMAP mailbox that signs in with a password or app password. MailRules sorts on the server, so every app you use sees the result.'],
   ['a build that offers one-click sign-in', '/api/oauth/start?provider=gmail', 'Any IMAP mailbox. MailRules sorts on the server, so every app you use sees the result.'],
 ])('says which mailboxes it takes in %s', async (_, url, said) => {
-  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: url }];
+  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: url, form_url: null }];
   await show();
   expect(screen.getByRole('heading', { name: 'Mailboxes' }).nextElementSibling!.textContent!.trim()).toBe(said);
 });
@@ -320,6 +320,50 @@ it('adds a Proton Mail mailbox through Bridge: the server is filled in, and its 
   const tests = fetchMock.mock.calls.filter((c) => c[0] === '/api/accounts/test').map((c) => JSON.parse(c[1].body as string));
   expect(tests.map((b) => b.cert_fingerprint)).toEqual([undefined, FP]);
   expect(tests[1]).toMatchObject({ preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' });
+});
+
+it("adds a Proton Mail mailbox through the module's sign-in form: password, code, an error retried, then Rules", async () => {
+  routes['GET /api/presets'] = [200, { items: [
+    { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: '', local_part_login: false, secret_label: 'Bridge password', password: false, one_click_url: null, form_url: '/api/proton/sign-in' },
+  ] }];
+  routes['GET /api/accounts'] = [200, { items: [acct({ id: 5, label: 'me@proton.me', preset: 'proton' })] }];
+  accounts.presets = [];
+  await show();
+  await fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' }));
+  // One Proton tile, the form's: no Bridge-password tile beside it.
+  const tile = await screen.findByRole('button', { name: /Proton Mail/ });
+  expect(tile.textContent).toContain('Address and password');
+  expect(screen.queryByRole('button', { name: /Bridge password/ })).toBeNull();
+  await fireEvent.click(tile);
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(screen.getByText(/Bridge needs a paid Proton plan/)).toBeTruthy();
+  expect(screen.queryByLabelText('Host')).toBeNull();
+
+  const post = (r: unknown) => (routes['POST /api/proton/sign-in'] = [200, r]);
+  post({ step: 'code', state: 's' });
+  await fireEvent.input(screen.getByLabelText('Proton Mail address'), { target: { value: 'me@proton.me' } });
+  await fireEvent.input(screen.getByLabelText('Proton Mail password'), { target: { value: 'pw' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  post({ step: 'code', state: 's', message: 'That code is wrong.' });
+  await fireEvent.input(await screen.findByLabelText(/^Two-factor code/), { target: { value: '1' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  expect((await screen.findByText('That code is wrong.')).getAttribute('role')).toBe('alert');
+  expect((screen.getByLabelText(/^Two-factor code/) as HTMLInputElement).value).toBe('');
+
+  post({ step: 'mailbox_password', state: 's' });
+  await fireEvent.input(screen.getByLabelText(/^Two-factor code/), { target: { value: '2' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  post({ account_id: 5 });
+  await fireEvent.input(await screen.findByLabelText(/^Mailbox password/), { target: { value: 'mbox' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(await screen.findByRole('heading', { name: 'Start with a few rules' })).toBeTruthy();
+  expect(fetchMock.mock.calls.filter((c) => c[0] === '/api/proton/sign-in').map((c) => JSON.parse(c[1].body as string))).toEqual([
+    { step: 'sign_in', username: 'me@proton.me', password: 'pw' },
+    { step: 'code', state: 's', code: '1' },
+    { step: 'code', state: 's', code: '2' },
+    { step: 'mailbox_password', state: 's', password: 'mbox' },
+  ]);
 });
 
 const bridge = acct({ preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', cert_fingerprint: '00:11' });

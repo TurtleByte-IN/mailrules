@@ -3,9 +3,10 @@
 // routes, served behind the same sign-in and CSRF checks as the built-in ones unless it
 // marks one Public (served before sign-in) or Webhook (a call from another server), a
 // capability the web app reads in GET /api/settings `features`, and optionally the way
-// people sign in (Module.SignIn) and the way mailboxes of some providers are connected
-// with one-click sign-in (Module.Mailboxes). ext/daemon runs the daemon with the modules a
-// build compiles in.
+// people sign in (Module.SignIn), the way mailboxes of some providers are connected with
+// one-click sign-in (Module.Mailboxes), and sign-in forms for mailboxes of providers the
+// module connects itself (Module.MailboxForms). ext/daemon runs the daemon with the
+// modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
 // mail it may read (read-only, with BODY.PEEK), the models it may call, the rules and
@@ -55,6 +56,14 @@ type Module struct {
 	// Reading, rules, moving, IDLE and undo are the daemon's own IMAP code, as for every
 	// mailbox. At most one module of a build sets it.
 	Mailboxes *MailboxSignIn
+	// MailboxForms, when set, connects mailboxes of some providers through a sign-in form
+	// on the add-mailbox screen that the module answers, step by step: the provider's
+	// username and password, then a two-factor code or a separate mailbox password when the
+	// account asks for them. The module signs in with them wherever it keeps the connection
+	// (for Proton, the operator's Proton Mail Bridge), and adds the mailbox with the IMAP
+	// password it gets back (Host.AddMailbox, NewMailbox.Password). At most one form per
+	// provider in a build.
+	MailboxForms []MailboxForm
 }
 
 // MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
@@ -97,11 +106,79 @@ type MailToken struct {
 
 // NewMailbox is a mailbox a module connects with Host.AddMailbox.
 type NewMailbox struct {
-	Provider string // one of MailboxSignIn.Providers
+	// Provider is one of MailboxSignIn.Providers, or with Password the Provider of one of
+	// the module's MailboxForms.
+	Provider string
 	Address  string // the mailbox's email address, which IMAP signs in as
-	Host     string // the IMAP server; empty = the preset's (imap.gmail.com, outlook.office365.com)
-	Port     int    // 0 = the preset's (993); the connection is always implicit TLS
-	Secret   string // what Login turns into an access token, such as a refresh token
+	Host     string // the IMAP server; empty = the preset's (imap.gmail.com, outlook.office365.com, 127.0.0.1)
+	Port     int    // 0 = the preset's (993; 1143 for proton)
+	// TLSMode is "implicit" or "starttls"; empty = the preset's (implicit; starttls for
+	// proton).
+	TLSMode string
+	// Secret is what Login turns into an access token, such as a refresh token; with
+	// Password, the password IMAP logs in with.
+	Secret string
+	// Password: Secret is a password the daemon logs in with (IMAP LOGIN), as with an app
+	// password, and Login is not called; the mailbox is then like any password mailbox.
+	// For a provider of the module's MailboxForms.
+	Password bool
+	// CertFingerprint, when not empty, is the SHA-256 fingerprint (64 hexadecimal digits,
+	// colons allowed) of the one certificate the server may present, such as the
+	// self-made one of Proton Mail Bridge; empty = the system's trust store decides.
+	CertFingerprint string
+}
+
+// MailboxForm is a sign-in form for one provider's mailboxes that a module answers
+// (Module.MailboxForms). The daemon only shows it: what is typed into it goes to the
+// module's route and nowhere else, and the daemon neither stores nor logs it.
+type MailboxForm struct {
+	// Provider is the preset whose mailboxes the form connects: "proton". GET /api/presets
+	// gives the preset a form_url, the wizard shows a sign-in tile for it, and the preset's
+	// own password tile (a Bridge on the daemon's machine) is not offered.
+	Provider string
+	// Path is the module's POST route under /api/, served to a signed-in user (not Public),
+	// that each step of the form is posted to as a MailboxFormInput (read it with
+	// Host.ReadJSON). It answers 200 with a MailboxFormStep (Host.WriteJSON): the next step
+	// to ask for, the same step again with a sentence saying what was wrong, or the mailbox
+	// it added.
+	Path string
+}
+
+// The steps of a mailbox sign-in form (MailboxFormInput.Step, MailboxFormStep.Step).
+const (
+	// MailboxStepSignIn asks for the provider's username and password. The form starts here.
+	MailboxStepSignIn = "sign_in"
+	// MailboxStepCode asks for the account's two-factor code.
+	MailboxStepCode = "code"
+	// MailboxStepMailboxPassword asks for the account's separate mailbox password.
+	MailboxStepMailboxPassword = "mailbox_password"
+)
+
+// MailboxFormInput is one step of a mailbox sign-in form as the browser posts it.
+type MailboxFormInput struct {
+	Step string `json:"step"` // one of the MailboxStep* constants
+	// State is what the previous answer's MailboxFormStep.State was; empty on the first step.
+	State    string `json:"state,omitempty"`
+	Username string `json:"username,omitempty"` // MailboxStepSignIn
+	Password string `json:"password,omitempty"` // MailboxStepSignIn and MailboxStepMailboxPassword
+	Code     string `json:"code,omitempty"`     // MailboxStepCode
+}
+
+// MailboxFormStep is what a module's form route answers for one step.
+type MailboxFormStep struct {
+	// Step is the step the form asks for next, one of the MailboxStep* constants; empty
+	// once AccountID is set. Answer the step just posted again, with Message, to have it
+	// typed again; MailboxStepSignIn starts over.
+	Step string `json:"step,omitempty"`
+	// State is anything the module needs to know which sign-in the next step belongs to;
+	// the browser posts it back unread. It must not hold a password or a code.
+	State string `json:"state,omitempty"`
+	// Message is a sentence shown above the step, such as why the password or the code was
+	// refused, or that the provider's free plan cannot be connected.
+	Message string `json:"message,omitempty"`
+	// AccountID is the mailbox Host.AddMailbox connected: the wizard goes on at its Rules
+	// step, as for any other mailbox.
+	AccountID int64 `json:"account_id,omitempty"`
 }
 
 var (
@@ -246,16 +323,19 @@ type Host interface {
 	// SignIn* codes (303 to /?signin_error=<code>).
 	SignInFailed(w http.ResponseWriter, r *http.Request, code string)
 
-	// AddMailbox connects a mailbox the module signs in to (Module.Mailboxes) for the
-	// signed-in user, from the module's Connect route; ctx must be the request's. It does
-	// what the add-mailbox wizard does with an app password: it logs in once (calling
-	// MailboxSignIn.Login with m.Secret), reads the folders, stores the mailbox with its
+	// AddMailbox connects a mailbox the module signs in to (Module.Mailboxes, or with
+	// m.Password Module.MailboxForms) for the signed-in user, from the module's Connect or
+	// form route; ctx must be the request's. It does what the add-mailbox wizard does with
+	// an app password: it logs in once (calling MailboxSignIn.Login with m.Secret, or with
+	// m.Password logging in with it as the password), checking the server's certificate
+	// against m.CertFingerprint when set, reads the folders, stores the mailbox with its
 	// secret encrypted, sorts only mail that arrives from now on, and starts watching it,
 	// in dry-run while the team's dry-run is on (as it is until the person turns it off).
-	// It returns the mailbox's id, for MailboxAdded. It fails, storing nothing, with
-	// ErrMailboxExists, with an error that wraps ErrReconnect when the provider refused the
-	// secret or the token, or with an error of the mail server or the database (answer
-	// those with MailboxFailed and the matching code).
+	// It returns the mailbox's id, for MailboxAdded or MailboxFormStep.AccountID. It fails,
+	// storing nothing, with ErrMailboxExists, with an error that wraps ErrReconnect when
+	// the provider refused the secret or the token, or with an error of the mail server or
+	// the database (answer those with MailboxFailed and the matching code, or a form step's
+	// Message).
 	AddMailbox(ctx context.Context, m NewMailbox) (accountID int64, err error)
 	// ReconnectMailbox gives a one-click mailbox the signed-in user added a new secret,
 	// from the module's Connect route called with account=<id>; ctx must be the

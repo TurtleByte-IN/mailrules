@@ -199,14 +199,17 @@ func (s *server) signIn() *ext.Module {
 // CheckModules refuses a build whose modules, or mode (MAILRULES_MODE), the daemon cannot
 // serve: a Webhook route that is not Public, a SignIn or SignOut that does not name one of
 // its module's Public GET routes, a SignOut without SignIn, more than one module with
-// SignIn, and cloud mode with no module that signs people in; and a Mailboxes with no
+// SignIn, and cloud mode with no module that signs people in; a Mailboxes with no
 // Login, with a provider other than gmail or outlook, or whose Connect is not one of its
-// module's signed-in GET routes, and more than one module with Mailboxes. The daemon calls
-// it before it serves anything.
+// module's signed-in GET routes, and more than one module with Mailboxes; and a
+// MailboxForm for a provider other than proton, or whose Path is not one of its module's
+// signed-in POST routes under /api/, and two forms for one provider. The daemon calls it
+// before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
 	var signIn, mailboxes []string
+	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
-		publicGet, signedInGet := map[string]bool{}, map[string]bool{}
+		publicGet, signedInGet, signedInPost := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		if m.Routes != nil {
 			for _, r := range m.Routes(host{&server{}}) {
 				if r.Webhook && !r.Public {
@@ -215,6 +218,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 				if r.Method == http.MethodGet {
 					publicGet[r.Path] = publicGet[r.Path] || r.Public
 					signedInGet[r.Path] = signedInGet[r.Path] || !r.Public
+				}
+				if r.Method == http.MethodPost && !r.Public {
+					signedInPost[r.Path] = true
 				}
 			}
 		}
@@ -231,6 +237,18 @@ func CheckModules(mode string, modules []ext.Module) error {
 				return fmt.Errorf("module %s: Mailboxes Connect %q is not one of its GET routes served to a signed-in user", m.Name, mb.Connect)
 			}
 			mailboxes = append(mailboxes, m.Name)
+		}
+		for _, f := range m.MailboxForms {
+			if !slices.Contains(formPresets, f.Provider) {
+				return fmt.Errorf("module %s: MailboxForm provider %q must be one of %s", m.Name, f.Provider, strings.Join(formPresets, ", "))
+			}
+			if !signedInPost[f.Path] || !strings.HasPrefix(f.Path, "/api/") {
+				return fmt.Errorf("module %s: MailboxForm Path %q is not one of its POST routes under /api/ served to a signed-in user", m.Name, f.Path)
+			}
+			if other, ok := forms[f.Provider]; ok {
+				return fmt.Errorf("modules %s and %s both have a sign-in form for %s", other, m.Name, f.Provider)
+			}
+			forms[f.Provider] = m.Name
 		}
 		if m.SignOut != "" && m.SignIn == "" {
 			return fmt.Errorf("module %s: SignOut is set without SignIn", m.Name)

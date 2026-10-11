@@ -225,6 +225,18 @@ func (l tracking) Accept() (net.Conn, error) {
 // IMAP4rev1 (which still includes IDLE, but neither MOVE nor UIDPLUS).
 func Start(t testing.TB, caps imap.CapSet) *Server {
 	t.Helper()
+	return start(t, caps, false)
+}
+
+// StartSTARTTLS is Start for a server that greets in the clear and offers STARTTLS, as
+// Proton Mail Bridge does on its IMAP port; it refuses a login before TLS.
+func StartSTARTTLS(t testing.TB, caps imap.CapSet) *Server {
+	t.Helper()
+	return start(t, caps, true)
+}
+
+func start(t testing.TB, caps imap.CapSet, starttls bool) *Server {
+	t.Helper()
 	cert, pool := selfSigned(t)
 	mem := imapmemserver.New()
 	user := imapmemserver.NewUser(Username, Password)
@@ -233,7 +245,9 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 	}
 	mem.AddUser(user)
 	var s *Server
-	srv := imapserver.New(&imapserver.Options{
+	serve := &tls.Config{MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return s.cert.Load(), nil }}
+	opts := &imapserver.Options{
 		NewSession: func(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 			s.mu.Lock()
 			s.imapConns = append(s.imapConns, c)
@@ -242,7 +256,11 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 		},
 		Caps:   caps,
 		Logger: log.New(io.Discard, "", 0),
-	})
+	}
+	if starttls {
+		opts.TLSConfig = serve
+	}
+	srv := imapserver.New(opts)
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -254,10 +272,11 @@ func Start(t testing.TB, caps imap.CapSet) *Server {
 		User: user,
 	}
 	s.cert.Store(&cert)
-	serve := &tls.Config{MinVersion: tls.VersionTLS12,
-		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return s.cert.Load(), nil }}
+	if !starttls {
+		ln = tls.NewListener(ln, serve)
+	}
 	go func() {
-		_ = srv.Serve(tracking{tls.NewListener(ln, serve), s})
+		_ = srv.Serve(tracking{ln, s})
 	}()
 	t.Cleanup(func() { _ = srv.Close() })
 	return s

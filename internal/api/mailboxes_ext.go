@@ -12,6 +12,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
+	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
@@ -20,6 +21,11 @@ import (
 // oneClickPresets are the presets a module may sign in to (ext.MailboxSignIn.Providers):
 // the providers whose IMAP servers take OAuth access tokens (SASL XOAUTH2).
 var oneClickPresets = []string{"gmail", "outlook"}
+
+// formPresets are the presets a module may connect through a sign-in form
+// (ext.MailboxForm.Provider): Proton, whose mailboxes the hosted build reads through the
+// operator's Proton Mail Bridge.
+var formPresets = []string{"proton"}
 
 // mailboxSignIn is the module that connects mailboxes with one-click sign-in, or nil.
 func (s *server) mailboxSignIn() *ext.MailboxSignIn {
@@ -42,15 +48,42 @@ func (s *server) oneClickURL(preset string) *string {
 	return &u
 }
 
-// AddMailbox connects a one-click mailbox for the signed-in user (ext.Host).
+// mailboxForm is the sign-in form a module of the build answers for preset, or nil.
+func (s *server) mailboxForm(preset string) *ext.MailboxForm {
+	for i := range s.Modules {
+		for j := range s.Modules[i].MailboxForms {
+			if f := &s.Modules[i].MailboxForms[j]; f.Provider == preset {
+				return f
+			}
+		}
+	}
+	return nil
+}
+
+// formURL is where the wizard posts the steps of preset's sign-in form, or nil when no
+// module of the build answers one.
+func (s *server) formURL(preset string) *string {
+	if f := s.mailboxForm(preset); f != nil {
+		return &f.Path
+	}
+	return nil
+}
+
+// AddMailbox connects a mailbox a module signs in to for the signed-in user (ext.Host):
+// a one-click mailbox, or with m.Password one a module's sign-in form connected.
 func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 	who, ok := ctxUser(ctx)
 	if !ok {
 		return 0, errNoUser
 	}
-	sign := h.s.mailboxSignIn()
 	preset, ok := presets.Get(m.Provider)
-	if sign == nil || !ok || !slices.Contains(sign.Providers, m.Provider) {
+	if m.Password {
+		ok = ok && h.s.mailboxForm(m.Provider) != nil
+	} else {
+		sign := h.s.mailboxSignIn()
+		ok = ok && sign != nil && slices.Contains(sign.Providers, m.Provider)
+	}
+	if !ok {
 		return 0, fmt.Errorf("add mailbox: %q is not one of the providers the module signs in to", m.Provider)
 	}
 	address := strings.TrimSpace(m.Address)
@@ -58,12 +91,25 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 		return 0, errors.New("add mailbox: an address and a secret are needed")
 	}
 	a := store.Account{Label: address, Preset: preset.Name, Host: preset.Host, Port: preset.Port, TLSMode: preset.TLSMode,
-		Username: address, WatchFolder: "INBOX", OAuth: true}
+		Username: address, WatchFolder: "INBOX", OAuth: !m.Password}
 	if m.Host != "" {
 		a.Host = m.Host
 	}
 	if m.Port != 0 {
 		a.Port = m.Port
+	}
+	if m.TLSMode != "" {
+		a.TLSMode = m.TLSMode
+	}
+	if a.TLSMode != presets.TLSImplicit && a.TLSMode != presets.TLSStartTLS {
+		return 0, fmt.Errorf("add mailbox: TLS mode %q is neither implicit nor starttls", a.TLSMode)
+	}
+	if m.CertFingerprint != "" {
+		fp, err := mail.ParseFingerprint(m.CertFingerprint)
+		if err != nil {
+			return 0, fmt.Errorf("add mailbox: %w", err)
+		}
+		a.CertFingerprint = fp
 	}
 	exists, err := h.s.alreadyConnected(ctx, who.TenantID, a.Host, a.Username)
 	if err != nil {
@@ -73,7 +119,12 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 		return 0, ext.ErrMailboxExists
 	}
 	secret := m.Secret // replaced when the module rotates it while logging in
-	mb, err := h.s.ConnectOAuth(ctx, a, &secret)
+	var mb mail.Mailbox
+	if m.Password {
+		mb, a.Username, err = h.s.Connect(ctx, a, secret)
+	} else {
+		mb, err = h.s.ConnectOAuth(ctx, a, &secret)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("add mailbox: %w", err)
 	}
