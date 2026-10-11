@@ -16,6 +16,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
@@ -401,6 +402,62 @@ func TestCleanupRunRefusals(t *testing.T) {
 	e.call(http.MethodDelete, "/api/cleanup/check?account_id=1", "", http.StatusNoContent)
 	if e.getCheck(1) != nil {
 		t.Error("the check was not discarded")
+	}
+}
+
+// A sender rule MailRules learns on its own — from new mail sorted live, or from another
+// mailbox's Sort, while the user looks at a check — does not spoil the check, nor does one
+// being forgotten: the user changed no rule (MAI-166). A rule a learned sender rule routed the
+// check's mail to still counts as one of the check's rules: editing it does spoil the check.
+func TestCleanupCheckOutlivesLearnedSenders(t *testing.T) {
+	e := newEnv(t)
+	for i := range 3 {
+		e.deliver("hello@news.example", fmt.Sprintf("reading digest %d", i))
+	}
+	e.deliver("noreply@swiggy.in", "order")
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated) // Food is rule 1, Reading rule 2
+	e.decider.DecideFunc = cleanupDeciderFunc
+	ctx := t.Context()
+	learn := func(sender string, ruleID int64) {
+		t.Helper()
+		if ok, err := e.st.AddLearnedSenderRule(ctx, 1, 1, sender, ruleID, time.Now().Unix()); !ok || err != nil {
+			t.Fatalf("learning %s: %v, %v", sender, ok, err)
+		}
+	}
+	forget := func(sender string) {
+		t.Helper()
+		if err := e.st.DeleteSenderRule(ctx, 1, rules.MatchAddress, sender); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status := func(want string) {
+		t.Helper()
+		if s := e.getCheck(1)["status"]; s != want {
+			t.Fatalf("the check is %v, want %s", s, want)
+		}
+	}
+
+	// Limited to Food: learning a route to the unpicked Reading rule leaves it ready.
+	e.checkReady(`{"account_id":1,"rule_ids":[1]}`)
+	learn("hello@news.example", 2)
+	status("ready")
+
+	// The check began with that learned route, so Reading is one of its rules: forgetting the
+	// route leaves it ready, editing Reading spoils it.
+	e.checkReady(`{"account_id":1,"rule_ids":[1]}`)
+	forget("hello@news.example")
+	status("ready")
+	e.call(http.MethodPatch, "/api/rules/2", `{"actions":[{"type":"archive"}]}`, http.StatusOK)
+	status("stale")
+
+	// Every rule: a sender learned meanwhile leaves it ready, and Sort runs it.
+	chk := e.checkReady(`{"account_id":1}`)
+	learn("hello@news.example", 2)
+	status("ready")
+	body, _ := json.Marshal(map[string]any{"account_id": 1, "check_id": chk["id"]})
+	if b := e.batchDone(id(e.call(http.MethodPost, "/api/cleanup/run", string(body), http.StatusAccepted)["batch"].(map[string]any)["id"])); b["status"] != "done" {
+		t.Errorf("the sort = %v", b)
 	}
 }
 

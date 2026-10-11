@@ -112,11 +112,13 @@ func pickedRules(w http.ResponseWriter, all []rules.Rule, ids []int64) ([]int64,
 }
 
 // rulesFingerprint is the signature of the rules a check was run against: the enabled rules
-// it walked in evaluation order, the rules only a sender rule routes to, and the sender
-// rules. A cleanup Sort compares it with the rules in force; when they differ the check is
-// stale and Sort is refused, so mail is never sorted by a rule the user has since rewritten
-// (MAI-44, Tilak's option A). A check limited to some rules is stale only when one of those,
-// or a sender rule, changes.
+// it walked in evaluation order, the rules only a sender rule routes to, and the user's
+// sender rules. A cleanup Sort compares it with the rules in force; when they differ the
+// check is stale and Sort is refused, so mail is never sorted by a rule the user has since
+// rewritten (MAI-44, Tilak's option A). A check limited to some rules is stale only when one
+// of those, or a sender rule of the user's, changes. A sender rule MailRules learned on its
+// own is left out: live mail and Sort learn them all the time, the user changed nothing, and
+// Sort replays the check's own answers anyway (MAI-166).
 func rulesFingerprint(set ruleSet, senders []rules.SenderRule) string {
 	type ruleFP struct {
 		ID         int64
@@ -144,9 +146,11 @@ func rulesFingerprint(set ruleSet, senders []rules.SenderRule) string {
 		}
 		return out
 	}
-	sfp := make([]senderFP, len(senders))
-	for i, x := range senders {
-		sfp[i] = senderFP{x.MatchType, x.Value, x.Verdict, x.Folder, x.RuleID}
+	sfp := make([]senderFP, 0, len(senders))
+	for _, x := range senders {
+		if x.Source != "learned" {
+			sfp = append(sfp, senderFP{x.MatchType, x.Value, x.Verdict, x.Folder, x.RuleID})
+		}
 	}
 	slices.SortFunc(sfp, func(a, b senderFP) int {
 		if a.Type != b.Type {
@@ -173,9 +177,10 @@ func cmpStr(a, b string) int {
 	return 0
 }
 
-// currentFingerprint is the fingerprint of the rules a check limited to ruleIDs (nil = every
-// rule) would be made with right now.
-func (s *server) currentFingerprint(ctx context.Context, tenantID int64, ruleIDs []int64) (string, error) {
+// currentFingerprint is the fingerprint of the rules the check would be made with right now:
+// the rules it was limited to (every one when none), the rules a sender rule routed its mail
+// to as it began, and the sender rules.
+func (s *server) currentFingerprint(ctx context.Context, tenantID int64, st worker.CheckState) (string, error) {
 	rs, err := s.store.Rules(ctx, tenantID)
 	if err != nil {
 		return "", err
@@ -184,7 +189,13 @@ func (s *server) currentFingerprint(ctx context.Context, tenantID int64, ruleIDs
 	if err != nil {
 		return "", err
 	}
-	return rulesFingerprint(selectRules(rs, senders, ruleIDs), senders), nil
+	set := selectRules(rs, nil, st.RuleIDs)
+	for _, r := range rs {
+		if r.Enabled && slices.Contains(st.RouteOnly, r.ID) {
+			set.RouteOnly = append(set.RouteOnly, r)
+		}
+	}
+	return rulesFingerprint(set, senders), nil
 }
 
 // cleanupMailboxes is which mailboxes a check request names: the account_id of the original
@@ -257,6 +268,9 @@ func (s *server) handleCleanupCheckStart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	set := selectRules(rs, senders, c.RuleIDs)
+	for _, x := range set.RouteOnly {
+		c.RouteOnly = append(c.RouteOnly, x.ID)
+	}
 	fp := rulesFingerprint(set, senders)
 
 	// Every mailbox is made ready before any check starts, so the run begins on all or none.
@@ -373,7 +387,7 @@ func (s *server) freshState(ctx context.Context, tenantID int64, chk *worker.Che
 	if st.Status != worker.CheckReady {
 		return st, nil
 	}
-	fp, err := s.currentFingerprint(ctx, tenantID, st.RuleIDs)
+	fp, err := s.currentFingerprint(ctx, tenantID, st)
 	if err != nil {
 		return worker.CheckState{}, err
 	}

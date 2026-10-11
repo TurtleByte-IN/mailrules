@@ -28,6 +28,9 @@ type Cleanup struct {
 	// RuleIDs limits the check to these rules, checked in their usual order; nil = every
 	// enabled rule. Sender rules apply either way (MAI-43).
 	RuleIDs []int64
+	// RouteOnly are the rules outside RuleIDs that a sender rule routed mail to when the
+	// check began; nil when every rule is checked. A check stays in step with their content.
+	RouteOnly []int64
 }
 
 // SortRun is the Sort that follows a finished check: the rows the user kept, applied with
