@@ -151,10 +151,20 @@ func (m *Mailbox) watchOnce(ctx context.Context, folder string, validity, lastUI
 				return classify("idle", err)
 			}
 		} else {
+			tick := m.cfg.pollTick
+			if tick == nil {
+				tick = time.After(m.cfg.PollInterval)
+			}
 			select {
-			case <-time.After(m.cfg.PollInterval):
+			case <-tick:
 			case <-c.Closed():
 			case <-ctx.Done():
+			}
+			// The search would not see mail delivered since the last command on a server
+			// that announces it only as a command completes (see syncFolder); IDLE has
+			// announced it already, a poll has not.
+			if err := c.Noop().Wait(); err != nil {
+				return classify("noop", err)
 			}
 		}
 		if err := catchUp("wake"); err != nil {

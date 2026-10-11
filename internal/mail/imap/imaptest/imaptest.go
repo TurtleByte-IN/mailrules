@@ -60,8 +60,10 @@ type Server struct {
 
 // DelayNewMail makes the server behave as Dovecot does: a session that has a folder
 // selected sees mail delivered after the SELECT only once a later command has completed
-// (NOOP being the one meant for it). Until then a UID FETCH of the new UID answers
-// nothing, which IMAP allows. The in-memory server otherwise shows every message at once.
+// (NOOP being the one meant for it). Until then the new UID does not exist for it: UID
+// FETCH answers nothing, UID STORE, COPY and MOVE ignore it and still answer OK (RFC 9051
+// §6.4.9 allows this of a UID that does not exist), and UID SEARCH leaves it out. The
+// in-memory server otherwise shows every message at once.
 func (s *Server) DelayNewMail(delay bool) { s.delayNew.Store(delay) }
 
 // view is what one session has been told about its selected folder.
@@ -107,31 +109,89 @@ func (x session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	return err
 }
 
+// announced narrows a UID set to the UIDs announced to the session when DelayNewMail is
+// on; anything else comes back unchanged. An empty set means none is known.
+func (x session) announced(numSet imap.NumSet) imap.NumSet {
+	uids, ok := numSet.(imap.UIDSet)
+	if !ok || !x.s.delayNew.Load() {
+		return numSet
+	}
+	known := x.known()
+	var seen imap.UIDSet
+	for _, r := range uids {
+		start, stop := r.Start, r.Stop
+		if stop == 0 || stop > known {
+			stop = known
+		}
+		if start == 0 {
+			start = known
+		}
+		if start != 0 && start <= stop {
+			seen.AddRange(start, stop)
+		}
+	}
+	return seen
+}
+
+func (x session) known() imap.UID {
+	x.v.mu.Lock()
+	defer x.v.mu.Unlock()
+	return x.v.known
+}
+
+func empty(numSet imap.NumSet) bool {
+	uids, ok := numSet.(imap.UIDSet)
+	return ok && len(uids) == 0
+}
+
 // Fetch leaves out UIDs not yet announced to the session when DelayNewMail is on.
 func (x session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error {
-	if uids, ok := numSet.(imap.UIDSet); ok && x.s.delayNew.Load() {
-		x.v.mu.Lock()
-		known := x.v.known
-		x.v.mu.Unlock()
-		var seen imap.UIDSet
-		for _, r := range uids {
-			start, stop := r.Start, r.Stop
-			if stop == 0 || stop > known {
-				stop = known
-			}
-			if start == 0 {
-				start = known
-			}
-			if start != 0 && start <= stop {
-				seen.AddRange(start, stop)
-			}
-		}
-		if len(seen) == 0 {
-			return nil
-		}
-		numSet = seen
+	if numSet = x.announced(numSet); empty(numSet) {
+		return nil
 	}
 	return x.SessionIMAP4rev2.Fetch(w, numSet, options)
+}
+
+// Store ignores UIDs not yet announced to the session when DelayNewMail is on, as it
+// would UIDs that do not exist: no error, nothing changed.
+func (x session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
+	if numSet = x.announced(numSet); empty(numSet) {
+		return nil
+	}
+	return x.SessionIMAP4rev2.Store(w, numSet, flags, options)
+}
+
+// Copy copies nothing not yet announced to the session when DelayNewMail is on.
+func (x session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) {
+	if numSet = x.announced(numSet); empty(numSet) {
+		return nil, nil // OK without COPYUID: nothing was copied
+	}
+	return x.SessionIMAP4rev2.Copy(numSet, dest)
+}
+
+// Move moves nothing not yet announced to the session when DelayNewMail is on.
+func (x session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string) error {
+	if numSet = x.announced(numSet); empty(numSet) {
+		return nil
+	}
+	return x.SessionIMAP4rev2.Move(w, numSet, dest)
+}
+
+// Search finds nothing not yet announced to the session when DelayNewMail is on.
+func (x session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
+	if x.s.delayNew.Load() {
+		known := x.known()
+		if known == 0 {
+			if kind == imapserver.NumKindUID {
+				return &imap.SearchData{All: imap.UIDSet{}}, nil
+			}
+			return &imap.SearchData{All: imap.SeqSet{}}, nil
+		}
+		narrowed := *criteria
+		narrowed.UID = append(slices.Clone(criteria.UID), imap.UIDSet{{Start: 1, Stop: known}})
+		criteria = &narrowed
+	}
+	return x.SessionIMAP4rev2.Search(kind, criteria, options)
 }
 
 // Fingerprint is the SHA-256 fingerprint of the certificate the server presents now, as

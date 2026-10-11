@@ -69,7 +69,8 @@ type Config struct {
 	BackoffMax      time.Duration // longest reconnect delay (5 min)
 	ThrottleBackoff time.Duration // delay after [UNAVAILABLE] or throttling (5 min)
 
-	forcePoll bool // tests: behave as if the server lacked IDLE
+	forcePoll bool             // tests: behave as if the server lacked IDLE
+	pollTick  <-chan time.Time // tests: poll on each value received instead of every PollInterval
 }
 
 // Mailbox is a mail.Mailbox over IMAP.
@@ -350,11 +351,25 @@ func (m *Mailbox) selectFolder(c *imapclient.Client, folder string) error {
 	return nil
 }
 
-// onMessage runs fn with ref's folder selected, after checking the UID still means the
-// same message: acting on a UID from an older UIDVALIDITY would hit someone else's mail.
-func (m *Mailbox) onMessage(ctx context.Context, op string, ref mail.MsgRef, fn func(c *imapclient.Client, uid imap.UIDSet) error) error {
+// syncFolder selects folder or, when the worker has it selected already, sends NOOP. A
+// server need not let UID STORE or UID SEARCH see mail delivered since the session last
+// synced (Dovecot does not), and unlike a UID FETCH that comes back empty (see fetchOne),
+// their OK gives nothing to notice and retry on, so the session is synced up front. A
+// fresh SELECT is up to date already. Callers hold m.mu.
+func (m *Mailbox) syncFolder(c *imapclient.Client, folder string) error {
+	if m.selName != folder {
+		return m.selectFolder(c, folder)
+	}
+	return c.Noop().Wait()
+}
+
+// onMessage runs fn with ref's folder selected by sel (selectFolder or syncFolder), after
+// checking the UID still means the same message: acting on a UID from an older
+// UIDVALIDITY would hit someone else's mail.
+func (m *Mailbox) onMessage(ctx context.Context, op string, ref mail.MsgRef, sel func(c *imapclient.Client, folder string) error,
+	fn func(c *imapclient.Client, uid imap.UIDSet) error) error {
 	return m.do(ctx, op, func(c *imapclient.Client) error {
-		if err := m.selectFolder(c, ref.Folder); err != nil {
+		if err := sel(c, ref.Folder); err != nil {
 			return err
 		}
 		if ref.UIDValidity != m.selValidity {
@@ -536,7 +551,7 @@ func (f fetchItems) raw(b *imapclient.FetchMessageBuffer) *message.Raw {
 func (m *Mailbox) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*message.Raw, error) {
 	items := newFetchItems(maxBody)
 	var raw *message.Raw
-	err := m.onMessage(ctx, "fetch", ref, func(c *imapclient.Client, uid imap.UIDSet) error {
+	err := m.onMessage(ctx, "fetch", ref, m.selectFolder, func(c *imapclient.Client, uid imap.UIDSet) error {
 		b, err := fetchOne(c, uid, items.opts)
 		if err != nil {
 			return err
@@ -685,7 +700,7 @@ func attachments(bs imap.BodyStructure) (bool, []string) {
 // FetchSince searches by internal date, which IMAP compares by day.
 func (m *Mailbox) FetchSince(ctx context.Context, folder string, since time.Time, limit int) (refs []mail.MsgRef, matched int, err error) {
 	err = m.do(ctx, fmt.Sprintf("search %q", folder), func(c *imapclient.Client) error {
-		if err := m.selectFolder(c, folder); err != nil {
+		if err := m.syncFolder(c, folder); err != nil {
 			return err
 		}
 		data, err := c.UIDSearch(&imap.SearchCriteria{Since: since}, nil).Wait()
@@ -712,12 +727,13 @@ func (m *Mailbox) FetchSince(ctx context.Context, folder string, since time.Time
 func (m *Mailbox) Move(ctx context.Context, ref mail.MsgRef, dest string) (mail.MsgRef, error) {
 	out := mail.MsgRef{AccountID: ref.AccountID, Folder: dest}
 	messageID := ""
-	err := m.onMessage(ctx, "move", ref, func(c *imapclient.Client, uid imap.UIDSet) error {
+	err := m.onMessage(ctx, "move", ref, m.selectFolder, func(c *imapclient.Client, uid imap.UIDSet) error {
 		var destUIDs imap.NumSet
 		if !m.caps.CanMove() {
 			return fmt.Errorf("%w: the server has neither MOVE nor UIDPLUS, so mail cannot be moved safely", mail.ErrUnsupported)
 		}
-		// Check the message is there first: servers disagree on how they answer a move of nothing.
+		// Check the message is there first: servers disagree on how they answer a move of
+		// nothing. fetchOne also syncs the session if it had not been told of the message.
 		if _, err := fetchOne(c, uid, &imap.FetchOptions{UID: true}); err != nil {
 			return err
 		}
@@ -791,7 +807,7 @@ func fetchMessageID(c *imapclient.Client, uid imap.UIDSet) (string, error) {
 
 // SetFlags adds and removes flags without reading the message.
 func (m *Mailbox) SetFlags(ctx context.Context, ref mail.MsgRef, add, remove []string) error {
-	return m.onMessage(ctx, "set flags", ref, func(c *imapclient.Client, uid imap.UIDSet) error {
+	return m.onMessage(ctx, "set flags", ref, m.syncFolder, func(c *imapclient.Client, uid imap.UIDSet) error {
 		for _, ch := range []struct {
 			op    imap.StoreFlagsOp
 			flags []string
@@ -810,7 +826,7 @@ func (m *Mailbox) SetFlags(ctx context.Context, ref mail.MsgRef, add, remove []s
 // Flags returns the message's current flags, sorted.
 func (m *Mailbox) Flags(ctx context.Context, ref mail.MsgRef) ([]string, error) {
 	var flags []string
-	err := m.onMessage(ctx, "read flags", ref, func(c *imapclient.Client, uid imap.UIDSet) error {
+	err := m.onMessage(ctx, "read flags", ref, m.selectFolder, func(c *imapclient.Client, uid imap.UIDSet) error {
 		b, err := fetchOne(c, uid, &imap.FetchOptions{UID: true, Flags: true})
 		if err != nil {
 			return err
@@ -829,7 +845,7 @@ func (m *Mailbox) FindByMessageID(ctx context.Context, folder, messageID string)
 		if messageID == "" {
 			return fmt.Errorf("%w: empty message-id", mail.ErrNotFound)
 		}
-		if err := m.selectFolder(c, folder); err != nil {
+		if err := m.syncFolder(c, folder); err != nil {
 			return err
 		}
 		crit := &imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: messageID}}}
