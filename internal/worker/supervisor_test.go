@@ -184,6 +184,9 @@ func TestSupervisorStatuses(t *testing.T) {
 			e.sup.Account.WatchFolder = "Gone"
 			return e.mb, nil
 		}, StatusError, true},
+		{"a server now off the public internet stops for good", func(*env, int) (mail.Mailbox, error) {
+			return nil, fmt.Errorf("connect to imap.example.test:993: imap.example.test is at 10.0.0.1: %w", mail.ErrNotPublic)
+		}, StatusError, true},
 		{"a dropped connection is retried", func(e *env, calls int) (mail.Mailbox, error) {
 			if calls < 3 {
 				return nil, mail.ErrConnection
@@ -217,6 +220,31 @@ func TestSupervisorStatuses(t *testing.T) {
 			}
 			stop()
 		})
+	}
+}
+
+// A server that resolves off the public internet in the hosted build stops the account in
+// error without retrying, and the person reads only the sentence, not the address.
+func TestSupervisorServerNotPublic(t *testing.T) {
+	e := newEnv(t)
+	var calls atomic.Int32
+	e.sup.Open = func(context.Context) (mail.Mailbox, error) {
+		calls.Add(1)
+		return nil, fmt.Errorf("connect to imap.example.test:993: imap.example.test is at 10.0.0.1: %w", mail.ErrNotPublic)
+	}
+	stop := e.run(t)
+	defer stop()
+	var a store.Account
+	eventually(t, "status error", func() bool {
+		a, _ = e.st.Account(t.Context(), e.sup.Account.ID)
+		return a.Status == StatusError
+	})
+	if a.LastError != "the hosted version of MailRules can only connect to mail servers on the public internet" {
+		t.Errorf("last error = %q", a.LastError)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Errorf("connected %d times; it must not be retried", n)
 	}
 }
 

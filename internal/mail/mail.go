@@ -33,6 +33,12 @@ var (
 	ErrNoFolder = errors.New("no such folder")
 	// ErrNotFound means the message is not there: wrong UID, or the folder's UIDVALIDITY changed.
 	ErrNotFound = errors.New("message not found")
+	// ErrNotPublic means the server is, or its name resolves to, an address that is not on
+	// the public internet (loopback, a private network, link-local and the like), which the
+	// hosted build does not connect to for a server the person named (publicnet). Nothing
+	// was dialed. Do not retry; the person must name a server on the public internet. Its
+	// text is shown to the person as it is.
+	ErrNotPublic = errors.New("the hosted version of MailRules can only connect to mail servers on the public internet")
 )
 
 // Special-use folder roles (RFC 6154), as stored in folders.special_use.

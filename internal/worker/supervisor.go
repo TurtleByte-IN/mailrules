@@ -90,8 +90,9 @@ func or(d, def time.Duration) time.Duration {
 }
 
 // Run supervises the account until ctx is done or the account needs the user: wrong
-// credentials, a one-click sign-in to renew, a certificate to accept, another TLS failure
-// or a watch folder that does not exist. Anything else is retried with a growing delay.
+// credentials, a one-click sign-in to renew, a certificate to accept, another TLS failure,
+// a watch folder that does not exist, or a server the hosted build does not connect to
+// (mail.ErrNotPublic). Anything else is retried with a growing delay.
 func (s *Supervisor) Run(ctx context.Context) {
 	backoff := or(s.BackoffMin, time.Second)
 	for ctx.Err() == nil {
@@ -117,6 +118,10 @@ func (s *Supervisor) Run(ctx context.Context) {
 			return
 		case errors.Is(err, mail.ErrTLS), errors.Is(err, mail.ErrNoFolder):
 			s.setStatus(ctx, StatusError, err)
+			return
+		case errors.Is(err, mail.ErrNotPublic):
+			// Only the sentence: it is what the person reads beside the mailbox.
+			s.setStatus(ctx, StatusError, mail.ErrNotPublic)
 			return
 		}
 		s.setStatus(ctx, StatusReconnecting, err)

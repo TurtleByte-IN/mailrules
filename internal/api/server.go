@@ -19,6 +19,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
+	"github.com/TurtleByte-IN/mailrules/internal/mail/publicnet"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/summary"
@@ -59,6 +60,9 @@ type Options struct {
 	// store when the module rotates it. Otherwise a secret not stored yet, replaced in place
 	// when the module rotates it, so what is stored afterwards is the one that works.
 	ConnectOAuth func(ctx context.Context, acct store.Account, secret *string) (mail.Mailbox, error)
+	// Resolver looks up the server a person names, which in the hosted build must be on
+	// the public internet (publicnet.Check); nil is the system's resolver.
+	Resolver publicnet.Resolver
 	// StartAccount (re)starts watching an account; StopAccount stops it and waits until
 	// mail already queued is finished.
 	StartAccount func(acct store.Account)
