@@ -163,9 +163,9 @@
   <header class="flex flex-wrap items-end justify-between gap-4">
     <div>
       <h1>Mailboxes</h1>
-      <!-- A build with one-click sign-in (a module offering it for a provider) connects more than password mailboxes. -->
+      <!-- A build with one-click sign-in or a module's sign-in form for a provider connects more than password mailboxes. -->
       <p class="mt-1 text-secondary">
-        {accounts.presets.some((p) => p.one_click_url) ? 'Any IMAP mailbox.' : 'Any IMAP mailbox that signs in with a password or app password.'} MailRules sorts on the server, so every app you use sees the result.
+        {accounts.presets.some((p) => p.one_click_url || p.form_url) ? 'Any IMAP mailbox.' : 'Any IMAP mailbox that signs in with a password or app password.'} MailRules sorts on the server, so every app you use sees the result.
       </p>
     </div>
     {#if !connecting}

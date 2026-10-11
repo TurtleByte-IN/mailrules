@@ -14,7 +14,7 @@ vi.mock('../lib/state/compose.svelte', () => ({ addTemplatesByName: vi.fn() }));
 
 // GET /api/presets in a build whose module offers one-click sign-in for Gmail.
 const gmail: Preset = { name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
-  secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail' };
+  secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null };
 
 // GET /api/settings from a fresh daemon with no keys anywhere.
 const fresh = (over: Partial<Saved> = {}): Saved => ({
@@ -202,6 +202,30 @@ it('shows a one-click sign-in that failed from setup on the mailbox step', async
   await show('mailbox');
   expect((await screen.findByRole('alert')).textContent).toContain("The mail server didn't accept the sign-in");
   expect(firstRun.step).toBe('mailbox');
+});
+
+it.each([
+  ['Finish', 'Finish'],
+  ['skipping its rules', 'Skip for now'],
+])("goes on at Rules after a module's sign-in form connected the mailbox, then to Done by %s", async (_name, last) => {
+  routes['GET /api/presets'] = [200, { items: [{ name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: '', local_part_login: false,
+    secret_label: 'Bridge password', password: false, one_click_url: null, form_url: '/api/proton/sign-in' }] }];
+  routes['POST /api/proton/sign-in'] = [200, { account_id: 8 }];
+  routes['GET /api/accounts'] = [200, { items: [] }];
+  await show('mailbox');
+  await fireEvent.click(await screen.findByRole('button', { name: /^Proton Mail Address and password/ }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await fireEvent.input(screen.getByLabelText('Proton Mail address'), { target: { value: 'me@proton.me' } });
+  await fireEvent.input(screen.getByLabelText('Proton Mail password'), { target: { value: 'pw' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByRole('heading', { name: 'Start with a few rules' })).toBeTruthy();
+  expect(firstRun.step).toBe('mailbox');
+  if (last === 'Finish') {
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Preview with/ }).hasAttribute('disabled')).toBe(false));
+    await fireEvent.click(screen.getByRole('button', { name: /^Preview with/ }));
+  }
+  await fireEvent.click(screen.getByRole('button', { name: last }));
+  await waitFor(() => expect(firstRun.step).toBe('done'));
 });
 
 it('ends on a closing word that opens Activity, with dry-run left on', async () => {
