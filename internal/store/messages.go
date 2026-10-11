@@ -53,10 +53,13 @@ type Message struct {
 	HasAttachment bool
 	Size          int64
 	Signals       Signals
-	State         string
-	Attempts      int   // retries made after a failure
-	NextAttemptAt int64 // 0 = not waiting for the retry job
-	CreatedAt     int64
+	// UnsubscribeURL is the RFC 8058 one-click link the email offers (unsubscribe.OneClick);
+	// empty when it offers none.
+	UnsubscribeURL string
+	State          string
+	Attempts       int   // retries made after a failure
+	NextAttemptAt  int64 // 0 = not waiting for the retry job
+	CreatedAt      int64
 	// ActedAt is when MailRules last decided the message, or CreatedAt until a decision is
 	// made. The feed is ordered by it.
 	ActedAt int64
@@ -80,12 +83,13 @@ const messageCols = `m.id, m.account_id, m.folder, m.uidvalidity, m.uid, COALESC
 	COALESCE(m.from_addr, ''), COALESCE(m.from_domain, ''), COALESCE(m.to_addrs, '[]'), COALESCE(m.subject, ''),
 	COALESCE(m.snippet, ''), COALESCE(m.received_at, 0), COALESCE(m.list_id, ''), m.has_attachment, COALESCE(m.size, 0),
 	COALESCE(m.signals, '{}'), m.state, m.attempts, COALESCE(m.next_attempt_at, 0), m.created_at,
-	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0), COALESCE(m.from_name, ''), m.acted_at`
+	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0), COALESCE(m.from_name, ''), m.acted_at,
+	COALESCE(m.unsubscribe_url, '')`
 
 func messageDest(m *Message, to, signals *string) []any {
 	return []any{&m.ID, &m.AccountID, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.FromAddr, &m.FromDomain, to,
 		&m.Subject, &m.Snippet, &m.ReceivedAt, &m.ListID, &m.HasAttachment, &m.Size, signals, &m.State, &m.Attempts,
-		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName, &m.ActedAt}
+		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName, &m.ActedAt, &m.UnsubscribeURL}
 }
 
 func (m *Message) decode(to, signals string) error {
@@ -204,10 +208,10 @@ func (s *Store) SaveMessageSummary(ctx context.Context, m Message) error {
 	}
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE messages SET message_id = ?, from_addr = ?, from_name = ?, from_domain = ?, to_addrs = ?, subject = ?, snippet = ?,
-		                     received_at = ?, list_id = ?, has_attachment = ?, size = ?, signals = ?
+		                     received_at = ?, list_id = ?, has_attachment = ?, size = ?, signals = ?, unsubscribe_url = ?
 		 WHERE id = ?`,
 		null(m.MessageID), m.FromAddr, null(m.FromName), m.FromDomain, string(to), m.Subject, m.Snippet,
-		m.ReceivedAt, null(m.ListID), m.HasAttachment, m.Size, string(signals), m.ID); err != nil {
+		m.ReceivedAt, null(m.ListID), m.HasAttachment, m.Size, string(signals), null(m.UnsubscribeURL), m.ID); err != nil {
 		return fmt.Errorf("save message summary: %w", err)
 	}
 	return nil

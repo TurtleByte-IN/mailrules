@@ -1,6 +1,6 @@
 <script lang="ts">
   import { link, router } from 'svelte-spa-router';
-  import { screens } from '../../routes';
+  import { screensFor } from '../../routes';
   import { accounts, statuses } from '../state/accounts.svelte';
   import { auth, logout } from '../state/auth.svelte';
   import { badges } from '../state/badges.svelte';
@@ -10,6 +10,7 @@
 
   // Below md the nav is a bar with a Menu button that opens the rest; from md up it is the sidebar.
   let open = $state(false);
+  const screens = $derived(screensFor(settings.value.features));
   const count = (path: string) => (path === '/rules' ? rules.list.length : badges[path]);
 </script>
 

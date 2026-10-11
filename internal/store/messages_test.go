@@ -219,8 +219,13 @@ func TestMigrationSenderSource(t *testing.T) {
 	db := migratedTo(t, 18)
 	s := New(db)
 	a := newAccount(t, s, "me@icloud.com", "pw")
-	m, _, err := s.IngestMessage(ctx, mail.MsgRef{AccountID: a.ID, Folder: "INBOX", UIDValidity: 1, UID: 1}, 100)
+	// The row is written by hand: the store's own queries read columns later migrations add.
+	res, err := db.ExecContext(ctx, `INSERT INTO messages (account_id, folder, uidvalidity, uid, created_at, acted_at) VALUES (?, 'INBOX', 1, 1, 100, 100)`, a.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	var m Message
+	if m.ID, err = res.LastInsertId(); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := s.FirstUser(ctx)

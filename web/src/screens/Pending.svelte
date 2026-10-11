@@ -1,8 +1,9 @@
 <script lang="ts">
   import { router } from 'svelte-spa-router';
-  import { screens } from '../routes';
+  import { settings } from '../lib/state/settings.svelte';
+  import { screensFor } from '../routes';
 
-  const screen = $derived(screens.find((s) => s.path === router.location));
+  const screen = $derived(screensFor(settings.value.features).find((s) => s.path === router.location));
 </script>
 
 <h1 class="text-2xl">{screen?.label ?? 'Not found'}</h1>

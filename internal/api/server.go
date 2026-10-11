@@ -24,6 +24,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/summary"
 	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
+	"github.com/TurtleByte-IN/mailrules/internal/unsubscribe"
 	"github.com/TurtleByte-IN/mailrules/internal/web"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
@@ -74,6 +75,9 @@ type Options struct {
 	Modules []ext.Module
 	// Summary is the summary email; nil = one built from Settings.Env that cannot send.
 	Summary *summary.Service
+	// Unsubscriber calls the one-click unsubscribe links Senders offers; nil = one that
+	// reaches only the public internet (unsubscribe.New with Resolver).
+	Unsubscriber unsubscribe.Unsubscriber
 }
 
 type server struct {
@@ -140,6 +144,7 @@ func (s *server) routes() []route {
 		on(get, "/api/senders", s.handleSenders),
 		on(put, "/api/senders/{type}/{value}", s.handleSenderPut),
 		on(del, "/api/senders/{type}/{value}", s.handleSenderDelete),
+		on(post, "/api/senders/{type}/{value}/unsubscribe", s.handleSenderUnsubscribe),
 
 		on(get, "/api/activity", s.handleActivity),
 		on(get, "/api/messages/{id}", s.handleMessage),
@@ -198,6 +203,9 @@ func NewHandler(o Options) http.Handler {
 	if s.Summary == nil {
 		s.Summary = summary.New(o.Store, o.Settings.Env, nil)
 		s.Summary.Now = s.now
+	}
+	if s.Unsubscriber == nil {
+		s.Unsubscriber = unsubscribe.New(o.Resolver)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {

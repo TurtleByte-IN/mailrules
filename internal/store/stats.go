@@ -13,6 +13,12 @@ type SenderSeen struct {
 	Messages        int    // emails seen since the time asked for
 	LastSeenAt      int64
 	ListUnsubscribe bool // at least one of them carried a List-Unsubscribe header
+	// OneClick is set when, on at least one mailbox, one of them offers an RFC 8058
+	// one-click unsubscribe link.
+	OneClick bool
+	// UnsubscribedAt is when MailRules last unsubscribed the address, once every such mailbox
+	// is unsubscribed (unsubscribes); 0 while one is not.
+	UnsubscribedAt int64
 }
 
 // SendersSeen lists every address the mailboxes the viewer sees have had mail from since
@@ -20,10 +26,16 @@ type SenderSeen struct {
 func (s *Store) SendersSeen(ctx context.Context, v Viewer, since int64) ([]SenderSeen, error) {
 	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT g.addr, g.n, g.last_seen, g.unsub, COALESCE((SELECT from_name FROM messages WHERE id = g.last_id), '')
+		`SELECT g.addr, g.n, g.last_seen, g.unsub, COALESCE((SELECT from_name FROM messages WHERE id = g.last_id), ''),
+		        g.links > 0, CASE WHEN g.links > 0 AND g.pending = 0
+		                     THEN COALESCE((SELECT MAX(u.created_at) FROM unsubscribes u WHERE u.address = g.addr AND `+inVisible("u.account_id", v)+`), 0)
+		                     ELSE 0 END
 		 FROM (SELECT m.from_addr AS addr, COUNT(*) AS n, MAX(m.id) AS last_id,
 		              MAX(COALESCE(m.received_at, m.created_at)) AS last_seen,
-		              MAX(COALESCE(json_extract(m.signals, '$.list_unsubscribe'), 0)) AS unsub
+		              MAX(COALESCE(json_extract(m.signals, '$.list_unsubscribe'), 0)) AS unsub,
+		              COUNT(m.unsubscribe_url) AS links,
+		              COUNT(CASE WHEN m.unsubscribe_url IS NOT NULL AND NOT EXISTS
+		                (SELECT 1 FROM unsubscribes u WHERE u.account_id = m.account_id AND u.address = m.from_addr) THEN 1 END) AS pending
 		       FROM messages m
 		       WHERE `+inVisible("m.account_id", v)+` AND m.created_at >= ? AND COALESCE(m.from_addr, '') <> ''
 		       GROUP BY m.from_addr) g`, since)
@@ -34,7 +46,7 @@ func (s *Store) SendersSeen(ctx context.Context, v Viewer, since int64) ([]Sende
 	var out []SenderSeen
 	for rows.Next() {
 		var v SenderSeen
-		if err := rows.Scan(&v.Address, &v.Messages, &v.LastSeenAt, &v.ListUnsubscribe, &v.Name); err != nil {
+		if err := rows.Scan(&v.Address, &v.Messages, &v.LastSeenAt, &v.ListUnsubscribe, &v.Name, &v.OneClick, &v.UnsubscribedAt); err != nil {
 			return nil, fmt.Errorf("list senders: %w", err)
 		}
 		out = append(out, v)

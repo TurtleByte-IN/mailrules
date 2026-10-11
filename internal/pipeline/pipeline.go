@@ -21,6 +21,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/unsubscribe"
 )
 
 const (
@@ -385,7 +386,8 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 }
 
 // fill copies what is kept of a parsed email onto its row. The body is not: only its
-// first snippetChars characters.
+// first snippetChars characters. Nor are the headers, except the one-click unsubscribe link
+// they offer, which Senders calls when the person asks.
 func fill(m *store.Message, s *message.Summary, raw *message.Raw) {
 	if ids := s.Headers["Message-Id"]; len(ids) > 0 {
 		m.MessageID = trimAngles(ids[0])
@@ -398,6 +400,7 @@ func fill(m *store.Message, s *message.Summary, raw *message.Raw) {
 	m.ReceivedAt, m.HasAttachment, m.Size = s.ReceivedAt.Unix(), s.HasAttachment, raw.Size
 	m.Signals = store.Signals{Bulk: s.IsBulk, Noreply: s.IsNoreply, Contact: s.IsContact, RepliedBefore: s.RepliedBefore, DMARC: s.DMARC,
 		ListUnsubscribe: len(s.Headers["List-Unsubscribe"]) > 0}
+	m.UnsubscribeURL = unsubscribe.OneClick(s.Headers)
 }
 
 func trimAngles(id string) string {

@@ -13,3 +13,5 @@ const path = (s: Key) => `/senders/${s.type}/${encodeURIComponent(s.value)}`;
 export const list = (params: ListParams = {}) => api<Page>('GET', '/senders' + query(params));
 export const put = (s: Key, body: SenderPut) => api<{ sender: Sender }>('PUT', path(s), body).then((r) => r.sender);
 export const remove = (s: Key) => api<void>('DELETE', path(s));
+/** Unsubscribes from an address with its one-click link (RFC 8058); the sender as it is afterwards. */
+export const unsubscribe = (s: Key) => api<{ sender: Sender }>('POST', path(s) + '/unsubscribe').then((r) => r.sender);

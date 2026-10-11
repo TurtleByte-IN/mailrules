@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '../lib/api/accounts';
 import type { Sender } from '../lib/api/senders';
 import { day } from '../lib/format';
 import { accounts } from '../lib/state/accounts.svelte';
 import { rules } from '../lib/state/rules.svelte';
 import { senders } from '../lib/state/senders.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Senders from './Senders.svelte';
 
@@ -19,6 +20,8 @@ const sender = (value: string, over: Partial<Sender> = {}): Sender => ({
   messages: 0,
   last_seen_at: null,
   has_list_unsubscribe: false,
+  one_click_unsubscribe: false,
+  unsubscribed_at: null,
   verdict: null,
   rule_id: null,
   folder: null,
@@ -127,4 +130,67 @@ it('keeps a sender\'s folder on offer when no mailbox lists it', async () => {
   const select = (await screen.findByLabelText('What happens to mail from Gone')) as HTMLSelectElement;
   expect(select.value).toBe('move:Old stuff');
   expect(select.selectedOptions[0].text).toBe('Always move to Old stuff');
+});
+
+describe('one-click unsubscribe', () => {
+  const news = sender('news@one.example', { name: 'One Weekly', messages: 30, has_list_unsubscribe: true, one_click_unsubscribe: true });
+  const mailto = sender('news@two.example', { name: 'Two Digest', messages: 9, has_list_unsubscribe: true });
+  const UNSUB = 'POST /api/senders/address/news%40one.example/unsubscribe';
+  const button = () => screen.getByRole('button', { name: /^Unsub/ }) as HTMLButtonElement;
+
+  beforeEach(() => {
+    settings.value.features.unsubscribe = true;
+    routes[LIST] = page([news, mailto, swiggy, jobs]);
+  });
+  afterEach(() => {
+    settings.value.features.unsubscribe = false;
+  });
+
+  it('offers Unsubscribe only for a sender with a one-click link, and nothing for a domain', async () => {
+    render(Senders);
+    await screen.findByText('One Weekly');
+    expect(screen.getAllByRole('button', { name: 'Unsubscribe' })).toHaveLength(1);
+    // A mailto: link only, or no List-Unsubscribe at all: no button; Always trash is in the menu.
+    expect(screen.getAllByText('No unsubscribe link')).toHaveLength(2);
+  });
+
+  it('shows nothing while the daemon says the feature is off', async () => {
+    settings.value.features.unsubscribe = false;
+    render(Senders);
+    await screen.findByText('One Weekly');
+    expect(screen.queryByRole('button', { name: 'Unsubscribe' })).toBeNull();
+    expect(screen.queryByText('No unsubscribe link')).toBeNull();
+  });
+
+  it('one click unsubscribes: the row says so and sends the stragglers to Trash', async () => {
+    const done = { ...news, unsubscribed_at: 1791000000, verdict: 'block', source: 'user' };
+    routes[UNSUB] = [200, { sender: done }];
+    render(Senders);
+    await screen.findByText('One Weekly');
+    await fireEvent.click(button());
+    await waitFor(() => expect(button().textContent?.trim()).toBe('Unsubscribed'));
+    expect(button().disabled).toBe(true);
+    expect(toast.text).toBe('Unsubscribed from One Weekly via List-Unsubscribe. Stragglers go to Trash.');
+    expect((screen.getByLabelText('What happens to mail from One Weekly') as HTMLSelectElement).value).toBe('trash');
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('a sender unsubscribed before shows it is done', async () => {
+    routes[LIST] = page([{ ...news, unsubscribed_at: 1791000000 }]);
+    render(Senders);
+    await screen.findByText('One Weekly');
+    expect(button().textContent?.trim()).toBe('Unsubscribed');
+    expect(button().disabled).toBe(true);
+  });
+
+  it("a site that does not take it shows the daemon's reason and keeps the button", async () => {
+    const reason = 'one.example answered 500 and did not confirm, so you may still be subscribed. Try again later, or choose Always trash.';
+    routes[UNSUB] = [502, { error: { code: 'unsubscribe_failed', message: reason } }];
+    render(Senders);
+    await screen.findByText('One Weekly');
+    await fireEvent.click(button());
+    await waitFor(() => expect(toast.text).toBe(reason));
+    expect(button().textContent?.trim()).toBe('Unsubscribe');
+    expect(button().disabled).toBe(false);
+  });
 });

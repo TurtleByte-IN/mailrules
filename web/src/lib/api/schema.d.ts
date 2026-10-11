@@ -662,6 +662,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/senders/{type}/{value}/unsubscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Only `address`: a domain is refused with 400 (path type) */
+                type: "address" | "domain";
+                /** @description The address */
+                value: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unsubscribe from an address with its one-click link
+         * @description Unsubscribes from the address with the one-click link (RFC 8058) of its newest email,
+         *     on every mailbox the person sees whose mail from it, in the last 30 days, offers one and
+         *     that is not unsubscribed yet: MailRules POSTs `List-Unsubscribe=One-Click`
+         *     (`application/x-www-form-urlencoded`) to the https link, with no cookies, follows no
+         *     redirect, and takes only a 2xx answer as done. It never sends email on the person's
+         *     behalf, so mail that offers only a mailto: address cannot be unsubscribed here
+         *     (`one_click_unsubscribe` is false); "Always trash" is the way for it.
+         *
+         *     The link comes from the email, so MailRules calls it only on the public internet: a
+         *     link that leads to loopback, a private network, link-local, unique-local, multicast or
+         *     unspecified addresses is refused when it is dialed, on the address connected to. Logs
+         *     name the link's host, never the link.
+         *
+         *     Unsubscribing changes no mailbox, so dry-run does not hold it back, and nothing is
+         *     added to Activity. Once every mailbox is unsubscribed, an address that had no sender
+         *     rule (of its own or of its domain) gets one of source `user` with verdict `block`, so
+         *     the mail the list still sends goes to Trash (as any trash does: not in dry-run). Asking
+         *     again when every mailbox is unsubscribed calls nothing and answers 200.
+         */
+        post: operations["unsubscribeSender"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/activity": {
         parameters: {
             query?: never;
@@ -1977,8 +2019,15 @@ export interface components {
              * @description When the newest email from this sender arrived, within the last 30 days; null when there was none
              */
             last_seen_at: number | null;
-            /** @description At least one of those emails carried a List-Unsubscribe header. Unsubscribing itself is not built (features.unsubscribe) */
+            /** @description At least one of those emails carried a List-Unsubscribe header, of any kind (a mailto: address included) */
             has_list_unsubscribe: boolean;
+            /** @description At least one of those emails offers a one-click unsubscribe link (RFC 8058: an https List-Unsubscribe link and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`), so POST .../unsubscribe can unsubscribe from the address. False for a domain, for mail that offers only a mailto: address or an http link, and for mail MailRules saw before it kept the link */
+            one_click_unsubscribe: boolean;
+            /**
+             * Format: int64
+             * @description When MailRules unsubscribed from this address, once every mailbox whose mail from it offers a one-click link is unsubscribed; null while one is not, and for a domain. Kept across reloads
+             */
+            unsubscribed_at: number | null;
             /**
              * @description null = no sender rule; the rules decide. `move` files the mail in `folder`, `keep` leaves it in the inbox, `block` trashes it
              * @enum {string|null}
@@ -2707,6 +2756,7 @@ export interface components {
                 timed_actions: boolean;
                 draft_replies: boolean;
                 billing: boolean;
+                /** @description One-click unsubscribe on Senders (POST /api/senders/{type}/{value}/unsubscribe); on in every build */
                 unsubscribe: boolean;
                 /** @description A module of this build connects mailboxes with one-click sign-in; GET /api/presets gives `one_click_url` for the providers it signs in to */
                 oauth_providers: boolean;
@@ -3853,6 +3903,38 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+        };
+    };
+    unsubscribeSender: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Only `address`: a domain is refused with 400 (path type) */
+                type: "address" | "domain";
+                /** @description The address */
+                value: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unsubscribed; the sender as it is now, `unsubscribed_at` set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sender: components["schemas"]["Sender"];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
         };
     };
     listActivity: {
