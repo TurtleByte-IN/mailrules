@@ -14,8 +14,10 @@ import (
 // features are the later-phase features the UI prototype draws. The UI hides each one
 // until its flag is true; a flag turns true in the release that builds the feature, or, for
 // a feature a module provides (suggest), while the module is in the build (server.features).
+// This list is the only one: the web UI reads it from GET /api/settings, and its type from
+// the contract.
 var features = map[string]bool{"notifications": false, "timed_actions": false, "draft_replies": false,
-	"billing": false, "unsubscribe": false, "oauth_providers": false, "suggest": false, "delete_account": false}
+	"billing": false, "unsubscribe": true, "oauth_providers": false, "suggest": false, "delete_account": false}
 
 // limits are the bounds the daemon enforces on how many emails one run reads, reported so
 // the UI's number boxes follow the daemon instead of repeating its numbers (MAI-41).

@@ -1,11 +1,11 @@
 <script lang="ts">
   import Waiting from '../lib/components/Waiting.svelte';
-  import { features } from '../lib/features';
   import { day } from '../lib/format';
   import type { Sender, Sort } from '../lib/api/senders';
   import { accounts } from '../lib/state/accounts.svelte';
   import { rules } from '../lib/state/rules.svelte';
-  import { forget, load, loadFolders, more, moveTo, nameOf, routingOf, senders, setQuery, setRouting, setSort, targetOf } from '../lib/state/senders.svelte';
+  import { forget, load, loadFolders, more, moveTo, nameOf, routingOf, senders, setQuery, setRouting, setSort, targetOf, unsubscribe } from '../lib/state/senders.svelte';
+  import { settings } from '../lib/state/settings.svelte';
 
   load();
 
@@ -22,6 +22,14 @@
 
   async function route(s: Sender, select: HTMLSelectElement) {
     if (!(await setRouting(s, select.value))) select.value = routingOf(s);
+  }
+
+  // The senders being unsubscribed: a site may take a few seconds to answer.
+  let unsubscribing = $state<string[]>([]);
+  async function unsub(s: Sender) {
+    unsubscribing.push(s.value);
+    await unsubscribe(s);
+    unsubscribing = unsubscribing.filter((v) => v !== s.value);
   }
 </script>
 
@@ -56,7 +64,7 @@
 
     <section aria-label="Sender list" class="card overflow-hidden">
       {#each senders.list as s, i (s.type + s.value)}
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 px-[18px] py-3.5 {i ? 'border-t border-line-divider' : ''}">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5 px-[18px] py-3.5 {i ? 'border-t border-line-divider' : ''} {s.unsubscribed_at !== null ? 'opacity-60' : ''}">
           <div class="min-w-0 flex-[1_1_220px]">
             <div class="font-semibold">{nameOf(s)}</div>
             <div class="font-mono text-[12.5px] text-muted max-md:break-words">{s.type === 'domain' ? 'Domain: all its addresses' : s.value}</div>
@@ -80,8 +88,20 @@
             {/each}
             <option value="trash">Always trash</option>
           </select>
-          {#if features.unsubscribe}
-            <!-- P2: the Unsubscribe button goes here once the contract has a route for it -->
+          {#if settings.value.features.unsubscribe && s.type === 'address'}
+            <!-- Only a one-click web link (RFC 8058) is offered: MailRules never sends email for the person. -->
+            {#if s.one_click_unsubscribe}
+              <button
+                type="button"
+                class="btn px-3 {s.unsubscribed_at !== null ? 'disabled:opacity-100' : ''}"
+                disabled={s.unsubscribed_at !== null || unsubscribing.includes(s.value)}
+                onclick={() => unsub(s)}
+              >
+                {s.unsubscribed_at !== null ? 'Unsubscribed' : unsubscribing.includes(s.value) ? 'Unsubscribing…' : 'Unsubscribe'}
+              </button>
+            {:else}
+              <span class="w-[120px] text-[12.5px] text-muted">No unsubscribe link</span>
+            {/if}
           {/if}
         </div>
       {:else}

@@ -149,3 +149,21 @@ export async function setRouting(s: Sender, routing: string) {
 }
 
 export const forget = (s: Sender) => removeRule(s).catch(fail);
+
+/**
+ * Unsubscribes from a sender with the one-click link its mail carries. A sender that had no
+ * rule comes back with one that trashes what the list still sends. False when the daemon
+ * refused or the sender's site did not take it; its reason was shown.
+ */
+export async function unsubscribe(s: Sender) {
+  try {
+    const after = await sendersApi.unsubscribe(s);
+    // A learned rule stays learned: only the row changes.
+    senders.list = senders.list.map((x) => (same(x, after) ? after : x));
+    flash('Unsubscribed from ' + nameOf(s) + ' via List-Unsubscribe.' + (s.verdict === null && after.verdict === 'block' ? ' Stragglers go to Trash.' : ''));
+    return true;
+  } catch (e) {
+    fail(e);
+    return false;
+  }
+}

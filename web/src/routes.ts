@@ -1,5 +1,5 @@
 import type { Component } from 'svelte';
-import { features, type Feature } from './lib/features';
+import type { Settings as DaemonSettings } from './lib/api/settings';
 import Accounts from './screens/Accounts.svelte';
 import Activity from './screens/Activity.svelte';
 import Cleanup from './screens/Cleanup.svelte';
@@ -13,13 +13,17 @@ import Overview from './screens/Overview.svelte';
 import Pending from './screens/Pending.svelte';
 import Setup from './screens/Setup.svelte';
 
+/** The flags of GET /api/settings: one list, the contract's. */
+type Features = DaemonSettings['features'];
+
 export interface Screen {
   path: string;
   label: string;
   /** SVG path data, 24x24 stroke icon, from the prototype nav. */
   icon: string;
   component: Component<any>;
-  feature?: Feature;
+  /** Shown only while the daemon says this feature is on (GET /api/settings `features`). */
+  feature?: keyof Features;
 }
 
 // Order and labels follow the prototype nav. Plan and billing is P2: it keeps the
@@ -38,10 +42,13 @@ const all: Screen[] = [
   { path: '/settings', label: 'Settings', icon: 'M4 7h9M17 7h3M4 17h3M11 17h9M13 7a2 2 0 1 0 4 0 2 2 0 1 0-4 0M7 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0', component: Settings },
 ];
 
-export const screens = all.filter((s) => !s.feature || features[s.feature]);
+/** The screens the nav offers, given the features the daemon reports in its settings. */
+export const screensFor = (features: Features) => all.filter((s) => !s.feature || features[s.feature]);
 
+// A flagged-off screen's path is routed too; it can only be reached by typing it, and its
+// component is the stand-in either way.
 export const routes: Record<string, Component<any>> = {
-  ...Object.fromEntries(screens.map((s) => [s.path, s.component])),
+  ...Object.fromEntries(all.map((s) => [s.path, s.component])),
   // The first-run guide: not in the nav, opened once right after the admin account is created.
   '/setup': Setup,
   '*': Pending,

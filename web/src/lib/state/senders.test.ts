@@ -16,6 +16,8 @@ const sender = (value: string, over: Partial<Sender> = {}): Sender => ({
   messages: 1,
   last_seen_at: 1790000000,
   has_list_unsubscribe: false,
+  one_click_unsubscribe: false,
+  unsubscribed_at: null,
   verdict: null,
   rule_id: null,
   folder: null,
