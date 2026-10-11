@@ -151,8 +151,12 @@ func (m *Mailbox) watchOnce(ctx context.Context, folder string, validity, lastUI
 				return classify("idle", err)
 			}
 		} else {
+			tick := m.cfg.pollTick
+			if tick == nil {
+				tick = time.After(m.cfg.PollInterval)
+			}
 			select {
-			case <-time.After(m.cfg.PollInterval):
+			case <-tick:
 			case <-c.Closed():
 			case <-ctx.Done():
 			}

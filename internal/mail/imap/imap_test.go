@@ -507,24 +507,29 @@ func TestWorkerActsOnMailArrivedSinceSelect(t *testing.T) {
 	}
 }
 
-// Without IDLE, Watch searches for new mail every PollInterval. The search must see mail
-// that arrived since the last one, not only once a later search has synced the session.
+// Without IDLE, Watch searches for new mail each poll. The first poll after mail arrived
+// must find it, not only a later one, once an earlier search has synced the session.
 func TestWatchPollSeesMailArrivedSinceLastSearch(t *testing.T) {
-	const interval = time.Second
 	s := imaptest.Start(t, capsMove)
 	s.DelayNewMail(true)
 	s.Append(t, "INBOX", eml(1))
+	tick := make(chan time.Time)
 	cfg := config(s)
-	cfg.forcePoll, cfg.PollInterval = true, interval
+	cfg.forcePoll, cfg.pollTick = true, tick
 	out := watch(t, open(t, cfg), 0)
-	expect(t, out, 1) // the first search has run; the next is one interval away
+	expect(t, out, 1) // the search on connect has run; no poll happens until the next tick
 	uid := s.Append(t, "INBOX", eml(2))
+	select { // exactly one poll
+	case tick <- time.Now():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Watch is not waiting to poll")
+	}
 	select {
 	case nm := <-out:
 		if nm.Ref.UID != uid {
 			t.Fatalf("got uid %d, want %d", nm.Ref.UID, uid)
 		}
-	case <-time.After(interval * 3 / 2):
+	case <-time.After(5 * time.Second): // no further poll will come: the first one missed it
 		t.Fatal("the first poll after the message arrived did not find it")
 	}
 }

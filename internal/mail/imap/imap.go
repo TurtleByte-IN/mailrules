@@ -69,7 +69,8 @@ type Config struct {
 	BackoffMax      time.Duration // longest reconnect delay (5 min)
 	ThrottleBackoff time.Duration // delay after [UNAVAILABLE] or throttling (5 min)
 
-	forcePoll bool // tests: behave as if the server lacked IDLE
+	forcePoll bool             // tests: behave as if the server lacked IDLE
+	pollTick  <-chan time.Time // tests: poll on each value received instead of every PollInterval
 }
 
 // Mailbox is a mail.Mailbox over IMAP.
