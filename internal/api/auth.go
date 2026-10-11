@@ -373,11 +373,11 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// deletionOnly refuses the account deletion route with 404 not_available in a build whose
-// sign-in module cannot delete a person at its sign-in service, self-host included.
+// deletionOnly refuses the account deletion route with 404 not_available in a build where
+// no module signs people in: self-host.
 func (s *server) deletionOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.accountDeletion() == nil {
+		if s.signIn() == nil {
 			writeError(w, http.StatusNotFound, "not_available", "This build of MailRules cannot delete accounts.", "")
 			return
 		}
@@ -390,9 +390,10 @@ type accountDeletion struct {
 }
 
 // handleDeleteAccount deletes the signed-in person's account, who confirms it with their
-// email. The sign-in service deletes them first (ext.Module.DeleteIdentity), and when it
-// fails nothing is deleted here. Then they are forgotten as when the service deletes them
-// (forgetIdentity), which ends every session of theirs; this browser's cookie is cleared.
+// email. When the sign-in module can, the sign-in service deletes them first
+// (ext.Module.DeleteIdentity), and when it fails nothing is deleted here; without it their
+// login at the service stays. Then they are forgotten for good (store.DeleteOwnAccount),
+// which ends every session of theirs; this browser's cookie is cleared.
 func (s *server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	u, _ := r.Context().Value(userKey{}).(store.User)
 	var in accountDeletion
@@ -412,14 +413,16 @@ func (s *server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
-	if err := s.accountDeletion()(r.Context(), id.Provider, id.Subject); err != nil {
-		slog.ErrorContext(r.Context(), "the sign-in service did not delete an account; nothing was deleted", "user_id", u.ID, "error", err.Error())
-		writeError(w, http.StatusBadGateway, "sign_in_error", "The sign-in service could not delete your account, so nothing was deleted. Try again in a few minutes.", "")
-		return
+	if del := s.signIn().DeleteIdentity; del != nil {
+		if err := del(r.Context(), id.Provider, id.Subject); err != nil {
+			slog.ErrorContext(r.Context(), "the sign-in service did not delete an account; nothing was deleted", "user_id", u.ID, "error", err.Error())
+			writeError(w, http.StatusBadGateway, "sign_in_error", "The sign-in service could not delete your account, so nothing was deleted. Try again in a few minutes.", "")
+			return
+		}
 	}
 	slog.InfoContext(r.Context(), "a person deleted their account", "user_id", u.ID, "tenant_id", u.TenantID)
-	// The service has deleted them: finish here even if the browser goes away.
-	if err := s.forgetIdentity(context.WithoutCancel(r.Context()), id.Provider, id.Subject); err != nil {
+	// Finish here even if the browser goes away: the service may have deleted them already.
+	if err := s.forgetIdentity(context.WithoutCancel(r.Context()), id.Provider, id.Subject, s.store.DeleteOwnAccount); err != nil {
 		internalError(w, r, err)
 		return
 	}

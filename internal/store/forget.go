@@ -11,7 +11,8 @@ import (
 )
 
 // ForgetDays is how long what MailRules kept of a forgotten person waits before it is
-// removed. Signing in again with the same identity before then cancels the removal.
+// removed. Signing in again with the same identity before then cancels the removal, unless
+// the person deleted their own account (DeleteOwnAccount).
 const ForgetDays = 30
 
 // forgottenEmail is the address a forgotten user holds while their removal waits: unique,
@@ -92,6 +93,22 @@ func identityUser(ctx context.Context, tx *sql.Tx, provider, subject string) (us
 // error, and forgetting one again changes nothing, the removal time included. Only users
 // made from an identity are reached, so the self-host admin never is.
 func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, now int64) (Forget, error) {
+	return s.forget(ctx, provider, subject, now, false)
+}
+
+// DeleteOwnAccount is a person who deleted their own account: ForgetIdentity, and in the
+// same transaction their user lets go of the identity, so that it never gets their data
+// back: the same identity signing in again, before the removal or after, gets a new, empty
+// user. When they are their tenant's only member, the tenant lets go of the sign-in
+// service's organisation too, so that user gets a new tenant instead of joining the old
+// data's. The old data is removed after ForgetDays all the same, and the service's own
+// deletion notice for the identity afterwards reaches nobody.
+func (s *Store) DeleteOwnAccount(ctx context.Context, provider, subject string, now int64) (Forget, error) {
+	return s.forget(ctx, provider, subject, now, true)
+}
+
+// forget is ForgetIdentity, and DeleteOwnAccount when own.
+func (s *Store) forget(ctx context.Context, provider, subject string, now int64, own bool) (Forget, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
@@ -115,9 +132,11 @@ func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, no
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET email = ? WHERE id = ?`, forgottenEmail(out.UserID), out.UserID); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: free email: %w", err)
 	}
-	if out.Keys, out.Accounts, err = removalAccounts(ctx, tx, out.UserID, out.TenantID); err != nil {
+	var alone bool
+	if alone, out.Accounts, err = removalAccounts(ctx, tx, out.UserID, out.TenantID); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: list mailboxes: %w", err)
 	}
+	out.Keys = alone
 	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
 	// one-click mailbox that is its refresh token. A mailbox whose secret is already gone
 	// keeps its status, so a second call changes nothing.
@@ -143,6 +162,17 @@ func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, no
 		`INSERT INTO forgotten (user_id, forgotten_at, remove_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING`,
 		out.UserID, now, now+ForgetDays*day); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: schedule removal: %w", err)
+	}
+	if own {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM identities WHERE user_id = ?`, out.UserID); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: let go of the identity: %w", err)
+		}
+		// NULL never matches the lookup by organisation, and is unique for UNIQUE.
+		if alone {
+			if _, err := tx.ExecContext(ctx, `UPDATE tenants SET external_id = NULL WHERE id = ?`, out.TenantID); err != nil {
+				return Forget{}, fmt.Errorf("forget identity: let go of the organisation: %w", err)
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)

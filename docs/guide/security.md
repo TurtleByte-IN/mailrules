@@ -53,10 +53,12 @@ In the hosted version you can delete your MailRules account yourself: **Settings
 
 MailRules asks you to type the email address you sign in with, and the button stays off until it matches. Then:
 
-- **Right away**, your sign-in account is deleted, you are signed out on every device, every mailbox stops being sorted, and its app password or sign-in token is deleted. If you are the only person in your team, your saved model API keys and the addresses of your notification destinations are deleted too. Your email address is free at once: signing up again with it starts a new, empty account.
+- **Right away**, you are signed out on every device, every mailbox stops being sorted, and its app password or sign-in token is deleted. If you are the only person in your team, your saved model API keys and the addresses of your notification destinations are deleted too. Your email address is free at once.
 - **Within 30 days**, everything else MailRules kept is deleted: your rules, sender rules, activity, settings and usage. If you are part of a team, your mailboxes and what MailRules recorded of them go, and the team keeps its rules and settings.
 
-It cannot be undone. If the sign-in service cannot delete your account, MailRules says so and deletes nothing; try again a few minutes later.
+It cannot be undone. Signing in again, with the same login or a new one, starts a new, empty account; your old one never comes back.
+
+Your login at the hosted sign-in service is deleted with your account when the hosted service supports it. If the service then fails to delete it, MailRules says so and deletes nothing; try again a few minutes later. Where the service does not support it, your login stays and only your MailRules account is deleted.
 
 Deleting your account does not touch your mail. Emails MailRules moved stay where they are, and nothing is deleted from your mailbox. To stop MailRules reading a mailbox while you keep your account, remove the mailbox instead.
 

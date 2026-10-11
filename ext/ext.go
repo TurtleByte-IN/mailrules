@@ -3,10 +3,11 @@
 // routes, served behind the same sign-in and CSRF checks as the built-in ones unless it
 // marks one Public (served before sign-in) or Webhook (a call from another server), a
 // capability the web app reads in GET /api/settings `features`, and optionally the way
-// people sign in (Module.SignIn) and delete their own account (Module.DeleteIdentity), the
-// way mailboxes of some providers are connected with one-click sign-in (Module.Mailboxes),
-// sign-in forms for mailboxes of providers the module connects itself
-// (Module.MailboxForms), and the delivery of rule notifications (Module.Notifications).
+// people sign in (Module.SignIn) and are deleted at the sign-in service when they delete
+// their own account (Module.DeleteIdentity), the way mailboxes of some providers are
+// connected with one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of
+// providers the module connects itself (Module.MailboxForms), and the delivery of rule
+// notifications (Module.Notifications).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -51,13 +52,17 @@ type Module struct {
 	// SignOut is the path of the module's Public GET route the browser goes to after the
 	// daemon has ended its session, so the sign-in service ends its own. It needs SignIn.
 	SignOut string
-	// DeleteIdentity, when set, deletes a person at the sign-in service, for Settings'
-	// Delete my account (POST /api/auth/delete-account; GET /api/settings reports
+	// DeleteIdentity, when set, deletes a person at the sign-in service when they delete
+	// their own account in Settings (Delete my account, POST /api/auth/delete-account),
+	// which every build with SignIn offers (GET /api/settings reports
 	// features.delete_account). provider and subject are the Identity the person signed in
 	// as. The daemon calls it first and deletes nothing when it returns an error, which it
-	// logs and does not show; when it returns nil the daemon forgets the person at once as
-	// Host.ForgetIdentity does and ends the request's session, so the service's own
-	// deletion notice calling ForgetIdentity afterwards changes nothing. It needs SignIn.
+	// logs and does not show; when it returns nil the daemon deletes the person's MailRules
+	// account at once (Host.ForgetIdentity, except that the same identity signing in again
+	// gets a new, empty user, never their data) and ends the request's session, so the
+	// service's own deletion notice calling ForgetIdentity afterwards changes nothing.
+	// Without it, Delete my account deletes only the MailRules account and the person's
+	// login at the sign-in service stays. It needs SignIn.
 	DeleteIdentity func(ctx context.Context, provider, subject string) error
 	// Mailboxes, when set, connects mailboxes of some providers with one-click sign-in: the
 	// person signs in to the provider (OAuth) instead of pasting an app password, and the
@@ -454,12 +459,13 @@ type Host interface {
 	EndSessions(ctx context.Context, provider, subject string) error
 
 	// ForgetIdentity is for a person the sign-in service deleted; the daemon does the same
-	// for a person who deletes their own account (Module.DeleteIdentity). In one step that
-	// changes all or nothing, it ends their sessions as EndSessions does, frees their email
-	// (a new identity with that email signs up at once and gets a new user, not their data) and
-	// deletes their secrets: their mailboxes are stopped first, then their passwords and
-	// tokens are deleted, with, when they are their tenant's only member, the tenant's
-	// stored model API keys and the addresses and secrets of its notification destinations.
+	// for a person who deletes their own account, except that they never get their data
+	// back. In one step that changes all or nothing, it ends their sessions as EndSessions
+	// does, frees their email (a new identity with that email signs up at once and gets a
+	// new user, not their data) and deletes their secrets: their mailboxes are stopped
+	// first, then their passwords and tokens are deleted, with, when they are their
+	// tenant's only member, the tenant's stored model API keys and the addresses and
+	// secrets of its notification destinations.
 	// The rest of their data is removed ForgetDays later, unless the same identity
 	// (Provider, Subject) signs in again first, which calls the removal off and gives their
 	// rules and history back; their mailboxes then wait for a new password, the model keys

@@ -63,8 +63,8 @@ func (s *server) moduleRoutes() []route {
 // features are the flags GET /api/settings reports: the later-phase ones, then each
 // module's name, on, oauth_providers while a module connects mailboxes with one-click
 // sign-in (GET /api/presets says for which providers), notifications while a module
-// delivers rule notifications, and delete_account while the sign-in module can delete a
-// person at its sign-in service.
+// delivers rule notifications, and delete_account while a module signs people in (the
+// hosted build), whether or not it can delete them at its sign-in service.
 func (s *server) features() map[string]bool {
 	out := maps.Clone(features)
 	for _, m := range s.Modules {
@@ -75,7 +75,7 @@ func (s *server) features() map[string]bool {
 		if m.Notifications != nil {
 			out["notifications"] = true
 		}
-		if m.SignIn != "" && m.DeleteIdentity != nil {
+		if m.SignIn != "" {
 			out["delete_account"] = true
 		}
 	}
@@ -202,14 +202,16 @@ func (h host) EndSessions(ctx context.Context, provider, subject string) error {
 // ForgetIdentity ends the identity's sessions, frees its email, deletes its secrets and
 // schedules the removal of the rest of its data (ext.Host).
 func (h host) ForgetIdentity(ctx context.Context, provider, subject string) error {
-	return h.s.forgetIdentity(ctx, provider, subject)
+	return h.s.forgetIdentity(ctx, provider, subject, h.s.store.ForgetIdentity)
 }
 
-// forgetIdentity is ForgetIdentity, for a person the sign-in service deleted and for one who
-// deleted their own account. The person's mailboxes are stopped first, so nothing is logged
-// in to them when their secrets go, and again after, for one started meanwhile (it could no
-// longer log in; this ends a session it has).
-func (s *server) forgetIdentity(ctx context.Context, provider, subject string) error {
+// forgetIdentity forgets a person with forget: store.ForgetIdentity for one the sign-in
+// service deleted, store.DeleteOwnAccount for one who deleted their own account. The
+// person's mailboxes are stopped first, so nothing is logged in to them when their secrets
+// go, and again after, for one started meanwhile (it could no longer log in; this ends a
+// session it has).
+func (s *server) forgetIdentity(ctx context.Context, provider, subject string,
+	forget func(ctx context.Context, provider, subject string, now int64) (store.Forget, error)) error {
 	before, err := s.store.IdentityMailboxes(ctx, provider, subject)
 	if err != nil {
 		return err
@@ -217,7 +219,7 @@ func (s *server) forgetIdentity(ctx context.Context, provider, subject string) e
 	for _, id := range before {
 		s.StopAccount(id)
 	}
-	f, err := s.store.ForgetIdentity(ctx, provider, subject, s.now().Unix())
+	f, err := forget(ctx, provider, subject, s.now().Unix())
 	if err != nil {
 		return err
 	}
@@ -245,15 +247,6 @@ func (s *server) signIn() *ext.Module {
 		if s.Modules[i].SignIn != "" {
 			return &s.Modules[i]
 		}
-	}
-	return nil
-}
-
-// accountDeletion is the sign-in module's DeleteIdentity, or nil in a build where people
-// cannot delete their own account: self-host, or a sign-in module without one.
-func (s *server) accountDeletion() func(ctx context.Context, provider, subject string) error {
-	if m := s.signIn(); m != nil {
-		return m.DeleteIdentity
 	}
 	return nil
 }

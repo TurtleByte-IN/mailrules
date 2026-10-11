@@ -154,9 +154,71 @@ func TestDeleteAccount(t *testing.T) {
 	}
 }
 
-// Only a build whose sign-in module deletes people at its service offers it: self-host
-// and a sign-in module without DeleteIdentity answer not_available, signed in or not, and
-// say so in features. A sign-in build's user not made by the service cannot use it either.
+// A sign-in module that cannot delete people at its sign-in service still offers Delete my
+// account: MailRules deletes its own data as with one that can, and the person's login at
+// the service stays. Signing in again with that same login, before the removal or after,
+// makes a new, empty account, never the old one.
+func TestDeleteAccountWithoutSignInHook(t *testing.T) {
+	e := newEnv(t, signInModule())
+	e.signInAs("sub-pat", "pat@example.test", "org-pat")
+	acct := e.tenantAccount("pat@imap.example.test")
+	old := e.tenantOf("pat@example.test")
+	if err := e.sett.Apply(t.Context(), old, settings.Patch{Keys: map[string]string{"openai_api_key": "sk-test-pat"}}); err != nil {
+		t.Fatal(err)
+	}
+	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated)
+	if on := e.call(http.MethodGet, "/api/settings", "", http.StatusOK)["features"].(map[string]any)["delete_account"]; on != true {
+		t.Errorf("features.delete_account = %v with a sign-in module", on)
+	}
+	e.refuse(http.MethodPost, deletePath, `{"email":"someone@example.test"}`, http.StatusBadRequest, "invalid_input", "email")
+
+	r := e.do(http.MethodPost, deletePath, `{"email":"pat@example.test"}`)
+	if r.status != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", r.status, r.raw)
+	}
+	if ck := r.setCookies[sessionCookie]; ck == nil || ck.MaxAge >= 0 {
+		t.Errorf("the session cookie was not cleared: %+v", ck)
+	}
+	if r := e.do(http.MethodGet, "/api/accounts", ""); r.status != http.StatusUnauthorized {
+		t.Errorf("after the deletion the session answers %d %s", r.status, r.raw)
+	}
+	if _, err := e.mgr.Mailbox(acct); err == nil {
+		t.Error("the mailbox is still running")
+	}
+	if _, err := e.st.AccountSecret(t.Context(), e.sett.Master, acct); !errors.Is(err, store.ErrNoSecret) {
+		t.Errorf("the mailbox password: %v, want ErrNoSecret", err)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM settings WHERE key LIKE 'key.%'`); n != 0 {
+		t.Errorf("%d model keys left", n)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM users WHERE email = 'pat@example.test'`); n != 0 {
+		t.Error("the email is still taken")
+	}
+	if n := e.count(`SELECT COUNT(*) FROM forgotten`); n != 1 {
+		t.Errorf("%d removals scheduled, want 1", n)
+	}
+
+	// The same login signs in again within the wait: a new, empty account.
+	back := e.browser()
+	if to := back.signInAs("sub-pat", "pat@example.test", "org-pat"); to != "/" {
+		t.Fatalf("signing in again was sent to %q", to)
+	}
+	if tenant := e.tenantOf("pat@example.test"); tenant == old {
+		t.Errorf("signing in again landed in the old tenant %d", old)
+	}
+	if got := back.call(http.MethodGet, "/api/accounts", "", http.StatusOK)["items"].([]any); len(got) != 0 {
+		t.Errorf("the new account sees mailboxes %v", got)
+	}
+	if got := back.call(http.MethodGet, "/api/rules", "", http.StatusOK)["items"].([]any); len(got) != 0 {
+		t.Errorf("the new account sees rules %v", got)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM forgotten`); n != 1 {
+		t.Errorf("signing in again called the removal off: %d left, want 1", n)
+	}
+}
+
+// Self-host offers no account deletion: not_available, signed in or not, and so say its
+// features. A sign-in build's user not made by the service cannot use it either.
 func TestDeleteAccountNotAvailable(t *testing.T) {
 	self := newEnv(t)
 	self.do(http.MethodGet, "/api/auth/me", "")
@@ -165,13 +227,6 @@ func TestDeleteAccountNotAvailable(t *testing.T) {
 	self.refuse(http.MethodPost, deletePath, `{"email":"me@icloud.com"}`, http.StatusNotFound, "not_available", "")
 	if on := self.call(http.MethodGet, "/api/settings", "", http.StatusOK)["features"].(map[string]any)["delete_account"]; on != false {
 		t.Errorf("self-host features.delete_account = %v", on)
-	}
-
-	plain := newEnv(t, signInModule())
-	plain.signInAs("sub-pat", "pat@example.test", "org-pat")
-	plain.refuse(http.MethodPost, deletePath, `{"email":"pat@example.test"}`, http.StatusNotFound, "not_available", "")
-	if on := plain.call(http.MethodGet, "/api/settings", "", http.StatusOK)["features"].(map[string]any)["delete_account"]; on != false {
-		t.Errorf("features.delete_account = %v with a sign-in module that does not delete", on)
 	}
 
 	var calls [][2]string
