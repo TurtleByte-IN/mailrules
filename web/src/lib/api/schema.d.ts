@@ -75,6 +75,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/delete-account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete the signed-in person's account; ends every session of theirs
+         * @description Works only with a sign-in module that deletes people at its sign-in service
+         *     (`ext.Module.DeleteIdentity`, `x-module`); the hosted build has one. Without it, self-host
+         *     included, this route answers 404 `not_available` and `features.delete_account` in GET
+         *     /api/settings is false.
+         *
+         *     The person confirms by sending the email address they sign in with (compared without
+         *     case and surrounding spaces); another one is 400 `invalid_input` at `email` and changes
+         *     nothing. The sign-in service deletes them first: when it fails, the answer is 502
+         *     `sign_in_error` and nothing is deleted. Then, at once, every session of theirs ends, their
+         *     email is free to sign up again as a new user, their mailboxes stop and the mailboxes'
+         *     passwords and sign-in tokens are deleted, and, when they are their team's only member,
+         *     its stored model API keys and the addresses of its notification destinations. The rest
+         *     (rules, activity, settings) is removed 30 days later; a member of a team takes the
+         *     mailboxes they own and the team keeps the rest. The answer clears the session cookie;
+         *     the client then goes where `sign_out` in the Session says, as after logout.
+         */
+        post: operations["authDeleteAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/me": {
         parameters: {
             query?: never;
@@ -1409,6 +1443,10 @@ export interface components {
             /** @description Minimum applies to setup only */
             password: string;
         };
+        AccountDeletion: {
+            /** @description The email address the person signs in with */
+            email: string;
+        };
         PasswordChange: {
             current_password: string;
             new_password: string;
@@ -2666,6 +2704,8 @@ export interface components {
                 oauth_providers: boolean;
                 /** @description Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works */
                 suggest: boolean;
+                /** @description The sign-in module of this build deletes people at its sign-in service, so POST /api/auth/delete-account works and Settings offers Delete my account */
+                delete_account: boolean;
             };
         };
         /** @description For every field: left out = unchanged; `null` = forget the stored value, so the environment's default is back in force; an empty string = that value, stored (see each field), or refused where empty cannot work */
@@ -2877,7 +2917,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description A mail server or model provider failed; `code` says which */
+        /** @description A mail server, model provider or sign-in service failed; `code` says which */
         Upstream: {
             headers: {
                 [name: string]: unknown;
@@ -3042,6 +3082,33 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    authDeleteAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountDeletion"];
+            };
+        };
+        responses: {
+            /** @description Deleted; every session of the person ended and the session cookie cleared */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotAvailable"];
+            502: components["responses"]["Upstream"];
         };
     };
     authMe: {

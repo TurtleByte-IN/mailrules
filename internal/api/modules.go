@@ -24,6 +24,16 @@ var optionalRoutes = []struct{ method, path, module, feature string }{
 	{http.MethodPost, "/api/rules/suggest", "suggest", "Suggest from my mail"},
 }
 
+// gatedRoutes are the daemon's own routes that work only with a module of the build
+// (x-module in api/openapi.yaml names the feature): each answers 404 not_available while no
+// module provides it.
+var gatedRoutes = []struct{ method, path, module string }{
+	{http.MethodPost, "/api/auth/delete-account", "delete_account"},
+	{http.MethodGet, "/api/notifications", "notifications"},
+	{http.MethodPost, "/api/notifications/destinations", "notifications"},
+	{http.MethodDelete, "/api/notifications/destinations/{id}", "notifications"},
+}
+
 // moduleRoutes are the routes the modules serve, then a refusal for each optional route of
 // the contract none of them serves.
 func (s *server) moduleRoutes() []route {
@@ -52,8 +62,9 @@ func (s *server) moduleRoutes() []route {
 
 // features are the flags GET /api/settings reports: the later-phase ones, then each
 // module's name, on, oauth_providers while a module connects mailboxes with one-click
-// sign-in (GET /api/presets says for which providers), and notifications while a module
-// delivers rule notifications.
+// sign-in (GET /api/presets says for which providers), notifications while a module
+// delivers rule notifications, and delete_account while the sign-in module can delete a
+// person at its sign-in service.
 func (s *server) features() map[string]bool {
 	out := maps.Clone(features)
 	for _, m := range s.Modules {
@@ -63,6 +74,9 @@ func (s *server) features() map[string]bool {
 		}
 		if m.Notifications != nil {
 			out["notifications"] = true
+		}
+		if m.SignIn != "" && m.DeleteIdentity != nil {
+			out["delete_account"] = true
 		}
 	}
 	return out
@@ -186,29 +200,35 @@ func (h host) EndSessions(ctx context.Context, provider, subject string) error {
 }
 
 // ForgetIdentity ends the identity's sessions, frees its email, deletes its secrets and
-// schedules the removal of the rest of its data (ext.Host). The person's mailboxes are
-// stopped first, so nothing is logged in to them when their secrets go, and again after,
-// for one started meanwhile (it could no longer log in; this ends a session it has).
+// schedules the removal of the rest of its data (ext.Host).
 func (h host) ForgetIdentity(ctx context.Context, provider, subject string) error {
-	before, err := h.s.store.IdentityMailboxes(ctx, provider, subject)
+	return h.s.forgetIdentity(ctx, provider, subject)
+}
+
+// forgetIdentity is ForgetIdentity, for a person the sign-in service deleted and for one who
+// deleted their own account. The person's mailboxes are stopped first, so nothing is logged
+// in to them when their secrets go, and again after, for one started meanwhile (it could no
+// longer log in; this ends a session it has).
+func (s *server) forgetIdentity(ctx context.Context, provider, subject string) error {
+	before, err := s.store.IdentityMailboxes(ctx, provider, subject)
 	if err != nil {
 		return err
 	}
 	for _, id := range before {
-		h.s.StopAccount(id)
+		s.StopAccount(id)
 	}
-	f, err := h.s.store.ForgetIdentity(ctx, provider, subject, h.s.now().Unix())
+	f, err := s.store.ForgetIdentity(ctx, provider, subject, s.now().Unix())
 	if err != nil {
 		return err
 	}
 	for _, id := range f.Accounts {
-		h.s.StopAccount(id)
-		if a, err := h.s.store.Account(ctx, id); err == nil {
-			h.s.Hub.Publish(f.TenantID, id, events.AccountStatus, a)
+		s.StopAccount(id)
+		if a, err := s.store.Account(ctx, id); err == nil {
+			s.Hub.Publish(f.TenantID, id, events.AccountStatus, a)
 		}
 	}
 	if f.UserID != 0 {
-		slog.InfoContext(ctx, "forgot a person the sign-in service deleted", "user_id", f.UserID, "tenant_id", f.TenantID,
+		slog.InfoContext(ctx, "forgot a deleted person", "user_id", f.UserID, "tenant_id", f.TenantID,
 			"mailbox_secrets_deleted", len(f.Accounts), "model_keys_deleted", f.Keys)
 	}
 	return nil
@@ -229,10 +249,19 @@ func (s *server) signIn() *ext.Module {
 	return nil
 }
 
+// accountDeletion is the sign-in module's DeleteIdentity, or nil in a build where people
+// cannot delete their own account: self-host, or a sign-in module without one.
+func (s *server) accountDeletion() func(ctx context.Context, provider, subject string) error {
+	if m := s.signIn(); m != nil {
+		return m.DeleteIdentity
+	}
+	return nil
+}
+
 // CheckModules refuses a build whose modules, or mode (MAILRULES_MODE), the daemon cannot
 // serve: a Webhook route that is not Public, a SignIn or SignOut that does not name one of
-// its module's Public GET routes, a SignOut without SignIn, more than one module with
-// SignIn, and cloud mode with no module that signs people in; a Mailboxes with no
+// its module's Public GET routes, a SignOut or DeleteIdentity without SignIn, more than one
+// module with SignIn, and cloud mode with no module that signs people in; a Mailboxes with no
 // Login, with a provider other than gmail or outlook, or whose Connect is not one of its
 // module's signed-in GET routes, and more than one module with Mailboxes; a
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
@@ -297,6 +326,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 		}
 		if m.SignOut != "" && m.SignIn == "" {
 			return fmt.Errorf("module %s: SignOut is set without SignIn", m.Name)
+		}
+		if m.DeleteIdentity != nil && m.SignIn == "" {
+			return fmt.Errorf("module %s: DeleteIdentity is set without SignIn", m.Name)
 		}
 		for field, path := range map[string]string{"SignIn": m.SignIn, "SignOut": m.SignOut} {
 			if path != "" && !publicGet[path] {

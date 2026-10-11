@@ -110,6 +110,8 @@ func (s *server) routes() []route {
 		{method: get, path: "/api/auth/me", handler: s.handleMe, public: true},
 		// Public only so that a sign-in build refuses it before asking for a session.
 		{method: post, path: "/api/auth/password", handler: s.passwordOnly(s.requireSession(s.handlePasswordChange)), public: true},
+		// Public only so that a build without account deletion refuses it before asking for a session.
+		{method: post, path: "/api/auth/delete-account", handler: s.deletionOnly(s.requireSession(s.handleDeleteAccount)), public: true},
 
 		on(get, "/api/presets", s.handlePresets),
 		on(post, "/api/accounts/test", s.handleAccountTest),

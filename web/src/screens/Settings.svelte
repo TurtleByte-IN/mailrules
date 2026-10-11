@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { TRASH_FOLDER } from '../lib/api/settings';
+  import AccountCard from './settings/AccountCard.svelte';
   import DeciderFields from './settings/DeciderFields.svelte';
   import KeyFields from './settings/KeyFields.svelte';
   import { keyOrder, keysInUse } from './settings/keysInUse';
@@ -152,4 +153,8 @@
     </select>
     <div class="text-[12.5px] text-secondary">System follows your device's light or dark setting. Saved in this browser only.</div>
   </section>
+
+  {#if settings.loaded && s.features.delete_account}
+    <AccountCard />
+  {/if}
 </div>

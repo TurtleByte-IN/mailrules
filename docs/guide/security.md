@@ -1,6 +1,6 @@
 ---
 title: Security
-description: MailRules' safe defaults, how sign-in works, how to put it behind a reverse proxy with TLS, how mail server certificates are checked, which mail servers the hosted version connects to, what is never logged, and how to report a vulnerability.
+description: MailRules' safe defaults, how sign-in works, how to delete your account in the hosted version, how to put it behind a reverse proxy with TLS, how mail server certificates are checked, which mail servers the hosted version connects to, what is never logged, and how to report a vulnerability.
 order: 90
 ---
 
@@ -46,6 +46,19 @@ Whether the cookie is marked `Secure` (sent over HTTPS only) is set by `MAILRULE
 | `false` | Never. Use this only when you open MailRules over plain HTTP on the same machine, as the Docker setups do. |
 
 Never set it to `false` on a machine others can reach.
+
+## Deleting your account (hosted version)
+
+In the hosted version you can delete your MailRules account yourself: **Settings → Account → Delete my account**. The free self-hosted build has no accounts to delete and shows none of this; to remove a self-hosted MailRules, stop it and delete its data directory.
+
+MailRules asks you to type the email address you sign in with, and the button stays off until it matches. Then:
+
+- **Right away**, your sign-in account is deleted, you are signed out on every device, every mailbox stops being sorted, and its app password or sign-in token is deleted. If you are the only person in your team, your saved model API keys and the addresses of your notification destinations are deleted too. Your email address is free at once: signing up again with it starts a new, empty account.
+- **Within 30 days**, everything else MailRules kept is deleted: your rules, sender rules, activity, settings and usage. If you are part of a team, your mailboxes and what MailRules recorded of them go, and the team keeps its rules and settings.
+
+It cannot be undone. If the sign-in service cannot delete your account, MailRules says so and deletes nothing; try again a few minutes later.
+
+Deleting your account does not touch your mail. Emails MailRules moved stay where they are, and nothing is deleted from your mailbox. To stop MailRules reading a mailbox while you keep your account, remove the mailbox instead.
 
 ## Putting MailRules behind a reverse proxy
 

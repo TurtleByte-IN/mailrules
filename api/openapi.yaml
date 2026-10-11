@@ -158,6 +158,40 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorBody' }
+  /api/auth/delete-account:
+    post:
+      tags: [Auth]
+      operationId: authDeleteAccount
+      x-module: delete_account
+      summary: Delete the signed-in person's account; ends every session of theirs
+      description: |
+        Works only with a sign-in module that deletes people at its sign-in service
+        (`ext.Module.DeleteIdentity`, `x-module`); the hosted build has one. Without it, self-host
+        included, this route answers 404 `not_available` and `features.delete_account` in GET
+        /api/settings is false.
+
+        The person confirms by sending the email address they sign in with (compared without
+        case and surrounding spaces); another one is 400 `invalid_input` at `email` and changes
+        nothing. The sign-in service deletes them first: when it fails, the answer is 502
+        `sign_in_error` and nothing is deleted. Then, at once, every session of theirs ends, their
+        email is free to sign up again as a new user, their mailboxes stop and the mailboxes'
+        passwords and sign-in tokens are deleted, and, when they are their team's only member,
+        its stored model API keys and the addresses of its notification destinations. The rest
+        (rules, activity, settings) is removed 30 days later; a member of a team takes the
+        mailboxes they own and the team keeps the rest. The answer clears the session cookie;
+        the client then goes where `sign_out` in the Session says, as after logout.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountDeletion' }
+      responses:
+        '204': { description: Deleted; every session of the person ended and the session cookie cleared }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: email), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '404': { $ref: '#/components/responses/NotAvailable' } # not_available: this build cannot delete accounts, or the user was not made by the sign-in service
+        '502': { $ref: '#/components/responses/Upstream' } # sign_in_error: the sign-in service could not delete the person; nothing was deleted
   /api/auth/me:
     get:
       tags: [Auth]
@@ -1658,7 +1692,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
     Upstream:
-      description: A mail server or model provider failed; `code` says which
+      description: A mail server, model provider or sign-in service failed; `code` says which
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -1683,6 +1717,12 @@ components:
       properties:
         email: { type: string, format: email }
         password: { type: string, minLength: 12, description: Minimum applies to setup only }
+    AccountDeletion:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email: { type: string, description: The email address the person signs in with, typed to confirm }
     PasswordChange:
       type: object
       required: [current_password, new_password]
@@ -2675,7 +2715,7 @@ components:
           type: object
           readOnly: true
           description: Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module
-          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest]
+          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest, delete_account]
           properties:
             notifications: { type: boolean, description: 'A module of this build delivers rule notifications, so `/api/notifications` works and rules may name destinations in `notify`' }
             timed_actions: { type: boolean }
@@ -2684,6 +2724,7 @@ components:
             unsubscribe: { type: boolean }
             oauth_providers: { type: boolean, description: 'A module of this build connects mailboxes with one-click sign-in; GET /api/presets gives `one_click_url` for the providers it signs in to' }
             suggest: { type: boolean, description: 'Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works' }
+            delete_account: { type: boolean, description: 'The sign-in module of this build deletes people at its sign-in service, so POST /api/auth/delete-account works and Settings offers Delete my account' }
     SettingsPatch:
       type: object
       additionalProperties: false

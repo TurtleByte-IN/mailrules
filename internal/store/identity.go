@@ -103,3 +103,19 @@ func (s *Store) EndIdentitySessions(ctx context.Context, provider, subject strin
 	}
 	return nil
 }
+
+// UserIdentity is the identity a user was made from (SignInIdentity): its Provider and
+// Subject, the rest left empty. A user with none, such as the self-host admin, is
+// ErrNotFound.
+func (s *Store) UserIdentity(ctx context.Context, userID int64) (Identity, error) {
+	var id Identity
+	err := s.db.QueryRowContext(ctx, `SELECT provider, subject FROM identities WHERE user_id = ? ORDER BY rowid LIMIT 1`, userID).
+		Scan(&id.Provider, &id.Subject)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Identity{}, ErrNotFound
+	}
+	if err != nil {
+		return Identity{}, fmt.Errorf("user identity: %w", err)
+	}
+	return id, nil
+}

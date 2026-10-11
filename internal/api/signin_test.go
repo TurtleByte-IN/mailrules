@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,6 +122,8 @@ func TestCheckModules(t *testing.T) {
 		{"SignIn names a POST", "selfhost", []ext.Module{{Name: "m", SignIn: "/api/s/start", Routes: routes(ext.Route{Method: http.MethodPost, Path: "/api/s/start", Public: true, Handler: ok})}}, "SignIn"},
 		{"SignOut names no route", "selfhost", []ext.Module{{Name: "m", SignIn: "/api/s/start", SignOut: "/api/s/gone", Routes: routes(start)}}, `SignOut "/api/s/gone"`},
 		{"SignOut without SignIn", "selfhost", []ext.Module{{Name: "m", SignOut: "/api/s/end", Routes: routes(end)}}, "SignOut is set without SignIn"},
+		{"DeleteIdentity without SignIn", "selfhost", []ext.Module{{Name: "m", DeleteIdentity: func(context.Context, string, string) error { return nil }, Routes: routes(end)}}, "DeleteIdentity is set without SignIn"},
+		{"a sign-in module that deletes", "cloud", []ext.Module{{Name: "m", SignIn: "/api/s/start", DeleteIdentity: func(context.Context, string, string) error { return nil }, Routes: routes(start)}}, ""},
 		{"two sign-in modules", "cloud", []ext.Module{
 			{Name: "one", SignIn: "/api/s/start", Routes: routes(start)},
 			{Name: "two", SignIn: "/api/s/end", Routes: routes(end)}}, "more than one module"},
