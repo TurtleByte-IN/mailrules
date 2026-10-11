@@ -34,6 +34,11 @@ export function reconnectURL(a: accountsApi.Account) {
   return a.one_click && url ? url + '&account=' + a.id : undefined;
 }
 
+/** Whether signing a mailbox in again goes through Google's sign-in, which MailRules explains on Mailboxes first. */
+export function reconnectsByGoogle(a: accountsApi.Account) {
+  return a.preset === 'gmail' && !!reconnectURL(a);
+}
+
 /**
  * Whether a mailbox reconnects through its provider's sign-in form, which a module answers: one that form
  * connected (with a password the person never saw, such as Proton Mail Bridge's), when this build still has

@@ -45,6 +45,10 @@ it.each([
   ['error', 'reconnect'],
 ] as const)('a %s mailbox offers %s', (status, action) => expect(health(account({ status })).action).toBe(action));
 
+it("offers a teammate's mailbox that needs reconnecting no Reconnect: only the person who added it can", () =>
+  expect(health(account({ status: 'reconnect_needed', mine: false, shared: true }))).toEqual({
+    detail: 'Sign-in revoked or expired. The person who added this mailbox needs to reconnect it.', chip: 'chip-trash' }));
+
 it('shows the daemon\'s reason for a failed sign-in', () =>
   expect(health(account({ status: 'auth_failed', last_error: 'App password revoked.' })).detail).toBe('App password revoked.'));
 
