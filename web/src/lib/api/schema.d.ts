@@ -1388,11 +1388,43 @@ export interface components {
             local_part_login: boolean;
             /** @description What the provider calls the secret the user pastes: "App-specific password" (iCloud), "App password" (Gmail, Fastmail, Yahoo, Zoho), "Bridge password" (Proton) or "Password" (generic); empty for Outlook, which takes none */
             secret_label: string;
-            /** @description The wizard can connect it with a pasted password or app password (`secret_label`). False for Outlook, which takes only Microsoft's own sign-in */
+            /** @description The wizard can connect it with a pasted password or app password (`secret_label`). False for Outlook, which takes only Microsoft's own sign-in, and for a preset with `form_url`, which the module's form connects instead */
             password: boolean;
             /** @description Where the browser goes to connect a mailbox here with one-click sign-in (the person signs in to the provider; no password), when a module of this build signs in to the preset; append `&account=<id>` to reconnect a mailbox in `reconnect_needed`. null otherwise: in the free build always */
             one_click_url: string | null;
+            /** @description Where the wizard posts each step of the provider's sign-in form (`MailboxFormInput`, answered with `MailboxFormStep`), when a module of this build answers one: Proton on the hosted build, signed in through the operator's Proton Mail Bridge. null otherwise: in the free build always */
+            form_url: string | null;
         };
+        /** @description One step of a module's mailbox sign-in form, posted to `Preset.form_url` with the CSRF header. What it carries goes to the module only; the daemon neither stores nor logs it */
+        MailboxFormInput: {
+            step: components["schemas"]["MailboxFormStepName"];
+            /** @description The previous answer's `state`, unread; absent on the first step */
+            state?: string;
+            /** @description `sign_in`: the provider account's username or address */
+            username?: string;
+            /** @description `sign_in`: the provider account's password; `mailbox_password`: its separate mailbox password */
+            password?: string;
+            /** @description `code`: the two-factor code */
+            code?: string;
+        };
+        /** @description What a module's mailbox sign-in form answers for one step, with 200: the step to ask for next (the one just posted again, with `message`, to type it again), or `account_id` once the mailbox is connected, when the wizard goes on at Rules. Errors of the daemon (not signed in, CSRF, invalid JSON) come as `Error` */
+        MailboxFormStep: {
+            step?: components["schemas"]["MailboxFormStepName"];
+            /** @description Posted back with the next step */
+            state?: string;
+            /** @description A sentence to show above the step, such as why the password or code was refused */
+            message?: string;
+            /**
+             * Format: int64
+             * @description The mailbox just connected
+             */
+            account_id?: number;
+        };
+        /**
+         * @description `sign_in` asks for the username and password (the form starts here), `code` for the two-factor code, `mailbox_password` for a separate mailbox password
+         * @enum {string}
+         */
+        MailboxFormStepName: "sign_in" | "code" | "mailbox_password";
         /** @enum {string} */
         PresetName: "icloud" | "gmail" | "outlook" | "fastmail" | "yahoo" | "zoho" | "proton" | "generic";
         /** @enum {string} */
@@ -2895,7 +2927,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one */
+            /** @description Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one. A preset a module's sign-in form connects has `form_url` and `password: false`: the wizard offers only the form's tile */
             200: {
                 headers: {
                     [name: string]: unknown;

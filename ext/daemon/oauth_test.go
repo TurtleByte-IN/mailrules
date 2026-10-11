@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -175,17 +176,18 @@ func receipt(n int) string {
 		imaptest.Username, n, n)
 }
 
-// A module connects a Gmail mailbox with one-click sign-in, and the daemon does the rest
-// over IMAP with XOAUTH2: it sorts mail, comes back with a fresh token when the provider
-// ends the session, stores the refresh tokens the provider rotates, stops in
-// reconnect_needed when access is revoked, and resumes once the person signs in again.
-func TestOneClickMailboxEndToEnd(t *testing.T) {
-	srv := imaptest.Start(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}, imap.CapUIDPlus: {}})
-	if err := srv.User.Create("Receipts", nil); err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeOAuth{srv: srv, rotate: map[string]string{"refresh-1": "refresh-1b", "refresh-1b": "refresh-1c"}, revoked: map[string]bool{}}
+// running is a daemon serveIMAP runs for a test, with a browser signed in to it.
+type running struct {
+	c        *client
+	cfg      *config.Config
+	dir      string // the data directory
+	shutdown func() // stops the daemon; later calls do nothing
+}
 
+// serveForTest runs the daemon built with modules, trusting imapTLS for IMAP (nil: the
+// system's roots), and signs a browser in through first-run setup.
+func serveForTest(t *testing.T, imapTLS *tls.Config, modules ...ext.Module) running {
+	t.Helper()
 	l, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +203,7 @@ func TestOneClickMailboxEndToEnd(t *testing.T) {
 	}
 	ctx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- serveIMAP(ctx, cfg, "test", []ext.Module{fake.module()}, srv.TLS) }()
+	go func() { done <- serveIMAP(ctx, cfg, "test", modules, imapTLS) }()
 	stopped := false
 	shutdown := func() {
 		if !stopped {
@@ -212,7 +214,7 @@ func TestOneClickMailboxEndToEnd(t *testing.T) {
 			}
 		}
 	}
-	defer shutdown()
+	t.Cleanup(shutdown)
 
 	jar, _ := cookiejar.New(nil)
 	c := &client{t: t, base: "http://" + addr, jar: jar, http: &http.Client{Jar: jar,
@@ -228,6 +230,43 @@ func TestOneClickMailboxEndToEnd(t *testing.T) {
 	})
 	c.do(http.MethodGet, "/api/auth/me", nil, http.StatusUnauthorized) // hands out the CSRF cookie
 	c.do(http.MethodPost, "/api/auth/setup", map[string]string{"email": "admin@example.test", "password": "correct horse battery"}, http.StatusCreated)
+	return running{c: c, cfg: cfg, dir: dir, shutdown: shutdown}
+}
+
+// storedSecret is the secret the stopped daemon of r stored for a mailbox.
+func (r running) storedSecret(t *testing.T, id int64) string {
+	t.Helper()
+	r.shutdown()
+	db, err := store.Open(t.Context(), r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := store.New(db)
+	key, err := openMasterKey(t.Context(), r.cfg, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.AccountSecret(t.Context(), key, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A module connects a Gmail mailbox with one-click sign-in, and the daemon does the rest
+// over IMAP with XOAUTH2: it sorts mail, comes back with a fresh token when the provider
+// ends the session, stores the refresh tokens the provider rotates, stops in
+// reconnect_needed when access is revoked, and resumes once the person signs in again.
+func TestOneClickMailboxEndToEnd(t *testing.T) {
+	srv := imaptest.Start(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}, imap.CapUIDPlus: {}})
+	if err := srv.User.Create("Receipts", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeOAuth{srv: srv, rotate: map[string]string{"refresh-1": "refresh-1b", "refresh-1b": "refresh-1c"}, revoked: map[string]bool{}}
+
+	d := serveForTest(t, srv.TLS, fake.module())
+	c := d.c
 
 	// The wizard offers one-click Gmail and Outlook through the module.
 	_, body := c.do(http.MethodGet, "/api/presets", nil, http.StatusOK)
@@ -355,18 +394,7 @@ func TestOneClickMailboxEndToEnd(t *testing.T) {
 	if strings.Contains(string(body), "refresh-") {
 		t.Errorf("the API shows the secret: %s", body)
 	}
-	shutdown()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	st := store.New(db)
-	key, err := openMasterKey(t.Context(), cfg, st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := st.AccountSecret(t.Context(), key, id); err != nil || got != "refresh-2" {
-		t.Errorf("stored secret = %q, %v; want the one the reconnect handed over", got, err)
+	if got := d.storedSecret(t, id); got != "refresh-2" {
+		t.Errorf("stored secret = %q; want the one the reconnect handed over", got)
 	}
 }

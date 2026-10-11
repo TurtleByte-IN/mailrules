@@ -72,6 +72,15 @@ Proton Mail has no IMAP server of its own. Proton Mail Bridge, Proton's app for 
 
 Proton works with the binary and Homebrew installs. MailRules in Docker cannot reach it: Bridge listens on the machine's own address `127.0.0.1`, which inside a container is the container itself.
 
+**In the hosted MailRules** (a build with the Proton module) you don't run Bridge yourself, and the **Proton Mail** tile says **Address and password** instead of asking for a Bridge password:
+
+1. Pick **Proton Mail** and click **Continue**.
+2. Enter your Proton address and your Proton password, and click **Sign in**.
+3. If your account has two-factor sign-in, enter the code from your authenticator app. If it has a separate mailbox password, enter that next. A wrong password or code is said on the same step, to type again; so is a free Proton plan, which Bridge cannot connect.
+4. Once you're signed in, the wizard goes on to **Rules**, as for any other mailbox (in the setup guide too).
+
+MailRules keeps neither your Proton password nor the codes: they are used once, to sign Bridge in to your account. What it stores, encrypted, is the password Bridge makes for reading your mail, and it trusts only Bridge's own certificate for that mailbox.
+
 ### Servers with their own certificate
 
 A server whose certificate your system does not trust, such as Proton Mail Bridge or your own server with a certificate it made itself, is not refused outright. The connection test shows the certificate and why it is not trusted (made by the server itself or by an unknown authority, made out to another name, or expired), with **Accept certificate**. Accept it only if it is your server's.

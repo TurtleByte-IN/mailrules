@@ -121,7 +121,7 @@ it('has a label and a dot for every status in the contract', () => {
 });
 
 it("sends a one-click mailbox to its provider's sign-in to reconnect, when this build has one", () => {
-  const gmail = { name: 'gmail' as const, label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit' as const, help_url: '', local_part_login: false, secret_label: 'App password', password: true };
+  const gmail = { name: 'gmail' as const, label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit' as const, help_url: '', local_part_login: false, secret_label: 'App password', password: true, form_url: null };
   accounts.presets = [{ ...gmail, one_click_url: '/api/oauth/start?provider=gmail' }];
   expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: true }))).toBe('/api/oauth/start?provider=gmail&account=4');
   expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: false }))).toBeUndefined();

@@ -25,11 +25,15 @@ type presetJSON struct {
 	LocalPartLogin bool   `json:"local_part_login"`
 	PasteLabel     string `json:"secret_label"` // what the provider calls the secret the user pastes
 	// Password: the wizard connects it with a pasted password or app password. False for a
-	// provider that takes only its own sign-in (Outlook).
+	// provider that takes only its own sign-in (Outlook), and for one a module's sign-in
+	// form connects instead (FormURL).
 	Password bool `json:"password"`
 	// OneClickURL is where the browser starts the provider's sign-in, when a module of
 	// this build signs in to the preset (ext.MailboxSignIn); null otherwise.
 	OneClickURL *string `json:"one_click_url"`
+	// FormURL is where the wizard posts the steps of the provider's sign-in form, when a
+	// module of this build answers one (ext.MailboxForm); null otherwise.
+	FormURL *string `json:"form_url"`
 }
 
 // accountJSON is an account as the API shows it. The password is not a field of
@@ -107,11 +111,15 @@ func foldersJSON(folders []store.Folder) []folderJSON {
 func (s *server) handlePresets(w http.ResponseWriter, _ *http.Request) {
 	var out []presetJSON
 	for _, p := range presets.All() {
-		oneClick := s.oneClickURL(p.Name)
+		oneClick, form := s.oneClickURL(p.Name), s.formURL(p.Name)
 		if p.OAuthOnly && oneClick == nil {
 			continue
 		}
-		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel, !p.OAuthOnly, oneClick})
+		// A provider a module's form connects (Proton through the operator's Bridge) has
+		// only that tile: the password tile would point at a Bridge on the daemon's own
+		// machine. This is the one place that decides it.
+		password := !p.OAuthOnly && form == nil
+		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel, password, oneClick, form})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
