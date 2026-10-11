@@ -324,6 +324,114 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 	}
 }
 
+// A person who deleted their own account never gets it back: the same identity signing in
+// again, within the wait or after the removal, gets a new, empty user in a new tenant, and
+// the old data is still removed when its time comes. The service's own deletion notice
+// afterwards reaches nobody.
+func TestDeleteOwnAccountNeverComesBack(t *testing.T) {
+	w := forgetWorld(t)
+	s, ctx := w.s, t.Context()
+	before := w.tenantRows(t, w.solo.TenantID)
+	f, err := s.DeleteOwnAccount(ctx, "workos", "user_solo", fNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.UserID != w.solo.ID || len(f.Accounts) != 1 || !f.Keys {
+		t.Errorf("delete = %+v", f)
+	}
+	if _, _, err := s.SessionUser(ctx, "session-solo", fNow); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the person's session still works: %v", err)
+	}
+	if _, err := s.UserByEmail(ctx, "solo@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the email is still held: %v", err)
+	}
+	if _, err := s.AccountSecret(ctx, testMaster, w.soloBox); !errors.Is(err, ErrNoSecret) {
+		t.Errorf("the mailbox secret: %v, want ErrNoSecret", err)
+	}
+	// Deleting again, or the service's notice, reaches nobody and moves nothing.
+	for _, forget := range []func() (Forget, error){
+		func() (Forget, error) { return s.DeleteOwnAccount(ctx, "workos", "user_solo", fNow+day) },
+		func() (Forget, error) { return s.ForgetIdentity(ctx, "workos", "user_solo", fNow+day) },
+	} {
+		if again, err := forget(); err != nil || again.UserID != 0 {
+			t.Errorf("forgetting again = %+v, %v", again, err)
+		}
+	}
+	if due, _ := s.DueForRemoval(ctx, fDue); len(due) != 1 || due[0].UserID != w.solo.ID || due[0].RemoveAt != fDue {
+		t.Errorf("due = %+v, want the old user at %d", due, fDue)
+	}
+
+	// The same identity, under the same organisation, within the wait.
+	fresh, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ID == w.solo.ID || fresh.TenantID == w.solo.TenantID {
+		t.Fatalf("signing in again got the old user or tenant: %+v, old %+v", fresh, w.solo)
+	}
+	if as, _ := s.VisibleAccounts(ctx, fresh.Viewer()); len(as) != 0 {
+		t.Errorf("the new user sees the old mailboxes: %+v", as)
+	}
+	if rs, _ := s.Rules(ctx, fresh.TenantID); len(rs) != 0 {
+		t.Errorf("the new user sees the old rules: %+v", rs)
+	}
+	// The removal still waits, and the old data is all there until then.
+	if got := w.tenantRows(t, w.solo.TenantID); got["accounts"] != before["accounts"] || got["rules"] != before["rules"] || got["identities"] != 0 || got["forgotten"] != 1 {
+		t.Errorf("the old tenant before its removal: %v", got)
+	}
+	gone, err := s.RemoveForgotten(ctx, w.solo.ID, fDue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gone.Tenant || gone.TenantID != w.solo.TenantID {
+		t.Errorf("removal = %+v, want the whole old tenant", gone)
+	}
+	for table, n := range w.tenantRows(t, w.solo.TenantID) {
+		if n != 0 {
+			t.Errorf("%s: %d rows of the old tenant left", table, n)
+		}
+	}
+	// After the removal the identity is the new user's.
+	later, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue+day)
+	if err != nil || later.ID != fresh.ID || later.TenantID != fresh.TenantID {
+		t.Errorf("signing in after the removal = %+v, %v; want the new user %+v", later, err, fresh)
+	}
+}
+
+// A team member who deleted their own account and signs in again joins the team as a new
+// user, without their old mailboxes; the team keeps its organisation and its other member.
+func TestDeleteOwnAccountTeamMember(t *testing.T) {
+	w := forgetWorld(t)
+	s, ctx := w.s, t.Context()
+	team := w.leaver.TenantID
+	if _, err := s.DeleteOwnAccount(ctx, "workos", "user_leaver", fNow); err != nil {
+		t.Fatal(err)
+	}
+	back, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_team"), fNow+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.ID == w.leaver.ID || back.TenantID != team {
+		t.Errorf("signing in again = %+v, want a new user in the team %d", back, team)
+	}
+	as, _ := s.VisibleAccounts(ctx, back.Viewer())
+	for _, a := range as {
+		if a.ID == w.leaverPriv {
+			t.Errorf("the new user sees the old private mailbox: %+v", a)
+		}
+	}
+	if mate, err := s.SignInIdentity(ctx, identity("user_mate", "mate@example.com", "org_team"), fNow+2); err != nil || mate.ID != w.mate.ID {
+		t.Errorf("the teammate = %+v, %v", mate, err)
+	}
+	gone, err := s.RemoveForgotten(ctx, w.leaver.ID, fDue)
+	if err != nil || gone.Tenant || !slices.Equal(gone.Accounts, []int64{w.leaverPriv, w.leaverShared}) {
+		t.Errorf("removal = %+v, %v; want the old user's two mailboxes, the team kept", gone, err)
+	}
+	if u, err := s.User(ctx, back.ID); err != nil || u.Email != "leaver@example.com" {
+		t.Errorf("the new user after the removal = %+v, %v", u, err)
+	}
+}
+
 // Forgetting deletes the person's secrets at once: their mailboxes' passwords (all of
 // them when they are their tenant's only member, else every one they own, shared or not)
 // and, for an only member, the tenant's model keys. Nobody else's are touched.

@@ -25,9 +25,10 @@ type Identity struct {
 // The tenant is the one of (Provider, Tenant), made when there is none yet. A new identity
 // gets a user in that tenant who cannot sign in with a password; a known one keeps its user,
 // whose email becomes id.Email, and a known one that was forgotten (ForgetIdentity) has its
-// removal called off. It fails, changing nothing, with ErrTenantMismatch when a
-// known identity's user is in another tenant, and with ErrEmailInUse when another user has
-// the email.
+// removal called off. One whose person deleted their own account is no longer known
+// (DeleteOwnAccount), so it gets a new user. It fails, changing nothing, with
+// ErrTenantMismatch when a known identity's user is in another tenant, and with
+// ErrEmailInUse when another user has the email.
 func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -86,21 +86,24 @@ export interface paths {
         put?: never;
         /**
          * Delete the signed-in person's account; ends every session of theirs
-         * @description Works only with a sign-in module that deletes people at its sign-in service
-         *     (`ext.Module.DeleteIdentity`, `x-module`); the hosted build has one. Without it, self-host
-         *     included, this route answers 404 `not_available` and `features.delete_account` in GET
-         *     /api/settings is false.
+         * @description Works in every build with a sign-in module (`x-module`): the hosted build. Without one,
+         *     self-host included, this route answers 404 `not_available` and `features.delete_account`
+         *     in GET /api/settings is false.
          *
          *     The person confirms by sending the email address they sign in with (compared without
          *     case and surrounding spaces); another one is 400 `invalid_input` at `email` and changes
-         *     nothing. The sign-in service deletes them first: when it fails, the answer is 502
-         *     `sign_in_error` and nothing is deleted. Then, at once, every session of theirs ends, their
-         *     email is free to sign up again as a new user, their mailboxes stop and the mailboxes'
-         *     passwords and sign-in tokens are deleted, and, when they are their team's only member,
-         *     its stored model API keys and the addresses of its notification destinations. The rest
-         *     (rules, activity, settings) is removed 30 days later; a member of a team takes the
-         *     mailboxes they own and the team keeps the rest. The answer clears the session cookie;
-         *     the client then goes where `sign_out` in the Session says, as after logout.
+         *     nothing. When the sign-in module can delete people at its sign-in service
+         *     (`ext.Module.DeleteIdentity`), the service deletes them first: when it fails, the answer
+         *     is 502 `sign_in_error` and nothing is deleted. Without it, their login at the service
+         *     stays and only their MailRules account is deleted. Then, at once, every session of
+         *     theirs ends, their email is free to sign up again as a new user, their mailboxes stop
+         *     and the mailboxes' passwords and sign-in tokens are deleted, and, when they are their
+         *     team's only member, its stored model API keys and the addresses of its notification
+         *     destinations. The rest (rules, activity, settings) is removed 30 days later; a member of
+         *     a team takes the mailboxes they own and the team keeps the rest. Signing in again, with
+         *     the same login or another, makes a new, empty account: the deleted one never comes
+         *     back. The answer clears the session cookie; the client then goes where `sign_out` in
+         *     the Session says, as after logout.
          */
         post: operations["authDeleteAccount"];
         delete?: never;
@@ -2704,7 +2707,7 @@ export interface components {
                 oauth_providers: boolean;
                 /** @description Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works */
                 suggest: boolean;
-                /** @description The sign-in module of this build deletes people at its sign-in service, so POST /api/auth/delete-account works and Settings offers Delete my account */
+                /** @description A module of this build signs people in (the hosted build), so POST /api/auth/delete-account works and Settings offers Delete my account */
                 delete_account: boolean;
             };
         };

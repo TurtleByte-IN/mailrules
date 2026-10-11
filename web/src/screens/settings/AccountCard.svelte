@@ -2,8 +2,8 @@
   import { tick } from 'svelte';
   import { auth, deleteAccount } from '../../lib/state/auth.svelte';
 
-  // Shown only when the build's sign-in module can delete people at its sign-in service
-  // (features.delete_account): the hosted version. Self-host has no such card.
+  // Shown only when a module signs people in (features.delete_account): the hosted version.
+  // Self-host has no such card.
 
   let asking = $state(false);
   let typed = $state('');
