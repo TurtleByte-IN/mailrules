@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -61,6 +63,80 @@ func TestOpenAndMigrate(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("tables = %v, want %v", got, want)
 		}
+	}
+}
+
+// The database is opened in the data directory given, whatever characters its path holds:
+// SQLite reads a "file:" name as a URI, where "#" would end the path and "?" start the
+// parameters, so a data dir such as "Mail #2" put the database in another file (MAI-172).
+func TestOpenInAnyDataDir(t *testing.T) {
+	for _, tc := range []struct {
+		name, dir string
+		relative  bool
+	}{
+		{name: "plain", dir: "data"},
+		{name: "hash", dir: "Mail #2"},
+		{name: "question mark", dir: "who?mode=memory"},
+		{name: "percent", dir: "100%41"},
+		{name: "relative", dir: "rel #1/data", relative: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, tc.dir)
+			given := dir
+			if tc.relative {
+				t.Chdir(root)
+				given = tc.dir
+			}
+			db, err := Open(t.Context(), given)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if err := Migrate(t.Context(), db); err != nil {
+				t.Fatal(err)
+			}
+			var seq int
+			var schema, file, mode string
+			if err := db.QueryRowContext(t.Context(), "PRAGMA database_list").Scan(&seq, &schema, &file); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(t.Context(), "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+				t.Errorf("journal_mode = %q, %v; want wal", mode, err)
+			}
+			want, err := filepath.EvalSymlinks(filepath.Join(dir, "mailrules.db"))
+			if err != nil {
+				t.Fatalf("no database in the data dir: %v", err)
+			}
+			if got, err := filepath.EvalSymlinks(file); err != nil || got != want {
+				t.Fatalf("opened %q (%v), want %q", file, err, want)
+			}
+			if _, err := os.Stat(filepath.Join(root, "Mail ")); err == nil {
+				t.Error("a database was made in a cut-short path")
+			}
+			// The connection settings survive the escaping: a transaction holds the write lock
+			// from its BEGIN (_txlock=immediate), so another connection cannot take it.
+			tx, err := db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			other, err := db.Conn(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = other.Close() }()
+			if _, err := other.ExecContext(t.Context(), "PRAGMA busy_timeout = 0"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := other.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err == nil {
+				_, _ = other.ExecContext(t.Context(), "ROLLBACK")
+				t.Error("a transaction began without the write lock: _txlock=immediate was lost")
+			}
+			if _, err := other.ExecContext(t.Context(), "PRAGMA busy_timeout = 5000"); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

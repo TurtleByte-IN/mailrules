@@ -312,9 +312,14 @@ func (e *env) tenantAccount(username string) int64 {
 	return acct
 }
 
-// deliverTo delivers an email to the fake mailbox of username.
+// deliverTo delivers an email to the inbox of the fake mailbox of username.
 func (e *env) deliverTo(username, from, subject string) {
-	e.boxes[username].Deliver("INBOX", "From: "+from+"\r\nTo: "+username+"\r\nSubject: "+subject+
+	e.deliverIn(username, "INBOX", from, subject)
+}
+
+// deliverIn delivers an email to a folder of the fake mailbox of username.
+func (e *env) deliverIn(username, folder, from, subject string) {
+	e.boxes[username].Deliver(folder, "From: "+from+"\r\nTo: "+username+"\r\nSubject: "+subject+
 		"\r\nMessage-ID: <"+strings.ReplaceAll(subject, " ", "-")+"@example.test>\r\n\r\nThe body of "+subject+".\r\n")
 }
 
@@ -374,10 +379,15 @@ func TestTenantIsolation(t *testing.T) {
 	actA := id(sorted["actions"].([]any)[0].(map[string]any)["id"])
 	e.deliverTo("ana@alpha.test", "hello@news.example", "alpha maybe reading")
 	reviewA := id(a.item("alpha maybe reading", "review")["id"])
+	// The cleanup covers old mail in Archive, which live processing never watches: the check
+	// and Sort see exactly these three, however fast the live inbox is (MAI-166).
 	for i := range 3 {
-		e.deliverTo("ana@alpha.test", "hello@news.example", fmt.Sprintf("alpha old reading %d", i))
+		e.deliverIn("ana@alpha.test", "Archive", "hello@news.example", fmt.Sprintf("alpha old reading %d", i))
 	}
-	chk := a.checkReady(fmt.Sprintf(`{"account_id":%d}`, acctA))
+	chk := a.checkReady(fmt.Sprintf(`{"account_id":%d,"folder":"Archive"}`, acctA))
+	if chk["status"] != "ready" || len(rowsOf(chk)) != 3 {
+		t.Fatalf("tenant A's check = %v", chk)
+	}
 	run, _ := json.Marshal(map[string]any{"account_id": acctA, "check_id": chk["id"]})
 	batchA := id(a.call(http.MethodPost, "/api/cleanup/run", string(run), http.StatusAccepted)["batch"].(map[string]any)["id"])
 	a.batchDone(batchA)
