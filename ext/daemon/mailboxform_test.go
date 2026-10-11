@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,12 +20,14 @@ import (
 // cloud module does with the operator's Proton Mail Bridge: the account has two-factor
 // sign-in and a separate mailbox password, and once signed in, "Bridge" (the in-memory
 // IMAP server, over STARTTLS with a certificate it made itself) gives the daemon the IMAP
-// password and the certificate to pin.
+// password and the certificate to pin. Posted with account_id (Reconnect), it gives that
+// mailbox the password Bridge has now.
 type fakeBridge struct {
 	srv *imaptest.Server
 
-	mu  sync.Mutex
-	pin string // the fingerprint the module hands the daemon
+	mu       sync.Mutex
+	pin      string // the fingerprint the module hands the daemon
+	password string // the IMAP password Bridge gives; empty = imaptest.Password
 }
 
 const (
@@ -54,10 +57,18 @@ func (b *fakeBridge) module() ext.Module {
 					answer(ext.MailboxFormStep{Step: ext.MailboxStepMailboxPassword, State: in.State})
 				case in.Step == ext.MailboxStepMailboxPassword && in.Password == bridgeMailboxPassword && in.State == "login-1":
 					b.mu.Lock()
-					pin := b.pin
+					pin, password := b.pin, cmp.Or(b.password, imaptest.Password)
 					b.mu.Unlock()
+					if in.AccountID != 0 {
+						if err := h.ReconnectMailbox(r.Context(), in.AccountID, imaptest.Username, password); err != nil {
+							answer(ext.MailboxFormStep{Step: ext.MailboxStepSignIn, Message: "Bridge could not be read: " + err.Error()})
+							return
+						}
+						answer(ext.MailboxFormStep{AccountID: in.AccountID})
+						return
+					}
 					id, err := h.AddMailbox(r.Context(), ext.NewMailbox{Provider: "proton", Address: imaptest.Username,
-						Host: b.srv.Host, Port: b.srv.Port, TLSMode: "starttls", Secret: imaptest.Password, Password: true, CertFingerprint: pin})
+						Host: b.srv.Host, Port: b.srv.Port, TLSMode: "starttls", Secret: password, Password: true, CertFingerprint: pin})
 					if err != nil {
 						answer(ext.MailboxFormStep{Step: ext.MailboxStepSignIn, Message: "Bridge could not be read: " + err.Error()})
 						return
@@ -74,7 +85,9 @@ func (b *fakeBridge) module() ext.Module {
 
 // A module's sign-in form connects a Proton mailbox, and the daemon reads it from Bridge
 // over STARTTLS, trusting Bridge's self-made certificate only by the pinned fingerprint,
-// and sorts its mail.
+// and sorts its mail. When Bridge stops taking the password the daemon holds, the mailbox
+// waits in reconnect_needed, and signing in through the same form again, with the
+// mailbox's id, starts the same mailbox with its history.
 func TestMailboxFormEndToEnd(t *testing.T) {
 	srv := imaptest.StartSTARTTLS(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}, imap.CapUIDPlus: {}})
 	if err := srv.User.Create("Receipts", nil); err != nil {
@@ -115,33 +128,34 @@ func TestMailboxFormEndToEnd(t *testing.T) {
 		}
 		return out
 	}
-	signIn := func() ext.MailboxFormStep {
+	// signIn goes through the form, adding a mailbox, or with account reconnecting it.
+	signIn := func(account int64) ext.MailboxFormStep {
 		t.Helper()
-		if s := step(ext.MailboxFormInput{Step: "sign_in", Username: "me@proton.test", Password: "wrong"}); s.Message != "Proton refused that password." {
+		if s := step(ext.MailboxFormInput{Step: "sign_in", Username: "me@proton.test", Password: "wrong", AccountID: account}); s.Message != "Proton refused that password." {
 			t.Errorf("wrong password = %+v", s)
 		}
-		s := step(ext.MailboxFormInput{Step: "sign_in", Username: "me@proton.test", Password: bridgeProtonPassword})
+		s := step(ext.MailboxFormInput{Step: "sign_in", Username: "me@proton.test", Password: bridgeProtonPassword, AccountID: account})
 		if s.Step != "code" {
 			t.Fatalf("after the password = %+v", s)
 		}
-		if s := step(ext.MailboxFormInput{Step: "code", State: s.State, Code: "000000"}); s.Message != "That code is wrong." {
+		if s := step(ext.MailboxFormInput{Step: "code", State: s.State, Code: "000000", AccountID: account}); s.Message != "That code is wrong." {
 			t.Errorf("wrong code = %+v", s)
 		}
-		s = step(ext.MailboxFormInput{Step: "code", State: s.State, Code: bridgeCode})
+		s = step(ext.MailboxFormInput{Step: "code", State: s.State, Code: bridgeCode, AccountID: account})
 		if s.Step != "mailbox_password" {
 			t.Fatalf("after the code = %+v", s)
 		}
-		return step(ext.MailboxFormInput{Step: "mailbox_password", State: s.State, Password: bridgeMailboxPassword})
+		return step(ext.MailboxFormInput{Step: "mailbox_password", State: s.State, Password: bridgeMailboxPassword, AccountID: account})
 	}
 
 	// With a pin that is not Bridge's certificate, nothing is connected.
-	if s := signIn(); s.AccountID != 0 || !strings.Contains(s.Message, "certificate") {
+	if s := signIn(0); s.AccountID != 0 || !strings.Contains(s.Message, "certificate") {
 		t.Fatalf("with another pin = %+v", s)
 	}
 	bridge.mu.Lock()
 	bridge.pin = srv.Fingerprint()
 	bridge.mu.Unlock()
-	s := signIn()
+	s := signIn(0)
 	if s.AccountID == 0 {
 		t.Fatalf("with Bridge's pin = %+v", s)
 	}
@@ -181,7 +195,41 @@ func TestMailboxFormEndToEnd(t *testing.T) {
 			t.Errorf("the API shows %q", typed)
 		}
 	}
-	if got := d.storedSecret(t, id); got != imaptest.Password {
-		t.Errorf("stored secret = %q, want the Bridge password", got)
+
+	// Bridge loses the account's session and signs it in again with a new password: the
+	// one the daemon holds is refused, and the mailbox waits for the person to reconnect.
+	const newPassword = "bridge-password-after-reset" // #nosec G101 -- a test value
+	bridge.mu.Lock()
+	bridge.password = newPassword
+	bridge.mu.Unlock()
+	srv.ChangePassword(newPassword)
+	srv.KillConnections()
+	eventually(t, "the mailbox waits to be reconnected", func() (bool, string) {
+		a := c.account(id)
+		return a.Status == "reconnect_needed", a.Status
+	})
+
+	// Reconnect: the same form, with the mailbox's id; the same mailbox is live again, its
+	// activity is still there, and it sorts new mail.
+	if s := signIn(id); s.AccountID != id || s.Message != "" {
+		t.Fatalf("reconnect = %+v", s)
+	}
+	eventually(t, "the reconnected mailbox goes live", func() (bool, string) { a := c.account(id); return a.Status == "live", a.Status })
+	_, body = c.do(http.MethodGet, "/api/activity", nil, http.StatusOK)
+	if !strings.Contains(string(body), `"subject":"Receipt 1"`) {
+		t.Errorf("activity after reconnecting = %s, want the receipt sorted before", body)
+	}
+	srv.Append(t, "INBOX", receipt(2))
+	eventually(t, "the next receipt is sorted", func() (bool, string) {
+		n := count(t, srv, "Receipts")
+		return n == 2, fmt.Sprint(n)
+	})
+	_, body = c.do(http.MethodGet, "/api/accounts", nil, http.StatusOK)
+	var list struct{ Items []json.RawMessage }
+	if err := json.Unmarshal(body, &list); err != nil || len(list.Items) != 1 || strings.Contains(string(body), newPassword) {
+		t.Errorf("accounts after reconnecting = %s (%v)", body, err)
+	}
+	if got := d.storedSecret(t, id); got != newPassword {
+		t.Errorf("stored secret = %q, want the password Bridge gave after signing in again", got)
 	}
 }

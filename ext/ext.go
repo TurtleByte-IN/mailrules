@@ -61,8 +61,11 @@ type Module struct {
 	// username and password, then a two-factor code or a separate mailbox password when the
 	// account asks for them. The module signs in with them wherever it keeps the connection
 	// (for Proton, the operator's Proton Mail Bridge), and adds the mailbox with the IMAP
-	// password it gets back (Host.AddMailbox, NewMailbox.Password). At most one form per
-	// provider in a build.
+	// password it gets back (Host.AddMailbox, NewMailbox.Password). The person never sees
+	// that password, so when the server stops accepting it (Bridge lost the account's
+	// session) the mailbox stops in reconnect_needed, not auth_failed, and its Reconnect
+	// button opens the form again (MailboxForm.Path). At most one form per provider in a
+	// build.
 	MailboxForms []MailboxForm
 }
 
@@ -140,7 +143,10 @@ type MailboxForm struct {
 	// that each step of the form is posted to as a MailboxFormInput (read it with
 	// Host.ReadJSON). It answers 200 with a MailboxFormStep (Host.WriteJSON): the next step
 	// to ask for, the same step again with a sentence saying what was wrong, or the mailbox
-	// it added.
+	// it added. The Reconnect button of a mailbox the form connected opens the same form,
+	// and every step it posts carries the mailbox's id (MailboxFormInput.AccountID): the
+	// module signs the person in again and gives the mailbox its new password with
+	// Host.ReconnectMailbox instead of adding one.
 	Path string
 }
 
@@ -162,6 +168,10 @@ type MailboxFormInput struct {
 	Username string `json:"username,omitempty"` // MailboxStepSignIn
 	Password string `json:"password,omitempty"` // MailboxStepSignIn and MailboxStepMailboxPassword
 	Code     string `json:"code,omitempty"`     // MailboxStepCode
+	// AccountID, on every step of a form opened by a mailbox's Reconnect button, is that
+	// mailbox: sign the person in again and end with Host.ReconnectMailbox for it, as the
+	// same address. 0 when the form adds a mailbox.
+	AccountID int64 `json:"account_id,omitempty"`
 }
 
 // MailboxFormStep is what a module's form route answers for one step.
@@ -177,7 +187,9 @@ type MailboxFormStep struct {
 	// refused, or that the provider's free plan cannot be connected.
 	Message string `json:"message,omitempty"`
 	// AccountID is the mailbox Host.AddMailbox connected: the wizard goes on at its Rules
-	// step, as for any other mailbox.
+	// step, as for any other mailbox. For a form opened to reconnect a mailbox, it is that
+	// mailbox once Host.ReconnectMailbox has taken the new password: the form closes and
+	// Mailboxes says the mailbox is connected again.
 	AccountID int64 `json:"account_id,omitempty"`
 }
 
@@ -192,9 +204,10 @@ var (
 	// ErrMailboxMismatch is what Host.ReconnectMailbox returns when the person signed in to
 	// the provider as another address than the mailbox's. Nothing changed.
 	ErrMailboxMismatch = errors.New("signed in as another address than the mailbox's")
-	// ErrNoMailbox is what Host.ReconnectMailbox returns for a mailbox that is not a
-	// one-click mailbox of the module's providers that the signed-in user added.
-	ErrNoMailbox = errors.New("no such one-click mailbox")
+	// ErrNoMailbox is what Host.ReconnectMailbox returns for a mailbox that is not one the
+	// module connected (one-click for one of its providers, or through one of its sign-in
+	// forms) and the signed-in user added.
+	ErrNoMailbox = errors.New("no such mailbox connected by the module")
 )
 
 // The codes Host.MailboxFailed sends the browser back to Mailboxes with.
@@ -358,12 +371,15 @@ type Host interface {
 	// the database (answer those with MailboxFailed and the matching code, or a form step's
 	// Message).
 	AddMailbox(ctx context.Context, m NewMailbox) (accountID int64, err error)
-	// ReconnectMailbox gives a one-click mailbox the signed-in user added a new secret,
-	// from the module's Connect route called with account=<id>; ctx must be the
-	// request's. address is the one the person just signed in to the provider as. It logs
-	// in once with the new secret, then stores it and connects the mailbox again: how a
-	// mailbox in reconnect_needed comes back. It fails, changing nothing, with
-	// ErrNoMailbox, ErrMailboxMismatch, or as AddMailbox does.
+	// ReconnectMailbox gives a mailbox the signed-in user added through the module a new
+	// secret, from the module's Connect route called with account=<id> (a one-click
+	// mailbox: a new refresh token) or from its form route posted with
+	// MailboxFormInput.AccountID (a mailbox its sign-in form connected: the new password);
+	// ctx must be the request's. address is the one the person just signed in to the
+	// provider as. It logs in once with the new secret, then stores it, encrypted, in place
+	// of the old one and connects the mailbox again, with its rules, activity and undo
+	// history as they were: how a mailbox in reconnect_needed comes back. It fails,
+	// changing nothing, with ErrNoMailbox, ErrMailboxMismatch, or as AddMailbox does.
 	ReconnectMailbox(ctx context.Context, accountID int64, address, secret string) error
 	// MailboxAdded sends the browser to the add-mailbox wizard at its Rules step for the
 	// mailbox AddMailbox connected (303 to /#/accounts?added=<id>).

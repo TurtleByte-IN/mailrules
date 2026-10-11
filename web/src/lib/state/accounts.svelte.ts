@@ -34,6 +34,15 @@ export function reconnectURL(a: accountsApi.Account) {
   return a.one_click && url ? url + '&account=' + a.id : undefined;
 }
 
+/**
+ * Whether a mailbox reconnects through its provider's sign-in form, which a module answers: one that form
+ * connected (with a password the person never saw, such as Proton Mail Bridge's), when this build still has
+ * the form. Its Reconnect opens the form with the mailbox's id instead of connecting with the stored password.
+ */
+export function reconnectsByForm(a: accountsApi.Account) {
+  return a.module && !a.one_click && !!accounts.presets.find((p) => p.name === a.preset)?.form_url;
+}
+
 const message = (e: unknown) => (e instanceof Error && e.message) || 'The daemon did not answer.';
 
 export async function load() {

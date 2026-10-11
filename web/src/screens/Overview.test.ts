@@ -45,3 +45,16 @@ it('shows today\'s numbers, the top rule and the latest decision', async () => {
   expect(document.body.textContent).toContain('Left in Inbox 6');
   expect(document.body.textContent).toContain('Sorted 29');
 });
+
+it("sends Reconnect of a mailbox a module's sign-in form connected to that form on Mailboxes, with its id", async () => {
+  daemon(() => true);
+  const proton = { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: '', local_part_login: false, secret_label: 'Bridge password',
+    password: false, one_click_url: null, form_url: '/api/proton/sign-in' } as const;
+  accounts.presets = [proton];
+  accounts.list = [{ id: 5, label: 'me@proton.me', preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', username: 'me@proton.me', watch_folder: 'INBOX',
+    status: 'reconnect_needed', last_error: '', last_event_at: null, last_mail_at: null, capabilities: [], can_move: true, folder_count: 2, created_at: 1, shared: false, mine: true,
+    cert_fingerprint: '', one_click: false, module: true }];
+  render(Overview);
+  expect((await screen.findByRole('link', { name: 'Reconnect me@proton.me' })).getAttribute('href')).toBe('#/accounts?reconnect=5');
+  accounts.presets = [];
+});

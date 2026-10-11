@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { router } from 'svelte-spa-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Account } from '../lib/api/accounts';
 import { accounts, load } from '../lib/state/accounts.svelte';
@@ -11,7 +12,7 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 // GET /api/accounts, one item.
 const acct = (over: Partial<Account> = {}): Account => ({
   id: 1, label: 'me@icloud.com', preset: 'icloud', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', username: 'me', watch_folder: 'INBOX',
-  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: false,
+  status: 'live', last_error: '', last_event_at: 1791270000, last_mail_at: null, capabilities: ['IMAP4rev1', 'IDLE', 'MOVE'], can_move: true, folder_count: 3, created_at: 1791260000, shared: false, mine: true, cert_fingerprint: '', one_click: false, module: false,
   ...over,
 });
 const failed = acct({ status: 'auth_failed', last_error: 'The mail server refused the sign-in.' });
@@ -472,7 +473,7 @@ it("sends a one-click mailbox that needs reconnecting to its provider's sign-in,
   accounts.presets = [];
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
-  await show(acct({ label: 'me@icloud.com', preset: 'gmail', one_click: true, status: 'reconnect_needed', last_error: 'invalid_grant' }));
+  await show(acct({ label: 'me@icloud.com', preset: 'gmail', one_click: true, module: true, status: 'reconnect_needed', last_error: 'invalid_grant' }));
   await waitFor(() => expect(screen.getByText(/Gmail no longer accepts MailRules' sign-in/)).toBeTruthy());
   expect(screen.getByText('Reconnect needed')).toBeTruthy();
   expect(screen.queryByText(/invalid_grant/)).toBeNull();
@@ -484,7 +485,85 @@ it("sends a one-click mailbox that needs reconnecting to its provider's sign-in,
 });
 
 it('tells a teammate that the person who added a one-click mailbox needs to reconnect it', async () => {
-  await show(acct({ mine: false, shared: true, one_click: true, status: 'reconnect_needed' }));
+  await show(acct({ mine: false, shared: true, one_click: true, module: true, status: 'reconnect_needed' }));
   expect(screen.getByText(/The person who added this mailbox needs to reconnect it/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: /^Reconnect/ })).toBeNull();
+});
+
+const protonForm = { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: '', local_part_login: false, secret_label: 'Bridge password',
+  password: false, one_click_url: null, form_url: '/api/proton/sign-in' };
+// A Proton mailbox the module's sign-in form added, whose Bridge session was lost.
+const formBox = acct({ id: 5, label: 'me@proton.me', preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', username: 'me@proton.me',
+  module: true, status: 'reconnect_needed', last_error: 'authentication failed' });
+
+it.each([
+  ['the row', 'Reconnect me@proton.me'],
+  ['the warning', 'Sign in to Proton Mail again for me@proton.me'],
+])("reconnects a mailbox a module's sign-in form connected through that form, from %s, with the mailbox's id", async (_, button) => {
+  routes['GET /api/presets'] = [200, { items: [protonForm] }];
+  accounts.presets = [];
+  await show(formBox);
+  await waitFor(() => expect(screen.getByText(/Proton Mail no longer accepts MailRules' sign-in. Sign in to Proton Mail again/)).toBeTruthy());
+  expect(screen.queryByText(/Enter a new app password/)).toBeNull();
+  expect(screen.queryByText(/authentication failed/)).toBeNull();
+
+  await fireEvent.click(screen.getByRole('button', { name: button }));
+  const form = within(screen.getByRole('region', { name: 'Reconnect me@proton.me' }));
+  expect(form.queryByText('Provider')).toBeNull();
+  expect(form.getByText(/Sign in as me@proton.me/)).toBeTruthy();
+  expect((form.getByLabelText('Proton Mail address') as HTMLInputElement).value).toBe('me@proton.me');
+  routes['POST /api/proton/sign-in'] = [200, { step: 'code', state: 's' }];
+  await fireEvent.input(form.getByLabelText('Proton Mail password'), { target: { value: 'pw' } });
+  await fireEvent.click(form.getByRole('button', { name: 'Sign in' }));
+
+  routes['POST /api/proton/sign-in'] = [200, { account_id: 5 }];
+  routes['GET /api/accounts'] = [200, { items: [{ ...formBox, status: 'new', last_error: '' }] }];
+  await fireEvent.input(await form.findByLabelText(/^Two-factor code/), { target: { value: '123456' } });
+  await fireEvent.click(form.getByRole('button', { name: 'Continue' }));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Reconnect me@proton.me' })).toBeNull());
+  expect(toast.text).toBe('me@proton.me is connected again');
+  expect(screen.queryByText(/no longer accepts/)).toBeNull();
+  expect(fetchMock.mock.calls.filter((c) => c[0] === '/api/proton/sign-in').map((c) => JSON.parse(c[1].body as string))).toEqual([
+    { step: 'sign_in', username: 'me@proton.me', password: 'pw', account_id: 5 },
+    { step: 'code', state: 's', code: '123456', account_id: 5 },
+  ]);
+  expect(fetchMock.mock.calls.some((c) => c[0] === '/api/accounts/5/reconnect')).toBe(false);
+});
+
+it('closes the reconnect form on Cancel and leaves the mailbox as it was', async () => {
+  routes['GET /api/presets'] = [200, { items: [protonForm] }];
+  accounts.presets = [];
+  await show(formBox);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Sign in to Proton Mail again for me@proton.me' })).toBeTruthy());
+  await fireEvent.click(screen.getByRole('button', { name: 'Reconnect me@proton.me' }));
+  await fireEvent.click(within(screen.getByRole('region', { name: 'Reconnect me@proton.me' })).getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('region', { name: 'Reconnect me@proton.me' })).toBeNull();
+  expect(fetchMock.mock.calls.some((c) => c[1].method === 'POST')).toBe(false);
+});
+
+it("opens the reconnect form Overview's Reconnect asked for (?reconnect=<id>), then clears the address bar", async () => {
+  routes['GET /api/presets'] = [200, { items: [protonForm] }];
+  accounts.presets = [];
+  location.hash = '#/accounts?reconnect=5';
+  await vi.waitFor(() => expect(router.querystring).toBe('reconnect=5'));
+  await show(formBox);
+  expect(await screen.findByRole('region', { name: 'Reconnect me@proton.me' })).toBeTruthy();
+  await vi.waitFor(() => expect(router.querystring).toBeFalsy());
+});
+
+it.each([
+  ['one its sign-in form connected', acct({ preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', module: true }), 'Proton Mail'],
+  ['a one-click one', acct({ preset: 'gmail', host: 'imap.gmail.com', one_click: true, module: true }), 'Gmail'],
+])('offers neither the password nor the server in Edit for a mailbox a module connected: %s', async (_, box, label) => {
+  routes['GET /api/presets'] = [200, { items: [protonForm, { ...protonForm, name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', form_url: null, one_click_url: '/api/oauth/start?provider=gmail' }] }];
+  accounts.presets = [];
+  await show(box);
+  const form = await openEdit();
+  for (const field of ['New app password', 'Host', 'Encryption', 'Port']) expect(form.queryByLabelText(new RegExp(field))).toBeNull();
+  expect(form.getByLabelText('Name')).toBeTruthy();
+  await waitFor(() => expect(form.getByText(`MailRules signs in to this mailbox through ${label}'s sign-in. To sign in again, use Reconnect.`)).toBeTruthy());
+  await fireEvent.input(form.getByLabelText('Name'), { target: { value: 'Mine' } });
+  routes['PATCH /api/accounts/1'] = [200, { account: { ...box, label: 'Mine' } }];
+  await fireEvent.click(form.getByRole('button', { name: 'Save' }));
+  expect(patches()).toEqual([{ label: 'Mine' }]);
 });

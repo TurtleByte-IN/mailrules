@@ -323,7 +323,7 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 // openAccount returns how a supervisor connects to an account. The password is decrypted
 // for each connection and kept nowhere else; a one-click mailbox signs in through logins.
 // A mailbox whose secret was deleted (store.ErrNoSecret) fails as a refused sign-in: the
-// supervisor stops on auth_failed (reconnect_needed for a one-click mailbox, in logins).
+// supervisor stops on auth_failed, or reconnect_needed for a mailbox a module connected.
 func openAccount(logins *mailLogins, acct store.Account) func(context.Context) (mail.Mailbox, error) {
 	return func(ctx context.Context) (mail.Mailbox, error) {
 		if acct.OAuth {

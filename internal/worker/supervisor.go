@@ -32,7 +32,8 @@ const (
 	StatusPaused      = "paused" // set by the user; Run is not started for a paused account
 	// StatusReconnectNeeded: a mailbox that signs in with OAuth (one-click sign-in) can no
 	// longer get in (mail.ErrReconnect): the person revoked access, or the provider refused
-	// the token. It waits until the person signs in to the provider again.
+	// the token; or the server refused the password of a mailbox a module's sign-in form
+	// connected. It waits until the person signs in to the provider again.
 	StatusReconnectNeeded = "reconnect_needed"
 )
 
@@ -92,8 +93,14 @@ func or(d, def time.Duration) time.Duration {
 // Run supervises the account until ctx is done or the account needs the user: wrong
 // credentials, a one-click sign-in to renew, a certificate to accept, another TLS failure,
 // a watch folder that does not exist, or a server the hosted build does not connect to
-// (mail.ErrNotPublic). Anything else is retried with a growing delay.
+// (mail.ErrNotPublic). Anything else is retried with a growing delay. Wrong credentials of
+// a mailbox a module connected (store.Account.Module, such as one its sign-in form added
+// with Bridge's password, which the person never saw) wait in reconnect_needed, for the
+// person to sign in through the module again, rather than in auth_failed.
 func (s *Supervisor) Run(ctx context.Context) {
+	s.mu.Lock()
+	byModule := s.Account.Module || s.Account.OAuth
+	s.mu.Unlock()
 	backoff := or(s.BackoffMin, time.Second)
 	for ctx.Err() == nil {
 		mb, err := s.Open(ctx)
@@ -107,10 +114,10 @@ func (s *Supervisor) Run(ctx context.Context) {
 		switch {
 		case ctx.Err() != nil:
 			return
-		case errors.Is(err, mail.ErrAuth):
+		case errors.Is(err, mail.ErrAuth) && !byModule:
 			s.setStatus(ctx, StatusAuthFailed, err)
 			return
-		case errors.Is(err, mail.ErrReconnect):
+		case errors.Is(err, mail.ErrReconnect), errors.Is(err, mail.ErrAuth):
 			s.setStatus(ctx, StatusReconnectNeeded, err)
 			return
 		case errors.As(err, new(*mail.CertError)):

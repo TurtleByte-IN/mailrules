@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account, TestResult } from '../api/accounts';
 import { dispatch } from '../api/events';
-import { accounts, connect, load, reconnect, reconnectURL, remove, setPaused, statuses, test, testSummary } from './accounts.svelte';
+import { accounts, connect, load, reconnect, reconnectsByForm, reconnectURL, remove, setPaused, statuses, test, testSummary } from './accounts.svelte';
 import { toast } from './toast.svelte';
 
 type Reply = [status: number, body?: unknown];
@@ -37,6 +37,7 @@ const acct = (over: Partial<Account> = {}): Account => ({
   mine: true,
   cert_fingerprint: '',
   one_click: false,
+  module: false,
   ...over,
 });
 
@@ -127,6 +128,17 @@ it("sends a one-click mailbox to its provider's sign-in to reconnect, when this 
   expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: false }))).toBeUndefined();
   accounts.presets = [{ ...gmail, one_click_url: null }];
   expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: true }))).toBeUndefined();
+  accounts.presets = [];
+});
+
+it("reconnects a mailbox a module's sign-in form connected through that form, when this build has it", () => {
+  const proton = { name: 'proton' as const, label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' as const, help_url: '', local_part_login: false, secret_label: 'Bridge password', password: false, one_click_url: null };
+  accounts.presets = [{ ...proton, form_url: '/api/proton/sign-in' }];
+  expect(reconnectsByForm(acct({ preset: 'proton', module: true }))).toBe(true);
+  expect(reconnectsByForm(acct({ preset: 'proton', module: false }))).toBe(false); // a Bridge of the person's own: its password
+  expect(reconnectsByForm(acct({ preset: 'gmail', module: true, one_click: true }))).toBe(false);
+  accounts.presets = [{ ...proton, password: true, form_url: null }];
+  expect(reconnectsByForm(acct({ preset: 'proton', module: true }))).toBe(false);
   accounts.presets = [];
 });
 

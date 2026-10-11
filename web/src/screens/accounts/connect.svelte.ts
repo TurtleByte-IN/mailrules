@@ -1,4 +1,4 @@
-import type { AccountInput, FormInput, FormStepName, Preset, ServerCert, TestResult } from '../../lib/api/accounts';
+import type { Account, AccountInput, FormInput, FormStepName, Preset, ServerCert, TestResult } from '../../lib/api/accounts';
 import * as accountsApi from '../../lib/api/accounts';
 import { ApiError } from '../../lib/api/client';
 import { accounts, connect, load } from '../../lib/state/accounts.svelte';
@@ -53,6 +53,11 @@ export class Wizard {
    * for it, so Provider and Sign in are behind it and the last step saves only the starter rules.
    */
   accountId = $state<number>();
+  /**
+   * The mailbox this run signs in to again through its provider's sign-in form (Reconnect): the run is that
+   * form's step only, every post carries the mailbox's id, and it ends once the module has reconnected it.
+   */
+  readonly reconnect?: Account;
   email = $state('');
   password = $state('');
   host = $state('');
@@ -85,17 +90,23 @@ export class Wizard {
 
   /**
    * `added`: the id of a mailbox a one-click sign-in just connected, to go on with at Rules. `from`: where a
-   * one-click sign-in this run starts should come back to.
+   * one-click sign-in this run starts should come back to. `reconnect`: a mailbox a module's sign-in form
+   * connected, to sign in to again through that form.
    */
   readonly from: 'setup' | 'accounts';
-  constructor(added?: number, from: 'setup' | 'accounts' = 'accounts') {
+  constructor(added?: number, from: 'setup' | 'accounts' = 'accounts', reconnect?: Account) {
     this.from = from;
     if (added) [this.accountId, this.step, this.test] = [added, 2, 'ok'];
+    if (reconnect) {
+      this.reconnect = reconnect;
+      this.choose(reconnect.preset, 'form');
+      [this.step, this.email] = [1, reconnect.username];
+    }
   }
 
-  /** The first step this run shows: Rules when it goes on for a mailbox already connected. */
+  /** The first step this run shows: Rules when it goes on for a mailbox already connected, the form's when it reconnects one. */
   get first() {
-    return this.accountId ? 2 : 0;
+    return this.accountId ? 2 : this.reconnect ? 1 : 0;
   }
 
   get preset() {
@@ -216,11 +227,12 @@ export class Wizard {
   /**
    * Posts the step of the module's sign-in form being asked for. The module answers with the next step, the same
    * one with a sentence to show, or the mailbox it connected, when the wizard goes on at Rules for it. What was
-   * typed is cleared once posted, whatever the answer.
+   * typed is cleared once posted, whatever the answer. Resolves true once the module has reconnected the mailbox
+   * this run reconnects: the run is over.
    */
-  async submitForm() {
+  async submitForm(): Promise<boolean> {
     const url = this.preset?.form_url;
-    if (!url || this.busy) return;
+    if (!url || this.busy) return false;
     const input: FormInput = { step: this.formStep };
     if (this.#formState) input.state = this.#formState;
     if (this.formStep === 'sign_in') [input.username, input.password] = [this.email.trim(), this.password];
@@ -229,15 +241,21 @@ export class Wizard {
     const empty = this.formStep === 'sign_in' ? !input.username || !input.password : !(input.code || input.password);
     if (empty) {
       this.formMessage = { sign_in: 'Enter your address and password first.', code: 'Enter the code first.', mailbox_password: 'Enter your mailbox password first.' }[this.formStep];
-      return;
+      return false;
     }
+    if (this.reconnect) input.account_id = this.reconnect.id;
     this.busy = true;
     try {
       const a = await accountsApi.formStep(url, input);
+      if (a.account_id && this.reconnect) {
+        flash(this.reconnect.label + ' is connected again');
+        await load();
+        return true;
+      }
       if (a.account_id) {
         [this.accountId, this.test, this.step] = [a.account_id, 'ok', 2];
         await load();
-        return;
+        return false;
       }
       [this.formStep, this.#formState, this.formMessage] = [a.step ?? 'sign_in', a.state ?? '', a.message ?? ''];
     } catch (e) {
@@ -246,12 +264,13 @@ export class Wizard {
     } finally {
       [this.password, this.code, this.mailboxPassword, this.busy] = ['', '', '', false];
     }
+    return false;
   }
 
   /**
-   * Moves on one step; on the last one saves the mailbox. Resolves true once it is saved. A one-click tile
-   * leaves for the provider's sign-in instead, and the wizard comes back at Rules (`accountId`); a form tile's
-   * Sign in step posts the form, and goes on at Rules once the module has connected the mailbox.
+   * Moves on one step; on the last one saves the mailbox. Resolves true once it is saved, or reconnected. A
+   * one-click tile leaves for the provider's sign-in instead, and the wizard comes back at Rules (`accountId`);
+   * a form tile's Sign in step posts the form, and goes on at Rules once the module has connected the mailbox.
    */
   async next(): Promise<boolean> {
     if (this.step === 0 && !this.preset) return false;
@@ -259,10 +278,7 @@ export class Wizard {
       startOneClick(this.preset.one_click_url, this.from);
       return false;
     }
-    if (this.step === 1 && this.via === 'form') {
-      await this.submitForm();
-      return false;
-    }
+    if (this.step === 1 && this.via === 'form') return this.submitForm();
     if (this.step === 1 && this.test !== 'ok') {
       await this.runTest();
       return false;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Account } from '../../lib/api/accounts';
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
   import CertCheck from './CertCheck.svelte';
@@ -9,7 +10,8 @@
    * is saved unless `onconnected` is given; `onconnected` also runs for that button once a
    * module's sign-in form has connected the mailbox. `added` is a mailbox a one-click sign-in
    * just connected: the wizard opens at Rules for it. `from` is the screen a one-click sign-in
-   * started here comes back to.
+   * started here comes back to. `reconnect` is a mailbox a module's sign-in form connected:
+   * the wizard is that form alone, signing in to it again, and closes once it is reconnected.
    */
   let {
     onclose,
@@ -17,10 +19,11 @@
     cancelLabel = 'Cancel',
     added,
     from = 'accounts',
-  }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number; from?: 'setup' | 'accounts' } = $props();
+    reconnect,
+  }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number; from?: 'setup' | 'accounts'; reconnect?: Account } = $props();
 
   // svelte-ignore state_referenced_locally -- read once: the wizard is made again for another mailbox
-  const w = new Wizard(added, from);
+  const w = new Wizard(added, from, reconnect);
   const apple = $derived(w.presetId === 'icloud');
   const proton = $derived(w.presetId === 'proton');
   const chosen = $derived(w.templates.filter((t) => t.on));
@@ -43,18 +46,20 @@
   {/if}
 {/snippet}
 
-<section aria-label="Add a mailbox" class="card flex flex-col gap-[18px] p-5">
-  <ol class="m-0 flex list-none flex-wrap gap-2 p-0">
-    {#each stepNames as label, i (label)}
-      <li
-        aria-current={i === w.step ? 'step' : undefined}
-        class="flex items-center gap-2 rounded py-1.5 pr-3 pl-1.5 text-[13px] {i === w.step ? 'bg-selected font-semibold' : 'font-medium'} {i <= w.step ? 'text-ink' : 'text-muted'}"
-      >
-        <span class="inline-flex size-[22px] items-center justify-center rounded-sm text-xs {i <= w.step ? 'bg-ink text-surface' : 'bg-neutral text-secondary'}">{i + 1}</span>
-        {label}
-      </li>
-    {/each}
-  </ol>
+<section aria-label={reconnect ? 'Reconnect ' + reconnect.label : 'Add a mailbox'} class="card flex flex-col gap-[18px] p-5">
+  {#if !reconnect}
+    <ol class="m-0 flex list-none flex-wrap gap-2 p-0">
+      {#each stepNames as label, i (label)}
+        <li
+          aria-current={i === w.step ? 'step' : undefined}
+          class="flex items-center gap-2 rounded py-1.5 pr-3 pl-1.5 text-[13px] {i === w.step ? 'bg-selected font-semibold' : 'font-medium'} {i <= w.step ? 'text-ink' : 'text-muted'}"
+        >
+          <span class="inline-flex size-[22px] items-center justify-center rounded-sm text-xs {i <= w.step ? 'bg-ink text-surface' : 'bg-neutral text-secondary'}">{i + 1}</span>
+          {label}
+        </li>
+      {/each}
+    </ol>
+  {/if}
 
   {#if w.step === 0}
     <div class="flex flex-col gap-3">
@@ -83,9 +88,13 @@
   {:else if w.step === 1 && w.via === 'form'}
     <div class="flex flex-wrap gap-5">
       <div class="flex flex-[1_1_300px] flex-col gap-2.5 rounded-md border border-selected bg-selected-row p-3.5">
-        <div class="font-semibold">Sign in to {w.preset?.label}</div>
+        <div class="font-semibold">Sign in to {w.preset?.label}{reconnect ? ' again' : ''}</div>
         <ol class="m-0 flex list-decimal flex-col gap-1.5 pl-[18px] text-[13.5px] text-nav">
-          <li>Sign in with your {w.preset?.label} address and password.</li>
+          {#if reconnect}
+            <li>Sign in as {reconnect.username} with your {w.preset?.label} password. MailRules connects the same mailbox again; its rules, activity and undo history stay.</li>
+          {:else}
+            <li>Sign in with your {w.preset?.label} address and password.</li>
+          {/if}
           <li>If your account asks for a two-factor code or a separate mailbox password, enter it next.</li>
           {#if proton}
             <li>MailRules reads your mail through Proton Mail Bridge, which we run for you. Bridge needs a paid Proton plan.</li>
@@ -95,9 +104,9 @@
       </div>
       <form
         class="flex flex-[1_1_300px] flex-col gap-3"
-        onsubmit={(e) => {
+        onsubmit={async (e) => {
           e.preventDefault();
-          w.submitForm();
+          if (await w.submitForm()) (onconnected ?? onclose)();
         }}
       >
         {#if w.formMessage}

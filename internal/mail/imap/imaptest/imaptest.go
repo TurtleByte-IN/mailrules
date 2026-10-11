@@ -53,6 +53,8 @@ type Server struct {
 	// answered here (see session.List).
 	special map[string][]imap.MailboxAttr
 	cert    atomic.Pointer[tls.Certificate] // what the server presents; see Rotate
+	// password is the one LOGIN accepts once ChangePassword set it; nil = Password.
+	password atomic.Pointer[string]
 }
 
 // Fingerprint is the SHA-256 fingerprint of the certificate the server presents now, as
@@ -113,6 +115,22 @@ func (x session) List(w *imapserver.ListWriter, ref string, patterns []string, o
 // RefuseCreate makes the server answer CREATE with NO, as a server that does not let a
 // client make folders would, until it is called with false.
 func (s *Server) RefuseCreate(refuse bool) { s.noCreate.Store(refuse) }
+
+// ChangePassword makes LOGIN accept only p as the account's password from now on, as
+// Proton Mail Bridge does when the account is signed in to it again; sessions already
+// open stay. XOAUTH2 is not affected.
+func (s *Server) ChangePassword(p string) { s.password.Store(&p) }
+
+// Login checks the password ChangePassword set, when it set one.
+func (x session) Login(username, password string) error {
+	if p := x.s.password.Load(); p != nil {
+		if password != *p {
+			return imapserver.ErrAuthFailed
+		}
+		password = Password // what the in-memory user was made with
+	}
+	return x.SessionIMAP4rev2.Login(username, password)
+}
 
 // session is the in-memory server's session with CREATE behind RefuseCreate.
 type session struct {
@@ -195,7 +213,7 @@ func (a *xoauth2Server) Next(resp []byte) ([]byte, bool, error) {
 		a.refused = true
 		return []byte(`{"status":"401","schemes":"bearer","scope":"https://mail.google.com/"}`), false, nil
 	}
-	return nil, true, a.x.Login(Username, Password)
+	return nil, true, a.x.SessionIMAP4rev2.Login(Username, Password)
 }
 
 func (x session) Create(name string, options *imap.CreateOptions) error {
