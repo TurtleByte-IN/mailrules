@@ -17,13 +17,17 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Open opens (creating if needed) the database in dataDir, in WAL mode.
+// Open opens (creating if needed) the database in dataDir, in WAL mode. Every transaction
+// not begun read-only begins IMMEDIATE, holding the write lock from its first statement:
+// a deferred one that read first could not write once another connection had committed
+// meanwhile (SQLITE_BUSY_SNAPSHOT), which mailbox supervisors do all the time. Begin one
+// that only reads with sql.TxOptions{ReadOnly: true}, so that it waits for no writer.
 func Open(ctx context.Context, dataDir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	dsn := "file:" + filepath.Join(dataDir, "mailrules.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
