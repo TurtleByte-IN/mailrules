@@ -10,6 +10,7 @@ import Senders from './screens/Senders.svelte';
 import Settings from './screens/Settings.svelte';
 import Usage from './screens/Usage.svelte';
 import Overview from './screens/Overview.svelte';
+import Plan from './screens/Plan.svelte';
 import Pending from './screens/Pending.svelte';
 import Setup from './screens/Setup.svelte';
 
@@ -26,8 +27,7 @@ export interface Screen {
   feature?: keyof Features;
 }
 
-// Order and labels follow the prototype nav. Plan and billing is P2: it keeps the
-// stand-in until its backend exists.
+// Order and labels follow the prototype nav. Plan and billing shows only in a build that sells plans.
 const all: Screen[] = [
   { path: '/', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z', component: Overview },
   { path: '/activity', label: 'Activity', icon: 'M3 12h4l3 8 4-16 3 8h4', component: Activity },
@@ -38,15 +38,14 @@ const all: Screen[] = [
   { path: '/compose', label: 'Add rules', icon: 'M12 5v14M5 12h14', component: Compose },
   { path: '/accounts', label: 'Mailboxes', icon: 'M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM3 7l9 6 9-6', component: Accounts },
   { path: '/usage', label: 'Usage', icon: 'M5 20V11M11 20V5M17 20v-7M3 20h18', component: Usage },
-  { path: '/plan', label: 'Plan and billing', icon: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM2 10h20', component: Pending, feature: 'billing' },
+  { path: '/plan', label: 'Plan and billing', icon: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM2 10h20', component: Plan, feature: 'billing' },
   { path: '/settings', label: 'Settings', icon: 'M4 7h9M17 7h3M4 17h3M11 17h9M13 7a2 2 0 1 0 4 0 2 2 0 1 0-4 0M7 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0', component: Settings },
 ];
 
 /** The screens the nav offers, given the features the daemon reports in its settings. */
 export const screensFor = (features: Features) => all.filter((s) => !s.feature || features[s.feature]);
 
-// A flagged-off screen's path is routed too; it can only be reached by typing it, and its
-// component is the stand-in either way.
+// A flagged-off screen's path is routed too; it can only be reached by typing it.
 export const routes: Record<string, Component<any>> = {
   ...Object.fromEntries(all.map((s) => [s.path, s.component])),
   // The first-run guide: not in the nav, opened once right after the admin account is created.

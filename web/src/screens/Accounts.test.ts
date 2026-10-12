@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Account } from '../lib/api/accounts';
 import { accounts, load } from '../lib/state/accounts.svelte';
 import { auth } from '../lib/state/auth.svelte';
+import { plan } from '../lib/state/plan.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Accounts from './Accounts.svelte';
 
@@ -610,4 +611,11 @@ it.each([
   routes['PATCH /api/accounts/1'] = [200, { account: { ...box, label: 'Mine' } }];
   await fireEvent.click(form.getByRole('button', { name: 'Save' }));
   expect(patches()).toEqual([{ label: 'Mine' }]);
+});
+
+it('offers no Add mailbox once the plan has ended', async () => {
+  plan.value = { plan: 'ended', read_only: true } as typeof plan.value;
+  await show(acct());
+  expect(screen.queryByRole('button', { name: 'Add mailbox' })).toBeNull();
+  plan.value = null;
 });

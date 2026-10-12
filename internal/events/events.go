@@ -22,6 +22,9 @@ const (
 	// QuestionsChanged: a question about the person's moves was asked, brought up to date
 	// or answered (GET /api/activity/questions). Data: nil
 	QuestionsChanged = "questions.changed"
+	// PlanChanged: the tenant's plan changed (bought, changed, ended), and with it what it
+	// may use and which features it has (GET /api/plan, /api/settings, /api/limits). Data: nil
+	PlanChanged = "plan.changed"
 )
 
 // Keep is how many past events a reconnecting subscriber can replay.

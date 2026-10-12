@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -187,6 +188,13 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	// The executor is the one place that changes a mailbox; the HTTP layer reaches it for
 	// undo and corrections.
 	exec := &actions.Exec{Store: st, Accounts: supervisors, Hub: hub, DryRunDefault: cfg.DryRun}
+	// A build that sells plans (ext.Module.Billing) notifies only for the tenants whose plan
+	// includes notifications; ended is whether a tenant's plan has ended, when nothing of it
+	// is sorted and its mailboxes stay stopped. A build that sells none has neither.
+	ended := planEnded(st, modules)
+	if ended != nil {
+		exec.Notices = api.PlanFeature(st, modules, "notifications")
+	}
 	// One-click mailboxes sign in through the module that connects them.
 	logins := newMailLogins(st, master, modules)
 	logins.tlsConfig, logins.cloud = imapTLS, cfg.Mode == "cloud"
@@ -208,14 +216,27 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		}()
 	}
 	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
-	// A module that limits tenants (ext.Module.Limits) gives each its monthly allowance of
-	// AI-sorted emails; without one there is none.
+	// A build that sells plans (ext.Module.Billing) gives each tenant its monthly allowance of
+	// AI-sorted emails; without one there is none. A mailbox of a tenant whose plan has ended
+	// is not started: it starts when a plan is bought (ext.Host.SetPlan). Its pipeline stops
+	// at the moment a plan ends between two looks (pipeline.Pipeline.Halted).
 	allowance := api.Allowance(st, modules)
 	start := func(acct store.Account) {
+		if ended != nil {
+			switch over, err := ended(ctx, acct.TenantID, time.Now()); {
+			case err != nil:
+				// Its pipeline checks again before each email.
+				slog.Warn("could not read the plan of a mailbox's tenant; starting it", "account", acct.ID, "error", err.Error())
+			case over:
+				supervisors.Stop(acct.ID)
+				slog.Info("not starting a mailbox: its tenant's plan has ended", "account", acct.ID, "tenant_id", acct.TenantID)
+				return
+			}
+		}
 		supervisors.Start(ctx, &worker.Supervisor{
 			Account: acct, Store: st, Hub: hub, Open: openAccount(logins, acct),
 			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars,
-				Allowance: allowance},
+				Allowance: allowance, Halted: ended},
 			Moves: watchMoves, MovesEvery: movesEvery,
 		})
 	}
@@ -285,6 +306,21 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		defer close(summaries)
 		sum.Run(ctx)
 	}()
+	// In a build that sells plans, the end-of-plan job keeps the mailboxes of a tenant whose
+	// plan ended stopped, sends it the warnings through the summary email's mail server,
+	// deletes its secrets and then the rest: now, and then every minute.
+	if ended != nil {
+		var sender mailer.Sender // none: the warnings are logged as not sent
+		if sum.Ready() {
+			sender = sum.Sender
+		}
+		ending := make(chan struct{})
+		defer func() { stopAll(); <-ending }()
+		go func() {
+			defer close(ending)
+			worker.PlanEnd{Store: st, Stop: supervisors.Stop, Start: watcher.Start, Hub: hub, Sender: sender, PublicURL: cfg.PublicURL}.Run(ctx)
+		}()
+	}
 
 	handler := api.NewHandler(api.Options{
 		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett, Master: master,
@@ -317,6 +353,25 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		return fmt.Errorf("shut down http server: %w", err)
 	}
 	return nil
+}
+
+// planEnded is, in a build that sells plans (ext.Module.Billing), whether a tenant's plan
+// has ended at now (store.TenantPlan): nothing of it is sorted and its mailboxes do not
+// run. The self-host tenant has no plan. nil in a build that sells none.
+func planEnded(st *store.Store, modules []ext.Module) func(ctx context.Context, tenantID int64, now time.Time) (bool, error) {
+	if !slices.ContainsFunc(modules, func(m ext.Module) bool { return m.Billing != nil }) {
+		return nil
+	}
+	return func(ctx context.Context, tenantID int64, now time.Time) (bool, error) {
+		if tenantID == store.SelfHostTenant {
+			return false, nil
+		}
+		p, err := st.TenantPlan(ctx, tenantID, now.Unix())
+		if err != nil {
+			return false, err
+		}
+		return p.Ended(), nil
+	}
 }
 
 // newSummary returns the summary email's service, sending through the mail server the

@@ -179,6 +179,7 @@ func (w fworld) tenantRows(t *testing.T, tenantID int64) map[string]int {
 		"notify_destinations": `tenant_id = ?1`,
 		"notices":             `tenant_id = ?1`,
 		"notify_deliveries":   `tenant_id = ?1`,
+		"plans":               `tenant_id = ?1`,
 	} {
 		var n int
 		if err := w.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table+` WHERE `+where, tenantID).Scan(&n); err != nil {

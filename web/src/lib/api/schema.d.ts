@@ -1236,6 +1236,98 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The tenant's plan, and the plans to choose from
+         * @description Only in a build that sells plans (`features.billing`). A tenant is in its trial for
+         *     14 days from its creation, then on the plan it bought, or ended. Once ended, nothing
+         *     is sorted and the app is read-only; `secrets_deleted_at` and `removed_at` say when its
+         *     mailbox passwords, tokens and model keys, then everything else, are deleted unless a
+         *     plan is bought before. The `plan.changed` event says when it changed.
+         */
+        get: operations["getPlan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plan/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * What the browser needs to open checkout for a plan
+         * @description For a tenant that has not subscribed (`subscribed` false: in its trial, or ended).
+         *     Load `script` once, then call `window.mailrulesCheckout.open(checkout, done)`; `done`
+         *     is called with `completed` or `closed`. The plan changes when the billing service
+         *     reports it (the `plan.changed` event), not when checkout closes. Works while the plan
+         *     has ended: it is how a tenant subscribes again.
+         */
+        post: operations["planCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plan/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a subscribed tenant to another plan or interval, at once
+         * @description For a tenant that subscribed (`subscribed` true). An upgrade is charged for what is
+         *     left of the period, a downgrade credited on the next bill. A plan that allows fewer
+         *     mailboxes than the tenant has is refused (409 `downgrade_refused`, the message says
+         *     which to remove). The answer is the plan as it stands; the change shows once the
+         *     billing service reports it (the `plan.changed` event).
+         */
+        post: operations["planChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plan/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The billing service's customer portal (Manage billing)
+         * @description Where a subscribed tenant's people cancel, change the payment method and get invoices. A cancelled plan runs to the end of its paid period.
+         */
+        get: operations["planPortal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings": {
         parameters: {
             query?: never;
@@ -2715,8 +2807,77 @@ export interface components {
                 used: number;
                 limit: number;
             } | null;
-            /** @description Where to raise the limits, as the module gives it: a path in the web app (`#/…`) or an https URL. null = no upgrade is offered */
+            /** @description Where to raise the limits: Plan and billing (`#/plan`) while a plan with more is sold, in a build that sells plans. null = no upgrade is offered */
             upgrade_url: string | null;
+        };
+        PlanChoice: {
+            /** @enum {string} */
+            plan: "personal" | "pro";
+            /** @enum {string} */
+            interval: "month" | "year";
+        };
+        PlanTerms: {
+            /** @enum {string} */
+            id: "personal" | "pro";
+            name: string;
+            /** @description What it costs, as shown, by interval (month, year) */
+            prices: {
+                [key: string]: string;
+            };
+            /** @description The lines its card lists */
+            includes: string[];
+            /** @description null = any number */
+            mailboxes: number | null;
+            /** @description AI-sorted emails a month; null = any number */
+            ai_emails: number | null;
+            /** @description Features only this plan's tenants get, named as in `features` */
+            features: string[];
+        };
+        PlanInfo: {
+            /** @enum {string} */
+            plan: "trial" | "personal" | "pro" | "ended";
+            /** @enum {string|null} */
+            interval: "month" | "year" | null;
+            /**
+             * @description `past_due`: a renewal is unpaid and the billing service retries it, the plan runs; `cancels_at_period_end`: it ends at `period_end`
+             * @enum {string|null}
+             */
+            status: "active" | "past_due" | "cancels_at_period_end" | null;
+            /**
+             * Format: int64
+             * @description When the paid period ends (renews, or ends when cancelled)
+             */
+            period_end: number | null;
+            /**
+             * Format: int64
+             * @description 14 days after the tenant was made
+             */
+            trial_ends_at: number;
+            /** @description Whole days left, rounded up, while in the trial; null otherwise */
+            trial_days_left: number | null;
+            /**
+             * Format: int64
+             * @description When the trial or plan ended; null while one runs
+             */
+            ended_at: number | null;
+            /**
+             * Format: int64
+             * @description Once ended: when the mailbox passwords, sign-in tokens and model keys are deleted (30 days after); null otherwise
+             */
+            secrets_deleted_at: number | null;
+            /**
+             * Format: int64
+             * @description Once ended: when everything else is removed (90 days after); null otherwise
+             */
+            removed_at: number | null;
+            /** @description The plan has ended: nothing is sorted and changes are refused (403 `plan_ended`) */
+            read_only: boolean;
+            /** @description The tenant bought a plan: change it with POST /api/plan/change and manage it in the portal; otherwise buy one with POST /api/plan/checkout */
+            subscribed: boolean;
+            /** @description A sentence to show under the plan, such as who bills */
+            note: string | null;
+            /** @description The plans on sale, cheapest first */
+            plans: components["schemas"]["PlanTerms"][];
         };
         /** @enum {string} */
         Decider: "jev" | "clef" | "anthropic" | "openai" | "ollama";
@@ -4727,6 +4888,121 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+        };
+    };
+    getPlan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plan */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanInfo"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotAvailable"];
+        };
+    };
+    planCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanChoice"];
+            };
+        };
+        responses: {
+            /** @description The checkout to open */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Opaque: what the module's script takes */
+                        checkout: {
+                            [key: string]: unknown;
+                        };
+                        /** @description The path of the checkout script, on this server */
+                        script: string;
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotAvailable"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    planChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanChoice"];
+            };
+        };
+        responses: {
+            /** @description Asked of the billing service */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanInfo"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotAvailable"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    planPortal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The portal's address */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        url: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotAvailable"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
         };
     };
     getSettings: {
