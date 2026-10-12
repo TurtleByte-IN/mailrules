@@ -13,6 +13,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 var master = bytes.Repeat([]byte{3}, 32)
@@ -34,15 +35,7 @@ type world struct {
 func newWorld(t *testing.T) *world {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.New(t)
 	u, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)

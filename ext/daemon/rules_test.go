@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 const fixtures = "../../testdata/rules"
@@ -115,14 +116,10 @@ func TestRulesImportExport(t *testing.T) {
 	if err := rulesCmd(ctx, []string{"import", rulesFile}, getenv, &out); err == nil || !strings.Contains(err.Error(), "no admin user yet") {
 		t.Fatalf("import before first-run setup: %v", err)
 	}
-	db, err := store.Open(ctx, dir)
-	if err != nil {
+	st, _ := storetest.InDir(t, dir)
+	if _, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.New(db).CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
 
 	for _, want := range []string{"4 rules added, 0 updated", "0 rules added, 4 updated"} {
 		out.Reset()
@@ -156,14 +153,7 @@ func TestRulesImportExportKeepsMailboxes(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
 	getenv := func(k string) string { return map[string]string{"MAILRULES_DATA_DIR": dir}[k] }
-	db, err := store.Open(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	user, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +161,6 @@ func TestRulesImportExportKeepsMailboxes(t *testing.T) {
 	if _, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: user.ID, Label: "Work", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "work@acme.example"}, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	_ = db.Close()
 
 	write := func(body string) string {
 		p := filepath.Join(t.TempDir(), "r.yaml")

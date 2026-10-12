@@ -119,7 +119,7 @@ func (s *Store) PlanWarned(ctx context.Context, tenantID, endedAt int64, n int, 
 	if n < 1 || n > 3 {
 		return fmt.Errorf("record plan warning %d: there are 3", n)
 	}
-	return s.endedStep(ctx, tenantID, endedAt, now, 0, "record plan warning", func(tx *sql.Tx) error {
+	return s.endedStep(ctx, tenantID, endedAt, now, 0, "record plan warning", func(tx *txn) error {
 		// No row yet is a trial that ended: the row EndTrial would write, with the warning.
 		_, err := tx.ExecContext(ctx, `INSERT INTO plans (tenant_id, plan, ended_at, warned, warned_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
@@ -141,7 +141,7 @@ func (s *Store) PlanWarned(ctx context.Context, tenantID, endedAt int64, n int, 
 // not long enough ago. Never the self-host tenant.
 func (s *Store) DeleteTenantSecrets(ctx context.Context, tenantID, endedAt, now int64) ([]int64, error) {
 	var ids []int64
-	err := s.endedStep(ctx, tenantID, endedAt, now, EndedSecretsDays, "delete the tenant's secrets", func(tx *sql.Tx) error {
+	err := s.endedStep(ctx, tenantID, endedAt, now, EndedSecretsDays, "delete the tenant's secrets", func(tx *txn) error {
 		var err error
 		if ids, err = tenantAccountIDs(ctx, tx, tenantID); err != nil {
 			return err
@@ -169,7 +169,7 @@ func (s *Store) DeleteTenantSecrets(ctx context.Context, tenantID, endedAt, now 
 // ended at endedAt or not long enough ago. Never the self-host tenant.
 func (s *Store) RemoveEndedTenant(ctx context.Context, tenantID, endedAt, now int64) (Removal, error) {
 	out := Removal{TenantID: tenantID, Tenant: true}
-	err := s.endedStep(ctx, tenantID, endedAt, now, EndedRemovalDays, "remove the tenant", func(tx *sql.Tx) error {
+	err := s.endedStep(ctx, tenantID, endedAt, now, EndedRemovalDays, "remove the tenant", func(tx *txn) error {
 		var err error
 		if out.Accounts, err = tenantAccountIDs(ctx, tx, tenantID); err != nil {
 			return err
@@ -190,7 +190,7 @@ func (s *Store) RemoveEndedTenant(ctx context.Context, tenantID, endedAt, now in
 // and at least days ago by now; else it answers ErrPlanNotEnded and changes nothing. A plan
 // bought again between the job's look and its step so keeps everything. The self-host
 // tenant has no plan, so no step is ever taken for it.
-func (s *Store) endedStep(ctx context.Context, tenantID, endedAt, now int64, days int64, what string, step func(*sql.Tx) error) error {
+func (s *Store) endedStep(ctx context.Context, tenantID, endedAt, now int64, days int64, what string, step func(*txn) error) error {
 	if tenantID == SelfHostTenant {
 		return fmt.Errorf("%s %d: the self-host tenant has no plan", what, tenantID)
 	}
@@ -216,7 +216,7 @@ func (s *Store) endedStep(ctx context.Context, tenantID, endedAt, now int64, day
 }
 
 // tenantAccountIDs lists, in tx, the tenant's mailboxes.
-func tenantAccountIDs(ctx context.Context, tx *sql.Tx, tenantID int64) ([]int64, error) {
+func tenantAccountIDs(ctx context.Context, tx *txn, tenantID int64) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts WHERE tenant_id = ? ORDER BY id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list mailboxes: %w", err)

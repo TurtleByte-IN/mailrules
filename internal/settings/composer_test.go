@@ -8,26 +8,18 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
-	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // newSettings is Settings over a fresh database, with env as the daemon's environment.
 func newSettings(t *testing.T, env map[string]string) *Settings {
 	t.Helper()
-	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	st, _ := storetest.New(t)
 	cfg, err := config.Load(nil, func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Settings{Store: store.New(db), Master: make([]byte, 32), Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
+	return &Settings{Store: st, Master: make([]byte, 32), Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
 }
 
 // composer_model is a Claude model, or provider:model; anything else is refused on its field.

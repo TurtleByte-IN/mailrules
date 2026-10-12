@@ -16,14 +16,13 @@ type UnsubscribeLink struct {
 // unsubscribed from address yet, the one-click link of the newest email from address seen
 // since `since` that offers one. A mailbox whose mail from address offers none is not listed.
 func (s *Store) UnsubscribeLinks(ctx context.Context, v Viewer, address string, since int64) ([]UnsubscribeLink, error) {
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT m.account_id, m.unsubscribe_url FROM messages m
 		 WHERE m.id IN (SELECT MAX(n.id) FROM messages n
-		                WHERE `+inVisible("n.account_id", v)+` AND n.from_addr = ?1 AND n.unsubscribe_url IS NOT NULL AND n.created_at >= ?2
+		                WHERE `+inVisible("n.account_id")+` AND n.from_addr = ?1 AND n.unsubscribe_url IS NOT NULL AND n.created_at >= ?2
 		                GROUP BY n.account_id)
 		   AND NOT EXISTS (SELECT 1 FROM unsubscribes u WHERE u.account_id = m.account_id AND u.address = ?1)
-		 ORDER BY m.account_id`, address, since)
+		 ORDER BY m.account_id`, address, since, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("list unsubscribe links: %w", err)
 	}

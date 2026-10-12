@@ -11,6 +11,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
 
@@ -24,15 +25,7 @@ func TestAccountWatcherPicksUpCLIAccounts(t *testing.T) {
 		"MAILRULES_DATA_DIR":   dir,
 		"MAILRULES_MASTER_KEY": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)),
 	}
-	db, err := store.Open(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	if _, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}

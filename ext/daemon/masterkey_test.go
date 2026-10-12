@@ -14,6 +14,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 func testKey(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
@@ -25,15 +26,7 @@ func keyB64(b byte) string { return base64.StdEncoding.EncodeToString(testKey(b)
 func installDir(t *testing.T, withKey bool) (string, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	u, err := st.CreateFirstUser(t.Context(), "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -52,15 +45,8 @@ func installDir(t *testing.T, withKey bool) (string, *store.Store) {
 func emptyStore(t *testing.T) (string, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	return dir, store.New(db)
+	st, _ := storetest.InDir(t, dir)
+	return dir, st
 }
 
 func loadCfg(t *testing.T, dir string, env map[string]string) *config.Config {

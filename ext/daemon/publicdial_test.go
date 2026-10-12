@@ -18,6 +18,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // watchedPort is a port on 127.0.0.1 that counts the connections made to it.
@@ -51,15 +52,7 @@ func TestCloudModeConnectsOnlyToPublicServers(t *testing.T) {
 	port, accepted := watchedPort(t)
 	named := store.Account{Preset: "generic", Host: "127.0.0.1", Port: port, TLSMode: presets.TLSImplicit, Username: imaptest.Username}
 
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.New(t)
 	master := bytes.Repeat([]byte{5}, 32)
 	user, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
@@ -132,15 +125,7 @@ func TestAccountsCLIInCloudMode(t *testing.T) {
 		err := accountsCLI{stdin: strings.NewReader(imaptest.Password + "\n"), stdout: out, getenv: func(k string) string { return env[k] }, tlsConfig: srv.TLS}.run(ctx, args)
 		return out.String(), err
 	}
-	db, err := store.Open(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	if _, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}

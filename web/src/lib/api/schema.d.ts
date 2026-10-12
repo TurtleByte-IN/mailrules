@@ -1585,6 +1585,7 @@ export interface paths {
          *     | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
          *     | `notifications.changed` | `EventEmpty` | a notification destination was added or removed, or a delivery recorded: refetch `/api/notifications` |
          *     | `questions.changed` | `EventEmpty` | a question about the person's moves was asked, brought up to date or answered: refetch `/api/activity/questions` |
+         *     | `plan.changed` | `EventEmpty` | the tenant's plan changed (bought, changed, ended): refetch `/api/plan`, `/api/settings` (its `features`) and `/api/limits` |
          *
          *     The daemon keeps the last 200 events. A client that reconnects sends the last id it saw
          *     in `Last-Event-ID` (EventSource does this by itself) and is first sent what it missed;
@@ -3188,7 +3189,7 @@ export interface components {
         EventAccountStatus: components["schemas"]["Account"];
         /** @description Data of `batch.progress` */
         EventBatchProgress: components["schemas"]["Batch"];
-        /** @description Data of `rules.changed`, `usage.updated`, `notifications.changed` and `questions.changed`; refetch */
+        /** @description Data of `rules.changed`, `usage.updated`, `notifications.changed`, `questions.changed` and `plan.changed`; refetch */
         EventEmpty: Record<string, never>;
     };
     responses: {

@@ -43,26 +43,19 @@ func (s *Store) CreateRule(ctx context.Context, tenantID int64, r rules.Rule, no
 	return createRule(ctx, s.db, tenantID, r, now)
 }
 
-// execer is a database or a transaction on it.
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-func createRule(ctx context.Context, q execer, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
+func createRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
 	conditions, exceptions, actions, notify, err := ruleJSON(r)
 	if err != nil {
 		return rules.Rule{}, err
 	}
-	res, err := q.ExecContext(ctx,
+	if err := q.QueryRowContext(ctx,
 		`INSERT INTO rules (tenant_id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
 		                    priority, stack, model, min_confidence, enabled, mailbox_removed, notify, version, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING id`,
 		tenantID, r.UserID, null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), now, now)
-	if err != nil {
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), now, now).Scan(&r.ID); err != nil {
 		return rules.Rule{}, fmt.Errorf("create rule: %w", err)
 	}
-	r.ID, _ = res.LastInsertId()
 	r.Version, r.CreatedAt, r.UpdatedAt = 1, now, now
 	return r, nil
 }
@@ -74,7 +67,7 @@ func (s *Store) UpdateRule(ctx context.Context, tenantID int64, r rules.Rule, no
 	return updateRule(ctx, s.db, tenantID, r, now)
 }
 
-func updateRule(ctx context.Context, q execer, tenantID int64, r rules.Rule, now int64) error {
+func updateRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, now int64) error {
 	conditions, exceptions, actions, notify, err := ruleJSON(r)
 	if err != nil {
 		return err
@@ -182,7 +175,7 @@ type tenantRule struct {
 
 // rulesNamingMailboxes returns, for every tenant, the rules that may name a mailbox: those
 // limited to one and those with an account condition. It reads q, a transaction.
-func rulesNamingMailboxes(ctx context.Context, q *sql.Tx) ([]tenantRule, error) {
+func rulesNamingMailboxes(ctx context.Context, q *txn) ([]tenantRule, error) {
 	rows, err := q.QueryContext(ctx, `SELECT `+ruleColumns+`, tenant_id FROM rules
 		WHERE account_id IS NOT NULL OR conditions LIKE '%"field":"account"%' OR exceptions LIKE '%"field":"account"%'
 		ORDER BY id`)
@@ -207,7 +200,7 @@ func rulesNamingMailboxes(ctx context.Context, q *sql.Tx) ([]tenantRule, error) 
 // dropMailboxes rewrites, in tx, every rule naming one of the mailboxes gone reports as
 // gone, as rules.Rule.DropAccount has it, as an edit (the version goes up). It returns the
 // rules it changed, as saved.
-func dropMailboxes(ctx context.Context, tx *sql.Tx, gone func(id int64) bool, now int64) ([]rules.Rule, error) {
+func dropMailboxes(ctx context.Context, tx *txn, gone func(id int64) bool, now int64) ([]rules.Rule, error) {
 	rs, err := rulesNamingMailboxes(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -259,7 +252,7 @@ func (s *Store) ReconcileRemovedMailboxes(ctx context.Context, now int64) ([]rul
 }
 
 // accountIDs is the set of every account's id, read in tx.
-func accountIDs(ctx context.Context, tx *sql.Tx) (map[int64]bool, error) {
+func accountIDs(ctx context.Context, tx *txn) (map[int64]bool, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts`)
 	if err != nil {
 		return nil, err
@@ -353,13 +346,12 @@ type RuleStat struct {
 // `since` in the mailboxes the viewer sees, with the time of the latest one ever. Mail
 // waiting in Needs review does not count: nothing was applied.
 func (s *Store) RuleStats(ctx context.Context, v Viewer, since int64) (map[int64]RuleStat, error) {
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT d.rule_id, COALESCE(SUM(d.created_at >= ?), 0), MAX(d.created_at)
+		`SELECT d.rule_id, COALESCE(SUM(CASE WHEN d.created_at >= ? THEN 1 ELSE 0 END), 0), MAX(d.created_at)
 		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN rules r ON r.id = d.rule_id
-		 WHERE r.tenant_id = ? AND `+inVisible("m.account_id", v)+` AND m.state = 'acted'
+		 WHERE r.tenant_id = ? AND `+inVisible("m.account_id")+` AND m.state = 'acted'
 		   AND d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
-		 GROUP BY d.rule_id`, since, v.TenantID)
+		 GROUP BY d.rule_id`, since, v.TenantID, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("rule stats: %w", err)
 	}
@@ -407,7 +399,9 @@ func (s *Store) ReorderRules(ctx context.Context, tenantID int64, ids []int64) e
 	if moved != have || len(ids) != have {
 		return ErrRuleSet
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE rules SET priority = -priority WHERE tenant_id = ?`, tenantID); err != nil {
+	// Only the rows placed above: a rule another connection added meanwhile (no single
+	// writer serialises them on every database) keeps its priority rather than losing it.
+	if _, err := tx.ExecContext(ctx, `UPDATE rules SET priority = -priority WHERE tenant_id = ? AND priority < 0`, tenantID); err != nil {
 		return fmt.Errorf("reorder rules: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

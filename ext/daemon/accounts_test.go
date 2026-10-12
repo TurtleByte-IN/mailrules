@@ -19,7 +19,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
-	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // syncBuffer lets the test read output while a command is still writing it.
@@ -66,18 +66,13 @@ func TestAccountsAddListTest(t *testing.T) {
 	if _, err := run(ctx, imaptest.Password+"\n", add...); err == nil || !strings.Contains(err.Error(), "first-run setup") {
 		t.Fatalf("add before setup: %v", err)
 	}
-	db, err := store.Open(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	if _, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}
 
 	// A wrong password stores nothing and does not echo the password back.
-	_, err = run(ctx, "not-the-password\n", add...)
+	_, err := run(ctx, "not-the-password\n", add...)
 	if !errors.Is(err, mail.ErrAuth) || strings.Contains(err.Error(), "not-the-password") {
 		t.Fatalf("add with a wrong password: %v", err)
 	}
@@ -210,15 +205,7 @@ func TestAccountsAddAcceptCert(t *testing.T) {
 		err := accountsCLI{stdin: strings.NewReader(""), stdout: out, getenv: func(k string) string { return env[k] }, tlsConfig: trustsNothing}.run(ctx, args)
 		return out.String(), err
 	}
-	db, err := store.Open(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	if _, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}

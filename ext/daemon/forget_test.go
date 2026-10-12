@@ -8,6 +8,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // A mailbox whose secret was deleted (a forgotten person's) never reaches the server: a
@@ -15,15 +16,7 @@ import (
 // provider again, and the module is not asked for a token.
 func TestDeletedSecretDoesNotLogIn(t *testing.T) {
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, db := storetest.New(t)
 	master := make([]byte, 32)
 	u, err := st.SignInIdentity(ctx, store.Identity{Provider: "p", Subject: "s", Email: "a@example.test", Tenant: "o"}, 1)
 	if err != nil {

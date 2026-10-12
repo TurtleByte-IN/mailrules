@@ -14,6 +14,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mailer"
 	"github.com/TurtleByte-IN/mailrules/internal/mailer/mailertest"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // planWorld is the self-host admin with a mailbox, a hosted team of two that never buys a
@@ -36,8 +37,7 @@ const planT0 = 1_800_000_000
 func newPlanWorld(t *testing.T) *planWorld {
 	t.Helper()
 	ctx := t.Context()
-	st, db := openAt(t, t.TempDir())
-	t.Cleanup(func() { _ = db.Close() })
+	st, _ := storetest.New(t)
 	w := &planWorld{st: st, m: &Manager{}, hub: events.NewHub(), sender: &mailertest.Sender{}}
 	box := func(u store.User, name string) store.Account {
 		a, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: name, Preset: "generic",

@@ -72,7 +72,7 @@ func (s *Store) IdentityMailboxes(ctx context.Context, provider, subject string)
 
 // identityUser finds, in tx, the user made from an identity, never one in the self-host
 // tenant; ErrNotFound when there is none.
-func identityUser(ctx context.Context, tx *sql.Tx, provider, subject string) (userID, tenantID int64, err error) {
+func identityUser(ctx context.Context, tx *txn, provider, subject string) (userID, tenantID int64, err error) {
 	err = tx.QueryRowContext(ctx, `SELECT u.id, u.tenant_id FROM identities i JOIN users u ON u.id = i.user_id
 		WHERE i.provider = ? AND i.subject = ? AND u.tenant_id != ?`, provider, subject, SelfHostTenant).Scan(&userID, &tenantID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -139,6 +139,7 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 	if err := deleteSecrets(ctx, tx, out.TenantID, out.Accounts, out.Keys, forgottenMessage, forgottenOAuthMessage, now); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
 	}
+
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO forgotten (user_id, forgotten_at, remove_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING`,
 		out.UserID, now, now+ForgetDays*day); err != nil {
@@ -168,7 +169,7 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 // (oauth or module). When keys, the tenant's stored model API keys go too, and the
 // addresses and signing secrets of its notification destinations. A mailbox whose secret
 // is already gone keeps its status, so a second call changes nothing.
-func deleteSecrets(ctx context.Context, tx *sql.Tx, tenantID int64, accounts []int64, keys bool, msg, oauthMsg string, now int64) error {
+func deleteSecrets(ctx context.Context, tx *txn, tenantID int64, accounts []int64, keys bool, msg, oauthMsg string, now int64) error {
 	// The mailboxes a module connected are queued for it with their secrets before those go.
 	if err := queueRemovedMailboxes(ctx, tx, accounts, now); err != nil {
 		return err
@@ -176,10 +177,10 @@ func deleteSecrets(ctx context.Context, tx *sql.Tx, tenantID int64, accounts []i
 	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
 	// one-click mailbox that is its refresh token.
 	for _, id := range accounts {
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = X'', dek_enc = X'',
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ?,
 			status = CASE WHEN oauth = 1 OR module = 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
 			last_error = CASE WHEN oauth = 1 OR module = 1 THEN ? ELSE ? END, last_event_at = ?
-			WHERE id = ? AND length(secret_enc) > 0`, oauthMsg, msg, now, id); err != nil {
+			WHERE id = ? AND length(secret_enc) > 0`, []byte{}, []byte{}, oauthMsg, msg, now, id); err != nil {
 			return fmt.Errorf("delete mailbox secret: %w", err)
 		}
 	}
@@ -191,7 +192,8 @@ func deleteSecrets(ctx context.Context, tx *sql.Tx, tenantID int64, accounts []i
 	}
 	// The destinations stay, named; nothing can be delivered to them until they are added
 	// again.
-	if _, err := tx.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = X'', dek_enc = X'' WHERE tenant_id = ?`, tenantID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = ?, dek_enc = ? WHERE tenant_id = ?`,
+		[]byte{}, []byte{}, tenantID); err != nil {
 		return fmt.Errorf("delete notification addresses: %w", err)
 	}
 	return nil
@@ -256,7 +258,7 @@ const leaverMailboxes = `user_id = ?`
 
 // removalAccounts reports, in tx, whether the user is their tenant's only member, and the
 // mailboxes their removal deletes.
-func removalAccounts(ctx context.Context, tx *sql.Tx, userID, tenantID int64) (alone bool, ids []int64, err error) {
+func removalAccounts(ctx context.Context, tx *txn, userID, tenantID int64) (alone bool, ids []int64, err error) {
 	var others int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = ? AND id != ?`, tenantID, userID).Scan(&others); err != nil {
 		return false, nil, err
@@ -353,7 +355,7 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 // mailbox cascades to its folders, contacts, messages, decisions, actions, corrections and
 // notices (and to its rules, which go anyway); deleting a notification destination to its
 // delivery log; deleting a user to their sessions, identity, summaries and forgotten row.
-func removeTenant(ctx context.Context, tx *sql.Tx, tenantID int64) error {
+func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 	for _, q := range []struct{ what, query string }{
 		{"mailboxes", `DELETE FROM accounts WHERE tenant_id = ?`},
 		{"notices", `DELETE FROM notices WHERE tenant_id = ?`},
@@ -380,7 +382,7 @@ func removeTenant(ctx context.Context, tx *sql.Tx, tenantID int64) error {
 // (all of theirs), after rewriting the team's rules that name one, then the authorship of
 // their rules and sender rules is handed over and their user row deleted. It returns the
 // rules it rewrote.
-func removeMember(ctx context.Context, tx *sql.Tx, userID, tenantID int64, accounts []int64, now int64) ([]rules.Rule, error) {
+func removeMember(ctx context.Context, tx *txn, userID, tenantID int64, accounts []int64, now int64) ([]rules.Rule, error) {
 	gone := make(map[int64]bool, len(accounts))
 	for _, id := range accounts {
 		gone[id] = true
@@ -405,7 +407,7 @@ func removeMember(ctx context.Context, tx *sql.Tx, userID, tenantID int64, accou
 // nothing shows but the database requires, to the team's longest-standing other member
 // (one not waiting for removal themselves, when there is one). Their mailboxes are gone by
 // then.
-func handOver(ctx context.Context, tx *sql.Tx, userID, tenantID int64) error {
+func handOver(ctx context.Context, tx *txn, userID, tenantID int64) error {
 	var heir int64
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE tenant_id = ? AND id != ?
 		ORDER BY id IN (SELECT user_id FROM forgotten), created_at, id LIMIT 1`, tenantID, userID).Scan(&heir); err != nil {

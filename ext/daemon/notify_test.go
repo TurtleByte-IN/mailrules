@@ -21,6 +21,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // fakeNotifier is a module that takes notices: it refuses the first `refuse` hand-overs,
@@ -79,15 +80,8 @@ type noticeWorld struct {
 func newNoticeWorld(t *testing.T) noticeWorld {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	w := noticeWorld{db: db, st: store.New(db), master: testKey(3)}
+	st, db := storetest.New(t)
+	w := noticeWorld{db: db, st: st, master: testKey(3)}
 	u, err := w.st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)

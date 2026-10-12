@@ -113,7 +113,7 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 }
 
 // createAccount is CreateAccount's insert in tx.
-func createAccount(ctx context.Context, tx *sql.Tx, master []byte, a Account, secret string) (Account, error) {
+func createAccount(ctx context.Context, tx *txn, master []byte, a Account, secret string) (Account, error) {
 	caps, err := json.Marshal(append([]string{}, a.Capabilities...))
 	if err != nil {
 		return Account{}, fmt.Errorf("encode capabilities: %w", err)
@@ -125,12 +125,14 @@ func createAccount(ctx context.Context, tx *sql.Tx, master []byte, a Account, se
 		a.Status = "new"
 	}
 	a.Shared = NewAccountShared
+	// The secret columns start empty, bound rather than written as x'' (Postgres reads that as
+	// a bit string), and are filled once the id they are bound to exists.
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
 		                       watch_folder, status, capabilities, created_at, cert_fingerprint, oauth, module)
-		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, x'', x'', ?, ?, ?, ?, ?, ?, ? FROM users WHERE id = ?
+		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM users WHERE id = ?
 		 RETURNING id, tenant_id`,
-		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, a.WatchFolder, a.Status, string(caps), a.CreatedAt,
+		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, []byte{}, []byte{}, a.WatchFolder, a.Status, string(caps), a.CreatedAt,
 		a.CertFingerprint, a.OAuth, a.Module, a.UserID).
 		Scan(&a.ID, &a.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -167,7 +169,7 @@ func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
 // is answered as missing.
 func (s *Store) VisibleAccount(ctx context.Context, v Viewer, id int64) (Account, error) {
 	a, err := scanAccount(s.db.QueryRowContext(ctx,
-		`SELECT `+accountCols+` FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a", v), id))
+		`SELECT `+accountCols+` FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a"), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -185,7 +187,7 @@ func (s *Store) Accounts(ctx context.Context) ([]Account, error) {
 
 // VisibleAccounts lists the accounts the viewer sees, oldest first.
 func (s *Store) VisibleAccounts(ctx context.Context, v Viewer) ([]Account, error) {
-	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a WHERE `+visibleAccounts("a", v)+` ORDER BY a.id`)
+	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a WHERE `+visibleAccounts("a")+` ORDER BY a.id`, v.tenantArg(), v.userArg())
 }
 
 // TenantAccounts lists every account of a tenant, private ones included, oldest first.
@@ -375,7 +377,7 @@ func (s *Store) SaveFolders(ctx context.Context, accountID int64, folders []Fold
 // AddFolder records a folder MailRules itself just created on the server, so it shows up
 // before the next folder discovery. A folder already on record is left as it is.
 func (s *Store) AddFolder(ctx context.Context, accountID int64, name string) error {
-	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO folders (account_id, name) VALUES (?, ?)`, accountID, name); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO folders (account_id, name) VALUES (?, ?) ON CONFLICT DO NOTHING`, accountID, name); err != nil {
 		return fmt.Errorf("add folder: %w", err)
 	}
 	return nil

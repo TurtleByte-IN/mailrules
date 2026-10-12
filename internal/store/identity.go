@@ -72,17 +72,16 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 		}
 	} else {
 		if tenantID == 0 {
-			res, err := tx.ExecContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?)`, id.Provider, id.Tenant, now)
-			if err != nil {
+			if err := tx.QueryRowContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?) RETURNING id`,
+				id.Provider, id.Tenant, now).Scan(&tenantID); err != nil {
 				return User{}, fmt.Errorf("sign in identity: create tenant: %w", err)
 			}
-			tenantID, _ = res.LastInsertId()
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO users (email, password_hash, created_at, tenant_id) VALUES (?, '', ?, ?)`, id.Email, now, tenantID)
-		if err != nil {
+		var uid int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO users (email, password_hash, created_at, tenant_id) VALUES (?, '', ?, ?) RETURNING id`,
+			id.Email, now, tenantID).Scan(&uid); err != nil {
 			return User{}, fmt.Errorf("sign in identity: create user: %w", err)
 		}
-		uid, _ := res.LastInsertId()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO identities (provider, subject, user_id) VALUES (?, ?, ?)`, id.Provider, id.Subject, uid); err != nil {
 			return User{}, fmt.Errorf("sign in identity: create identity: %w", err)
 		}

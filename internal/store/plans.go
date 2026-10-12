@@ -78,11 +78,8 @@ func (s *Store) TenantPlan(ctx context.Context, tenantID, now int64) (PlanState,
 	return tenantPlan(ctx, s.db, tenantID, now)
 }
 
-type queryer interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func tenantPlan(ctx context.Context, q queryer, tenantID, now int64) (PlanState, error) {
+// tenantPlan is TenantPlan on q, the database or a transaction.
+func tenantPlan(ctx context.Context, q querier, tenantID, now int64) (PlanState, error) {
 	var (
 		created   int64
 		plan      sql.NullString

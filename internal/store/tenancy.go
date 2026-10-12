@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 )
 
 // SelfHostTenant is the one tenant of a self-hosted install, made by migration 0011.
@@ -35,43 +34,48 @@ func (a Account) Owner() Viewer { return Viewer{UserID: a.UserID, TenantID: a.Te
 // visibleAccounts is the one rule of who sees which mailbox, as an SQL condition on the
 // accounts row aliased alias: in the viewer's tenant, and theirs or shared. Every
 // user-facing query that touches accounts or what hangs off them is built from it (or from
-// inVisible, which is built from it). The ids are written into the SQL as numbers rather
-// than bound, so the condition fits queries that number their own parameters (?1, ?2);
-// an int64 printed in base 10 cannot carry anything but digits and a sign.
-func visibleAccounts(alias string, v Viewer) string {
-	return "(" + alias + ".tenant_id = " + strconv.FormatInt(v.TenantID, 10) +
-		" AND (" + alias + ".user_id = " + strconv.FormatInt(v.UserID, 10) + " OR " + alias + ".shared = 1))"
+// inVisible, which is built from it). The viewer is bound by name, @viewer_tenant and
+// @viewer_user, so the condition fits a query wherever it numbers its own parameters: pass
+// v.tenantArg() and v.userArg() with the query's arguments.
+func visibleAccounts(alias string) string {
+	return "(" + alias + ".tenant_id = @viewer_tenant AND (" + alias + ".user_id = @viewer_user OR " + alias + ".shared = 1))"
 }
 
-// inVisible is the condition that the account id in column is one the viewer sees.
-func inVisible(column string, v Viewer) string {
-	return column + " IN (SELECT va.id FROM accounts va WHERE " + visibleAccounts("va", v) + ")"
+// inVisible is the condition that the account id in column is one the viewer sees; it binds
+// the viewer as visibleAccounts does.
+func inVisible(column string) string {
+	return column + " IN (SELECT va.id FROM accounts va WHERE " + visibleAccounts("va") + ")"
 }
+
+// tenantArg binds the viewer's tenant as @viewer_tenant.
+func (v Viewer) tenantArg() sql.NamedArg { return sql.Named("viewer_tenant", v.TenantID) }
+
+// userArg binds the viewer as @viewer_user.
+func (v Viewer) userArg() sql.NamedArg { return sql.Named("viewer_user", v.UserID) }
 
 // CreateTenant adds a tenant for a sign-in service's organisation and returns its id.
 func (s *Store) CreateTenant(ctx context.Context, provider, externalID string, now int64) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?)`,
-		null(provider), null(externalID), now)
-	if err != nil {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?) RETURNING id`,
+		null(provider), null(externalID), now).Scan(&id); err != nil {
 		return 0, fmt.Errorf("create tenant: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return id, nil
 }
 
 // CreateUser adds a user to a tenant. An empty passwordHash makes a user who cannot sign
 // in with a password (one made from a sign-in service's identity).
 func (s *Store) CreateUser(ctx context.Context, tenantID int64, email, passwordHash string, now int64) (User, error) {
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (email, password_hash, created_at, tenant_id) SELECT ?, ?, ?, id FROM tenants WHERE id = ?`,
-		email, passwordHash, now, tenantID)
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO users (email, password_hash, created_at, tenant_id) SELECT ?, ?, ?, id FROM tenants WHERE id = ? RETURNING id`,
+		email, passwordHash, now, tenantID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, fmt.Errorf("create user: tenant %d: %w", tenantID, ErrNotFound)
+	}
 	if err != nil {
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return User{}, fmt.Errorf("create user: tenant %d: %w", tenantID, ErrNotFound)
-	}
-	id, _ := res.LastInsertId()
 	return User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: tenantID}, nil
 }
 
@@ -156,7 +160,7 @@ func (s *Store) AccountTenant(ctx context.Context, accountID int64) (int64, erro
 func (s *Store) CanSee(ctx context.Context, v Viewer, accountID int64) (bool, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a", v)+`)`, accountID).Scan(&n); err != nil {
+		`SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a")+`)`, accountID, v.tenantArg(), v.userArg()).Scan(&n); err != nil {
 		return false, fmt.Errorf("check account visibility: %w", err)
 	}
 	return n == 1, nil
