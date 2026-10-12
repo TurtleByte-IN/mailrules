@@ -5,3 +5,5 @@ MailRules does not accept outside pull requests for now. Pull requests from outs
 Bug reports and ideas are welcome: open an issue on GitHub with what you did, what you expected and what happened instead. Never paste passwords, API keys or the contents of your emails into an issue.
 
 Security problems: do not open a public issue. Report them privately with "Report a vulnerability" on the repository's Security tab.
+
+Everyone taking part in issues and discussions follows the [code of conduct](CODE_OF_CONDUCT.md). Report a problem to support@mailrules.app.
