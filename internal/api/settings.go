@@ -17,7 +17,8 @@ import (
 // This list is the only one: the web UI reads it from GET /api/settings, and its type from
 // the contract.
 var features = map[string]bool{"notifications": false, "timed_actions": false, "draft_replies": false,
-	"billing": false, "unsubscribe": true, "oauth_providers": false, "suggest": false, "delete_account": false}
+	"billing": false, "unsubscribe": true, "oauth_providers": false, "suggest": false, "delete_account": false,
+	"move_questions": false}
 
 // limits are the bounds the daemon enforces on how many emails one run reads, reported so
 // the UI's number boxes follow the daemon instead of repeating its numbers (MAI-41).

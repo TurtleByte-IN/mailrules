@@ -5,6 +5,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/mailer"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/moved"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
@@ -188,11 +190,29 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	// One-click mailboxes sign in through the module that connects them.
 	logins := newMailLogins(st, master, modules)
 	logins.tlsConfig, logins.cloud = imapTLS, cfg.Mode == "cloud"
+	// The build's module that learns from the person's moves, when it has one: one watcher
+	// for every mailbox, swept on each mailbox's own connection, and the worker that hands
+	// what it finds to the module. The free build has neither.
+	var watchMoves func(context.Context, mail.Mailbox, store.Account) error
+	var movesEvery time.Duration
+	if mv := movesModule(modules); mv != nil {
+		handing := newMoveWorker(st, mv, hub)
+		w := moved.New(st)
+		w.Serves, w.Found = mv.Serves, handing.found
+		watchMoves, movesEvery = w.Sweep, cmp.Or(mv.Every, ext.MoveSweepEvery)
+		handed := make(chan struct{})
+		defer func() { stopAll(); <-handed }()
+		go func() {
+			defer close(handed)
+			handing.Run(ctx)
+		}()
+	}
 	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
 	start := func(acct store.Account) {
 		supervisors.Start(ctx, &worker.Supervisor{
 			Account: acct, Store: st, Hub: hub, Open: openAccount(logins, acct),
 			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
+			Moves:    watchMoves, MovesEvery: movesEvery,
 		})
 	}
 	watcher := newAccountWatcher(st, start)

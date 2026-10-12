@@ -327,6 +327,26 @@ func (m *Mailbox) FindByMessageID(ctx context.Context, name, messageID string) (
 	return mail.MsgRef{}, fmt.Errorf("%w: message-id %q in %q", mail.ErrNotFound, messageID, name)
 }
 
+// Present reports which of uids the folder still holds; a message marked \Deleted is gone.
+func (m *Mailbox) Present(ctx context.Context, name string, uidValidity uint32, uids []uint32) ([]uint32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f, err := m.folder(name)
+	if err != nil {
+		return nil, err
+	}
+	if f.validity != uidValidity {
+		return nil, fmt.Errorf("%w: uidvalidity of %q is %d", mail.ErrNotFound, name, f.validity)
+	}
+	var out []uint32
+	for _, x := range f.msgs {
+		if slices.Contains(uids, x.uid) && !slices.Contains(x.raw.Flags, `\Deleted`) {
+			out = append(out, x.uid)
+		}
+	}
+	return out, ctx.Err()
+}
+
 // SentRecipients returns the To and Cc addresses of the newest limit messages.
 func (m *Mailbox) SentRecipients(ctx context.Context, name string, limit int) ([]mail.Recipient, error) {
 	m.mu.Lock()

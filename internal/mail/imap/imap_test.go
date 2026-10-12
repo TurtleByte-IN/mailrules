@@ -656,6 +656,48 @@ func TestSearchAndContactsScan(t *testing.T) {
 	}
 }
 
+// Present sees what another mail app did since the worker last had the folder selected: a
+// message it moved away is gone, one it marked deleted is gone, and the rest are there,
+// still unread.
+func TestPresent(t *testing.T) {
+	ctx := t.Context()
+	s := imaptest.Start(t, capsMove)
+	if err := s.User.Create("Receipts", nil); err != nil {
+		t.Fatal(err)
+	}
+	for n := 1; n <= 3; n++ {
+		s.Append(t, "Receipts", eml(n))
+	}
+	m := open(t, config(s))
+	validity := mustStatus(t, m, "Receipts").UIDValidity
+	if got, err := m.Present(ctx, "Receipts", validity, []uint32{1, 2, 3, 9}); err != nil || !slices.Equal(got, []uint32{1, 2, 3}) {
+		t.Fatalf("Present before = %v, %v", got, err)
+	}
+
+	other := open(t, config(s)) // another mail app, on its own connection
+	if _, err := other.Move(ctx, mail.MsgRef{Folder: "Receipts", UIDValidity: validity, UID: 2}, "INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.SetFlags(ctx, mail.MsgRef{Folder: "Receipts", UIDValidity: validity, UID: 3}, []string{`\Deleted`}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.Present(ctx, "Receipts", validity, []uint32{1, 2, 3}); err != nil || !slices.Equal(got, []uint32{1}) {
+		t.Errorf("Present after = %v, %v; want [1]", got, err)
+	}
+	if flags, err := m.Flags(ctx, mail.MsgRef{Folder: "Receipts", UIDValidity: validity, UID: 1}); err != nil || slices.Contains(flags, `\Seen`) {
+		t.Errorf("flags after Present = %v, %v", flags, err)
+	}
+	if _, err := m.Present(ctx, "Receipts", validity+1, []uint32{1}); !errors.Is(err, mail.ErrNotFound) {
+		t.Errorf("Present with an old UIDVALIDITY: err = %v", err)
+	}
+	if _, err := m.Present(ctx, "Nowhere", validity, []uint32{1}); !errors.Is(err, mail.ErrNoFolder) {
+		t.Errorf("Present in a missing folder: err = %v", err)
+	}
+	if got, err := m.Present(ctx, "Receipts", validity, nil); err != nil || got != nil {
+		t.Errorf("Present of nothing = %v, %v", got, err)
+	}
+}
+
 func mustStatus(t *testing.T, m *Mailbox, folder string) mail.FolderStatus {
 	t.Helper()
 	st, err := m.Status(t.Context(), folder)
