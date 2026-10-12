@@ -258,10 +258,10 @@ func (s *server) signIn() *ext.Module {
 // Login, with a provider other than gmail or outlook, or whose Connect is not one of its
 // module's signed-in GET routes, and more than one module with Mailboxes; a
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
-// signed-in POST routes under /api/, and two forms for one provider; and a Notifications
-// with no Notify or no kind, or a kind other than webhook or slack, and more than one
-// module with Notifications; and more than one module with Limits. The daemon calls it
-// before it serves anything.
+// signed-in POST routes under /api/, and two forms for one provider; a MailboxRemoved with
+// neither Mailboxes nor MailboxForms; a Notifications with no Notify or no kind, or a kind
+// other than webhook or slack, and more than one module with Notifications; and more than
+// one module with Limits. The daemon calls it before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
 	var signIn, mailboxes, notifiers, limits []string
 	forms := map[string]string{} // provider: the module whose form connects it
@@ -306,6 +306,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 				return fmt.Errorf("modules %s and %s both have a sign-in form for %s", other, m.Name, f.Provider)
 			}
 			forms[f.Provider] = m.Name
+		}
+		if m.MailboxRemoved != nil && m.Mailboxes == nil && len(m.MailboxForms) == 0 {
+			return fmt.Errorf("module %s: MailboxRemoved is set without Mailboxes or MailboxForms", m.Name)
 		}
 		if n := m.Notifications; n != nil {
 			if n.Notify == nil || len(n.Kinds) == 0 {

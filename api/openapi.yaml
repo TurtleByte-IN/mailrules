@@ -2734,13 +2734,14 @@ components:
       description: '`webhook`: a POST of JSON, signed with the destination''s secret. `slack`: a message through a Slack incoming webhook'
     NotificationDestination:
       type: object
-      required: [id, name, kind, url, address_deleted, created_at, deliveries]
+      required: [id, name, kind, url, address_deleted, needs_https, created_at, deliveries]
       properties:
         id: { type: integer, format: int64 }
         name: { type: string }
         kind: { $ref: '#/components/schemas/NotificationKind' }
         url: { type: string, description: 'The address cut short, such as `https://hooks.slack.com/…bX9z`: the whole address is never returned' }
         address_deleted: { type: boolean, description: 'The address and secret were deleted with the sign-in of the person who was the team''s only member; nothing is delivered to it. Remove it and add it again' }
+        needs_https: { type: boolean, description: 'It was added with a plain http address before only https was taken; no notice is queued or sent to it. Remove it and add it again with an https address' }
         created_at: { type: integer, format: int64 }
         deliveries: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/NotificationDelivery' }, description: The last 20 deliveries the module reported, newest first; kept for 30 days }
     NotificationDelivery:
@@ -2759,7 +2760,7 @@ components:
       properties:
         name: { type: string, maxLength: 100, description: 'How Settings and the rule editor name it; 1 to 100 characters' }
         kind: { $ref: '#/components/schemas/NotificationKind' }
-        url: { type: string, maxLength: 2000, description: 'An http or https address (https for a `slack` one, which must be a Slack incoming webhook, `https://hooks.slack.com/…`), with no user name or password in it' }
+        url: { type: string, maxLength: 2000, description: 'An https address (for a `slack` one, a Slack incoming webhook, `https://hooks.slack.com/…`), with no user name or password in it. An http address is refused: "Use an https address, so the email''s sender and subject are encrypted on the way."' }
     NotificationDestinationCreated:
       type: object
       required: [destination, secret]

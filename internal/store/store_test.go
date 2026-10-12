@@ -38,8 +38,8 @@ func TestOpenAndMigrate(t *testing.T) {
 		}
 	}
 	want := []string{"accounts", "actions", "ai_emails", "batches", "contacts", "corrections", "decisions", "folders", "forgotten",
-		"identities", "messages", "notices", "notify_deliveries", "notify_destinations", "rules", "sender_rules", "sessions",
-		"settings", "summaries", "tenants", "unsubscribes", "usage_daily", "users"}
+		"identities", "messages", "notices", "notify_deliveries", "notify_destinations", "removed_mailboxes", "rules", "sender_rules",
+		"sessions", "settings", "summaries", "tenants", "unsubscribes", "usage_daily", "users"}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'goose%' AND name NOT LIKE 'sqlite%' ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)

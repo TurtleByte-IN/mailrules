@@ -6,7 +6,8 @@
 // people sign in (Module.SignIn) and are deleted at the sign-in service when they delete
 // their own account (Module.DeleteIdentity), the way mailboxes of some providers are
 // connected with one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of
-// providers the module connects itself (Module.MailboxForms), the delivery of rule
+// providers the module connects itself (Module.MailboxForms), what the module is told when a
+// mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of rule
 // notifications (Module.Notifications), and how much of the hosted service each tenant may
 // use (Module.Limits).
 // ext/daemon runs the daemon with the modules a build compiles in.
@@ -82,6 +83,23 @@ type Module struct {
 	// button opens the form again (MailboxForm.Path). At most one form per provider in a
 	// build.
 	MailboxForms []MailboxForm
+	// MailboxRemoved, when set, is told of every mailbox the module connected (one-click,
+	// for one of its Mailboxes providers, or through one of its MailboxForms) whose secret
+	// the daemon let go of: the person removed the mailbox, or its owner was forgotten
+	// (Host.ForgetIdentity, Delete my account), which deletes the secret at once. The module
+	// undoes there what it holds for the mailbox outside the daemon, such as revoking the
+	// refresh token or removing the account from the Bridge it runs. Nothing waits for it:
+	// the removal is written, in the same transaction, with what to tell, so a restart
+	// loses none, and one worker hands each RemovedMailbox over within a few seconds, one at
+	// a time, with a ctx that ends after 30 seconds, and again (the same RemovedMailbox.ID)
+	// until it returns nil: every one reaches the module at least once. nil means the module
+	// has it: the daemon deletes its copy of the secret, and undoing, retries included, is
+	// the module's job. An error is logged and the mailbox handed over again, after a few
+	// seconds at first and at most an hour apart, until RemovedMailboxDays have passed;
+	// then it is dropped with its secret. One is told only once per secret: a mailbox that
+	// is removed after its owner was forgotten, with no new secret since, is not told
+	// again. Errors must not contain the secret. It needs Mailboxes or MailboxForms.
+	MailboxRemoved func(ctx context.Context, m RemovedMailbox) error
 	// Notifications, when set, delivers rule notifications. The daemon then offers Settings'
 	// Notifications and webhooks, where a team adds destinations of the module's Kinds, and
 	// a rule's More options, where a rule chooses the destinations to tell; it stores the
@@ -187,6 +205,27 @@ type NewMailbox struct {
 	// self-made one of Proton Mail Bridge; empty = the system's trust store decides.
 	CertFingerprint string
 }
+
+// RemovedMailbox is a mailbox a module connected whose secret the daemon let go of
+// (Module.MailboxRemoved).
+type RemovedMailbox struct {
+	// ID is this hand-over's own: the same on every attempt, so a module that must not undo
+	// twice tells them apart by it. A mailbox forgotten, connected again and then removed is
+	// handed over twice, with two IDs and two secrets.
+	ID int64
+	// AccountID is the mailbox, as Host.AddMailbox returned it. It may no longer exist.
+	AccountID int64
+	Provider  string // NewMailbox.Provider: "gmail", "outlook" or "proton"
+	Address   string // the mailbox's address, NewMailbox.Address
+	// Secret is the secret last stored for the mailbox: NewMailbox.Secret, or the one
+	// Host.ReconnectMailbox or a MailToken.Secret put in its place. Empty when the daemon
+	// could not open it under the master key it runs with. Never log it.
+	Secret string
+}
+
+// RemovedMailboxDays is how long the daemon keeps handing a removed mailbox over to the
+// module that connected it (Module.MailboxRemoved) before it drops it with its secret.
+const RemovedMailboxDays = store.RemovedMailboxDays
 
 // MailboxForm is a sign-in form for one provider's mailboxes that a module answers
 // (Module.MailboxForms). The daemon only shows it: what is typed into it goes to the
@@ -505,9 +544,10 @@ type Host interface {
 	// back. In one step that changes all or nothing, it ends their sessions as EndSessions
 	// does, frees their email (a new identity with that email signs up at once and gets a
 	// new user, not their data) and deletes their secrets: their mailboxes are stopped
-	// first, then their passwords and tokens are deleted, with, when they are their
-	// tenant's only member, the tenant's stored model API keys and the addresses and
-	// secrets of its notification destinations.
+	// first, then their passwords and tokens are deleted (the module that connected one is
+	// told: Module.MailboxRemoved), with, when they are their tenant's only member, the
+	// tenant's stored model API keys and the addresses and secrets of its notification
+	// destinations.
 	// The rest of their data is removed ForgetDays later, unless the same identity
 	// (Provider, Subject) signs in again first, which calls the removal off and gives their
 	// rules and history back; their mailboxes then wait for a new password, the model keys
