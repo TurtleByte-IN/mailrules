@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -92,6 +93,7 @@ func (a Account) OwnAddresses() []string {
 // FirstUser returns the admin account, or ErrNotFound before first-run setup. The command
 // line acts as this user, in its tenant.
 func (s *Store) FirstUser(ctx context.Context) (User, error) {
+	ctx = s.tenantFor(ctx, ofFirstUser, nil)
 	u, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id LIMIT 1`))
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -125,20 +127,23 @@ func createAccount(ctx context.Context, tx *txn, master []byte, a Account, secre
 		a.Status = "new"
 	}
 	a.Shared = NewAccountShared
-	// The secret columns start empty, bound rather than written as x'' (Postgres reads that as
-	// a bit string), and are filled once the id they are bound to exists.
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
-		                       watch_folder, status, capabilities, created_at, cert_fingerprint, oauth, module)
-		 SELECT id, tenant_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM users WHERE id = ?
-		 RETURNING id, tenant_id`,
-		a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, []byte{}, []byte{}, a.WatchFolder, a.Status, string(caps), a.CreatedAt,
-		a.CertFingerprint, a.OAuth, a.Module, a.UserID).
-		Scan(&a.ID, &a.TenantID)
+	// The account is its owner's tenant's. The secret columns start empty, bound rather than
+	// written as x'' (Postgres reads that as a bit string), and are filled once the id they
+	// are bound to exists.
+	err = tx.QueryRowContext(ctx, `SELECT tenant_id FROM users WHERE id = ?`, a.UserID).Scan(&a.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, fmt.Errorf("create account: user %d: %w", a.UserID, ErrNotFound)
 	}
 	if err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
+		                       watch_folder, status, capabilities, created_at, cert_fingerprint, oauth, module)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		a.UserID, a.TenantID, a.Shared, a.Label, a.Preset, a.Host, a.Port, a.TLSMode, a.Username, []byte{}, []byte{}, a.WatchFolder, a.Status,
+		string(caps), a.CreatedAt, a.CertFingerprint, a.OAuth, a.Module).
+		Scan(&a.ID); err != nil {
 		return Account{}, fmt.Errorf("create account: %w", err)
 	}
 	secretEnc, dekEnc, err := crypto.Seal(master, a.ID, []byte(secret))
@@ -155,6 +160,7 @@ func createAccount(ctx context.Context, tx *txn, master []byte, a Account, secre
 // internal work on a known account (the worker, the executor). A request reads
 // VisibleAccount.
 func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	a, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountCols+` FROM accounts a WHERE a.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
@@ -168,6 +174,7 @@ func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
 // VisibleAccount returns one account the viewer sees, or ErrNotFound: one they do not see
 // is answered as missing.
 func (s *Store) VisibleAccount(ctx context.Context, v Viewer, id int64) (Account, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	a, err := scanAccount(s.db.QueryRowContext(ctx,
 		`SELECT `+accountCols+` FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a"), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -182,11 +189,22 @@ func (s *Store) VisibleAccount(ctx context.Context, v Viewer, id int64) (Account
 // Accounts lists every account of every tenant, oldest first: for the daemon's own work
 // (starting the watchers, the master key check), never for a request.
 func (s *Store) Accounts(ctx context.Context) ([]Account, error) {
-	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a ORDER BY a.id`)
+	var out []Account
+	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		as, err := s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a ORDER BY a.id`)
+		out = append(out, as...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(out, func(a, b Account) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 // VisibleAccounts lists the accounts the viewer sees, oldest first.
 func (s *Store) VisibleAccounts(ctx context.Context, v Viewer) ([]Account, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a WHERE `+visibleAccounts("a")+` ORDER BY a.id`, v.tenantArg(), v.userArg())
 }
 
@@ -194,6 +212,7 @@ func (s *Store) VisibleAccounts(ctx context.Context, v Viewer) ([]Account, error
 // It is for checks that span the tenant without showing what they find (a mailbox already
 // connected), never for listing to a person.
 func (s *Store) TenantAccounts(ctx context.Context, tenantID int64) ([]Account, error) {
+	ctx = WithTenant(ctx, tenantID)
 	return s.listAccounts(ctx, `SELECT `+accountCols+` FROM accounts a WHERE a.tenant_id = ? ORDER BY a.id`, tenantID)
 }
 
@@ -220,6 +239,7 @@ func (s *Store) listAccounts(ctx context.Context, query string, args ...any) ([]
 // SetAccountShared shares an account with everyone in its tenant, or makes it private to
 // its owner again. The caller checks that the owner asks.
 func (s *Store) SetAccountShared(ctx context.Context, id int64, shared bool) error {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET shared = ? WHERE id = ?`, shared, id)
 	if err != nil {
 		return fmt.Errorf("share account: %w", err)
@@ -237,6 +257,7 @@ var ErrNoSecret = errors.New("the mailbox's password was deleted; enter it again
 // when the master key is not the one the secret was sealed under, and ErrNoSecret when the
 // secret was deleted.
 func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (string, error) {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	var secretEnc, dekEnc []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secret_enc, dek_enc FROM accounts WHERE id = ?`, id).Scan(&secretEnc, &dekEnc)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -257,6 +278,7 @@ func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (str
 
 // SetAccountStatus records the connection state; lastError is cleared by passing "".
 func (s *Store) SetAccountStatus(ctx context.Context, id int64, status, lastError string, now int64) error {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE accounts SET status = ?, last_error = NULLIF(?, ''), last_event_at = ? WHERE id = ?`, status, lastError, now, id)
 	if err != nil {
@@ -271,6 +293,7 @@ func (s *Store) SetAccountStatus(ctx context.Context, id int64, status, lastErro
 // SetAccountCert stores the server certificate the person accepted for an account; ""
 // leaves the decision to the system's trust store again.
 func (s *Store) SetAccountCert(ctx context.Context, id int64, fingerprint string) error {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET cert_fingerprint = ? WHERE id = ?`, fingerprint, id)
 	if err != nil {
 		return fmt.Errorf("set account certificate: %w", err)
@@ -283,6 +306,7 @@ func (s *Store) SetAccountCert(ctx context.Context, id int64, fingerprint string
 
 // SetAccountCapabilities stores what the server advertised at the last login.
 func (s *Store) SetAccountCapabilities(ctx context.Context, id int64, capabilities []string) error {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	caps, err := json.Marshal(append([]string{}, capabilities...))
 	if err != nil {
 		return fmt.Errorf("encode capabilities: %w", err)
@@ -304,6 +328,7 @@ func (s *Store) SetAccountCapabilities(ctx context.Context, id int64, capabiliti
 // marked, with no mailbox, before the cascade could reach it. It returns those rules. A
 // mailbox a module connected is queued for that module (queueRemovedMailboxes).
 func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule, error) {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("delete account: %w", err)
@@ -345,6 +370,7 @@ type Folder struct {
 // SaveFolders replaces an account's folder list with what discovery found. Watch
 // positions of folders that still exist are kept; folders that are gone are removed.
 func (s *Store) SaveFolders(ctx context.Context, accountID int64, folders []Folder) error {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("save folders: %w", err)
@@ -365,7 +391,7 @@ func (s *Store) SaveFolders(ctx context.Context, accountID int64, folders []Fold
 		return fmt.Errorf("save folders: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM folders WHERE account_id = ? AND name NOT IN (SELECT value FROM json_each(?))`, accountID, string(enc)); err != nil {
+		`DELETE FROM folders WHERE account_id = ? AND name NOT IN (`+s.db.d.jsonValues("?", "TEXT")+`)`, accountID, string(enc)); err != nil {
 		return fmt.Errorf("save folders: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -377,6 +403,7 @@ func (s *Store) SaveFolders(ctx context.Context, accountID int64, folders []Fold
 // AddFolder records a folder MailRules itself just created on the server, so it shows up
 // before the next folder discovery. A folder already on record is left as it is.
 func (s *Store) AddFolder(ctx context.Context, accountID int64, name string) error {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO folders (account_id, name) VALUES (?, ?) ON CONFLICT DO NOTHING`, accountID, name); err != nil {
 		return fmt.Errorf("add folder: %w", err)
 	}
@@ -393,6 +420,7 @@ func scanFolder(row interface{ Scan(...any) error }) (Folder, error) {
 
 // Folders lists an account's folders by name.
 func (s *Store) Folders(ctx context.Context, accountID int64) ([]Folder, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+folderCols+` FROM folders WHERE account_id = ? ORDER BY name`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("list folders: %w", err)
@@ -414,6 +442,7 @@ func (s *Store) Folders(ctx context.Context, accountID int64) ([]Folder, error) 
 
 // Folder returns one folder, or ErrNotFound.
 func (s *Store) Folder(ctx context.Context, accountID int64, name string) (Folder, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	f, err := scanFolder(s.db.QueryRowContext(ctx, `SELECT `+folderCols+` FROM folders WHERE account_id = ? AND name = ?`, accountID, name))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Folder{}, ErrNotFound
@@ -426,6 +455,7 @@ func (s *Store) Folder(ctx context.Context, accountID int64, name string) (Folde
 
 // SetFolderPosition records how far a watched folder has been processed.
 func (s *Store) SetFolderPosition(ctx context.Context, accountID int64, name string, uidValidity, lastUID uint32) error {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO folders (account_id, name, uidvalidity, last_uid) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (account_id, name) DO UPDATE SET uidvalidity = excluded.uidvalidity, last_uid = excluded.last_uid`,
@@ -443,6 +473,7 @@ type Contact struct {
 
 // UpsertContacts adds addresses to an account's contacts, keeping the latest sent time.
 func (s *Store) UpsertContacts(ctx context.Context, accountID int64, contacts []Contact) error {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("upsert contacts: %w", err)
@@ -452,7 +483,7 @@ func (s *Store) UpsertContacts(ctx context.Context, accountID int64, contacts []
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO contacts (account_id, address, last_sent_at) VALUES (?, ?, ?)
 			 ON CONFLICT (account_id, address) DO UPDATE
-			 SET last_sent_at = MAX(COALESCE(contacts.last_sent_at, 0), excluded.last_sent_at)`,
+			 SET last_sent_at = `+s.db.d.greatest("COALESCE(contacts.last_sent_at, 0)", "excluded.last_sent_at"),
 			accountID, c.Address, c.LastSentAt); err != nil {
 			return fmt.Errorf("upsert contacts: %w", err)
 		}
@@ -465,18 +496,20 @@ func (s *Store) UpsertContacts(ctx context.Context, accountID int64, contacts []
 
 // IsContact reports whether the account's owner has sent mail to address.
 func (s *Store) IsContact(ctx context.Context, accountID int64, address string) (bool, error) {
-	var n int
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
+	var ok bool
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM contacts WHERE account_id = ? AND address = ? COLLATE NOCASE)`, accountID, address).Scan(&n); err != nil {
+		`SELECT EXISTS (SELECT 1 FROM contacts WHERE account_id = ? AND lower(address) = lower(?))`, accountID, address).Scan(&ok); err != nil {
 		return false, fmt.Errorf("look up contact: %w", err)
 	}
-	return n == 1, nil
+	return ok, nil
 }
 
 // UpdateAccount stores an account's label, watch folder, server (host, port and TLS mode)
 // and status (the fields the user edits). A new server clears Module: the server is then
 // the person's, not the module's.
 func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
+	ctx = s.tenantFor(ctx, ofAccount, a.ID)
 	// The right-hand sides read the row as it was, so module stays only on the same server.
 	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?,
 		module = (module AND host = ? AND port = ? AND tls_mode = ?), host = ?, port = ?, tls_mode = ?, status = ? WHERE id = ?`,
@@ -492,6 +525,7 @@ func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
 
 // SetAccountSecret replaces an account's app password, sealed under a fresh data key.
 func (s *Store) SetAccountSecret(ctx context.Context, master []byte, id int64, secret string) error {
+	ctx = s.tenantFor(ctx, ofAccount, id)
 	secretEnc, dekEnc, err := crypto.Seal(master, id, []byte(secret))
 	if err != nil {
 		return fmt.Errorf("encrypt account secret: %w", err)
@@ -509,6 +543,7 @@ func (s *Store) SetAccountSecret(ctx context.Context, master []byte, id int64, s
 // LastMailAt is when the newest email MailRules has seen in an account arrived (its
 // received date, or when it was first seen if it carried none); 0 when it has seen none.
 func (s *Store) LastMailAt(ctx context.Context, accountID int64) (int64, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	var at sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(COALESCE(received_at, created_at)) FROM messages WHERE account_id = ?`, accountID).Scan(&at); err != nil {
 		return 0, fmt.Errorf("last mail of account %d: %w", accountID, err)

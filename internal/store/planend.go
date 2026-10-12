@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // What a mailbox shows once the end-of-plan job deleted its secret (DeleteTenantSecrets). A
@@ -34,31 +35,36 @@ type EndedPlan struct {
 // passed. It is where the end-of-plan job looks; whether each one ended is TenantPlan's to
 // say (EndedPlan).
 func (s *Store) PlanEndTenants(ctx context.Context, now int64) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT t.id FROM tenants t LEFT JOIN plans p ON p.tenant_id = t.id
-		WHERE t.id != ? AND ((p.tenant_id IS NULL AND t.created_at + ? <= ?) OR p.plan = ?
-		  OR (p.status = ? AND p.period_end IS NOT NULL AND p.period_end <= ?))
-		ORDER BY t.id`, SelfHostTenant, TrialDays*day, now, PlanEnded, StatusCancelsAtPeriodEnd, now)
+	var out []int64
+	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT t.id FROM tenants t LEFT JOIN plans p ON p.tenant_id = t.id
+			WHERE t.id != ? AND ((p.tenant_id IS NULL AND t.created_at + ? <= ?) OR p.plan = ?
+			  OR (p.status = ? AND p.period_end IS NOT NULL AND p.period_end <= ?))
+			ORDER BY t.id`, SelfHostTenant, TrialDays*day, now, PlanEnded, StatusCancelsAtPeriodEnd, now)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list ended plans: %w", err)
 	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("list ended plans: %w", err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list ended plans: %w", err)
-	}
+	slices.Sort(out)
 	return out, nil
 }
 
 // EndedPlan returns the tenant's plan at now (TenantPlan) with when its latest warning
 // was sent. ErrNotFound for a tenant that does not exist.
 func (s *Store) EndedPlan(ctx context.Context, tenantID, now int64) (EndedPlan, error) {
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return EndedPlan{}, fmt.Errorf("read the tenant's plan: %w", err)
@@ -88,6 +94,7 @@ func (s *Store) EndTrial(ctx context.Context, tenantID, now int64) (bool, error)
 	if tenantID == SelfHostTenant {
 		return false, nil
 	}
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("end trial: %w", err)
@@ -119,7 +126,7 @@ func (s *Store) PlanWarned(ctx context.Context, tenantID, endedAt int64, n int, 
 	if n < 1 || n > 3 {
 		return fmt.Errorf("record plan warning %d: there are 3", n)
 	}
-	return s.endedStep(ctx, tenantID, endedAt, now, 0, "record plan warning", func(tx *txn) error {
+	return s.endedStep(WithTenant(ctx, tenantID), tenantID, endedAt, now, 0, "record plan warning", func(tx *txn) error {
 		// No row yet is a trial that ended: the row EndTrial would write, with the warning.
 		_, err := tx.ExecContext(ctx, `INSERT INTO plans (tenant_id, plan, ended_at, warned, warned_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
@@ -141,6 +148,7 @@ func (s *Store) PlanWarned(ctx context.Context, tenantID, endedAt int64, n int, 
 // not long enough ago. Never the self-host tenant.
 func (s *Store) DeleteTenantSecrets(ctx context.Context, tenantID, endedAt, now int64) ([]int64, error) {
 	var ids []int64
+	ctx = WithTenant(ctx, tenantID)
 	err := s.endedStep(ctx, tenantID, endedAt, now, EndedSecretsDays, "delete the tenant's secrets", func(tx *txn) error {
 		var err error
 		if ids, err = tenantAccountIDs(ctx, tx, tenantID); err != nil {
@@ -150,8 +158,8 @@ func (s *Store) DeleteTenantSecrets(ctx context.Context, tenantID, endedAt, now 
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO plans (tenant_id, plan, ended_at, secrets_deleted, updated_at)
-			VALUES (?, ?, ?, 1, ?)
-			ON CONFLICT (tenant_id) DO UPDATE SET secrets_deleted = 1, updated_at = excluded.updated_at`,
+			VALUES (?, ?, ?, TRUE, ?)
+			ON CONFLICT (tenant_id) DO UPDATE SET secrets_deleted = TRUE, updated_at = excluded.updated_at`,
 			tenantID, PlanEnded, endedAt, now)
 		return err
 	})
@@ -169,6 +177,7 @@ func (s *Store) DeleteTenantSecrets(ctx context.Context, tenantID, endedAt, now 
 // ended at endedAt or not long enough ago. Never the self-host tenant.
 func (s *Store) RemoveEndedTenant(ctx context.Context, tenantID, endedAt, now int64) (Removal, error) {
 	out := Removal{TenantID: tenantID, Tenant: true}
+	ctx = WithTenant(ctx, tenantID)
 	err := s.endedStep(ctx, tenantID, endedAt, now, EndedRemovalDays, "remove the tenant", func(tx *txn) error {
 		var err error
 		if out.Accounts, err = tenantAccountIDs(ctx, tx, tenantID); err != nil {
@@ -194,6 +203,7 @@ func (s *Store) endedStep(ctx context.Context, tenantID, endedAt, now int64, day
 	if tenantID == SelfHostTenant {
 		return fmt.Errorf("%s %d: the self-host tenant has no plan", what, tenantID)
 	}
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%s: %w", what, err)
@@ -237,6 +247,7 @@ func tenantAccountIDs(ctx context.Context, tx *txn, tenantID int64) ([]int64, er
 // those forgotten (ForgetIdentity) whose removal waits: who an email about the tenant's
 // plan goes to.
 func (s *Store) TenantEmails(ctx context.Context, tenantID int64) ([]string, error) {
+	ctx = WithTenant(ctx, tenantID)
 	rows, err := s.db.QueryContext(ctx, `SELECT email FROM users
 		WHERE tenant_id = ? AND email != '' AND id NOT IN (SELECT user_id FROM forgotten) ORDER BY id`, tenantID)
 	if err != nil {

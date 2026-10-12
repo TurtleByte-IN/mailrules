@@ -137,10 +137,9 @@ func (w fworld) seed(t *testing.T, u User, name string) int64 {
 	dest, err := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "Hook " + name, Kind: DestinationWebhook},
 		DestinationSecret{URL: "https://hooks.test/" + name, Secret: "whsec_" + name}, 1000)
 	must(err)
-	res, err := w.db.ExecContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
-		VALUES (?, ?, ?, ?, ?, 'Box', '{}', 1000, 1000)`, u.TenantID, dest.ID, a.ID, m.ID, scoped.ID)
-	must(err)
-	notice, _ := res.LastInsertId()
+	var notice int64
+	must(w.db.QueryRowContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
+		VALUES (?, ?, ?, ?, ?, 'Box', '{}', 1000, 1000) RETURNING id`, u.TenantID, dest.ID, a.ID, m.ID, scoped.ID).Scan(&notice))
 	_, err = s.RecordDelivery(ctx, notice, true, "", 1000)
 	must(err)
 	return a.ID
@@ -447,10 +446,10 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 	s, ctx := w.s, t.Context()
 	// The leaver's shared mailbox is a one-click one, and their private one a module's
 	// sign-in form added with a password: both land in reconnect_needed.
-	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET oauth = 1 WHERE id = ?`, w.leaverShared); err != nil {
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET oauth = TRUE WHERE id = ?`, w.leaverShared); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = 1 WHERE id = ?`, w.leaverPriv); err != nil {
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = TRUE WHERE id = ?`, w.leaverPriv); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {

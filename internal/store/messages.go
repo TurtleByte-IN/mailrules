@@ -117,6 +117,7 @@ func scanMessage(row interface{ Scan(...any) error }) (Message, error) {
 // either way. A known message that the executor itself put at ref (an undo back into the
 // watched folder gets a new UID) is not new mail either: its existing row is returned.
 func (s *Store) IngestMessage(ctx context.Context, ref mail.MsgRef, now int64) (m Message, fresh bool, err error) {
+	ctx = s.tenantFor(ctx, ofAccount, ref.AccountID)
 	m, err = scanMessage(s.db.QueryRowContext(ctx,
 		`SELECT `+messageCols+` FROM messages m
 		 WHERE m.account_id = ? AND m.cur_folder = ? AND m.cur_uidvalidity = ? AND m.cur_uid = ?`,
@@ -146,6 +147,7 @@ func (s *Store) IngestMessage(ctx context.Context, ref mail.MsgRef, now int64) (
 // MessageByMessageID returns the account's newest row, other than except, for the email
 // with this Message-ID header, or ErrNotFound.
 func (s *Store) MessageByMessageID(ctx context.Context, accountID int64, messageID string, except int64) (Message, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	m, err := scanMessage(s.db.QueryRowContext(ctx,
 		`SELECT `+messageCols+` FROM messages m WHERE m.account_id = ? AND m.message_id = ? AND m.id <> ? ORDER BY m.id DESC LIMIT 1`,
 		accountID, messageID, except))
@@ -163,6 +165,7 @@ func (s *Store) MessageByMessageID(ctx context.Context, accountID int64, message
 // has done nothing with yet: when it has a decision, an action or a correction, Rebind
 // changes nothing and reports false.
 func (s *Store) Rebind(ctx context.Context, fresh, known int64, ref mail.MsgRef) (bool, error) {
+	ctx = s.tenantFor(ctx, ofAccount, ref.AccountID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("rebind message: %w", err)
@@ -190,6 +193,7 @@ func (s *Store) Rebind(ctx context.Context, fresh, known int64, ref mail.MsgRef)
 
 // Message returns one message, or ErrNotFound.
 func (s *Store) Message(ctx context.Context, id int64) (Message, error) {
+	ctx = s.tenantFor(ctx, ofMessage, id)
 	m, err := scanMessage(s.db.QueryRowContext(ctx, `SELECT `+messageCols+` FROM messages m WHERE m.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
@@ -202,6 +206,7 @@ func (s *Store) Message(ctx context.Context, id int64) (Message, error) {
 
 // SaveMessageSummary stores the parsed header fields, snippet and signals of a message.
 func (s *Store) SaveMessageSummary(ctx context.Context, m Message) error {
+	ctx = s.tenantFor(ctx, ofMessage, m.ID)
 	to, err := json.Marshal(append([]string{}, m.ToAddrs...))
 	if err != nil {
 		return fmt.Errorf("encode recipients: %w", err)
@@ -224,6 +229,7 @@ func (s *Store) SaveMessageSummary(ctx context.Context, m Message) error {
 // SetMessageState moves a message to a state. nextAttemptAt is when the retry job should
 // run it again; 0 means it is not waiting.
 func (s *Store) SetMessageState(ctx context.Context, id int64, state string, attempts int, nextAttemptAt int64) error {
+	ctx = s.tenantFor(ctx, ofMessage, id)
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE messages SET state = ?, attempts = ?, next_attempt_at = ? WHERE id = ?`,
 		state, attempts, null(nextAttemptAt), id); err != nil {
@@ -234,6 +240,7 @@ func (s *Store) SetMessageState(ctx context.Context, id int64, state string, att
 
 // DueMessages lists an account's failed messages whose retry time has come, oldest first.
 func (s *Store) DueMessages(ctx context.Context, accountID, now int64) ([]Message, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+messageCols+` FROM messages m
 		 WHERE m.account_id = ? AND m.state = 'error' AND m.next_attempt_at <= ? ORDER BY m.id`, accountID, now)
@@ -258,11 +265,12 @@ func (s *Store) DueMessages(ctx context.Context, accountID, now int64) ([]Messag
 // AdvanceFolder raises a watched folder's last processed UID to ref's. It never lowers it,
 // except when the folder's UIDVALIDITY changed, where the old position means nothing.
 func (s *Store) AdvanceFolder(ctx context.Context, ref mail.MsgRef) error {
+	ctx = s.tenantFor(ctx, ofAccount, ref.AccountID)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO folders (account_id, name, uidvalidity, last_uid) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (account_id, name) DO UPDATE SET
 		   last_uid = CASE WHEN folders.uidvalidity IS NOT DISTINCT FROM excluded.uidvalidity
-		                   THEN MAX(folders.last_uid, excluded.last_uid) ELSE excluded.last_uid END,
+		                   THEN `+s.db.d.greatest("folders.last_uid", "excluded.last_uid")+` ELSE excluded.last_uid END,
 		   uidvalidity = excluded.uidvalidity`,
 		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID); err != nil {
 		return fmt.Errorf("advance folder: %w", err)
@@ -327,6 +335,7 @@ func decisionDest(d *Decision) []any {
 // same transaction, unless the message was counted before: a decision that is not recorded
 // is not counted, and one made again after a failure is not counted twice.
 func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int64, error) {
+	ctx = s.tenantFor(ctx, ofMessage, d.MessageID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
@@ -422,10 +431,11 @@ func outcomeSQL(state, id string) map[string]string {
 // decision, by when MailRules acted on them (ActedAt), newest first; messages acted on in
 // the same second come newest row first.
 func (s *Store) Activity(ctx context.Context, v Viewer, f ActivityFilter) ([]ActivityRow, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	return s.activity(ctx, &v, f)
 }
 
-// activity is Activity; a nil viewer lists every tenant's mail, for internal work.
+// activity is Activity; a nil viewer does not look at who sees the mail, for internal work.
 func (s *Store) activity(ctx context.Context, v *Viewer, f ActivityFilter) ([]ActivityRow, error) {
 	if f.Limit <= 0 {
 		f.Limit = 50
@@ -505,12 +515,14 @@ func (s *Store) activity(ctx context.Context, v *Viewer, f ActivityFilter) ([]Ac
 
 // ActivityFor returns the activity row of one message the viewer sees, or ErrNotFound.
 func (s *Store) ActivityFor(ctx context.Context, v Viewer, messageID int64) (ActivityRow, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	return s.activityFor(ctx, &v, messageID)
 }
 
 // MessageActivity returns one message's activity row, whoever's it is, or ErrNotFound: for
 // internal work on a known message (the executor, the event publishers).
 func (s *Store) MessageActivity(ctx context.Context, messageID int64) (ActivityRow, error) {
+	ctx = s.tenantFor(ctx, ofMessage, messageID)
 	return s.activityFor(ctx, nil, messageID)
 }
 
@@ -539,6 +551,7 @@ type SenderDecision struct {
 // actions were recorded in dry-run is left out, so a dry-run period teaches the learner
 // nothing, then or once MailRules is live.
 func (s *Store) RecentSenderDecisions(ctx context.Context, v Viewer, address string, n int) ([]SenderDecision, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.stage, COALESCE(d.rule_id, 0), COALESCE(d.confidence, 0),
 		        EXISTS (SELECT 1 FROM corrections c WHERE c.message_id = m.id)
@@ -568,9 +581,11 @@ func (s *Store) RecentSenderDecisions(ctx context.Context, v Viewer, address str
 // already has a sender rule there, which is never overwritten. userID is who it is learnt
 // for. It reports whether a rule was created.
 func (s *Store) AddLearnedSenderRule(ctx context.Context, tenantID, userID int64, address string, ruleID, now int64) (bool, error) {
+	ctx = WithTenant(ctx, tenantID)
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, source, hits, created_at)
-		 SELECT ?, ?, ?, ?, id, ?, 'learned', 0, ? FROM rules WHERE id = ? AND tenant_id = ?
+		 SELECT CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT), id, CAST(? AS TEXT), 'learned', 0, CAST(? AS BIGINT)
+		 FROM rules WHERE id = ? AND tenant_id = ?
 		 ON CONFLICT (tenant_id, match_type, value) DO NOTHING`,
 		tenantID, userID, rules.MatchAddress, address, rules.VerdictRoute, now, ruleID, tenantID)
 	if err != nil {
@@ -605,6 +620,7 @@ type Correction struct {
 // to the right rule (or keeps it in the inbox), replacing whatever that address or domain
 // had. The caller checks that the message and the right rule are the tenant's.
 func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Correction, always string) (int64, error) {
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("add correction: %w", err)
@@ -668,6 +684,7 @@ func putUserSenderRule(ctx context.Context, tx *txn, tenantID int64, sr rules.Se
 // Corrections lists the newest corrections made to mail in the mailboxes the viewer sees,
 // newest first, with the example each stored: the pool few-shot retrieval ranks.
 func (s *Store) Corrections(ctx context.Context, v Viewer, limit int) ([]Correction, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT c.id, c.message_id, COALESCE(c.wrong_rule_id, 0), COALESCE(c.right_rule_id, 0), c.example, c.created_at
 		 FROM corrections c JOIN messages m ON m.id = c.message_id
@@ -693,6 +710,7 @@ func (s *Store) Corrections(ctx context.Context, v Viewer, limit int) ([]Correct
 // MessageDecisions lists every decision made for a message, oldest first. A message has
 // more than one when the retry job ran it again.
 func (s *Store) MessageDecisions(ctx context.Context, messageID int64) ([]Decision, error) {
+	ctx = s.tenantFor(ctx, ofMessage, messageID)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+decisionCols+` FROM decisions d WHERE d.message_id = ? ORDER BY d.id`, messageID)
 	if err != nil {
 		return nil, fmt.Errorf("list decisions: %w", err)
@@ -714,6 +732,7 @@ func (s *Store) MessageDecisions(ctx context.Context, messageID int64) ([]Decisi
 
 // MessageCorrections lists the corrections the user made to a message, oldest first.
 func (s *Store) MessageCorrections(ctx context.Context, messageID int64) ([]Correction, error) {
+	ctx = s.tenantFor(ctx, ofMessage, messageID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, message_id, COALESCE(wrong_rule_id, 0), COALESCE(right_rule_id, 0),
 		        COALESCE((SELECT name FROM rules WHERE id = right_rule_id), ''), kind, created_at
@@ -739,6 +758,7 @@ func (s *Store) MessageCorrections(ctx context.Context, messageID int64) ([]Corr
 // CountMessages counts the messages in a state in the mailboxes the viewer sees, e.g.
 // StateReview for the Needs review badge.
 func (s *Store) CountMessages(ctx context.Context, v Viewer, state string) (int, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	var n int
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM messages m WHERE m.state = ? AND `+inVisible("m.account_id"), state, v.tenantArg(), v.userArg()).Scan(&n); err != nil {
@@ -749,6 +769,7 @@ func (s *Store) CountMessages(ctx context.Context, v Viewer, state string) (int,
 
 // VisibleMessage returns one message of a mailbox the viewer sees, or ErrNotFound.
 func (s *Store) VisibleMessage(ctx context.Context, v Viewer, id int64) (Message, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	m, err := scanMessage(s.db.QueryRowContext(ctx,
 		`SELECT `+messageCols+` FROM messages m WHERE m.id = ? AND `+inVisible("m.account_id"), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {

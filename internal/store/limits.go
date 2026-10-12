@@ -36,9 +36,11 @@ func (e *MailboxLimitError) Is(target error) bool { return target == ErrMailboxL
 
 // CreateAccountWithin is CreateAccount for a tenant that may have at most max mailboxes
 // (NoLimit: any number). The count and the insert are one write transaction, which holds the
-// database's write lock from its start, so two mailboxes added at once cannot both take the
-// last place. A tenant at or over max gets a *MailboxLimitError and nothing is stored.
+// database's write lock (on Postgres, the tenant's) from its start, so two mailboxes added at
+// once cannot both take the last place. A tenant at or over max gets a *MailboxLimitError and
+// nothing is stored.
 func (s *Store) CreateAccountWithin(ctx context.Context, master []byte, a Account, secret string, max int) (Account, error) {
+	ctx = s.tenantFor(ctx, ofUser, a.UserID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Account{}, fmt.Errorf("create account: %w", err)
@@ -70,6 +72,7 @@ func Month(t time.Time) string { return t.UTC().Format("2006-01") }
 // AIEmails returns how many emails a model decided for the tenant on keys the operator holds
 // in month (see Month).
 func (s *Store) AIEmails(ctx context.Context, tenantID int64, month string) (int, error) {
+	ctx = WithTenant(ctx, tenantID)
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT emails FROM ai_emails WHERE tenant_id = ? AND month = ?`, tenantID, month).Scan(&n)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -85,6 +88,7 @@ func (s *Store) AIEmails(ctx context.Context, tenantID int64, month string) (int
 // at, which no decision row records: those of a cleanup check beyond its first-cleanup grant
 // (SpendCleanupEmail). Live sorting counts with the decision (Decision.Metered).
 func (s *Store) SpendAIEmails(ctx context.Context, tenantID int64, at time.Time, n int) error {
+	ctx = WithTenant(ctx, tenantID)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO ai_emails (tenant_id, month, emails) VALUES (?, ?, ?)
 		 ON CONFLICT (tenant_id, month) DO UPDATE SET emails = ai_emails.emails + excluded.emails`, tenantID, Month(at), n); err != nil {
@@ -96,6 +100,7 @@ func (s *Store) SpendAIEmails(ctx context.Context, tenantID int64, at time.Time,
 // FirstCleanupUsed returns how much of its one-time first-cleanup grant the tenant's cleanup
 // checks have used: emails a model decided on keys the operator holds. It never resets.
 func (s *Store) FirstCleanupUsed(ctx context.Context, tenantID int64) (int, error) {
+	ctx = WithTenant(ctx, tenantID)
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT emails FROM first_cleanup WHERE tenant_id = ?`, tenantID).Scan(&n)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -112,6 +117,7 @@ func (s *Store) FirstCleanupUsed(ctx context.Context, tenantID int64) (int, erro
 // is used, else against the month's AI-sorted emails. The grant is taken in one statement, so
 // checks running at once never take more than grant of it. fromGrant reports which it was.
 func (s *Store) SpendCleanupEmail(ctx context.Context, tenantID int64, at time.Time, grant int) (fromGrant bool, err error) {
+	ctx = WithTenant(ctx, tenantID)
 	if grant > 0 {
 		res, err := s.db.ExecContext(ctx,
 			`INSERT INTO first_cleanup (tenant_id, emails) VALUES (?, 1)
@@ -129,7 +135,7 @@ func (s *Store) SpendCleanupEmail(ctx context.Context, tenantID int64, at time.T
 // meter counts, in tx, the message's email against its tenant's allowance for the month of
 // at, unless it was counted before.
 func meter(ctx context.Context, tx *txn, messageID, at int64) error {
-	res, err := tx.ExecContext(ctx, `UPDATE messages SET metered = 1 WHERE id = ? AND metered = 0`, messageID)
+	res, err := tx.ExecContext(ctx, `UPDATE messages SET metered = TRUE WHERE id = ? AND metered = FALSE`, messageID)
 	if err != nil {
 		return fmt.Errorf("count AI-sorted email: %w", err)
 	}
@@ -138,7 +144,7 @@ func meter(ctx context.Context, tx *txn, messageID, at int64) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO ai_emails (tenant_id, month, emails)
-		 SELECT a.tenant_id, ?, 1 FROM messages m JOIN accounts a ON a.id = m.account_id WHERE m.id = ?
+		 SELECT a.tenant_id, CAST(? AS TEXT), 1 FROM messages m JOIN accounts a ON a.id = m.account_id WHERE m.id = ?
 		 ON CONFLICT (tenant_id, month) DO UPDATE SET emails = ai_emails.emails + 1`, Month(time.Unix(at, 0)), messageID); err != nil {
 		return fmt.Errorf("count AI-sorted email: %w", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +12,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
+	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
 )
 
 var testMaster = bytes.Repeat([]byte{7}, 32)
@@ -167,11 +167,7 @@ func TestMigrationModuleMark(t *testing.T) {
 		t.Fatal(err)
 	}
 	oneClick, _ := res.LastInsertId()
-	fsys, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.SQLite())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,6 +252,7 @@ func TestOwnAddresses(t *testing.T) {
 }
 
 func TestAccountSecretIsEncrypted(t *testing.T) {
+	sqliteOnly(t, "reads the SQLite database and WAL files on disk")
 	ctx := t.Context()
 	dir := t.TempDir()
 	db, err := Open(ctx, dir)

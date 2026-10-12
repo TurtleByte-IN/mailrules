@@ -107,6 +107,8 @@ func or(d, def time.Duration) time.Duration {
 func (s *Supervisor) Run(ctx context.Context) {
 	s.mu.Lock()
 	byModule := s.Account.Module || s.Account.OAuth
+	// Everything the mailbox's work has the store do is its tenant's (store.WithTenant).
+	ctx = store.WithTenant(ctx, s.Account.TenantID)
 	s.mu.Unlock()
 	backoff := or(s.BackoffMin, time.Second)
 	for ctx.Err() == nil {

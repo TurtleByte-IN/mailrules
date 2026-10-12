@@ -1,11 +1,13 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
@@ -49,6 +51,7 @@ type Filed struct {
 // email without a Message-ID or a sender cannot be followed and is left out. The rule is
 // the decision's, or, for a fix made in MailRules, the rule it was fixed to.
 func (s *Store) FiledSince(ctx context.Context, accountID, since, afterID int64, limit int) ([]Filed, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT a.id, a.message_id, m.message_id, m.from_addr, a.before, a.after, a.created_at,
 		        COALESCE(d.rule_id, c.right_rule_id, 0), COALESCE(d.rule_name, r.name, '')
@@ -91,6 +94,7 @@ func (s *Store) FiledSince(ctx context.Context, accountID, since, afterID int64,
 // uid) of the account: it is where the executor last put a row other than exceptMessage
 // (a cleanup that sorted the same email under a row of its own).
 func (s *Store) LeftByMailRules(ctx context.Context, accountID int64, folder string, uidValidity, uid uint32, exceptMessage int64) (bool, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	var n int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM messages WHERE account_id = ? AND cur_folder = ? AND cur_uidvalidity = ? AND cur_uid = ? AND id <> ?`,
@@ -139,6 +143,7 @@ func (m Move) target() string {
 // written as already handed over: the module never gets it. It returns the move's id, or
 // 0 when nothing was written.
 func (s *Store) RecordMove(ctx context.Context, m Move) (int64, error) {
+	ctx = WithTenant(ctx, m.TenantID)
 	var handed any
 	if !m.Person {
 		handed = m.CreatedAt
@@ -147,7 +152,9 @@ func (s *Store) RecordMove(ctx context.Context, m Move) (int64, error) {
 	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO moves (tenant_id, account_id, message_id, action_id, from_addr, rule_id, rule_name, filed_folder,
 		   chosen_folder, inbox, person, filed_at, created_at, next_at, handed_at)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS BIGINT),
+		        CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BOOLEAN), CAST(? AS BOOLEAN), CAST(? AS BIGINT),
+		        CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS BIGINT)
 		 WHERE EXISTS (SELECT 1 FROM actions WHERE id = ? AND status = 'done')
 		 ON CONFLICT DO NOTHING RETURNING id`,
 		m.TenantID, m.AccountID, m.MessageID, m.ActionID, m.From, null(m.RuleID), m.RuleName, m.Filed, m.Chosen, m.Inbox, m.Person,
@@ -163,15 +170,16 @@ func (s *Store) RecordMove(ctx context.Context, m Move) (int64, error) {
 
 const moveCols = `v.id, v.tenant_id, v.account_id, v.message_id, v.action_id, v.from_addr, COALESCE(v.rule_id, 0), v.rule_name,
 	v.filed_folder, v.chosen_folder, v.inbox, v.person, v.filed_at, v.created_at, v.attempts, acc.preset, acc.username, acc.label,
-	(SELECT COUNT(*) FROM moves o WHERE o.tenant_id = v.tenant_id AND o.from_addr = v.from_addr AND o.person = 1
-	   AND o.inbox = v.inbox AND (v.inbox = 1 OR o.chosen_folder = v.chosen_folder) AND o.id <= v.id)`
+	(SELECT COUNT(*) FROM moves o WHERE o.tenant_id = v.tenant_id AND o.from_addr = v.from_addr AND o.person = TRUE
+	   AND o.inbox = v.inbox AND (v.inbox = TRUE OR o.chosen_folder = v.chosen_folder) AND o.id <= v.id)`
 
-func scanMove(row interface{ Scan(...any) error }) (Move, error) {
+// scanMove reads moveCols, then into more whatever the query selects after them.
+func scanMove(row interface{ Scan(...any) error }, more ...any) (Move, error) {
 	var m Move
 	var acct Account
-	if err := row.Scan(&m.ID, &m.TenantID, &m.AccountID, &m.MessageID, &m.ActionID, &m.From, &m.RuleID, &m.RuleName,
+	if err := row.Scan(append([]any{&m.ID, &m.TenantID, &m.AccountID, &m.MessageID, &m.ActionID, &m.From, &m.RuleID, &m.RuleName,
 		&m.Filed, &m.Chosen, &m.Inbox, &m.Person, &m.FiledAt, &m.CreatedAt, &m.Attempts, &acct.Preset, &acct.Username, &acct.Label,
-		&m.Count); err != nil {
+		&m.Count}, more...)...); err != nil {
 		return Move{}, err
 	}
 	m.Mailbox = acct.Label
@@ -184,29 +192,59 @@ func scanMove(row interface{ Scan(...any) error }) (Move, error) {
 // WaitingMoves lists the person's moves the module has not taken yet that are due at now,
 // oldest first: at most limit.
 func (s *Store) WaitingMoves(ctx context.Context, now int64, limit int) ([]Move, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+moveCols+` FROM moves v JOIN accounts acc ON acc.id = v.account_id
-		 WHERE v.handed_at IS NULL AND v.next_at <= ? ORDER BY v.next_at, v.id LIMIT ?`, now, limit)
+	var waiting []outboxRow[Move]
+	err := s.eachTenant(ctx, tenantsMoves, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT `+moveCols+`, v.next_at FROM moves v JOIN accounts acc ON acc.id = v.account_id
+			 WHERE v.handed_at IS NULL AND v.next_at <= ? ORDER BY v.next_at, v.id LIMIT ?`, now, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var next int64
+			m, err := scanMove(rows, &next)
+			if err != nil {
+				return err
+			}
+			waiting = append(waiting, outboxRow[Move]{row: m, next: next, id: m.ID})
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list waiting moves: %w", err)
 	}
-	defer rows.Close()
-	var out []Move
-	for rows.Next() {
-		m, err := scanMove(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list waiting moves: %w", err)
+	return firstDue(waiting, limit), nil
+}
+
+// outboxRow is a row of an outbox (moves, notices, removed mailboxes) as one tenant's query
+// listed it, with what it was ordered by: when it is due, then its id.
+type outboxRow[T any] struct {
+	row  T
+	next int64
+	id   int64
+}
+
+// firstDue puts the rows of an outbox read tenant by tenant in the order one query over
+// every tenant gives, by when due then by id, and keeps the first limit (all of them when
+// limit is negative, as SQLite's LIMIT does).
+func firstDue[T any](rows []outboxRow[T], limit int) []T {
+	slices.SortStableFunc(rows, func(a, b outboxRow[T]) int {
+		return cmp.Or(cmp.Compare(a.next, b.next), cmp.Compare(a.id, b.id))
+	})
+	var out []T
+	for _, r := range rows {
+		if limit >= 0 && len(out) >= limit {
+			break
 		}
-		out = append(out, m)
+		out = append(out, r.row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list waiting moves: %w", err)
-	}
-	return out, nil
+	return out
 }
 
 // MoveHanded records that the module took a move.
 func (s *Store) MoveHanded(ctx context.Context, id, now int64) error {
+	ctx = s.tenantFor(ctx, ofMove, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE moves SET handed_at = ? WHERE id = ?`, now, id); err != nil {
 		return fmt.Errorf("move handed: %w", err)
 	}
@@ -215,6 +253,7 @@ func (s *Store) MoveHanded(ctx context.Context, id, now int64) error {
 
 // MoveRetry records that the module refused a move, to be handed over again at next.
 func (s *Store) MoveRetry(ctx context.Context, id, next int64) error {
+	ctx = s.tenantFor(ctx, ofMove, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE moves SET attempts = attempts + 1, next_at = ? WHERE id = ?`, next, id); err != nil {
 		return fmt.Errorf("move retry: %w", err)
 	}
@@ -242,12 +281,13 @@ type Question struct {
 // changed. A question already answered is ErrAnswered; a move that is not kept, or not the
 // person's, is ErrNotFound.
 func (s *Store) AskMove(ctx context.Context, moveID, now int64) (Question, bool, error) {
+	ctx = s.tenantFor(ctx, ofMove, moveID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Question{}, false, fmt.Errorf("ask about move: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	m, err := scanMove(tx.QueryRowContext(ctx, `SELECT `+moveCols+` FROM moves v JOIN accounts acc ON acc.id = v.account_id WHERE v.id = ? AND v.person = 1`, moveID))
+	m, err := scanMove(tx.QueryRowContext(ctx, `SELECT `+moveCols+` FROM moves v JOIN accounts acc ON acc.id = v.account_id WHERE v.id = ? AND v.person = TRUE`, moveID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Question{}, false, ErrNotFound
 	}
@@ -256,7 +296,7 @@ func (s *Store) AskMove(ctx context.Context, moveID, now int64) (Question, bool,
 	}
 	var emails int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM moves WHERE tenant_id = ? AND from_addr = ? AND person = 1 AND inbox = ? AND (inbox = 1 OR chosen_folder = ?)`,
+		`SELECT COUNT(*) FROM moves WHERE tenant_id = ? AND from_addr = ? AND person = TRUE AND inbox = ? AND (inbox = TRUE OR chosen_folder = ?)`,
 		m.TenantID, m.From, m.Inbox, m.Chosen).Scan(&emails); err != nil {
 		return Question{}, false, fmt.Errorf("ask about move: %w", err)
 	}
@@ -319,6 +359,7 @@ func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 
 // OpenQuestions lists the open questions about mailboxes the viewer sees, newest first.
 func (s *Store) OpenQuestions(ctx context.Context, v Viewer) ([]Question, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+questionCols+` WHERE q.tenant_id = ? AND q.status = ? AND `+inVisible("q.account_id")+` ORDER BY q.asked_at DESC, q.id DESC`,
 		v.TenantID, QuestionOpen, v.tenantArg(), v.userArg())
@@ -347,6 +388,7 @@ func (s *Store) OpenQuestions(ctx context.Context, v Viewer) ([]Question, error)
 // No stores nothing more. Either way the question is not asked again. A question that is
 // not open, or not one the viewer sees, is ErrNotFound.
 func (s *Store) AnswerQuestion(ctx context.Context, v Viewer, id int64, yes bool, now int64) (Question, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Question{}, fmt.Errorf("answer question: %w", err)

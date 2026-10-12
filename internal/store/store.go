@@ -1,10 +1,11 @@
-// Package store owns the SQLite database: opening it, migrating it and, later, the repositories.
+// Package store owns the database: opening it, migrating it and the repositories over it.
+// Self-host runs on SQLite, one file in the data directory; the hosted build can run on
+// Postgres, where row-level security keeps each tenant's rows to that tenant (MAI-150).
 package store
 
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -12,18 +13,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
+
+	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
 )
 
-//go:embed migrations/*.sql
-var migrations embed.FS
-
-// Open opens (creating if needed) the database in dataDir, in WAL mode. Every transaction
-// not begun read-only begins IMMEDIATE, holding the write lock from its first statement:
-// a deferred one that read first could not write once another connection had committed
-// meanwhile (SQLITE_BUSY_SNAPSHOT), which mailbox supervisors do all the time. Begin one
-// that only reads with sql.TxOptions{ReadOnly: true}, so that it waits for no writer.
+// Open opens (creating if needed) the SQLite database in dataDir, in WAL mode. Every
+// transaction not begun read-only begins IMMEDIATE, holding the write lock from its first
+// statement: a deferred one that read first could not write once another connection had
+// committed meanwhile (SQLITE_BUSY_SNAPSHOT), which mailbox supervisors do all the time.
+// Begin one that only reads with sql.TxOptions{ReadOnly: true}, so that it waits for no
+// writer.
 func Open(ctx context.Context, dataDir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -33,6 +36,21 @@ func Open(ctx context.Context, dataDir string) (*sql.DB, error) {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	return db, nil
+}
+
+// OpenPostgres connects to the Postgres database at dsn (a postgres:// URL or key=value
+// string). The role it signs in as must not own the tables nor bypass row-level security:
+// the store relies on the policies to keep tenants apart. Migrations run as the owner.
+func OpenPostgres(ctx context.Context, dsn string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -60,13 +78,34 @@ func dataSource(path string) (string, error) {
 	return u.String(), nil
 }
 
-// Migrate applies every embedded migration that has not run yet.
-func Migrate(ctx context.Context, db *sql.DB) error {
-	fsys, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		return fmt.Errorf("load migrations: %w", err)
+// dialectOf is the SQL dialect of the database behind db, told by its driver.
+func dialectOf(db *sql.DB) dialect {
+	if _, ok := db.Driver().(*stdlib.Driver); ok {
+		return dialectPostgres
 	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	return dialectSQLite
+}
+
+// Migrate applies every embedded migration of the database's dialect that has not run yet.
+// On Postgres it runs as the role that owns the tables, and holds a session lock so two
+// processes starting at once do not both migrate.
+func Migrate(ctx context.Context, db *sql.DB) error {
+	var (
+		d    goose.Dialect
+		fsys fs.FS
+		opts []goose.ProviderOption
+	)
+	switch dialectOf(db) {
+	case dialectPostgres:
+		locker, err := lock.NewPostgresSessionLocker()
+		if err != nil {
+			return fmt.Errorf("load migrations: %w", err)
+		}
+		d, fsys, opts = goose.DialectPostgres, migrations.Postgres(), []goose.ProviderOption{goose.WithSessionLocker(locker)}
+	default:
+		d, fsys = goose.DialectSQLite3, migrations.SQLite()
+	}
+	p, err := goose.NewProvider(d, db, fsys, opts...)
 	if err != nil {
 		return fmt.Errorf("load migrations: %w", err)
 	}

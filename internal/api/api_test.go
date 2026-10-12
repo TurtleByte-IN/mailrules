@@ -305,10 +305,13 @@ func TestOpsAndSecurityHeaders(t *testing.T) {
 	if strings.Contains(metrics, "/api/accounts/123") {
 		t.Error("/metrics labels a request by its raw path")
 	}
-	// Not ready once the database is gone.
-	_ = e.db.Close()
-	if got := e.do(http.MethodGet, "/readyz", ""); got.status != http.StatusServiceUnavailable {
-		t.Errorf("readyz with the database closed = %d, want 503", got.status)
+	// Not ready once the database is gone. On Postgres e.db is the test's superuser handle,
+	// not the store's pool, so closing it would prove nothing there.
+	if !storetest.Postgres() {
+		_ = e.db.Close()
+		if got := e.do(http.MethodGet, "/readyz", ""); got.status != http.StatusServiceUnavailable {
+			t.Errorf("readyz with the database closed = %d, want 503", got.status)
+		}
 	}
 	if got := e.do(http.MethodGet, "/healthz", ""); got.status != http.StatusOK {
 		t.Errorf("healthz with the database closed = %d, want 200", got.status)

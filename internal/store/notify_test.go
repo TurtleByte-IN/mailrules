@@ -59,10 +59,13 @@ func TestDestinations(t *testing.T) {
 	if _, err := s.DestinationSecret(ctx, make([]byte, 32), d.ID); err == nil {
 		t.Error("opened with the wrong master key")
 	}
-	var dump string
-	if err := db.QueryRowContext(ctx, `SELECT name || kind || url_hint || hex(secret_enc) || hex(dek_enc) FROM notify_destinations`).Scan(&dump); err != nil {
+	var name, kind, hint string
+	var secretEnc, dekEnc []byte
+	if err := db.QueryRowContext(ctx, `SELECT name, kind, url_hint, secret_enc, dek_enc FROM notify_destinations`).
+		Scan(&name, &kind, &hint, &secretEnc, &dekEnc); err != nil {
 		t.Fatal(err)
 	}
+	dump := name + kind + hint + fmt.Sprintf("%X%X", secretEnc, dekEnc)
 	if strings.Contains(dump, "topsecret") || strings.Contains(strings.ToUpper(dump), strings.ToUpper(fmt.Sprintf("%x", "topsecret"))) {
 		t.Error("the address is stored in clear")
 	}
@@ -150,13 +153,13 @@ func TestNoticeLifecycle(t *testing.T) {
 	other, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "B", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/b"}, 1)
 	notice := func(dest, at int64) int64 {
 		t.Helper()
-		res, err := db.ExecContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
-			VALUES (?, ?, ?, 7, NULL, 'Receipts', '{"mailbox":"me@example.test","actions":["move"],"folder":"Receipts","from":"a@b.test","subject":"Hi"}', ?, ?)`,
-			u.TenantID, dest, a.ID, at, at)
-		if err != nil {
+		var id int64
+		if err := db.QueryRowContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
+			VALUES (?, ?, ?, 7, NULL, 'Receipts', '{"mailbox":"me@example.test","actions":["move"],"folder":"Receipts","from":"a@b.test","subject":"Hi"}', ?, ?)
+			RETURNING id`,
+			u.TenantID, dest, a.ID, at, at).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		id, _ := res.LastInsertId()
 		return id
 	}
 	first, second, later := notice(d.ID, 100), notice(d.ID, 200), notice(other.ID, 900)

@@ -32,6 +32,7 @@ func mustRule(t *testing.T, s *Store, r rules.Rule) rules.Rule {
 // that deletes it: a failed delete leaves the rules as they were. Rules are tenant-owned,
 // so a teammate's rule naming the mailbox is rewritten too.
 func TestDeleteAccountKeepsRules(t *testing.T) {
+	sqliteOnly(t, "fails the delete with a SQLite trigger (RAISE)")
 	s, db := open(t)
 	ctx := t.Context()
 	x := newAccount(t, s, "x@icloud.com", "pw")

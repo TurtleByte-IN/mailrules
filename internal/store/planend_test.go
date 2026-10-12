@@ -137,10 +137,10 @@ func TestDeleteTenantSecrets(t *testing.T) {
 	team := w.leaver.TenantID
 	// The leaver's shared mailbox is a one-click one, their private one a module's sign-in
 	// form added; the teammate's is an ordinary one.
-	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET oauth = 1 WHERE id = ?`, w.leaverShared); err != nil {
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET oauth = TRUE WHERE id = ?`, w.leaverShared); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = 1 WHERE id = ?`, w.leaverPriv); err != nil {
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = TRUE WHERE id = ?`, w.leaverPriv); err != nil {
 		t.Fatal(err)
 	}
 	secretsAt := end + EndedSecretsDays*day

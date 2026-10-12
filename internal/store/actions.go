@@ -65,6 +65,7 @@ type Action struct {
 
 // InsertAction writes an action row and returns its id.
 func (s *Store) InsertAction(ctx context.Context, a Action) (int64, error) {
+	ctx = s.tenantFor(ctx, ofAccount, a.AccountID)
 	before, err := json.Marshal(a.Before)
 	if err != nil {
 		return 0, fmt.Errorf("encode snapshot: %w", err)
@@ -101,6 +102,7 @@ func setLocation(ctx context.Context, tx *txn, messageID int64, ref mail.MsgRef)
 // that stopped the run): the run's notices are then queued in the same transaction
 // (queueNotices), so they exist exactly when the actions they tell of do.
 func (s *Store) FinishAction(ctx context.Context, a Action, last bool) error {
+	ctx = s.tenantFor(ctx, ofAccount, a.AccountID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("finish action: %w", err)
@@ -133,6 +135,7 @@ func (s *Store) FinishAction(ctx context.Context, a Action, last bool) error {
 
 // MarkActionUndone marks a done action undone and records where its message is now.
 func (s *Store) MarkActionUndone(ctx context.Context, a Action, restored mail.MsgRef, now int64) error {
+	ctx = s.tenantFor(ctx, ofAccount, a.AccountID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("mark action undone: %w", err)
@@ -150,9 +153,12 @@ func (s *Store) MarkActionUndone(ctx context.Context, a Action, restored mail.Ms
 	return nil
 }
 
-const actionCols = `id, COALESCE(decision_id, 0), COALESCE(batch_id, 0), message_id, account_id, kind,
-	COALESCE(json_extract(params, '$.folder'), ''), before, COALESCE(after, ''), status, COALESCE(error, ''),
+// actionCols are the columns scanAction reads, from actions (unaliased).
+func (s *Store) actionCols() string {
+	return `id, COALESCE(decision_id, 0), COALESCE(batch_id, 0), message_id, account_id, kind,
+	COALESCE(` + s.db.d.jsonText("params", "folder") + `, ''), before, COALESCE(after, ''), status, COALESCE(error, ''),
 	created_at, COALESCE(undone_at, 0)`
+}
 
 func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 	var a Action
@@ -176,7 +182,8 @@ func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 // Action returns one action, or ErrNotFound. It does not look at who asks: a request
 // reads VisibleAction.
 func (s *Store) Action(ctx context.Context, id int64) (Action, error) {
-	a, err := scanAction(s.db.QueryRowContext(ctx, `SELECT `+actionCols+` FROM actions WHERE id = ?`, id))
+	ctx = s.tenantFor(ctx, ofAction, id)
+	a, err := scanAction(s.db.QueryRowContext(ctx, `SELECT `+s.actionCols()+` FROM actions WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Action{}, ErrNotFound
 	}
@@ -188,8 +195,9 @@ func (s *Store) Action(ctx context.Context, id int64) (Action, error) {
 
 // VisibleAction returns one action on a mailbox the viewer sees, or ErrNotFound.
 func (s *Store) VisibleAction(ctx context.Context, v Viewer, id int64) (Action, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	a, err := scanAction(s.db.QueryRowContext(ctx,
-		`SELECT `+actionCols+` FROM actions WHERE id = ? AND `+inVisible("account_id"), id, v.tenantArg(), v.userArg()))
+		`SELECT `+s.actionCols()+` FROM actions WHERE id = ? AND `+inVisible("account_id"), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Action{}, ErrNotFound
 	}
@@ -198,11 +206,6 @@ func (s *Store) VisibleAction(ctx context.Context, v Viewer, id int64) (Action, 
 	}
 	return a, nil
 }
-
-const (
-	actionsOfMessage = `SELECT ` + actionCols + ` FROM actions WHERE message_id = ? ORDER BY id`
-	actionsOfBatch   = `SELECT ` + actionCols + ` FROM actions WHERE batch_id = ? ORDER BY id`
-)
 
 func (s *Store) listActions(ctx context.Context, query string, args ...any) ([]Action, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -226,20 +229,23 @@ func (s *Store) listActions(ctx context.Context, query string, args ...any) ([]A
 
 // MessageActions lists every action taken on a message, oldest first.
 func (s *Store) MessageActions(ctx context.Context, messageID int64) ([]Action, error) {
-	return s.listActions(ctx, actionsOfMessage, messageID)
+	ctx = s.tenantFor(ctx, ofMessage, messageID)
+	return s.listActions(ctx, `SELECT `+s.actionCols()+` FROM actions WHERE message_id = ? ORDER BY id`, messageID)
 }
 
 // BatchActions lists a batch's actions, oldest first, whoever's mailbox they are on: for
 // internal work. A request reads VisibleBatchActions.
 func (s *Store) BatchActions(ctx context.Context, batchID int64) ([]Action, error) {
-	return s.listActions(ctx, actionsOfBatch, batchID)
+	ctx = s.tenantFor(ctx, ofBatch, batchID)
+	return s.listActions(ctx, `SELECT `+s.actionCols()+` FROM actions WHERE batch_id = ? ORDER BY id`, batchID)
 }
 
 // VisibleBatchActions lists a batch's actions on the mailboxes the viewer sees, oldest
 // first. A tenant's batch without a mailbox (the day's live batch, a correction or an undo)
 // can hold actions on mailboxes of several people; each sees only theirs and shared ones.
 func (s *Store) VisibleBatchActions(ctx context.Context, v Viewer, batchID int64) ([]Action, error) {
-	return s.listActions(ctx, `SELECT `+actionCols+` FROM actions WHERE batch_id = ? AND `+inVisible("account_id")+` ORDER BY id`,
+	ctx = WithTenant(ctx, v.TenantID)
+	return s.listActions(ctx, `SELECT `+s.actionCols()+` FROM actions WHERE batch_id = ? AND `+inVisible("account_id")+` ORDER BY id`,
 		batchID, v.tenantArg(), v.userArg())
 }
 
@@ -308,11 +314,14 @@ func insertCleanupBatch(ctx context.Context, q querier, c CleanupBatch, runID an
 	if c.ScanLimit > 0 {
 		matched = c.ScanMatched
 	}
-	// The batch belongs to the tenant of the mailbox it sorts.
+	// The batch belongs to the tenant of the mailbox it sorts. The casts give Postgres the
+	// types of values it cannot tell from a select list.
 	var id int64
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO batches (tenant_id, kind, status, total, account_id, folder, since, scan_limit, scan_matched, run_id, created_at)
-		 SELECT tenant_id, ?, ?, ?, id, ?, ?, ?, ?, ?, ? FROM accounts WHERE id = ? RETURNING id`,
+		 SELECT tenant_id, CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), id, CAST(? AS TEXT), CAST(? AS BIGINT),
+		        CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS BIGINT)
+		 FROM accounts WHERE id = ? RETURNING id`,
 		BatchCleanup, BatchRunning, c.Total, c.Folder, null(c.Since), null(c.ScanLimit), matched, runID, now, c.AccountID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("create cleanup batch: account %d: %w", c.AccountID, ErrNotFound)
@@ -328,6 +337,7 @@ func insertCleanupBatch(ctx context.Context, q querier, c CleanupBatch, runID an
 // scanLimit and scanMatched say how much mail the check behind it covered: the most emails it
 // was allowed and how many the range held before that cut. scanLimit 0 records nothing.
 func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder string, since int64, scanLimit, scanMatched, total int, now int64) (Batch, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	id, err := insertCleanupBatch(ctx, s.db, CleanupBatch{AccountID: accountID, Folder: folder, Since: since, ScanLimit: scanLimit, ScanMatched: scanMatched, Total: total}, nil, now)
 	if err != nil {
 		return Batch{}, err
@@ -339,6 +349,10 @@ func (s *Store) CreateCleanupBatch(ctx context.Context, accountID int64, folder 
 // mailboxes, all or none: they share a RunID, the id of the first, so they read back as one
 // run. A run of one mailbox is a plain cleanup batch with no RunID.
 func (s *Store) CreateCleanupRun(ctx context.Context, cs []CleanupBatch, now int64) ([]Batch, error) {
+	if len(cs) == 0 {
+		return []Batch{}, nil
+	}
+	ctx = s.tenantFor(ctx, ofAccount, cs[0].AccountID) // a run's mailboxes are one tenant's
 	if len(cs) == 1 {
 		b, err := s.CreateCleanupBatch(ctx, cs[0].AccountID, cs[0].Folder, cs[0].Since, cs[0].ScanLimit, cs[0].ScanMatched, cs[0].Total, now)
 		return []Batch{b}, err
@@ -376,6 +390,7 @@ func (s *Store) CreateCleanupRun(ctx context.Context, cs []CleanupBatch, now int
 // AddBatchProgress records that a cleanup batch handled more emails, passed over some that
 // had moved, and what their model calls cost.
 func (s *Store) AddBatchProgress(ctx context.Context, id int64, done, skipped, tokens int, costUSD float64) error {
+	ctx = s.tenantFor(ctx, ofBatch, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET done = done + ?, skipped = skipped + ?, tokens = tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`,
 		done, skipped, tokens, costUSD, id); err != nil {
 		return fmt.Errorf("add batch progress: %w", err)
@@ -386,16 +401,19 @@ func (s *Store) AddBatchProgress(ctx context.Context, id int64, done, skipped, t
 // FailRunningBatches marks every batch still running as failed. The daemon calls it at
 // startup: a batch that was running when the daemon stopped will never finish.
 func (s *Store) FailRunningBatches(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET status = ? WHERE status = ?`, BatchFailed, BatchRunning); err != nil {
-		return fmt.Errorf("fail running batches: %w", err)
-	}
-	return nil
+	return s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		if _, err := s.db.ExecContext(ctx, `UPDATE batches SET status = ? WHERE status = ?`, BatchFailed, BatchRunning); err != nil {
+			return fmt.Errorf("fail running batches: %w", err)
+		}
+		return nil
+	})
 }
 
 // Batches lists the batches the viewer sees, newest first: of one kind, or of every kind
 // when kind is empty. before is the cursor (only batches with a smaller id; 0 = from the
 // newest).
 func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64, limit int) ([]Batch, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+batchCols+` FROM batches WHERE `+visibleBatch()+` AND (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`,
 		kind, before, limit, v.tenantArg(), v.userArg())
@@ -419,6 +437,7 @@ func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64
 
 // BatchActionCounts counts a batch's own actions on the mailboxes the viewer sees, by status.
 func (s *Store) BatchActionCounts(ctx context.Context, v Viewer, batchID int64) (map[string]int, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT status, COUNT(*) FROM actions WHERE batch_id = ? AND `+inVisible("account_id")+` GROUP BY status`, batchID, v.tenantArg(), v.userArg())
 	if err != nil {
@@ -442,6 +461,7 @@ func (s *Store) BatchActionCounts(ctx context.Context, v Viewer, batchID int64) 
 
 // CreateBatch opens a batch of the tenant, with no mailbox, and returns its id.
 func (s *Store) CreateBatch(ctx context.Context, tenantID int64, kind, status string, now int64) (int64, error) {
+	ctx = WithTenant(ctx, tenantID)
 	var id int64
 	if err := s.db.QueryRowContext(ctx, `INSERT INTO batches (tenant_id, kind, status, created_at) VALUES (?, ?, ?, ?) RETURNING id`,
 		tenantID, kind, status, now).Scan(&id); err != nil {
@@ -453,6 +473,7 @@ func (s *Store) CreateBatch(ctx context.Context, tenantID int64, kind, status st
 // Batch returns one batch, or ErrNotFound. It does not look at who asks: a request reads
 // VisibleBatch.
 func (s *Store) Batch(ctx context.Context, id int64) (Batch, error) {
+	ctx = s.tenantFor(ctx, ofBatch, id)
 	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Batch{}, ErrNotFound
@@ -465,6 +486,7 @@ func (s *Store) Batch(ctx context.Context, id int64) (Batch, error) {
 
 // VisibleBatch returns one batch the viewer sees, or ErrNotFound.
 func (s *Store) VisibleBatch(ctx context.Context, v Viewer, id int64) (Batch, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ? AND `+visibleBatch(), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Batch{}, ErrNotFound
@@ -477,6 +499,7 @@ func (s *Store) VisibleBatch(ctx context.Context, v Viewer, id int64) (Batch, er
 
 // SetBatchStatus moves a batch to a status.
 func (s *Store) SetBatchStatus(ctx context.Context, id int64, status string) error {
+	ctx = s.tenantFor(ctx, ofBatch, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET status = ? WHERE id = ?`, status, id); err != nil {
 		return fmt.Errorf("set batch status: %w", err)
 	}
@@ -487,16 +510,27 @@ func (s *Store) SetBatchStatus(ctx context.Context, id int64, status string) err
 // now's day (UTC), creating it on the day's first action, so "undo today" is one batch
 // undo. Once a day's batch has been undone, later mail that day starts a new one.
 func (s *Store) LiveBatch(ctx context.Context, tenantID int64, now time.Time) (int64, error) {
+	ctx = WithTenant(ctx, tenantID)
 	day := now.UTC().Truncate(24 * time.Hour).Unix()
 	const open = `tenant_id = ?1 AND kind = 'live' AND status <> 'undone' AND created_at >= ?2`
-	// One statement, so two accounts' first actions of the day cannot both create it.
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO batches (tenant_id, kind, status, created_at) SELECT ?1, 'live', 'done', ?3 WHERE NOT EXISTS (SELECT 1 FROM batches WHERE `+open+`)`,
+	// One write transaction, which holds the database's write lock (on Postgres, the
+	// tenant's), so two accounts' first actions of the day cannot both create it.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("open live batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO batches (tenant_id, kind, status, created_at) SELECT CAST(?1 AS BIGINT), 'live', 'done', CAST(?3 AS BIGINT)
+		 WHERE NOT EXISTS (SELECT 1 FROM batches WHERE `+open+`)`,
 		tenantID, day, now.Unix()); err != nil {
 		return 0, fmt.Errorf("open live batch: %w", err)
 	}
 	var id int64
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM batches WHERE `+open+` ORDER BY id DESC LIMIT 1`, tenantID, day).Scan(&id); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM batches WHERE `+open+` ORDER BY id DESC LIMIT 1`, tenantID, day).Scan(&id); err != nil {
+		return 0, fmt.Errorf("open live batch: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("open live batch: %w", err)
 	}
 	return id, nil
@@ -569,6 +603,7 @@ func (s *Store) boolSetting(ctx context.Context, tenantID int64, key string, def
 
 // SetBatchProgress records how far a batch has come.
 func (s *Store) SetBatchProgress(ctx context.Context, id int64, total, done int) error {
+	ctx = s.tenantFor(ctx, ofBatch, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE batches SET total = ?, done = ? WHERE id = ?`, total, done, id); err != nil {
 		return fmt.Errorf("set batch progress: %w", err)
 	}
@@ -579,8 +614,9 @@ func (s *Store) SetBatchProgress(ctx context.Context, id int64, total, done int)
 // since that are still in effect, newest first: the ones "undo everything since" reverses.
 // With ruleID, only those a decision for that rule led to.
 func (s *Store) DoneActionsSince(ctx context.Context, v Viewer, ruleID, since int64) ([]Action, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	return s.listActions(ctx,
-		`SELECT `+actionCols+` FROM actions
+		`SELECT `+s.actionCols()+` FROM actions
 		 WHERE status = 'done' AND created_at >= ?1 AND `+inVisible("account_id")+`
 		   AND (?2 = 0 OR decision_id IN (SELECT id FROM decisions WHERE rule_id = ?2))
 		 ORDER BY id DESC`, since, ruleID, v.tenantArg(), v.userArg())

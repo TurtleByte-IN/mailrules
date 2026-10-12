@@ -38,14 +38,15 @@ func (w fworld) waiting(t *testing.T) []told {
 // removes the mailbox or deletes its secret, once per secret; a mailbox the person connected
 // with their own password never is.
 func TestRemovedMailboxesQueued(t *testing.T) {
+	sqliteOnly(t, "fails the delete with a SQLite trigger (RAISE)")
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
 	// The solo person's and the leaver's shared mailbox are one-click ones, the leaver's
 	// private one a sign-in form's; the rest are password mailboxes.
 	for id, set := range map[int64]string{
-		w.soloBox:      `oauth = 1, module = 1, preset = 'gmail'`,
-		w.leaverShared: `oauth = 1, module = 1, preset = 'outlook'`,
-		w.leaverPriv:   `module = 1, preset = 'proton'`,
+		w.soloBox:      `oauth = TRUE, module = TRUE, preset = 'gmail'`,
+		w.leaverShared: `oauth = TRUE, module = TRUE, preset = 'outlook'`,
+		w.leaverPriv:   `module = TRUE, preset = 'proton'`,
 	} {
 		if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET `+set+` WHERE id = ?`, id); err != nil {
 			t.Fatal(err)
@@ -114,7 +115,7 @@ func TestRemovedMailboxLifecycle(t *testing.T) {
 	w := forgetWorld(t)
 	s, ctx := w.s, t.Context()
 	for _, id := range []int64{w.soloBox, w.otherBox} {
-		if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = 1, preset = 'proton' WHERE id = ?`, id); err != nil {
+		if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = TRUE, preset = 'proton' WHERE id = ?`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -176,7 +177,7 @@ func TestRemovedMailboxLifecycle(t *testing.T) {
 		t.Errorf("rows left: %d, %v", n, err)
 	}
 	// A mailbox queued once the table is empty gets an ID never handed over before.
-	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = 1 WHERE id = ?`, w.mateBox); err != nil {
+	if _, err := w.db.ExecContext(ctx, `UPDATE accounts SET module = TRUE WHERE id = ?`, w.mateBox); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DeleteAccount(ctx, w.mateBox, fNow); err != nil {

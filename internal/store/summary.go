@@ -36,11 +36,12 @@ type Summary struct {
 // running or was cut off (status sending), after maxAttempts, or while the last failed
 // attempt is younger than its back-off: a minute after the first, doubling each time.
 func (s *Store) ClaimSummary(ctx context.Context, userID, dueAt, now int64, maxAttempts int) (id int64, attempt int, ok bool, err error) {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	err = s.db.QueryRowContext(ctx,
 		`INSERT INTO summaries (user_id, due_at, status, attempts, last_attempt_at) VALUES (?1, ?2, 'sending', 1, ?3)
 		 ON CONFLICT (user_id, due_at) DO UPDATE SET status = 'sending', attempts = summaries.attempts + 1, last_attempt_at = ?3
 		 WHERE summaries.status = 'failed' AND summaries.attempts < ?4
-		   AND summaries.last_attempt_at + (60 << (summaries.attempts - 1)) <= ?3
+		   AND summaries.last_attempt_at + (CAST(60 AS BIGINT) << CAST(summaries.attempts - 1 AS INTEGER)) <= ?3
 		 RETURNING id, attempts`, userID, dueAt, now, maxAttempts).Scan(&id, &attempt)
 	if errors.Is(err, sql.ErrNoRows) { // the conflict's WHERE left the row as it was
 		return 0, 0, false, nil
@@ -53,6 +54,7 @@ func (s *Store) ClaimSummary(ctx context.Context, userID, dueAt, now int64, maxA
 
 // FinishSummary records how a claimed attempt ended: sent, with the time it covered, or failed.
 func (s *Store) FinishSummary(ctx context.Context, id int64, sent bool, periodStart, periodEnd, now int64) error {
+	ctx = s.tenantFor(ctx, ofSummary, id)
 	var err error
 	if sent {
 		_, err = s.db.ExecContext(ctx, `UPDATE summaries SET status = 'sent', period_start = ?, period_end = ?, sent_at = ? WHERE id = ?`,
@@ -68,6 +70,7 @@ func (s *Store) FinishSummary(ctx context.Context, id int64, sent bool, periodSt
 
 // LastSentSummary returns the user's latest summary that went out, or ErrNotFound.
 func (s *Store) LastSentSummary(ctx context.Context, userID int64) (Summary, error) {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	var v Summary
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, due_at, status, attempts, last_attempt_at, period_start, period_end, sent_at
@@ -94,48 +97,63 @@ type SummaryEmail struct {
 }
 
 // windowLatest is latest (stats.go) with an end: every message of the mailboxes the viewer
-// sees whose latest decision was made in [?1, ?2). It binds the viewer as visibleAccounts
-// does.
+// sees whose latest decision was made in [@from, @to). The query binds the window by name
+// (windowArgs), and the viewer as visibleAccounts does.
 func windowLatest() string {
 	return `WITH latest AS (
 	SELECT m.id AS message_id, m.state AS state, d.rule_id AS rule_id,
 	       COALESCE((SELECT name FROM rules WHERE id = d.rule_id), d.rule_name, '') AS rule_name
 	FROM messages m
 	JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
-	WHERE ` + inVisible("m.account_id") + ` AND d.created_at >= ?1 AND d.created_at < ?2) `
+	WHERE ` + inVisible("m.account_id") + ` AND d.created_at >= @from AND d.created_at < @to) `
+}
+
+// windowArgs binds the window [from, to) of a summary, as @from and @to, with the viewer.
+func windowArgs(v Viewer, from, to int64) []any {
+	return []any{sql.Named("from", from), sql.Named("to", to), v.tenantArg(), v.userArg()}
 }
 
 // SummaryRules lists, per rule, the emails of the mailboxes the viewer sees a rule was
 // applied to (sorted or trashed, as the Overview counts them) whose latest decision was
 // made in [from, to), most first.
 func (s *Store) SummaryRules(ctx context.Context, v Viewer, from, to int64) ([]RuleUse, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	went := outcomeSQL("state", "latest.message_id")
 	return s.ruleUses(ctx, "summary rules",
 		windowLatest()+`SELECT rule_id, rule_name, COUNT(*), 0, 0 FROM latest
 		 WHERE rule_name <> '' AND ((`+went["sorted"]+`) OR (`+went["trashed"]+`))
-		 GROUP BY rule_id, rule_name ORDER BY 3 DESC, rule_name`, from, to, v.tenantArg(), v.userArg())
+		 GROUP BY rule_id, rule_name ORDER BY 3 DESC, rule_name`, windowArgs(v, from, to)...)
 }
 
 // SummaryTrashed lists the emails of the mailboxes the viewer sees trashed (or, in
 // dry-run, recorded as trashed) in [from, to) and not undone since, newest first, at most
-// limit of them, and how many there are.
+// limit of them, and how many there are. An email trashed more than once in the window is
+// listed once, as its latest such trash left it.
 func (s *Store) SummaryTrashed(ctx context.Context, v Viewer, from, to int64, limit int) ([]SummaryEmail, int, error) {
-	where := ` FROM actions x JOIN messages m ON m.id = x.message_id
-		 WHERE ` + inVisible("x.account_id") + ` AND x.kind = 'trash' AND x.status IN ('done', 'dry_run') AND x.created_at >= ?1 AND x.created_at < ?2`
+	ctx = WithTenant(ctx, v.TenantID)
+	// trashed is the condition on actions alias a of a trash in the window that counts.
+	trashed := func(a string) string {
+		return inVisible(a+".account_id") + ` AND ` + a + `.kind = 'trash' AND ` + a + `.status IN ('done', 'dry_run')
+		   AND ` + a + `.created_at >= @from AND ` + a + `.created_at < @to`
+	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT x.message_id)`+where, from, to, v.tenantArg(), v.userArg()).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN messages m ON m.id = x.message_id
+		 WHERE `+trashed("x"), windowArgs(v, from, to)...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("summary trashed: %w", err)
 	}
 	out, err := s.summaryEmails(ctx, "summary trashed",
 		`SELECT m.id, COALESCE(m.from_name, ''), COALESCE(m.from_addr, ''), COALESCE(m.subject, ''),
-		        COALESCE(json_extract(x.params, '$.folder'), json_extract(x.after, '$.folder'), ''), x.status = 'dry_run'`+where+`
-		 GROUP BY m.id ORDER BY MAX(x.id) DESC LIMIT ?3`, from, to, limit, v.tenantArg(), v.userArg())
+		        COALESCE(`+s.db.d.jsonText("x.params", "folder")+`, `+s.db.d.jsonText("x.after", "folder")+`, ''), x.status = 'dry_run'
+		 FROM actions x JOIN messages m ON m.id = x.message_id
+		 WHERE x.id IN (SELECT MAX(y.id) FROM actions y WHERE `+trashed("y")+` GROUP BY y.message_id)
+		 ORDER BY x.id DESC LIMIT ?`, append([]any{limit}, windowArgs(v, from, to)...)...)
 	return out, total, err
 }
 
 // SummaryReview lists the emails of the mailboxes the viewer sees waiting in Needs review
 // now, newest first, at most limit of them, and how many there are.
 func (s *Store) SummaryReview(ctx context.Context, v Viewer, limit int) ([]SummaryEmail, int, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	where := ` FROM messages m WHERE ` + inVisible("m.account_id") + ` AND m.state = 'review'`
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+where, v.tenantArg(), v.userArg()).Scan(&total); err != nil {
@@ -170,6 +188,7 @@ func (s *Store) summaryEmails(ctx context.Context, what, query string, args ...a
 // SummaryCost is what the model decisions made in [from, to) on the mail of the mailboxes
 // the viewer sees cost, and how many asked a model.
 func (s *Store) SummaryCost(ctx context.Context, v Viewer, from, to int64) (costUSD float64, calls int, err error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	err = s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(d.cost_usd), 0), `+countWhere(`COALESCE(d.model, '') <> ''`)+`
 		 FROM decisions d JOIN messages m ON m.id = d.message_id

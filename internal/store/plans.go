@@ -75,7 +75,7 @@ func (p PlanState) Ended() bool { return p.EndedAt != 0 }
 // the trial while no plan was bought and TrialDays have not passed since the tenant was
 // made, else ended. ErrNotFound for a tenant that does not exist.
 func (s *Store) TenantPlan(ctx context.Context, tenantID, now int64) (PlanState, error) {
-	return tenantPlan(ctx, s.db, tenantID, now)
+	return tenantPlan(WithTenant(ctx, tenantID), s.db, tenantID, now)
 }
 
 // tenantPlan is TenantPlan on q, the database or a transaction.
@@ -89,7 +89,7 @@ func tenantPlan(ctx context.Context, q querier, tenantID, now int64) (PlanState,
 	)
 	err := q.QueryRowContext(ctx,
 		`SELECT t.created_at, p.plan, COALESCE(p.interval, ''), COALESCE(p.status, ''), p.period_end, COALESCE(p.record, ''),
-		        p.ended_at, COALESCE(p.warned, 0), COALESCE(p.secrets_deleted, 0)
+		        p.ended_at, COALESCE(p.warned, 0), COALESCE(p.secrets_deleted, FALSE)
 		 FROM tenants t LEFT JOIN plans p ON p.tenant_id = t.id WHERE t.id = ?`, tenantID).
 		Scan(&created, &plan, &st.Interval, &st.Status, &periodEnd, &st.Record, &endedAt, &st.Warned, &st.SecretsDeleted)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -132,6 +132,7 @@ func (s *Store) SetPlan(ctx context.Context, tenantID int64, p Plan, now int64) 
 		!slices.Contains([]string{"", StatusActive, StatusPastDue, StatusCancelsAtPeriodEnd}, p.Status) {
 		return PlanState{}, PlanState{}, fmt.Errorf("set plan %q, interval %q, status %q: %w", p.Plan, p.Interval, p.Status, ErrBadPlan)
 	}
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return PlanState{}, PlanState{}, fmt.Errorf("set plan: %w", err)

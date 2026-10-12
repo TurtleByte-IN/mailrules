@@ -1,10 +1,12 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
@@ -51,6 +53,7 @@ type Forget struct {
 // stand. Their supervisors are stopped before ForgetIdentity runs. An identity nobody has
 // has none.
 func (s *Store) IdentityMailboxes(ctx context.Context, provider, subject string) ([]int64, error) {
+	ctx = s.tenantFor(ctx, ofIdentity, provider, subject)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("list identity mailboxes: %w", err)
@@ -110,6 +113,7 @@ func (s *Store) DeleteOwnAccount(ctx context.Context, provider, subject string, 
 
 // forget is ForgetIdentity, and DeleteOwnAccount when own.
 func (s *Store) forget(ctx context.Context, provider, subject string, now int64, own bool) (Forget, error) {
+	ctx = s.tenantFor(ctx, ofIdentity, provider, subject)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
@@ -178,8 +182,8 @@ func deleteSecrets(ctx context.Context, tx *txn, tenantID int64, accounts []int6
 	// one-click mailbox that is its refresh token.
 	for _, id := range accounts {
 		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ?,
-			status = CASE WHEN oauth = 1 OR module = 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
-			last_error = CASE WHEN oauth = 1 OR module = 1 THEN ? ELSE ? END, last_event_at = ?
+			status = CASE WHEN oauth = TRUE OR module = TRUE THEN 'reconnect_needed' ELSE 'auth_failed' END,
+			last_error = CASE WHEN oauth = TRUE OR module = TRUE THEN CAST(? AS TEXT) ELSE CAST(? AS TEXT) END, last_event_at = ?
 			WHERE id = ? AND length(secret_enc) > 0`, []byte{}, []byte{}, oauthMsg, msg, now, id); err != nil {
 			return fmt.Errorf("delete mailbox secret: %w", err)
 		}
@@ -208,23 +212,29 @@ type Forgotten struct {
 // DueForRemoval lists the forgotten users whose removal time has come by now, the earliest
 // first.
 func (s *Store) DueForRemoval(ctx context.Context, now int64) ([]Forgotten, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT f.user_id, u.tenant_id, f.remove_at
-		FROM forgotten f JOIN users u ON u.id = f.user_id WHERE f.remove_at <= ? ORDER BY f.remove_at, f.user_id`, now)
+	var out []Forgotten
+	err := s.eachTenant(ctx, tenantsForgotten, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT f.user_id, u.tenant_id, f.remove_at
+			FROM forgotten f JOIN users u ON u.id = f.user_id WHERE f.remove_at <= ? ORDER BY f.remove_at, f.user_id`, now)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var f Forgotten
+			if err := rows.Scan(&f.UserID, &f.TenantID, &f.RemoveAt); err != nil {
+				return err
+			}
+			out = append(out, f)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list removals due: %w", err)
 	}
-	defer rows.Close()
-	var out []Forgotten
-	for rows.Next() {
-		var f Forgotten
-		if err := rows.Scan(&f.UserID, &f.TenantID, &f.RemoveAt); err != nil {
-			return nil, fmt.Errorf("list removals due: %w", err)
-		}
-		out = append(out, f)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list removals due: %w", err)
-	}
+	slices.SortStableFunc(out, func(a, b Forgotten) int {
+		return cmp.Or(cmp.Compare(a.RemoveAt, b.RemoveAt), cmp.Compare(a.UserID, b.UserID))
+	})
 	return out, nil
 }
 
@@ -232,6 +242,7 @@ func (s *Store) DueForRemoval(ctx context.Context, now int64) ([]Forgotten, erro
 // mailbox of their tenant when they are its only member, else the ones they own, shared or
 // not. Their supervisors are stopped before RemoveForgotten runs.
 func (s *Store) RemovalAccounts(ctx context.Context, userID int64) ([]int64, error) {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("list removal accounts: %w", err)
@@ -308,6 +319,7 @@ type Removal struct {
 // for a user who is not forgotten or not yet due: one who signed in again, or was removed
 // already.
 func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal, error) {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)

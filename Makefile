@@ -3,7 +3,7 @@ VERSION  ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/
 # Pinned here so local runs and CI lint with the same version.
 GOLANGCI := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
-.PHONY: version check fmt vet lint test vuln settings-doc settings-doc-check web web-check build dev
+.PHONY: version check fmt vet lint test test-postgres pg-up pg-down vuln settings-doc settings-doc-check web web-check build dev
 
 # Prints the version a build from this checkout reports; used for the compose build arg.
 version:
@@ -36,6 +36,25 @@ test:
 			else if (got[p] + 0 < min) { printf "coverage: %s is at %s%%, below the %s%% floor\n", want[k], got[p], min; bad = 1 } \
 			else printf "coverage: %s %s%% (floor %s%%)\n", want[k], got[p], min } \
 		exit bad }' $$out; status=$$?; rm -f $$out; exit $$status
+
+# The tests again on Postgres, for the hosted build's store: MAILRULES_TEST_POSTGRES_DSN is a
+# superuser DSN (Postgres 16+). Each test gets its own database, copied from a template the
+# harness migrates (internal/store/pgtest). `make pg-up` starts one in Docker. The store's
+# coverage is recorded across every package, and querycover fails when one of its
+# statements never ran: SQL that Postgres reads differently cannot ship untested.
+test-postgres:
+	@if [ -z "$$MAILRULES_TEST_POSTGRES_DSN" ]; then echo "set MAILRULES_TEST_POSTGRES_DSN (make pg-up starts a local Postgres)"; exit 1; fi
+	@out=$$(mktemp); go test -race -coverpkg=./internal/store -coverprofile=$$out ./... && \
+		go run ./internal/store/querycover $$out; status=$$?; rm -f $$out; exit $$status
+
+PG_DSN := postgres://postgres:pw@127.0.0.1:55432/postgres?sslmode=disable
+
+pg-up:
+	docker run -d --rm --name mailrules-pg -e POSTGRES_PASSWORD=pw -p 55432:5432 postgres:17
+	@echo "export MAILRULES_TEST_POSTGRES_DSN='$(PG_DSN)'"
+
+pg-down:
+	docker stop mailrules-pg
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

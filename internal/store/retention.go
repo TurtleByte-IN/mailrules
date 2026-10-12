@@ -27,6 +27,7 @@ const day = 24 * 3600
 // NoticeDays, and the moves the move watcher found more than MoveDays ago, which it does
 // not count.
 func (s *Store) Retain(ctx context.Context, tenantID, now int64, retentionDays int) (blanked, deleted int64, err error) {
+	ctx = WithTenant(ctx, tenantID)
 	const ofTenant = `account_id IN (SELECT id FROM accounts WHERE tenant_id = ?)`
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE messages SET snippet = NULL WHERE `+ofTenant+` AND created_at < ? AND snippet IS NOT NULL AND snippet <> ''`,

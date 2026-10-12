@@ -39,7 +39,7 @@ func TestDeletedSecretDoesNotLogIn(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.ExecContext(ctx, `UPDATE accounts SET secret_enc = X'', dek_enc = X'' WHERE id = ?`, a.ID); err != nil {
+		if _, err := db.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, []byte{}, []byte{}, a.ID); err != nil {
 			t.Fatal(err)
 		}
 		// A one-click mailbox reaches the server and fails at its first login, when the

@@ -29,6 +29,9 @@ type Identity struct {
 // (DeleteOwnAccount), so it gets a new user. It fails, changing nothing, with
 // ErrTenantMismatch when a known identity's user is in another tenant, and with
 // ErrEmailInUse when another user has the email.
+//
+// It runs before anyone is signed in, so on Postgres it finds the tenants through the
+// definer functions (scope.go) and scopes its transaction once it knows the tenant.
 func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -36,28 +39,35 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var tenantID int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM tenants WHERE provider = ? AND external_id = ?`, id.Provider, id.Tenant).Scan(&tenantID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	tenantID, err := s.findTenant(ctx, tx, ofExternal, id.Provider, id.Tenant)
+	if err != nil {
 		return User{}, fmt.Errorf("sign in identity: find tenant: %w", err)
 	}
-	u, err := scanUser(tx.QueryRowContext(ctx, `SELECT u.id, u.email, u.password_hash, u.created_at, u.tenant_id
-		FROM identities i JOIN users u ON u.id = i.user_id
-		WHERE i.provider = ? AND i.subject = ?`, id.Provider, id.Subject))
-	known := err == nil
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	userTenant, err := s.findTenant(ctx, tx, ofIdentity, id.Provider, id.Subject)
+	if err != nil {
 		return User{}, fmt.Errorf("sign in identity: find user: %w", err)
 	}
-	if known && u.TenantID != tenantID {
+	known := userTenant != 0
+	if known && userTenant != tenantID {
 		return User{}, ErrTenantMismatch
 	}
+	var u User
+	if known {
+		if err := tx.scope(ctx, tenantID, true); err != nil {
+			return User{}, fmt.Errorf("sign in identity: %w", err)
+		}
+		if u, err = scanUser(tx.QueryRowContext(ctx, `SELECT u.id, u.email, u.password_hash, u.created_at, u.tenant_id
+			FROM identities i JOIN users u ON u.id = i.user_id
+			WHERE i.provider = ? AND i.subject = ?`, id.Provider, id.Subject)); err != nil {
+			return User{}, fmt.Errorf("sign in identity: find user: %w", err)
+		}
+	}
 
-	var other int
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE email = ? COLLATE NOCASE AND id != ?)`,
-		id.Email, u.ID).Scan(&other); err != nil {
+	inUse, err := s.emailInUse(ctx, tx, id.Email, u.ID)
+	if err != nil {
 		return User{}, fmt.Errorf("sign in identity: check email: %w", err)
 	}
-	if other == 1 {
+	if inUse {
 		return User{}, ErrEmailInUse
 	}
 
@@ -72,10 +82,12 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 		}
 	} else {
 		if tenantID == 0 {
-			if err := tx.QueryRowContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?) RETURNING id`,
-				id.Provider, id.Tenant, now).Scan(&tenantID); err != nil {
+			if tenantID, err = s.createTenant(ctx, tx, id.Provider, id.Tenant, now); err != nil {
 				return User{}, fmt.Errorf("sign in identity: create tenant: %w", err)
 			}
+		}
+		if err := tx.scope(ctx, tenantID, true); err != nil {
+			return User{}, fmt.Errorf("sign in identity: %w", err)
 		}
 		var uid int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO users (email, password_hash, created_at, tenant_id) VALUES (?, '', ?, ?) RETURNING id`,
@@ -93,9 +105,57 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 	return u, nil
 }
 
+// sqliteTenantOf is, for SQLite, what mailrules_tenant_of answers for the kinds a sign-in
+// asks before it knows the tenant.
+var sqliteTenantOf = map[string]string{
+	ofExternal: `SELECT id FROM tenants WHERE provider = ? AND external_id = ?`,
+	ofIdentity: `SELECT u.tenant_id FROM identities i JOIN users u ON u.id = i.user_id WHERE i.provider = ? AND i.subject = ?`,
+}
+
+// findTenant is, read in q, the tenant of the row of kind keyed by key and key2, 0 when
+// there is none.
+func (s *Store) findTenant(ctx context.Context, q querier, kind, key, key2 string) (int64, error) {
+	query := `SELECT mailrules_tenant_of(CAST(? AS text), CAST(? AS text), CAST(? AS text))`
+	args := []any{kind, key, key2}
+	if s.db.d != dialectPostgres {
+		query, args = sqliteTenantOf[kind], []any{key, key2}
+	}
+	var t sql.NullInt64
+	if err := q.QueryRowContext(ctx, query, args...).Scan(&t); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	return t.Int64, nil
+}
+
+// emailInUse reports, read in q, whether a user other than except has email, compared
+// ignoring case, in any tenant: the one deliberate disclosure across tenants (a sign-in
+// answers ErrEmailInUse).
+func (s *Store) emailInUse(ctx context.Context, q querier, email string, except int64) (bool, error) {
+	query := `SELECT mailrules_email_in_use(CAST(? AS text), CAST(? AS BIGINT))`
+	if s.db.d != dialectPostgres {
+		query = `SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower(?) AND id != ?)`
+	}
+	var inUse bool
+	err := q.QueryRowContext(ctx, query, email, except).Scan(&inUse)
+	return inUse, err
+}
+
+// createTenant adds a tenant in q and returns its id; on Postgres through the definer
+// function, since no tenant's policy admits a row that does not exist yet.
+func (s *Store) createTenant(ctx context.Context, q querier, provider, externalID string, now int64) (int64, error) {
+	query := `SELECT mailrules_create_tenant(CAST(? AS text), CAST(? AS text), CAST(? AS BIGINT))`
+	if s.db.d != dialectPostgres {
+		query = `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?) RETURNING id`
+	}
+	var id int64
+	err := q.QueryRowContext(ctx, query, null(provider), null(externalID), now).Scan(&id)
+	return id, err
+}
+
 // EndIdentitySessions deletes every session of the identity's user. An identity nobody
 // has is not an error.
 func (s *Store) EndIdentitySessions(ctx context.Context, provider, subject string) error {
+	ctx = s.tenantFor(ctx, ofIdentity, provider, subject)
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM identities WHERE provider = ? AND subject = ?)`,
 		provider, subject); err != nil {
@@ -108,8 +168,9 @@ func (s *Store) EndIdentitySessions(ctx context.Context, provider, subject strin
 // Subject, the rest left empty. A user with none, such as the self-host admin, is
 // ErrNotFound.
 func (s *Store) UserIdentity(ctx context.Context, userID int64) (Identity, error) {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	var id Identity
-	err := s.db.QueryRowContext(ctx, `SELECT provider, subject FROM identities WHERE user_id = ? ORDER BY rowid LIMIT 1`, userID).
+	err := s.db.QueryRowContext(ctx, `SELECT provider, subject FROM identities WHERE user_id = ? ORDER BY `+s.db.d.insertOrder()+` LIMIT 1`, userID).
 		Scan(&id.Provider, &id.Subject)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Identity{}, ErrNotFound
