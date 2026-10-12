@@ -167,6 +167,7 @@ func (s *server) routes() []route {
 		on(get, "/api/templates", s.handleTemplates),
 		on(get, "/api/stats/summary", s.handleStatsSummary),
 		on(get, "/api/stats/usage", s.handleStatsUsage),
+		on(get, "/api/limits", s.handleLimits),
 
 		on(get, "/api/settings", s.handleSettings),
 		on(patch, "/api/settings", s.handleSettingsPatch),

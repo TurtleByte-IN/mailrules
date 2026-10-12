@@ -157,7 +157,7 @@ export interface paths {
         put?: never;
         /**
          * Log in with credentials that are not stored, and list the folders
-         * @description Changes nothing, in the database or the mailbox. The password is used for this login only.
+         * @description Changes nothing, in the database or the mailbox. The password is used for this login only. A tenant that has all the mailboxes its limits allow (`GET /api/limits`) is refused before anything is dialed.
          */
         post: operations["testAccount"];
         delete?: never;
@@ -180,7 +180,10 @@ export interface paths {
          * Connect a mailbox and start watching it
          * @description The login is checked against the server before anything is stored. Only mail that
          *     arrives from now on is sorted; existing mail is Cleanup's job. The new account's
-         *     `status` is `new` until its supervisor reports over `account.status`.
+         *     `status` is `new` until its supervisor reports over `account.status`. A tenant that
+         *     has all the mailboxes its limits allow (`GET /api/limits`) is refused before anything
+         *     is dialed, and again as the mailbox is stored, so two added at once cannot both take
+         *     the last place.
          */
         post: operations["createAccount"];
         delete?: never;
@@ -1144,6 +1147,31 @@ export interface paths {
          *     and testing and its costs add up to less than `cost_usd`.
          */
         get: operations["statsUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The tenant's use against the limits of the hosted service
+         * @description How many mailboxes the tenant has and may have, and how many emails a model decided
+         *     for it this calendar month (UTC) on the operator's model keys against its monthly
+         *     allowance of AI-sorted emails. The limits are a module's (the hosted service's plans);
+         *     a limit the tenant does not have is null, and on self-host both are. Usage shows the
+         *     meters, Needs review says when mail waits because the allowance is used up, and
+         *     Mailboxes says when no mailbox can be added.
+         */
+        get: operations["getLimits"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2597,6 +2625,36 @@ export interface components {
             /** @description Of the `processed` emails, those a sender rule or a condition rule acted on, with no model asked (not the ones waiting in Needs review, nor those no rule matched). Never more than `processed`; the free share is `without_model / processed`, not over `emails` */
             without_model: number;
         };
+        Limits: {
+            /** @description null = any number. Every mailbox of the tenant counts, its members' private ones too; one over `limit` is refused with 409 `mailbox_limit` */
+            mailboxes: {
+                /** @description Mailboxes the tenant has connected */
+                used: number;
+                /** @description Mailboxes it may have; may be below `used` after the limit went down */
+                limit: number;
+                /** @description While the tenant has no room for another mailbox, the sentence a new one is refused with, to show in place of the add-mailbox wizard; null while it has */
+                refusal: string | null;
+            } | null;
+            /** @description null = no allowance. The emails a model decided for the tenant on the operator's keys this month: an email counts once when live sorting decides it, and once for each cleanup check that asks a model about it. Sender rules, rules without an intent and the tenant's own keys are never counted */
+            ai_emails: {
+                /** @description May pass `limit` by a few: emails decided at the same moment on several mailboxes */
+                used: number;
+                limit: number;
+                /** @description The calendar month counted, in UTC: YYYY-MM */
+                month: string;
+                /**
+                 * Format: int64
+                 * @description When the next month starts and the count starts again from 0
+                 */
+                resets_at: number;
+                /** @description The decision model, or its fallback, runs on the operator's keys now, so what it decides counts. false = the tenant's own keys: show no limit */
+                counted: boolean;
+                /** @description The allowance is used up and the decision model runs on the operator's keys: mail that needs a model waits in Needs review until `resets_at`, or until the tenant adds a key of its own in Settings */
+                paused: boolean;
+            } | null;
+            /** @description Where to raise the limits, as the module gives it: a path in the web app (`#/…`) or an https URL. null = no upgrade is offered */
+            upgrade_url: string | null;
+        };
         /** @enum {string} */
         Decider: "jev" | "clef" | "anthropic" | "openai" | "ollama";
         /**
@@ -3238,6 +3296,7 @@ export interface operations {
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ConnectionFailed"];
         };
     };
@@ -4493,6 +4552,27 @@ export interface operations {
                 };
             };
             400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    getLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Limits"];
+                };
+            };
             401: components["responses"]["Unauthenticated"];
         };
     };

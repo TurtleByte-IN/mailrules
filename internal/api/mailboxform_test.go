@@ -55,6 +55,8 @@ func formModule() ext.Module {
 					switch {
 					case errors.Is(err, ext.ErrMailboxExists):
 						answer(ext.MailboxFormStep{Step: ext.MailboxStepSignIn, Message: "This mailbox is already connected."})
+					case errors.Is(err, ext.ErrMailboxLimit):
+						answer(ext.MailboxFormStep{Step: ext.MailboxStepSignIn, Message: err.Error()}) // the sentence to show
 					case err != nil:
 						answer(ext.MailboxFormStep{Step: ext.MailboxStepSignIn, Message: "failed: " + err.Error()})
 					default:

@@ -260,9 +260,10 @@ func (s *server) signIn() *ext.Module {
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
 // signed-in POST routes under /api/, and two forms for one provider; and a Notifications
 // with no Notify or no kind, or a kind other than webhook or slack, and more than one
-// module with Notifications. The daemon calls it before it serves anything.
+// module with Notifications; and more than one module with Limits. The daemon calls it
+// before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn, mailboxes, notifiers []string
+	var signIn, mailboxes, notifiers, limits []string
 	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
 		publicGet, signedInGet, signedInPost := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -331,6 +332,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 		if m.SignIn != "" {
 			signIn = append(signIn, m.Name)
 		}
+		if m.Limits != nil {
+			limits = append(limits, m.Name)
+		}
 	}
 	if len(signIn) > 1 {
 		return fmt.Errorf("more than one module signs people in: %s", strings.Join(signIn, ", "))
@@ -340,6 +344,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 	}
 	if len(notifiers) > 1 {
 		return fmt.Errorf("more than one module delivers rule notifications: %s", strings.Join(notifiers, ", "))
+	}
+	if len(limits) > 1 {
+		return fmt.Errorf("more than one module limits tenants: %s", strings.Join(limits, ", "))
 	}
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")

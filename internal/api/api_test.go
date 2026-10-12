@@ -48,11 +48,14 @@ type env struct {
 	gen        *models.Fake            // the composer's model; nil = none is set
 	realGen    bool                    // the composer's model is the one the settings build, gen is not used
 	connectErr error                   // makes the next logins fail
-	dialed     store.Account           // what the last login was asked to reach
-	doc        map[string]any
-	summary    *summary.Service   // the summary email, sending to mail
-	mail       *mailertest.Sender // what the summary email sent
-	logins     *atomic.Int64      // how many times a supervisor logged in to a mailbox
+	// metered says which providers' calls go out on the operator's keys (models.Router.Metered);
+	// nil = none: the tenant's own keys.
+	metered func(provider string) bool
+	dialed  store.Account // what the last login was asked to reach
+	doc     map[string]any
+	summary *summary.Service   // the summary email, sending to mail
+	mail    *mailertest.Sender // what the summary email sent
+	logins  *atomic.Int64      // how many times a supervisor logged in to a mailbox
 }
 
 // Live, RouterFor and Composer make env the daemon's source of models (ModelSource), with
@@ -61,12 +64,12 @@ func (e *env) Live(_ context.Context, tenantID int64) (*models.Router, float64) 
 	if e.noDecider {
 		return nil, 0.75
 	}
-	return &models.Router{Primary: e.decider, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now}, 0.75
+	return &models.Router{Primary: e.decider, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now, Metered: e.metered}, 0.75
 }
 
 func (e *env) RouterFor(_ context.Context, tenantID int64, spec string) *models.Router {
 	if d := e.own[spec]; d != nil {
-		return &models.Router{Primary: d, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now}
+		return &models.Router{Primary: d, Usage: store.Ledger{Store: e.st, TenantID: tenantID}, Now: e.ck.now, Metered: e.metered}
 	}
 	return nil
 }
@@ -124,7 +127,8 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 				e.logins.Add(1)
 				return e.box(acct), nil
 			},
-			Pipeline:   pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now, Live: e.Live, Override: e.RouterFor},
+			Pipeline: pipeline.Pipeline{Store: e.st, Exec: exec, Hub: e.hub, BodyChars: 2000, Now: e.ck.now, Live: e.Live, Override: e.RouterFor,
+				Allowance: Allowance(e.st, modules)},
 			BackoffMin: time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 		})
 	}

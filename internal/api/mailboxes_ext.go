@@ -132,6 +132,13 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 	if exists {
 		return 0, ext.ErrMailboxExists
 	}
+	max, err := h.s.mailboxRoomFor(ctx, who.TenantID)
+	if errors.Is(err, ext.ErrMailboxLimit) {
+		return 0, err // its text is the sentence to show
+	}
+	if err != nil {
+		return 0, fmt.Errorf("add mailbox: %w", err)
+	}
 	secret := m.Secret // replaced when the module rotates it while logging in
 	var mb mail.Mailbox
 	if m.Password {
@@ -146,7 +153,10 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("add mailbox: %w", err)
 	}
-	acct, err := h.s.saveAccount(ctx, who.ID, c, secret)
+	acct, err := h.s.saveAccount(ctx, who.ID, c, secret, max)
+	if errors.Is(err, ext.ErrMailboxLimit) {
+		return 0, err // another mailbox took the last place meanwhile
+	}
 	if err != nil {
 		return 0, fmt.Errorf("add mailbox: %w", err)
 	}

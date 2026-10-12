@@ -229,7 +229,7 @@ paths:
       tags: [Accounts]
       operationId: testAccount
       summary: Log in with credentials that are not stored, and list the folders
-      description: Changes nothing, in the database or the mailbox. The password is used for this login only.
+      description: Changes nothing, in the database or the mailbox. The password is used for this login only. A tenant that has all the mailboxes its limits allow (`GET /api/limits`) is refused before anything is dialed.
       requestBody:
         required: true
         content:
@@ -244,6 +244,7 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: preset | username | password | host | port | tls_mode | cert_fingerprint), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
+        '409': { $ref: '#/components/responses/Conflict' } # mailbox_limit: the tenant has all the mailboxes its limits allow; the message is the sentence to show
         '422': { $ref: '#/components/responses/ConnectionFailed' }
   /api/accounts:
     get:
@@ -268,7 +269,10 @@ paths:
       description: |
         The login is checked against the server before anything is stored. Only mail that
         arrives from now on is sorted; existing mail is Cleanup's job. The new account's
-        `status` is `new` until its supervisor reports over `account.status`.
+        `status` is `new` until its supervisor reports over `account.status`. A tenant that
+        has all the mailboxes its limits allow (`GET /api/limits`) is refused before anything
+        is dialed, and again as the mailbox is stored, so two added at once cannot both take
+        the last place.
       requestBody:
         required: true
         content:
@@ -283,7 +287,7 @@ paths:
         '400': { $ref: '#/components/responses/Invalid' } # as for /api/accounts/test
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
-        '409': { $ref: '#/components/responses/Conflict' } # account_exists (path: username)
+        '409': { $ref: '#/components/responses/Conflict' } # account_exists (path: username); mailbox_limit (no path): the message is the sentence to show
         '422': { $ref: '#/components/responses/ConnectionFailed' }
   /api/accounts/{id}:
     parameters:
@@ -1356,6 +1360,25 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StatsUsage' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: range)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+  /api/limits:
+    get:
+      tags: [Stats]
+      operationId: getLimits
+      summary: The tenant's use against the limits of the hosted service
+      description: |
+        How many mailboxes the tenant has and may have, and how many emails a model decided
+        for it this calendar month (UTC) on the operator's model keys against its monthly
+        allowance of AI-sorted emails. The limits are a module's (the hosted service's plans);
+        a limit the tenant does not have is null, and on self-host both are. Usage shows the
+        meters, Needs review says when mail waits because the allowance is used up, and
+        Mailboxes says when no mailbox can be added.
+      responses:
+        '200':
+          description: Limits
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Limits' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
   /api/settings:
     get:
@@ -2634,6 +2657,32 @@ components:
               cost_usd: { type: number }
         by_model: { type: array, items: { $ref: '#/components/schemas/ModelUsage' }, description: 'One row per provider, model and purpose, dearest first' }
         without_model: { type: integer, description: 'Of the `processed` emails, those a sender rule or a condition rule acted on, with no model asked (not the ones waiting in Needs review, nor those no rule matched). Never more than `processed`; the free share is `without_model / processed`, not over `emails`' }
+    Limits:
+      type: object
+      required: [mailboxes, ai_emails, upgrade_url]
+      properties:
+        mailboxes:
+          type: [object, 'null']
+          description: 'null = any number. Every mailbox of the tenant counts, its members'' private ones too; one over `limit` is refused with 409 `mailbox_limit`'
+          required: [used, limit, refusal]
+          properties:
+            used: { type: integer, description: Mailboxes the tenant has connected }
+            limit: { type: integer, description: Mailboxes it may have; may be below `used` after the limit went down }
+            refusal: { type: [string, 'null'], description: 'While the tenant has no room for another mailbox, the sentence a new one is refused with, to show in place of the add-mailbox wizard; null while it has' }
+        ai_emails:
+          type: [object, 'null']
+          description: 'null = no allowance. The emails a model decided for the tenant on the operator''s keys this month: an email counts once when live sorting decides it, and once for each cleanup check that asks a model about it. Sender rules, rules without an intent and the tenant''s own keys are never counted'
+          required: [used, limit, month, resets_at, counted, paused]
+          properties:
+            used: { type: integer, description: 'May pass `limit` by a few: emails decided at the same moment on several mailboxes' }
+            limit: { type: integer }
+            month: { type: string, description: 'The calendar month counted, in UTC: YYYY-MM' }
+            resets_at: { type: integer, format: int64, description: 'When the next month starts and the count starts again from 0' }
+            counted: { type: boolean, description: 'The decision model, or its fallback, runs on the operator''s keys now, so what it decides counts. false = the tenant''s own keys: show no limit' }
+            paused: { type: boolean, description: 'The allowance is used up and the decision model runs on the operator''s keys: mail that needs a model waits in Needs review until `resets_at`, or until the tenant adds a key of its own in Settings' }
+        upgrade_url:
+          type: [string, 'null']
+          description: 'Where to raise the limits, as the module gives it: a path in the web app (`#/…`) or an https URL. null = no upgrade is offered'
 
     Decider: { type: string, enum: [jev, clef, anthropic, openai, ollama] }
     KeySource:

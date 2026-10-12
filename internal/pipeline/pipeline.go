@@ -37,6 +37,9 @@ const (
 	// ReasonOwnMail is the decision's reason for an email sent from the mailbox's own
 	// address while the leave_own_mail setting is on (Decider.Own).
 	ReasonOwnMail = "Sent from this mailbox's own address, so MailRules left it alone."
+	// ReasonAllowance is the Needs review reason of an email a model was needed for while
+	// the tenant's monthly allowance of AI-sorted emails is used up (Decider.Allowance).
+	ReasonAllowance = "This month's AI-sorted emails are used up, so MailRules left this one for you."
 
 	snippetChars = 200
 )
@@ -71,6 +74,10 @@ type Pipeline struct {
 	Batch int64
 	// Spent, when set, is told what each model decision cost: a cleanup run shows the total.
 	Spent func(tokens int, costUSD float64)
+	// Allowance, when set, says whether a tenant's monthly allowance of emails a model
+	// decides on keys the operator holds is used up at now (Decider.Allowance). An email
+	// counted already (a message tried again) is decided as before. nil = no allowance.
+	Allowance func(ctx context.Context, tenantID int64, now time.Time) (reached bool, err error)
 
 	Now func() time.Time // nil = time.Now
 	// Rediscover re-runs folder discovery. It is called once when a step fails because a
@@ -214,6 +221,10 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	if d.Own, err = OwnMail(ctx, p.Store, p.Account); err != nil {
 		return err
 	}
+	if p.Allowance != nil && !m.Metered {
+		tenant := p.Account.TenantID
+		d.Allowance = func(ctx context.Context) (bool, error) { return p.Allowance(ctx, tenant, now) }
+	}
 	out, err := d.Settle(ctx, *sum, rs, senders)
 	if err != nil {
 		return err
@@ -271,7 +282,7 @@ func decisionFrom(out Outcome, messageID int64, now time.Time) store.Decision {
 	res := out.Result
 	d := store.Decision{MessageID: messageID, CreatedAt: now.Unix(), Stage: string(res.Stage), RuleID: res.RuleID,
 		RuleVersion: res.RuleVersion, Confidence: res.Confidence, Reason: out.Reason, RuleName: out.RuleName, Probabilities: out.Probabilities,
-		SenderSource: res.SenderSource}
+		SenderSource: res.SenderSource, Metered: out.Metered}
 	if out.Asked {
 		u := out.Usage
 		d.Model, d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS = u.Model, u.TokensIn, u.TokensOut, u.CostUSD, u.Latency.Milliseconds()
@@ -323,6 +334,7 @@ func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) 
 	}
 	dec := decisionFrom(out, m.ID, now)
 	dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = 0, 0, 0, 0 // paid once, on the check's ledger
+	dec.Metered = false                                                  // counted once, by the check
 	dry, err := p.finish(ctx, &m, dec, out.Result)
 	if err != nil {
 		return false, err

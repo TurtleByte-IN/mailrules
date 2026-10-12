@@ -189,10 +189,14 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	logins := newMailLogins(st, master, modules)
 	logins.tlsConfig, logins.cloud = imapTLS, cfg.Mode == "cloud"
 	// start is also how the HTTP layer starts an account added, resumed or reconnected at runtime.
+	// A module that limits tenants (ext.Module.Limits) gives each its monthly allowance of
+	// AI-sorted emails; without one there is none.
+	allowance := api.Allowance(st, modules)
 	start := func(acct store.Account) {
 		supervisors.Start(ctx, &worker.Supervisor{
 			Account: acct, Store: st, Hub: hub, Open: openAccount(logins, acct),
-			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars},
+			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars,
+				Allowance: allowance},
 		})
 	}
 	watcher := newAccountWatcher(st, start)

@@ -106,8 +106,14 @@ func (s *Store) FirstUser(ctx context.Context) (User, error) {
 // account goes into its owner's (a.UserID's) tenant and starts shared or not as
 // NewAccountShared says; a.TenantID and a.Shared are ignored. The ciphertext is bound to
 // the row id, which only exists after the insert, so the row is inserted, sealed and
-// updated in one transaction: no reader ever sees it without a secret.
+// updated in one transaction: no reader ever sees it without a secret. Its tenant may have
+// any number of mailboxes; CreateAccountWithin caps them.
 func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, secret string) (Account, error) {
+	return s.CreateAccountWithin(ctx, master, a, secret, NoLimit)
+}
+
+// createAccount is CreateAccount's insert in tx.
+func createAccount(ctx context.Context, tx *sql.Tx, master []byte, a Account, secret string) (Account, error) {
 	caps, err := json.Marshal(append([]string{}, a.Capabilities...))
 	if err != nil {
 		return Account{}, fmt.Errorf("encode capabilities: %w", err)
@@ -118,11 +124,6 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 	if a.Status == "" {
 		a.Status = "new"
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Account{}, fmt.Errorf("create account: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // a no-op after Commit
 	a.Shared = NewAccountShared
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO accounts (user_id, tenant_id, shared, label, preset, host, port, tls_mode, username, secret_enc, dek_enc,
@@ -143,9 +144,6 @@ func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, sec
 		return Account{}, fmt.Errorf("encrypt account secret: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, a.ID); err != nil {
-		return Account{}, fmt.Errorf("create account: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
 		return Account{}, fmt.Errorf("create account: %w", err)
 	}
 	return a, nil

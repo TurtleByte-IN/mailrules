@@ -63,6 +63,10 @@ type Message struct {
 	// ActedAt is when MailRules last decided the message, or CreatedAt until a decision is
 	// made. The feed is ordered by it.
 	ActedAt int64
+	// Metered: a model on keys the operator holds decided the email, and it was counted
+	// against its tenant's monthly allowance (AIEmails). It is counted once, however often
+	// it is decided again.
+	Metered bool
 
 	// Where the executor last left the message; zero while it is still where it arrived.
 	CurFolder      string
@@ -84,12 +88,12 @@ const messageCols = `m.id, m.account_id, m.folder, m.uidvalidity, m.uid, COALESC
 	COALESCE(m.snippet, ''), COALESCE(m.received_at, 0), COALESCE(m.list_id, ''), m.has_attachment, COALESCE(m.size, 0),
 	COALESCE(m.signals, '{}'), m.state, m.attempts, COALESCE(m.next_attempt_at, 0), m.created_at,
 	COALESCE(m.cur_folder, ''), COALESCE(m.cur_uidvalidity, 0), COALESCE(m.cur_uid, 0), COALESCE(m.from_name, ''), m.acted_at,
-	COALESCE(m.unsubscribe_url, '')`
+	COALESCE(m.unsubscribe_url, ''), m.metered`
 
 func messageDest(m *Message, to, signals *string) []any {
 	return []any{&m.ID, &m.AccountID, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.FromAddr, &m.FromDomain, to,
 		&m.Subject, &m.Snippet, &m.ReceivedAt, &m.ListID, &m.HasAttachment, &m.Size, signals, &m.State, &m.Attempts,
-		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName, &m.ActedAt, &m.UnsubscribeURL}
+		&m.NextAttemptAt, &m.CreatedAt, &m.CurFolder, &m.CurUIDValidity, &m.CurUID, &m.FromName, &m.ActedAt, &m.UnsubscribeURL, &m.Metered}
 }
 
 func (m *Message) decode(to, signals string) error {
@@ -289,6 +293,10 @@ type Decision struct {
 	// or learned. Empty for other stages, and for a sender decision recorded before it was
 	// kept whose origin cannot be told.
 	SenderSource string
+	// Metered: a model on keys the operator holds made the decision, so AddDecision counts the
+	// email against its tenant's monthly allowance (once per message). It is not stored on
+	// the decision.
+	Metered bool
 }
 
 // The columns tolerate a missing row, so a LEFT JOIN scans into a zero Decision.
@@ -314,7 +322,10 @@ func decisionDest(d *Decision) []any {
 }
 
 // AddDecision records a decision and moves its message to state in one transaction, and
-// returns the decision's id. The message's ActedAt becomes the decision's time.
+// returns the decision's id. The message's ActedAt becomes the decision's time. A Metered
+// decision counts the email against its tenant's allowance for the month of CreatedAt in the
+// same transaction, unless the message was counted before: a decision that is not recorded
+// is not counted, and one made again after a failure is not counted twice.
 func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -341,6 +352,11 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 	id, _ := res.LastInsertId()
 	if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = ?, next_attempt_at = NULL, acted_at = ? WHERE id = ?`, state, d.CreatedAt, d.MessageID); err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
+	}
+	if d.Metered {
+		if err := meter(ctx, tx, d.MessageID, d.CreatedAt); err != nil {
+			return 0, fmt.Errorf("add decision: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)

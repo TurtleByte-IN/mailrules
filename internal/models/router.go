@@ -30,6 +30,10 @@ type Router struct {
 	// Purpose, when set, is the ledger purpose of every call ("test" for the rule tester);
 	// empty records the primary's calls as "decide" and the fallback's as "escalate".
 	Purpose string
+	// Metered says, by provider (Usage.Provider), whether calls to it go out on a key the
+	// operator holds (MAILRULES_MODE=cloud, the tenant has no key of its own), so that the
+	// emails they decide count against the tenant's monthly allowance. nil = none do.
+	Metered func(provider string) bool
 }
 
 // For returns a copy of the router whose calls are recorded under purpose.
@@ -40,6 +44,49 @@ func (r *Router) For(purpose string) *Router {
 	c := *r
 	c.Purpose = purpose
 	return &c
+}
+
+// deciderProviders are the providers (Usage.Provider) of the deciders whose name is not
+// their provider's.
+var deciderProviders = map[string]string{"jev": "openrouter", "clef": "cloudflare"}
+
+// metered reports whether d's calls go out on a key the operator holds.
+func (r *Router) metered(d Decider) bool {
+	if r.Metered == nil || d == nil {
+		return false
+	}
+	name := d.Name()
+	if p, ok := deciderProviders[name]; ok {
+		name = p
+	}
+	return r.Metered(name)
+}
+
+// OnOperatorKeys reports whether a model the router may ask runs on a key the operator
+// holds: an email it decides may count against the tenant's allowance.
+func (r *Router) OnOperatorKeys() bool {
+	return r != nil && (r.metered(r.Primary) || r.metered(r.Fallback))
+}
+
+// OwnKeysOnly is the router without the models that run on a key the operator holds: nil
+// when the primary does, else a copy without a fallback that does (an unsure answer is then
+// not double-checked). It is how a tenant whose allowance is used up still decides on its
+// own keys.
+func (r *Router) OwnKeysOnly() *Router {
+	if r == nil || r.metered(r.Primary) {
+		return nil
+	}
+	c := *r
+	if r.metered(r.Fallback) {
+		c.Fallback = nil
+	}
+	return &c
+}
+
+// MeteredResult reports whether a routed decision was made on a key the operator holds: the
+// primary's, or the fallback's when it answered.
+func (r *Router) MeteredResult(res Result) bool {
+	return r.metered(r.Primary) || res.Fallback != nil && r.metered(r.Fallback)
 }
 
 // ReadTries is how many times one model is asked about one email while its answer cannot

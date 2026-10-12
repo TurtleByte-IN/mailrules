@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
@@ -127,6 +128,7 @@ func (w fworld) seed(t *testing.T, u User, name string) int64 {
 	must(err)
 	must(s.SetSetting(ctx, u.TenantID, "seed_"+name, `"x"`))
 	must(s.AddUsage(ctx, u.TenantID, false, "2026-10-01", "anthropic", "claude-haiku-4-5", "decide", 1, 10, 10, 0.01))
+	must(s.SpendAIEmails(ctx, u.TenantID, time.Unix(1000, 0), 1))
 	must(s.CreateSession(ctx, "session-"+name, u.ID, 1000, fDue*2))
 	_, _, _, err = s.ClaimSummary(ctx, u.ID, 2000, 2000, 3)
 	must(err)
@@ -170,6 +172,7 @@ func (w fworld) tenantRows(t *testing.T, tenantID int64) map[string]int {
 		"batches":             `tenant_id = ?1`,
 		"settings":            `tenant_id = ?1`,
 		"usage_daily":         `tenant_id = ?1`,
+		"ai_emails":           `tenant_id = ?1`,
 		"notify_destinations": `tenant_id = ?1`,
 		"notices":             `tenant_id = ?1`,
 		"notify_deliveries":   `tenant_id = ?1`,
@@ -614,7 +617,7 @@ func TestRemoveForgottenTeamMember(t *testing.T) {
 	got := w.tenantRows(t, team)
 	for table, want := range map[string]int{
 		"tenants": 1, "users": 1, "identities": 1, "sessions": 1, "summaries": 1, "forgotten": 0,
-		"accounts": 1, "messages": 1, "settings": before["settings"], "usage_daily": before["usage_daily"],
+		"accounts": 1, "messages": 1, "settings": before["settings"], "usage_daily": before["usage_daily"], "ai_emails": before["ai_emails"],
 		"batches": before["batches"], "rules": before["rules"],
 		// The team's destinations and their log stay; the notices about the leaver's mail go.
 		"notify_destinations": before["notify_destinations"], "notify_deliveries": before["notify_deliveries"],
