@@ -25,6 +25,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 	"github.com/TurtleByte-IN/mailrules/internal/summary"
 	"github.com/TurtleByte-IN/mailrules/internal/worker"
 )
@@ -94,19 +95,12 @@ func newEnv(t *testing.T, modules ...ext.Module) *env {
 func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	st, db := storetest.New(t)
 	cfg, err := config.Load(nil, func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, db: db, st: store.New(db), ck: &clock{t: time.Unix(1_800_000_000, 0)}, hub: events.NewHub(),
+	e := &env{t: t, db: db, st: st, ck: &clock{t: time.Unix(1_800_000_000, 0)}, hub: events.NewHub(),
 		mb: mailtest.New(1), boxes: map[string]*mailtest.Mailbox{}, mgr: &worker.Manager{}, decider: &models.Fake{NameValue: "fake"}, doc: spec(t),
 		logins: &atomic.Int64{}}
 	for name, role := range map[string]string{"Trash": mail.RoleTrash, "Archive": mail.RoleArchive, "Sent": mail.RoleSent} {

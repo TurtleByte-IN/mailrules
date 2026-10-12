@@ -96,8 +96,8 @@ func (s *Store) CreateDestination(ctx context.Context, master []byte, d Destinat
 	d.URLHint, d.CreatedAt, d.AddressDeleted = URLHint(sec.URL), now, false
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO notify_destinations (tenant_id, name, kind, url_hint, secret_enc, dek_enc, created_at)
-		 VALUES (?, ?, ?, ?, x'', x'', ?) RETURNING id`,
-		d.TenantID, d.Name, d.Kind, d.URLHint, now).Scan(&d.ID); err != nil {
+		 VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		d.TenantID, d.Name, d.Kind, d.URLHint, []byte{}, []byte{}, now).Scan(&d.ID); err != nil {
 		return Destination{}, fmt.Errorf("create destination: %w", err)
 	}
 	secretEnc, dekEnc, err := crypto.Seal(master, destinationAAD(d.ID), plain)
@@ -232,7 +232,7 @@ func (s *Store) DeleteDestination(ctx context.Context, tenantID, id, now int64) 
 }
 
 // rulesNaming lists, in tx, the tenant's rules that notify the destination.
-func rulesNaming(ctx context.Context, tx *sql.Tx, tenantID, destinationID int64) ([]rules.Rule, error) {
+func rulesNaming(ctx context.Context, tx *txn, tenantID, destinationID int64) ([]rules.Rule, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT `+ruleColumns+` FROM rules
 		WHERE tenant_id = ? AND EXISTS (SELECT 1 FROM json_each(rules.notify) WHERE value = ?) ORDER BY id`, tenantID, destinationID)
 	if err != nil {
@@ -345,7 +345,7 @@ type NoticePayload struct {
 // is recorded (a, just finished): one per destination the rule names, when the decision was
 // a rule's (not a sender rule's), in the live batch, and at least one of its actions was
 // done. Dry-run, cleanup, correction and undo runs queue none.
-func queueNotices(ctx context.Context, tx *sql.Tx, a Action) error {
+func queueNotices(ctx context.Context, tx *txn, a Action) error {
 	if a.DecisionID == 0 || a.BatchID == 0 {
 		return nil
 	}
@@ -397,7 +397,7 @@ func queueNotices(ctx context.Context, tx *sql.Tx, a Action) error {
 }
 
 // doneKinds lists, in tx, the kinds of the decision's actions that were done, in order.
-func doneKinds(ctx context.Context, tx *sql.Tx, decisionID int64) ([]string, error) {
+func doneKinds(ctx context.Context, tx *txn, decisionID int64) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT kind FROM actions WHERE decision_id = ? AND status = ? ORDER BY id`, decisionID, ActionDone)
 	if err != nil {
 		return nil, fmt.Errorf("queue notices: actions: %w", err)

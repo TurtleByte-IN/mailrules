@@ -143,20 +143,21 @@ func (s *Store) RecordMove(ctx context.Context, m Move) (int64, error) {
 	if !m.Person {
 		handed = m.CreatedAt
 	}
-	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO moves (tenant_id, account_id, message_id, action_id, from_addr, rule_id, rule_name, filed_folder,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO moves (tenant_id, account_id, message_id, action_id, from_addr, rule_id, rule_name, filed_folder,
 		   chosen_folder, inbox, person, filed_at, created_at, next_at, handed_at)
 		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		 WHERE EXISTS (SELECT 1 FROM actions WHERE id = ? AND status = 'done')`,
+		 WHERE EXISTS (SELECT 1 FROM actions WHERE id = ? AND status = 'done')
+		 ON CONFLICT DO NOTHING RETURNING id`,
 		m.TenantID, m.AccountID, m.MessageID, m.ActionID, m.From, null(m.RuleID), m.RuleName, m.Filed, m.Chosen, m.Inbox, m.Person,
-		m.FiledAt, m.CreatedAt, m.CreatedAt, handed, m.ActionID)
+		m.FiledAt, m.CreatedAt, m.CreatedAt, handed, m.ActionID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("record move: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return 0, nil
-	}
-	id, _ := res.LastInsertId()
 	return id, nil
 }
 
@@ -267,13 +268,11 @@ func (s *Store) AskMove(ctx context.Context, moveID, now int64) (Question, bool,
 	changed := true
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO move_questions (tenant_id, account_id, move_id, from_addr, target, emails, asked_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			m.TenantID, m.AccountID, m.ID, m.From, m.target(), emails, now)
-		if err != nil {
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO move_questions (tenant_id, account_id, move_id, from_addr, target, emails, asked_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			m.TenantID, m.AccountID, m.ID, m.From, m.target(), emails, now).Scan(&id); err != nil {
 			return Question{}, false, fmt.Errorf("ask about move: %w", err)
 		}
-		id, _ = res.LastInsertId()
 	case err != nil:
 		return Question{}, false, fmt.Errorf("ask about move: %w", err)
 	case status != QuestionOpen:
@@ -320,10 +319,9 @@ func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 
 // OpenQuestions lists the open questions about mailboxes the viewer sees, newest first.
 func (s *Store) OpenQuestions(ctx context.Context, v Viewer) ([]Question, error) {
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+questionCols+` WHERE q.tenant_id = ? AND q.status = ? AND `+inVisible("q.account_id", v)+` ORDER BY q.asked_at DESC, q.id DESC`,
-		v.TenantID, QuestionOpen)
+		`SELECT `+questionCols+` WHERE q.tenant_id = ? AND q.status = ? AND `+inVisible("q.account_id")+` ORDER BY q.asked_at DESC, q.id DESC`,
+		v.TenantID, QuestionOpen, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("list questions: %w", err)
 	}
@@ -354,9 +352,9 @@ func (s *Store) AnswerQuestion(ctx context.Context, v Viewer, id int64, yes bool
 		return Question{}, fmt.Errorf("answer question: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	q, err := scanQuestion(tx.QueryRowContext(ctx,
-		`SELECT `+questionCols+` WHERE q.id = ? AND q.tenant_id = ? AND q.status = ? AND `+inVisible("q.account_id", v), id, v.TenantID, QuestionOpen))
+		`SELECT `+questionCols+` WHERE q.id = ? AND q.tenant_id = ? AND q.status = ? AND `+inVisible("q.account_id"),
+		id, v.TenantID, QuestionOpen, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Question{}, ErrNotFound
 	}

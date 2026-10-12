@@ -30,7 +30,7 @@ type RemovedMailbox struct {
 // connected and that still has its secret, copied as sealed, before the caller deletes the
 // mailbox or its secret in the same transaction. A mailbox whose secret is already gone was
 // queued when it went, so it is not queued twice.
-func queueRemovedMailboxes(ctx context.Context, tx *sql.Tx, ids []int64, now int64) error {
+func queueRemovedMailboxes(ctx context.Context, tx *txn, ids []int64, now int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -50,18 +50,18 @@ func queueRemovedMailboxes(ctx context.Context, tx *sql.Tx, ids []int64, now int
 // removedCols are the columns of a RemovedMailbox, as scanRemoved reads them.
 const removedCols = `id, account_id, preset, oauth, username, created_at, attempts`
 
-// scanRemoved reads every row of rows, removedCols each, and closes them.
-func scanRemoved(rows *sql.Rows) ([]RemovedMailbox, error) {
-	defer rows.Close()
+// scanRemoved reads every row of rs, removedCols each, and closes them.
+func scanRemoved(rs *rows) ([]RemovedMailbox, error) {
+	defer rs.Close()
 	var out []RemovedMailbox
-	for rows.Next() {
+	for rs.Next() {
 		var r RemovedMailbox
-		if err := rows.Scan(&r.ID, &r.AccountID, &r.Preset, &r.OAuth, &r.Username, &r.CreatedAt, &r.Attempts); err != nil {
+		if err := rs.Scan(&r.ID, &r.AccountID, &r.Preset, &r.OAuth, &r.Username, &r.CreatedAt, &r.Attempts); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	return out, rs.Err()
 }
 
 // WaitingRemovedMailboxes lists at most limit removed mailboxes due to be handed over by

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
-	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 const oldAdminPassword = "the old admin password"
@@ -18,15 +18,7 @@ const oldAdminPassword = "the old admin password"
 func adminDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	hash, err := crypto.HashPassword(oldAdminPassword)
 	if err != nil {
 		t.Fatal(err)
@@ -44,12 +36,7 @@ func adminDir(t *testing.T) string {
 // adminState reads back whether password opens the account and whether the session is alive.
 func adminState(t *testing.T, dir, password string) (passwordWorks, sessionAlive bool) {
 	t.Helper()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	st := store.New(db)
+	st, _ := storetest.InDir(t, dir)
 	u, err := st.UserByEmail(t.Context(), "me@example.test")
 	if err != nil {
 		t.Fatal(err)
@@ -144,14 +131,7 @@ func TestUsersDataDirFromEnvironment(t *testing.T) {
 func TestUsersErrors(t *testing.T) {
 	empty := t.TempDir() // a directory without a database
 	noAdmin := t.TempDir()
-	db, err := store.Open(t.Context(), noAdmin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
+	storetest.InDir(t, noAdmin)
 
 	tests := []struct {
 		name string

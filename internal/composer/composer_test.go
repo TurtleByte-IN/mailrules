@@ -27,6 +27,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden prompts in testdata/")
@@ -231,15 +232,9 @@ func (e *env) count(t *testing.T, query string) int {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	e := &env{st: store.New(db), mb: mailtest.New(1), db: db}
+	st, db := storetest.New(t)
+	var err error
+	e := &env{st: st, mb: mailtest.New(1), db: db}
 	if e.user, err = e.st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}

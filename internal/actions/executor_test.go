@@ -15,6 +15,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // accounts is the test Accounts: one mailbox for every account.
@@ -113,15 +114,9 @@ func newEnv(t *testing.T) *env {
 func newStoreEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	e := &env{t: t, db: db, st: store.New(db), accs: &accounts{}}
+	st, db := storetest.New(t)
+	var err error
+	e := &env{t: t, db: db, st: st, accs: &accounts{}}
 	if e.user, err = e.st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}

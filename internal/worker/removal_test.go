@@ -12,6 +12,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // removalWorld is a database in dir with two hosted people, each the only member of their
@@ -22,23 +23,11 @@ type removalWorld struct {
 	goneAcct, keptAcct store.Account
 }
 
-func openAt(t *testing.T, dir string) (*store.Store, *sql.DB) {
-	t.Helper()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	return store.New(db), db
-}
-
 func newRemovalWorld(t *testing.T) (removalWorld, *store.Store, *sql.DB) {
 	t.Helper()
 	ctx := t.Context()
 	w := removalWorld{dir: t.TempDir()}
-	st, db := openAt(t, w.dir)
+	st, db := storetest.InDir(t, w.dir)
 	person := func(sub, email, org string) (store.User, store.Account) {
 		u, err := st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: sub, Email: email, Tenant: org}, 1)
 		if err != nil {
@@ -80,8 +69,7 @@ func TestRemovalJobSurvivesARestart(t *testing.T) {
 	}
 	_ = db.Close() // the daemon stops in the middle of the wait
 
-	st, db = openAt(t, w.dir)
-	t.Cleanup(func() { _ = db.Close() })
+	st, _ = storetest.InDir(t, w.dir)
 	m := &Manager{}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer func() { cancel(); m.Wait() }()
@@ -136,8 +124,7 @@ func TestRemovalJobSurvivesARestart(t *testing.T) {
 // it happened, keeps everything; their mailbox, whose secret went when they were
 // forgotten, stays stopped until they enter a new password.
 func TestRemovalCalledOffKeepsTheMailboxStopped(t *testing.T) {
-	w, st, db := newRemovalWorld(t)
-	t.Cleanup(func() { _ = db.Close() })
+	w, st, _ := newRemovalWorld(t)
 	ctx := t.Context()
 	now := time.Unix(1_800_000_000, 0)
 	if _, err := st.ForgetIdentity(ctx, "workos", "user_gone", now.Unix()); err != nil {

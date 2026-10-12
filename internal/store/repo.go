@@ -14,10 +14,10 @@ var ErrNotFound = errors.New("not found")
 var ErrAlreadySetUp = errors.New("already set up")
 
 // Store is the repository over the database. All times are unix seconds.
-type Store struct{ db *sql.DB }
+type Store struct{ db *conn }
 
 // New wraps an open, migrated database.
-func New(db *sql.DB) *Store { return &Store{db: db} }
+func New(db *sql.DB) *Store { return &Store{db: &conn{db: db, d: dialectSQLite}} }
 
 // User is a person who signs in. Self-host has one, the admin, in SelfHostTenant.
 type User struct {
@@ -39,16 +39,16 @@ func scanUser(row interface{ Scan(...any) error }) (User, error) {
 // CreateFirstUser inserts the admin account, in the self-host tenant, only if no user
 // exists yet.
 func (s *Store) CreateFirstUser(ctx context.Context, email, passwordHash string, now int64) (User, error) {
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO users (email, password_hash, created_at, tenant_id)
-		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)`, email, passwordHash, now, SelfHostTenant)
+		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`, email, passwordHash, now, SelfHostTenant).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrAlreadySetUp
+	}
 	if err != nil {
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return User{}, ErrAlreadySetUp
-	}
-	id, _ := res.LastInsertId()
 	return User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: SelfHostTenant}, nil
 }
 
@@ -177,10 +177,10 @@ func (s *Store) AddUsage(ctx context.Context, tenantID int64, operator bool, day
 		`INSERT INTO usage_daily (tenant_id, operator, day, provider, model, purpose, calls, tokens_in, tokens_out, cost_usd)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (tenant_id, operator, day, provider, model, purpose) DO UPDATE SET
-		   calls = calls + excluded.calls,
-		   tokens_in = tokens_in + excluded.tokens_in,
-		   tokens_out = tokens_out + excluded.tokens_out,
-		   cost_usd = cost_usd + excluded.cost_usd`,
+		   calls = usage_daily.calls + excluded.calls,
+		   tokens_in = usage_daily.tokens_in + excluded.tokens_in,
+		   tokens_out = usage_daily.tokens_out + excluded.tokens_out,
+		   cost_usd = usage_daily.cost_usd + excluded.cost_usd`,
 		tenantID, operator, day, provider, model, purpose, calls, tokensIn, tokensOut, costUSD); err != nil {
 		return fmt.Errorf("add usage: %w", err)
 	}

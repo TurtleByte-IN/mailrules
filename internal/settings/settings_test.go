@@ -7,6 +7,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // trash_to_folder and leave_own_mail are on unless they were turned off, on a new install
@@ -42,15 +43,7 @@ func TestOwnSwitches(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(sw.key+"/"+tt.name, func(t *testing.T) {
 				ctx := t.Context()
-				db, err := store.Open(ctx, t.TempDir())
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = db.Close() })
-				if err := store.Migrate(ctx, db); err != nil {
-					t.Fatal(err)
-				}
-				st := store.New(db)
+				st, _ := storetest.New(t)
 				rows := map[string]string{}
 				if tt.other {
 					rows["dry_run"], rows["retention_days"] = "false", "90"

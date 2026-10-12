@@ -4,9 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 )
 
 func open(t *testing.T) (*Store, *sql.DB) {
@@ -63,6 +67,51 @@ func TestOpenAndMigrate(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("tables = %v, want %v", got, want)
 		}
+	}
+}
+
+// A database an earlier build migrated opens without running anything again: goose knows a
+// migration by its version number alone, so every embedded migration must keep its number
+// for as long as there are databases that ran it, wherever its file lives.
+func TestMigrateAgainRunsNothing(t *testing.T) {
+	_, db := open(t) // migrated twice already
+	ctx := t.Context()
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := p.Up(ctx); err != nil || len(res) != 0 {
+		t.Fatalf("a third run applied %v, %v; want nothing", res, err)
+	}
+	var files []int64
+	for _, src := range p.ListSources() {
+		files = append(files, src.Version)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT version_id FROM goose_db_version WHERE version_id > 0 AND is_applied ORDER BY version_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var applied []int64
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		applied = append(applied, v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(applied, files) {
+		t.Fatalf("applied versions %v, embedded %v", applied, files)
+	}
+	if files[0] != 1 || files[len(files)-1] != int64(len(files)) {
+		t.Fatalf("embedded versions %v are not 1 to %d", files, len(files))
 	}
 }
 

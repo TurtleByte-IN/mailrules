@@ -17,6 +17,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // imapWorld is a live account over the real IMAP connector and go-imap's in-memory server,
@@ -34,15 +35,7 @@ func newIMAPWorld(t *testing.T) *imapWorld {
 	t.Helper()
 	ctx := t.Context()
 	srv := imaptest.Start(t, goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapMove: {}, goimap.CapUIDPlus: {}})
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.New(t)
 	u, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)

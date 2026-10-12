@@ -25,7 +25,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
-	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // fakeOAuth is a module that connects Gmail and Outlook mailboxes with one-click sign-in
@@ -237,12 +237,7 @@ func serveForTest(t *testing.T, imapTLS *tls.Config, modules ...ext.Module) runn
 func (r running) storedSecret(t *testing.T, id int64) string {
 	t.Helper()
 	r.shutdown()
-	db, err := store.Open(t.Context(), r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	st := store.New(db)
+	st, _ := storetest.InDir(t, r.dir)
 	key, err := openMasterKey(t.Context(), r.cfg, st)
 	if err != nil {
 		t.Fatal(err)
