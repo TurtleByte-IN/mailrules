@@ -22,6 +22,7 @@ func TestHandler(t *testing.T) {
 		"assets/index-abc123.js":  {Data: []byte("console.log(1)")},
 		"assets/index-abc123.css": {Data: []byte("body{}")},
 		"icon.svg":                {Data: []byte("<svg xmlns='http://www.w3.org/2000/svg'/>")},
+		"icon-192.png":            {Data: []byte("\x89PNG\r\n\x1a\n")},
 		"manifest.webmanifest":    {Data: []byte("{}")},
 	})
 	for _, tc := range []struct {
@@ -38,6 +39,7 @@ func TestHandler(t *testing.T) {
 		{"GET", "/assets/index-abc123.js", 200, "text/javascript", immutable, "console.log"},
 		{"GET", "/assets/index-abc123.css", 200, "text/css", immutable, "body{}"},
 		{"GET", "/icon.svg", 200, "image/svg+xml", revalidate, "<svg"},
+		{"GET", "/icon-192.png", 200, "image/png", revalidate, "PNG"},
 		{"GET", "/manifest.webmanifest", 200, "application/manifest+json", revalidate, "{}"},
 		{"GET", "/assets/gone-000000.js", 404, "", "", ""}, // a missing asset is not index.html
 		{"GET", "/../../etc/passwd", 200, "text/html", revalidate, "<title>app</title>"},
