@@ -104,7 +104,7 @@ MailRules writes its log to standard error, one JSON object per line.
 | systemd | `journalctl -u mailrules` |
 | In a terminal | The terminal you started it in |
 
-Set `LOG_LEVEL=debug` for more detail, including one line per model call with its duration and outcome. Logs never contain passwords, keys or email text at any level.
+Set `LOG_LEVEL=debug` for more detail, including one line per model call with its duration and outcome. Logs never contain passwords, keys or email text at any level. A line about a request has its `route` (such as `GET /api/rules`) and, once you are signed in, `tenant_id`; a line about a mailbox has its number as `account`.
 
 Lines worth searching for:
 
@@ -119,6 +119,7 @@ Lines worth searching for:
 | `summary email cannot be sent until these are set` | Settings for the [summary email](./summary-email.md) are missing. |
 | `summary email not sent` | Sending the summary failed; the reason is in the line. |
 | `web UI is reachable from other machines; put it behind a reverse proxy with TLS` | MailRules listens on a non-loopback address. Expected inside Docker, where the port is published to `127.0.0.1` only. |
+| `a request panicked`, `a mailbox's work panicked`, `watching a mailbox panicked`, `a cleanup check panicked`, `a cleanup sort panicked` | A bug in MailRules. The line has the `stack` of where it happened; please include it when you report the bug. MailRules carries on: the request gets an error, a mailbox connects again after a short wait (the reason beside it reads "MailRules hit an internal error; trying again"), and a cleanup check or sort stops as failed. |
 
 ## Checking a mailbox from the command line
 

@@ -263,9 +263,14 @@ func (m *Manager) StartCheck(c Cleanup, fingerprint string, run CheckFunc) (*Che
 	slog.InfoContext(ctx, "cleanup check started", "account", c.AccountID, "folder", c.Folder, "limit", c.Limit)
 	m.wg.Go(func() {
 		defer cancel()
-		rows, err := run(ctx, func(p composer.CheckProgress) {
-			chk.setProgress(p)
-			hub.Publish(tenant, account, events.CheckProgress, chk.progressState())
+		// A check that panicked fails like one the server or the model failed.
+		var rows []composer.CheckRow
+		err := guard(ctx, "a cleanup check panicked", account, func() (err error) {
+			rows, err = run(ctx, func(p composer.CheckProgress) {
+				chk.setProgress(p)
+				hub.Publish(tenant, account, events.CheckProgress, chk.progressState())
+			})
+			return err
 		})
 		st := chk.finish(rows, err, ctx)
 		if st.Status == "" { // replaced, or the daemon is stopping: it is not the account's any more

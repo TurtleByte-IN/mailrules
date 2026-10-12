@@ -10,8 +10,9 @@
 // mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
 // rule notifications (Module.Notifications), what the module is told when the person
 // moves an email MailRules filed, with a question it may ask in Activity (Module.Moves),
-// the plans the build sells: what each tenant may use and pays for (Module.Billing), and
-// the key service that holds the key every tenant's data key is wrapped under (Module.Keys).
+// the plans the build sells: what each tenant may use and pays for (Module.Billing), the
+// key service that holds the key every tenant's data key is wrapped under (Module.Keys),
+// and every error the daemon logs, for an error tracker (Module.Errors).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -139,6 +140,51 @@ type Module struct {
 	// key. An unwrapped key is kept in memory for MAILRULES_TENANT_KEY_CACHE, then asked for
 	// again; requests that need the same key at once share one call.
 	Keys KeyProvider
+	// Errors, when set, is handed every error `serve` logs (level error, recovered panics
+	// included), from its start to its end, to send to an error tracker. It sees exactly
+	// the line the log writes, redaction included (see ErrorEvent), never more. Each module
+	// that sets it is handed every one.
+	//
+	// Nothing waits for it: it is called on a goroutine of its own, one error at a time, in
+	// the order they were logged, with a ctx that ends a few seconds after the daemon begins
+	// to stop. Up to ErrorQueue errors wait for it while it runs; when one more is logged,
+	// the oldest waiting is dropped, counted in the metric
+	// mailrules_error_events_dropped_total{module} and in the next ErrorEvent.Dropped. It
+	// must not log at error level itself (log a failure to send at warn): what it logs at
+	// error comes back to it.
+	Errors func(ctx context.Context, e ErrorEvent)
+}
+
+// ErrorQueue is how many logged errors wait for a module's Errors before the oldest is
+// dropped.
+const ErrorQueue = 256
+
+// ErrorEvent is an error the daemon logged (Module.Errors), as its log line reads: the
+// keys password, secret, token, key, authorization and body are dropped, at any depth, and
+// email content is never logged. An email address is there only where the log line has it.
+type ErrorEvent struct {
+	Time    time.Time
+	Message string
+	// Attrs are the line's attributes but time, level, msg and stack, as JSON decodes them
+	// with numbers kept as json.Number: a group is a map[string]any. They include, where
+	// the error is known to belong to one:
+	//
+	//	tenant_id  the tenant
+	//	account    the mailbox's id
+	//	route      the request's route, such as "GET /api/rules/{id}" ("unmatched" when no
+	//	           route matched)
+	//	method     the request's method, on a panic serving it
+	//	panic      the value the code panicked with, as fmt.Sprint prints it
+	Attrs map[string]any
+	// Stack is the stack of the goroutine that panicked, as runtime/debug.Stack writes it,
+	// for a recovered panic; empty for any other error.
+	Stack string
+	// Version is the build's version, as `mailrules version` prints it: an error tracker's
+	// release.
+	Version string
+	// Dropped is how many errors logged just before this one were dropped unhanded: too
+	// many were waiting (ErrorQueue).
+	Dropped int
 }
 
 // KeyProvider is a key-encryption key held outside the daemon, in a key service such as a

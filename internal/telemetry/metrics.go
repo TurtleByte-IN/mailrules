@@ -17,6 +17,7 @@ type Metrics struct {
 	reg      *prometheus.Registry
 	requests *prometheus.CounterVec
 	duration *prometheus.HistogramVec
+	dropped  *prometheus.CounterVec
 }
 
 // NewMetrics returns a registry with the Go runtime and process collectors, the build
@@ -31,10 +32,13 @@ func NewMetrics(version string) *Metrics {
 			Name: "mailrules_http_request_duration_seconds", Help: "Time to serve an HTTP request, by method and route.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"method", "route"}),
+		dropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mailrules_error_events_dropped_total", Help: "Logged errors a module was never handed because too many were waiting for it, by module.",
+		}, []string{"module"}),
 	}
 	build := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "mailrules_build_info", Help: "Always 1; the version label names the build."}, []string{"version"})
 	build.WithLabelValues(version).Set(1)
-	m.reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), build, m.requests, m.duration)
+	m.reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), build, m.requests, m.duration, m.dropped)
 	return m
 }
 
@@ -46,6 +50,14 @@ func (m *Metrics) ObserveHTTP(method, route string, status int, took time.Durati
 	}
 	m.requests.WithLabelValues(method, route, strconv.Itoa(status)).Inc()
 	m.duration.WithLabelValues(method, route).Observe(took.Seconds())
+}
+
+// DroppedError counts a logged error module was not handed: too many were waiting for it.
+func (m *Metrics) DroppedError(module string) {
+	if m == nil {
+		return
+	}
+	m.dropped.WithLabelValues(module).Inc()
 }
 
 // Handler serves the registry in the Prometheus text format.

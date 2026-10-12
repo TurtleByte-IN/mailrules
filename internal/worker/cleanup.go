@@ -204,10 +204,14 @@ func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, r
 			report(store.BatchFailed)
 			return
 		}
-		s.work.Lock()
-		applied, err := p.SortSaved(ctx, row.Ref, row.Outcome)
-		s.work.Unlock()
-		if err != nil { // the outcome could not be recorded at all, or the daemon is stopping
+		var applied bool
+		err := guard(ctx, "a cleanup sort panicked", acct.ID, func() error {
+			return s.locked(func() (err error) {
+				applied, err = p.SortSaved(ctx, row.Ref, row.Outcome)
+				return err
+			})
+		})
+		if err != nil { // the outcome could not be recorded at all, the daemon is stopping, or it panicked
 			slog.WarnContext(ctx, "cleanup sort stopped", "account", acct.ID, "batch", batchID, "error", err.Error())
 			report(store.BatchFailed)
 			return

@@ -265,10 +265,34 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Write sends the body; a body sent without WriteHeader is a 200.
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
 // Unwrap lets http.ResponseController reach Flush for the event stream.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// harden sets the security headers on every response and counts the request.
+// pattern is what is logged and counted as a request's route: the pattern the mux matched,
+// which it sets on the request before the handler runs, never the raw path.
+type pattern struct{ r *http.Request }
+
+func (p pattern) LogValue() slog.Value { return slog.StringValue(p.String()) }
+
+func (p pattern) String() string {
+	if p.r.Pattern == "" {
+		return "unmatched"
+	}
+	return p.r.Pattern
+}
+
+// harden sets the security headers on every response and counts the request. What is
+// logged with the request's context has its route and, once the session is known, its
+// tenant (requireSession). A handler that panics is logged at error with its stack and
+// answered 500, or, when it had begun its answer, cut off; the daemon goes on.
 func (s *server) harden(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -278,15 +302,33 @@ func (s *server) harden(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		sw := &statusWriter{ResponseWriter: w}
 		start := time.Now()
+		ctx := telemetry.WithAttrs(r.Context())
+		r = r.WithContext(ctx)
+		telemetry.AddAttrs(ctx, slog.Any("route", pattern{r}))
+		observe := func() {
+			if sw.status == 0 {
+				sw.status = http.StatusOK
+			}
+			s.Metrics.ObserveHTTP(r.Method, pattern{r}.String(), sw.status, time.Since(start))
+		}
+		defer func() {
+			v := recover()
+			if v == nil {
+				return
+			}
+			if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) { // a handler ending the connection on purpose
+				panic(v)
+			}
+			telemetry.LogPanic(ctx, "a request panicked", v, "method", r.Method)
+			if sw.status != 0 {
+				observe()
+				panic(http.ErrAbortHandler) // the client must not take a cut-off answer for a whole one
+			}
+			writeError(sw, http.StatusInternalServerError, "internal", "Something went wrong on the server.", "")
+			observe()
+		}()
 		next.ServeHTTP(sw, r)
-		if sw.status == 0 {
-			sw.status = http.StatusOK
-		}
-		pattern := r.Pattern // set by the mux; empty when nothing matched
-		if pattern == "" {
-			pattern = "unmatched"
-		}
-		s.Metrics.ObserveHTTP(r.Method, pattern, sw.status, time.Since(start))
+		observe()
 	})
 }
 
