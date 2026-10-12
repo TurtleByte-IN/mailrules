@@ -6,6 +6,7 @@
   import { clock, day } from '../lib/format';
   import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectsByForm, reconnectsByGoogle, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { mailboxReturn } from '../lib/state/oneclick';
+  import { limits, load as loadLimits } from '../lib/state/limits.svelte';
   import { auth } from '../lib/state/auth.svelte';
   import { flash } from '../lib/state/toast.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
@@ -28,6 +29,14 @@
   /** The mailbox whose provider's sign-in form, or the note before Google's sign-in, is open to reconnect it, in its row. */
   let reconnecting = $state(reconnectAsked);
   let removing = $state<number>();
+  /** Why no mailbox can be added now (the plan's limit), shown in place of the wizard; empty while one can. */
+  let full = $state('');
+  /** Opens the wizard, unless the plan has no room for another mailbox. */
+  async function add() {
+    await loadLimits();
+    full = limits.value?.mailboxes?.refusal ?? '';
+    connecting = !full;
+  }
   let editing = $state<number>();
   // Joined here, not in the markup: a separator at the start of an {#if} block loses its leading space.
   const line = (a: Account) =>
@@ -182,7 +191,7 @@
       </p>
     </div>
     {#if !connecting}
-      <button type="button" class="btn-primary" onclick={() => (connecting = true)}>Add mailbox</button>
+      <button type="button" class="btn-primary" onclick={add}>Add mailbox</button>
     {/if}
   </header>
 
@@ -197,6 +206,13 @@
     <div role="alert" class="flex flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-[18px] py-3 text-trash">
       <span>{returnError}</span>
       <button type="button" class="btn" onclick={() => (returnError = undefined)}>Dismiss</button>
+    </div>
+  {/if}
+
+  {#if full}
+    <div role="status" class="flex flex-wrap items-center justify-between gap-2 rounded border border-warn-line bg-warn-bg px-[18px] py-3 text-warn">
+      <span>{full}{#if limits.value?.upgrade_url}{' '}<a href={limits.value.upgrade_url} class="font-semibold underline">Upgrade</a>{/if}</span>
+      <button type="button" class="btn" onclick={() => (full = '')}>Dismiss</button>
     </div>
   {/if}
 

@@ -69,6 +69,8 @@ func oneClickModule() ext.Module {
 				switch {
 				case errors.Is(err, ext.ErrMailboxExists):
 					h.MailboxFailed(w, r, ext.MailboxExists)
+				case errors.Is(err, ext.ErrMailboxLimit):
+					h.MailboxFailed(w, r, ext.MailboxLimitReached)
 				case err != nil:
 					h.WriteJSON(w, http.StatusOK, map[string]string{"failed": err.Error()})
 				default:

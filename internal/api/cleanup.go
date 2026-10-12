@@ -650,16 +650,22 @@ func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 
 // cleanupDecider is the deciding step of a cleanup check of acct's mail: the routers in
 // force, with their calls booked under the "cleanup" purpose so Usage can tell them from
-// live sorting, leaving the account's own mail alone as live sorting does.
+// live sorting, leaving the account's own mail alone as live sorting does. Each email a
+// model decides on keys the operator holds draws on the tenant's first-cleanup grant, then
+// on its monthly allowance, as it is decided (cleanupMeter), and once both are used up such
+// mail is left for Needs review.
 func (s *server) cleanupDecider(ctx context.Context, v store.Viewer, acct store.Account) (pipeline.Decider, error) {
 	src := s.modelSource()
 	router, minConfidence := src.Live(ctx, acct.TenantID)
 	own, err := pipeline.OwnMail(ctx, s.store, acct)
-	return pipeline.Decider{Router: router.For("cleanup"), MinConfidence: minConfidence, Now: s.now(), Own: own,
+	d := pipeline.Decider{Router: router.For("cleanup"), MinConfidence: minConfidence, Now: s.now(), Own: own,
 		Examples: pipeline.Corrections(s.store, v),
 		Override: func(ctx context.Context, spec string) *models.Router {
 			return src.RouterFor(ctx, acct.TenantID, spec).For("cleanup")
-		}}, err
+		},
+	}
+	d.Allowance, d.Spend = s.cleanupMeter(acct.TenantID)
+	return d, err
 }
 
 var batchKinds = []string{store.BatchLive, store.BatchCleanup, "review", store.BatchCorrection, store.BatchUndo}

@@ -673,6 +673,8 @@ func (s *Settings) live(ctx context.Context, tenantID int64) (*routers, map[stri
 	} else if t.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(tenantID), s.ledger(tenantID, rows)); err != nil {
 		slog.WarnContext(ctx, "could not set up the decision model", "tenant", tenantID, "error", err.Error())
 		t.router = nil
+	} else {
+		t.router.Metered = s.operator(rows)
 	}
 	if t.router != nil {
 		// One line each time the settings change, not per email: this runs only on a rebuild.
@@ -725,6 +727,8 @@ func (s *Settings) RouterFor(ctx context.Context, tenantID int64, spec string) *
 	if err != nil {
 		slog.WarnContext(ctx, "a rule's model cannot be used; the default decides instead", "model", spec, "error", err.Error())
 		r = nil
+	} else {
+		r.Metered = s.operator(rows)
 	}
 	t.overrides[spec] = r
 	return r

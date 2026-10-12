@@ -316,6 +316,8 @@ func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Acco
 	return refuse("connection_failed", "Could not reach "+addr+". Check the host and port.", "host")
 }
 
+// handleAccountTest logs in to a mailbox not added yet, as the wizard's test does. A tenant
+// with all the mailboxes it may have is told so before anything is dialed.
 func (s *server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 	var in accountInput
 	if !readJSON(w, r, &in) {
@@ -323,6 +325,9 @@ func (s *server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 	}
 	a, ok := in.account(w)
 	if !ok {
+		return
+	}
+	if _, ok := s.mailboxRoom(w, r, viewer(r).TenantID); !ok {
 		return
 	}
 	c, ok := s.tryAccount(w, r, a, in.Password)
@@ -393,7 +398,8 @@ func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 
 // handleAccountCreate checks the account against its server before anything is stored,
 // records what first connect found (folders, and the watch position: only mail that
-// arrives from now on is sorted), and starts watching.
+// arrives from now on is sorted), and starts watching. A tenant with all the mailboxes it
+// may have is refused before anything is dialed, and again as the mailbox is stored.
 func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var in accountInput
@@ -401,6 +407,10 @@ func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, ok := in.account(w)
+	if !ok {
+		return
+	}
+	max, ok := s.mailboxRoom(w, r, viewer(r).TenantID)
 	if !ok {
 		return
 	}
@@ -417,7 +427,12 @@ func (s *server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "account_exists", "This mailbox is already connected.", "username")
 		return
 	}
-	acct, err := s.saveAccount(ctx, user(r).ID, c, in.Password)
+	acct, err := s.saveAccount(ctx, user(r).ID, c, in.Password, max)
+	var full *store.MailboxLimitError
+	if errors.As(err, &full) { // another mailbox took the last place meanwhile
+		writeError(w, http.StatusConflict, "mailbox_limit", full.Error(), "")
+		return
+	}
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -444,10 +459,11 @@ func (s *server) alreadyConnected(ctx context.Context, tenantID int64, host, use
 
 // saveAccount stores a mailbox for userID with its secret and what first connect found
 // (folders, and the watch position: only mail that arrives from now on is sorted), and
-// starts watching it.
-func (s *server) saveAccount(ctx context.Context, userID int64, c connected, secret string) (store.Account, error) {
+// starts watching it. The user's tenant may have max mailboxes (store.NoLimit: any number);
+// one over it is a *store.MailboxLimitError, and nothing is stored.
+func (s *server) saveAccount(ctx context.Context, userID int64, c connected, secret string, max int) (store.Account, error) {
 	c.account.UserID, c.account.CreatedAt = userID, s.now().Unix()
-	acct, err := s.store.CreateAccount(ctx, s.Master, c.account, secret)
+	acct, err := s.store.CreateAccountWithin(ctx, s.Master, c.account, secret, max)
 	if err == nil {
 		err = s.store.SaveFolders(ctx, acct.ID, c.folders)
 	}

@@ -20,8 +20,9 @@ import (
 var ErrModel = errors.New("the decision model failed")
 
 // Decider settles which rule applies to one email: the rules' evaluation order first and,
-// when rules with an intent are in play, the decision model. It changes nothing, so the
-// live pipeline, cleanup and the rule tester all decide through it and cannot disagree.
+// when rules with an intent are in play, the decision model. It changes nothing but what
+// Spend counts, so the live pipeline, cleanup and the rule tester all decide through it and
+// cannot disagree.
 type Decider struct {
 	Router *models.Router // nil = no decision model is set
 	// Override returns the router for a rule's own model, or nil when it cannot be used.
@@ -37,6 +38,16 @@ type Decider struct {
 	// RouteOnly are rules a sender rule may route to although they are not in the rules
 	// given to Settle (see rules.Options.RouteOnly). nil = none.
 	RouteOnly []rules.Rule
+	// Allowance, when set, says whether the tenant's monthly allowance of emails a model
+	// decides on keys the operator holds is used up. While it is, no model on those keys is
+	// asked: a model on the tenant's own keys decides (models.Router.OwnKeysOnly), or else
+	// the email waits in Needs review (ReasonAllowance). Sender rules and rules without an
+	// intent decide as ever. nil = no allowance (self-host).
+	Allowance func(ctx context.Context) (reached bool, err error)
+	// Spend, when set, counts each email a model decides on keys the operator holds as Settle
+	// decides it: a cleanup check's, which records no decision. Live sorting leaves it nil and
+	// counts with the decision's row (store.Decision.Metered).
+	Spend func(ctx context.Context) error
 }
 
 // OwnMail returns the Decider.Own for an account: its own addresses while the
@@ -73,6 +84,9 @@ type Outcome struct {
 	// NoModel: rules with an intent were in play and no model could be asked, so they were
 	// passed over. With a model set, this is an email the model would have decided.
 	NoModel bool
+	// Metered: a model on keys the operator holds decided the email, so it counts against the
+	// tenant's monthly allowance.
+	Metered bool
 	Calls   int          // how many model calls that took, counting retries and the fallback
 	Usage   models.Usage // what asking cost, over every call made
 	// Probabilities is what the decision model gave each candidate, by rule id (0 = none
@@ -121,22 +135,39 @@ func (d Decider) Settle(ctx context.Context, sum message.Summary, rs []rules.Rul
 		}
 		return Outcome{Result: res, RuleName: names[res.RuleID], Reason: localReason(res, names), NoModel: true}, nil
 	}
+	if d.Allowance != nil && router.OnOperatorKeys() {
+		reached, err := d.Allowance(ctx)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("check the AI allowance: %w", err)
+		}
+		if reached {
+			if router = router.OwnKeysOnly(); router == nil {
+				return Outcome{Result: rules.Result{Stage: rules.StageNone, Review: true}, Reason: ReasonAllowance}, nil
+			}
+		}
+	}
 	if router.Fallback != nil && d.Examples != nil { // only the fallback is shown examples
 		req.Examples = d.Examples(ctx, sum, ids)
 	}
 	routed, err := router.Route(ctx, req)
+	metered := router.MeteredResult(routed)
+	if metered && d.Spend != nil && (err == nil || errors.Is(err, models.ErrBadOutput)) {
+		if err := d.Spend(ctx); err != nil {
+			return Outcome{}, fmt.Errorf("count the AI-sorted email: %w", err)
+		}
+	}
 	if errors.Is(err, models.ErrBadOutput) {
 		// The model answered, ReadTries times, with nothing that could be read: the email
 		// is left where it is (PRD R5), not retried later nor parked in Needs review.
 		slog.WarnContext(ctx, "model answers could not be read; keeping the email", "error", err.Error())
-		return Outcome{Result: rules.Result{Stage: rules.StageNone}, Reason: ReasonUnreadable, Asked: true,
+		return Outcome{Result: rules.Result{Stage: rules.StageNone}, Reason: ReasonUnreadable, Asked: true, Metered: metered,
 			Calls: routed.Calls, Usage: routed.Primary}, nil
 	}
 	if err != nil {
 		return Outcome{}, fmt.Errorf("decide: %w: %w", ErrModel, err)
 	}
-	out := Outcome{Result: ev.Resolve(routed.RuleID, routed.Confidence), Reason: routed.Reason, Asked: true, Calls: routed.Calls, Usage: routed.Primary,
-		Probabilities: routed.Probabilities}
+	out := Outcome{Result: ev.Resolve(routed.RuleID, routed.Confidence), Reason: routed.Reason, Asked: true, Metered: metered,
+		Calls: routed.Calls, Usage: routed.Primary, Probabilities: routed.Probabilities}
 	if out.Stage == rules.StageCondition {
 		out.Reason += fmt.Sprintf("; the default rule %q applied", names[out.RuleID])
 	}

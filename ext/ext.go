@@ -8,8 +8,9 @@
 // connected with one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of
 // providers the module connects itself (Module.MailboxForms), what the module is told when a
 // mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
-// rule notifications (Module.Notifications), and what the module is told when the person
-// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves).
+// rule notifications (Module.Notifications), what the module is told when the person
+// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves), and
+// how much of the hosted service each tenant may use (Module.Limits).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -114,6 +115,48 @@ type Module struct {
 	// (none without it) and GET /api/settings reports features.move_questions. At most one
 	// module of a build sets it.
 	Moves *Moves
+	// Limits, when set, says how much each tenant may use (see Limits): the daemon asks it
+	// whenever it needs to know, with the tenant's id, as a mailbox is added, as an email
+	// needs a model and as a screen shows the tenant's use. It is called often and must
+	// answer quickly, without calling another service. An error refuses what was asked
+	// (a mailbox is not added, an email is tried again later) and is logged. Without it no
+	// tenant is limited, as on self-host. At most one module of a build sets it.
+	Limits func(ctx context.Context, tenantID int64) (Limits, error)
+}
+
+// NoLimit is a limit that does not limit (Limits.Mailboxes, Limits.AIEmails).
+const NoLimit = store.NoLimit
+
+// Limits is how much of the hosted service one tenant may use (Module.Limits). A zero field
+// allows none; NoLimit allows any number.
+type Limits struct {
+	// Mailboxes is how many mailboxes the tenant may have connected at once, its members'
+	// private ones included. A mailbox over it is refused on every path that adds one: the
+	// add-mailbox wizard (409 mailbox_limit) and Host.AddMailbox (ErrMailboxLimit). The
+	// mailboxes it has already are left alone when the number goes down.
+	Mailboxes int
+	// AIEmails is how many emails a month (a calendar month in UTC) a model may decide for
+	// the tenant on keys the operator holds (MAILRULES_MODE=cloud, the tenant has no key of
+	// its own for the provider). Emails a model decides on the tenant's own keys are not
+	// counted, nor are those sender rules and rules without an intent decide. An email is
+	// counted once when live sorting decides it, however often it is tried again, and once
+	// per cleanup check that asks a model about it. Once the month's are used up, sender
+	// rules and rules without an intent keep sorting, a decision model on the tenant's own
+	// key decides without the operator's fallback, and mail that needs the operator's model
+	// waits in Needs review, which says why with a way to the person's own key and, with
+	// UpgradeURL, to more. Nothing is charged for going over.
+	AIEmails int
+	// FirstCleanupEmails is a one-time grant of emails the tenant's cleanup checks may have a
+	// model decide on keys the operator holds before they draw on AIEmails, so a first
+	// cleanup of old mail does not use up the month. Each such email of a check takes one of
+	// it while any is left, then counts against AIEmails as before. What was used is kept for
+	// good: it never resets, and raising the number gives the difference. Live sorting never
+	// draws on it. 0 = none.
+	FirstCleanupEmails int
+	// UpgradeURL, when set, is where the screens send a tenant at a limit to raise it, such
+	// as the module's plan screen: a path in the web app (#/settings/plan) or an https URL.
+	// Empty = no upgrade is offered.
+	UpgradeURL string
 }
 
 // MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
@@ -276,6 +319,10 @@ var (
 	// module connected (one-click for one of its providers, or through one of its sign-in
 	// forms) and the signed-in user added.
 	ErrNoMailbox = errors.New("no such mailbox connected by the module")
+	// ErrMailboxLimit is what Host.AddMailbox returns when the signed-in user's tenant has as
+	// many mailboxes as its Limits allow. The error's text is the sentence to show the
+	// person, such as a form step's Message. Nothing changed.
+	ErrMailboxLimit = store.ErrMailboxLimit
 )
 
 // The codes Host.MailboxFailed sends the browser back to Mailboxes with.
@@ -292,6 +339,8 @@ const (
 	// MailboxConnectFailed: Host.AddMailbox or Host.ReconnectMailbox failed otherwise: the
 	// mail server refused the login or could not be reached.
 	MailboxConnectFailed = "connect_failed"
+	// MailboxLimitReached: Host.AddMailbox returned ErrMailboxLimit.
+	MailboxLimitReached = "mailbox_limit"
 )
 
 // Notifications is how a module delivers rule notifications (Module.Notifications). The
@@ -625,10 +674,12 @@ type Host interface {
 	// secret encrypted, sorts only mail that arrives from now on, and starts watching it,
 	// in dry-run while the team's dry-run is on (as it is until the person turns it off).
 	// It returns the mailbox's id, for MailboxAdded or MailboxFormStep.AccountID. It fails,
-	// storing nothing, with ErrMailboxExists, with an error that wraps ErrReconnect when
-	// the provider refused the secret or the token, or with an error of the mail server or
-	// the database (answer those with MailboxFailed and the matching code, or a form step's
-	// Message).
+	// storing nothing, with ErrMailboxExists, with ErrMailboxLimit when the tenant has all
+	// the mailboxes its Limits allow (checked before the login and again as it stores the
+	// mailbox, so two added at once cannot both take the last place), with an error that
+	// wraps ErrReconnect when the provider refused the secret or the token, or with an error
+	// of the mail server or the database (answer those with MailboxFailed and the matching
+	// code, or a form step's Message).
 	AddMailbox(ctx context.Context, m NewMailbox) (accountID int64, err error)
 	// ReconnectMailbox gives a mailbox the signed-in user added through the module a new
 	// secret, from the module's Connect route called with account=<id> (a one-click

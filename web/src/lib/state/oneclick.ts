@@ -10,6 +10,7 @@ const messages: Record<string, string> = {
   exists: 'This mailbox is already connected.',
   mismatch: "You signed in as another address than this mailbox's. Reconnect, and sign in as the mailbox's own address.",
   connect_failed: "The mail server didn't accept the sign-in, so the mailbox wasn't connected. Check that IMAP is switched on for the account, then try again.",
+  mailbox_limit: "Your plan has no room for another mailbox, so this one wasn't connected. Remove a mailbox to connect another.",
 };
 
 export interface MailboxReturn {
