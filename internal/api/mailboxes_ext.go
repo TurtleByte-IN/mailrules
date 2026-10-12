@@ -88,6 +88,9 @@ func (h host) AddMailbox(ctx context.Context, m ext.NewMailbox) (int64, error) {
 	if !ok {
 		return 0, errNoUser
 	}
+	if err := h.s.planEnded(ctx, who.TenantID); err != nil {
+		return 0, err
+	}
 	preset, ok := presets.Get(m.Provider)
 	if m.Password {
 		ok = ok && h.s.mailboxForm(m.Provider) != nil
@@ -170,6 +173,9 @@ func (h host) ReconnectMailbox(ctx context.Context, accountID int64, address, se
 	who, ok := ctxUser(ctx)
 	if !ok {
 		return errNoUser
+	}
+	if err := h.s.planEnded(ctx, who.TenantID); err != nil {
+		return err
 	}
 	a, err := h.s.store.Account(ctx, accountID)
 	if errors.Is(err, store.ErrNotFound) {

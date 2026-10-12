@@ -62,7 +62,7 @@ Where to put the variables depends on how you run MailRules; see [Install](./ins
 
 | Variable | Flag | Default | What it does |
 | --- | --- | --- | --- |
-| `MAILRULES_SMTP_HOST` | `--smtp-host` | none | Outgoing mail server the summary email is sent through, such as `smtp.example.com`, without a scheme or port. |
+| `MAILRULES_SMTP_HOST` | `--smtp-host` | none | Outgoing mail server the summary email is sent through, such as `smtp.example.com`, without a scheme or port. A build that sells plans (the hosted service) also sends through it the warnings before a plan's data is deleted, and does not start without it. |
 | `MAILRULES_SMTP_PORT` | `--smtp-port` | `0` | Its port. `0` uses the usual one: 587 for `starttls`, 465 for `implicit`, 25 for `none`. |
 | `MAILRULES_SMTP_USER` | `--smtp-user` | none | User name to sign in to the mail server with. Empty sends without signing in. |
 | `MAILRULES_SMTP_PASSWORD` | `--smtp-password` | none | Its password; an app password where the provider has them. |

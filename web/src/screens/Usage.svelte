@@ -2,6 +2,7 @@
   import type { ModelUsage, StatsUsage } from '../lib/api/usage';
   import { day as shortDay, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
+  import PlanMeters from '../lib/components/PlanMeters.svelte';
   import { limits, load as loadLimits } from '../lib/state/limits.svelte';
   import { load, totals, usage } from '../lib/state/usage.svelte';
 
@@ -28,20 +29,6 @@
   };
   // The first of next month is a UTC date, shown as such.
   const resets = (ts: number) => new Date(ts * 1000).toLocaleDateString([], { day: 'numeric', month: 'long', timeZone: 'UTC' });
-
-  // The plan's meters, as the prototype's Plan screen draws them; none on self-host. Emails decided on the tenant's
-  // own keys are not counted, so that meter shows no limit.
-  const meters = $derived.by(() => {
-    const l = limits.value;
-    const out: { label: string; text: string; now: number; max: number }[] = [];
-    if (l?.mailboxes) out.push({ label: 'Mailboxes', text: n(l.mailboxes.used) + ' of ' + n(l.mailboxes.limit), now: l.mailboxes.used, max: l.mailboxes.limit });
-    const ai = l?.ai_emails;
-    if (ai) {
-      const counted = { text: n(ai.used) + ' of ' + n(ai.limit), now: ai.used, max: ai.limit };
-      out.push({ label: 'AI-sorted emails this month', ...(ai.counted ? counted : { text: n(ai.used) + ' · no limit with your own keys', now: 0, max: 0 }) });
-    }
-    return out;
-  });
 </script>
 
 <div class="flex min-w-0 flex-col gap-[18px]">
@@ -50,21 +37,12 @@
     <p class="mt-1 text-secondary">What sorting cost this month, and where the model calls went.</p>
   </header>
 
-  {#if limits.value && meters.length}
+  {#if limits.value && (limits.value.mailboxes || limits.value.ai_emails)}
     {@const l = limits.value}
     {@const ai = l.ai_emails}
     <section aria-label="Your plan" class="card flex flex-col gap-4 p-[18px]">
       <h2 class="text-[15px]">Your plan</h2>
-      <div class="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-[18px]">
-        {#each meters as m (m.label)}
-          <div class="flex flex-col gap-1.5">
-            <div class="flex justify-between gap-2 text-[13.5px]"><span class="font-semibold">{m.label}</span><span class="text-secondary">{m.text}</span></div>
-            <div role="meter" aria-label={m.label} aria-valuemin={0} aria-valuemax={m.max} aria-valuenow={m.now} aria-valuetext={m.text} class="h-2.5 overflow-hidden rounded-[3px] bg-neutral">
-              <div class="h-full bg-ink" style:width="{m.max ? Math.min(100, Math.round((m.now / m.max) * 100)) : 0}%"></div>
-            </div>
-          </div>
-        {/each}
-      </div>
+      <PlanMeters limits={l} />
       {#if ai?.paused}
         <p role="status" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">
           This month's AI-sorted emails are used up. Until {resets(ai.resets_at)}, email that needs AI waits in Needs review; sender rules and rules built from conditions keep sorting.

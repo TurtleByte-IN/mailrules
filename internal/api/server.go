@@ -91,6 +91,7 @@ type server struct {
 	accountLogins *failureLimiter
 	dummy         string // hash verified when the email is unknown, so timing does not reveal accounts
 	dummyMu       sync.Once
+	csp           string // the Content-Security-Policy of every response (contentPolicy)
 }
 
 type route struct {
@@ -170,6 +171,10 @@ func (s *server) routes() []route {
 		on(get, "/api/stats/summary", s.handleStatsSummary),
 		on(get, "/api/stats/usage", s.handleStatsUsage),
 		on(get, "/api/limits", s.handleLimits),
+		on(get, "/api/plan", s.billingOnly(s.handlePlan)),
+		on(post, "/api/plan/checkout", s.billingOnly(s.handlePlanCheckout)),
+		on(post, "/api/plan/change", s.billingOnly(s.handlePlanChange)),
+		on(get, "/api/plan/portal", s.billingOnly(s.handlePlanPortal)),
 
 		on(get, "/api/settings", s.handleSettings),
 		on(patch, "/api/settings", s.handleSettingsPatch),
@@ -188,7 +193,8 @@ func (s *server) routes() []route {
 
 // NewHandler returns the daemon's HTTP routes.
 func NewHandler(o Options) http.Handler {
-	s := &server{Options: o, store: o.Store, secure: o.SecureCookies, now: o.Now, logins: newFailureLimiter(5, time.Minute), accountLogins: newFailureLimiter(maxAccountFailures, time.Minute)}
+	s := &server{Options: o, store: o.Store, secure: o.SecureCookies, now: o.Now, logins: newFailureLimiter(5, time.Minute), accountLogins: newFailureLimiter(maxAccountFailures, time.Minute),
+		csp: contentPolicy(billingOf(o.Modules))}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -224,10 +230,15 @@ func NewHandler(o Options) http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("GET /metrics", s.Metrics.Handler())
+	// A tenant whose plan has ended changes nothing but its plan (readOnly).
 	for _, r := range s.routes() {
 		var h http.Handler = r.handler
 		if !r.public {
-			h = s.requireSession(r.handler)
+			inner := r.handler
+			if !readOnlyExempt(r.path) {
+				inner = s.readOnly(r.handler).ServeHTTP
+			}
+			h = s.requireSession(inner)
 		}
 		if !r.webhook {
 			h = s.csrf(h.ServeHTTP)
@@ -261,7 +272,7 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *server) harden(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'")
+		h.Set("Content-Security-Policy", s.csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")

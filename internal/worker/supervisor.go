@@ -98,10 +98,12 @@ func or(d, def time.Duration) time.Duration {
 // Run supervises the account until ctx is done or the account needs the user: wrong
 // credentials, a one-click sign-in to renew, a certificate to accept, another TLS failure,
 // a watch folder that does not exist, or a server the hosted build does not connect to
-// (mail.ErrNotPublic). Anything else is retried with a growing delay. Wrong credentials of
-// a mailbox a module connected (store.Account.Module, such as one its sign-in form added
-// with Bridge's password, which the person never saw) wait in reconnect_needed, for the
-// person to sign in through the module again, rather than in auth_failed.
+// (mail.ErrNotPublic); or until the tenant's plan ends (pipeline.ErrHalted), leaving the
+// status as it is: the mailbox starts again when a plan is bought. Anything else is
+// retried with a growing delay. Wrong credentials of a mailbox a module connected
+// (store.Account.Module, such as one its sign-in form added with Bridge's password, which
+// the person never saw) wait in reconnect_needed, for the person to sign in through the
+// module again, rather than in auth_failed.
 func (s *Supervisor) Run(ctx context.Context) {
 	s.mu.Lock()
 	byModule := s.Account.Module || s.Account.OAuth
@@ -120,6 +122,9 @@ func (s *Supervisor) Run(ctx context.Context) {
 		}
 		switch {
 		case ctx.Err() != nil:
+			return
+		case errors.Is(err, pipeline.ErrHalted):
+			slog.InfoContext(ctx, "the tenant's plan has ended; the mailbox stopped sorting", "account", s.Account.ID)
 			return
 		case errors.Is(err, mail.ErrAuth) && !byModule:
 			s.setStatus(ctx, StatusAuthFailed, err)
@@ -282,6 +287,9 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 			s.work.Lock()
 			_, err := p.RetryDue(procCtx)
 			s.work.Unlock()
+			if errors.Is(err, pipeline.ErrHalted) {
+				return err
+			}
 			if err != nil && procCtx.Err() == nil {
 				slog.ErrorContext(ctx, "the retry job failed", "account", s.Account.ID, "error", err.Error())
 			}

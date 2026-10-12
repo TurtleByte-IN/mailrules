@@ -2,10 +2,12 @@
   import Router, { replace } from 'svelte-spa-router';
   import { close as closeEvents, open as openEvents } from './lib/api/events';
   import Nav from './lib/components/Nav.svelte';
+  import PlanBanner from './lib/components/PlanBanner.svelte';
   import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
   import { auth, start } from './lib/state/auth.svelte';
   import { firstRun, settle } from './lib/state/firstrun.svelte';
   import { setupReturn } from './lib/state/oneclick';
+  import { load as loadPlan } from './lib/state/plan.svelte';
   import { load as loadReview } from './lib/state/review.svelte';
   import { load as loadRules } from './lib/state/rules.svelte';
   import { load as loadSettings, settings, toggleDryRun } from './lib/state/settings.svelte';
@@ -35,6 +37,12 @@
     }
   });
 
+  // Only a build that sells plans has one; the shell says when it is about to end or has ended.
+  const billing = $derived(settings.value.features.billing);
+  $effect(() => {
+    if (auth.status === 'in' && billing) loadPlan();
+  });
+
   // Right after the admin account is created, the first-run guide opens once the mailboxes
   // are listed, unless there already is one.
   $effect(() => {
@@ -56,6 +64,7 @@
             <button type="button" class="min-h-9 rounded border border-warn-strong bg-surface px-3 font-semibold text-warn max-md:min-h-11" onclick={toggleDryRun}>Go live</button>
           </div>
         {/if}
+        <PlanBanner />
         <Router {routes} />
       </div>
     </main>

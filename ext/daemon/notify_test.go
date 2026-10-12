@@ -214,7 +214,7 @@ func TestNoticeWorkerAddressDeleted(t *testing.T) {
 	nw := newNoticeWorker(w.st, w.master, f.module().Notifications, events.NewHub(), "http://127.0.0.1:8080")
 	w.queue(t, 1, time.Now().Unix())
 	// What ForgetIdentity does to the destinations of a tenant's only member.
-	if _, err := w.db.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = X'', dek_enc = X''`); err != nil {
+	if _, err := w.db.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = ?, dek_enc = ?`, []byte{}, []byte{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := nw.once(ctx); err != nil {

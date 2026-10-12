@@ -55,3 +55,6 @@ func SQLiteOnly(t testing.TB, why string) {
 		t.Skip("needs SQLite: " + why)
 	}
 }
+
+// Postgres reports whether New gives tests a Postgres database.
+func Postgres() bool { return pgtest.DSN() != "" }

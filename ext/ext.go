@@ -10,7 +10,7 @@
 // mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
 // rule notifications (Module.Notifications), what the module is told when the person
 // moves an email MailRules filed, with a question it may ask in Activity (Module.Moves), and
-// how much of the hosted service each tenant may use (Module.Limits).
+// the plans the build sells: what each tenant may use and pays for (Module.Billing).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -115,25 +115,27 @@ type Module struct {
 	// (none without it) and GET /api/settings reports features.move_questions. At most one
 	// module of a build sets it.
 	Moves *Moves
-	// Limits, when set, says how much each tenant may use (see Limits): the daemon asks it
-	// whenever it needs to know, with the tenant's id, as a mailbox is added, as an email
-	// needs a model and as a screen shows the tenant's use. It is called often and must
-	// answer quickly, without calling another service. An error refuses what was asked
-	// (a mailbox is not added, an email is tried again later) and is logged. Without it no
-	// tenant is limited, as on self-host. At most one module of a build sets it.
-	Limits func(ctx context.Context, tenantID int64) (Limits, error)
+	// Billing, when set, makes the build sell plans (see Billing): the daemon keeps each
+	// tenant's plan, which the module sets (Host.SetPlan), limits the tenant to its plan's
+	// terms, offers the plan's features only to it, shows Plan and billing (GET
+	// /api/settings reports features.billing) and, once a trial or plan ends, stops sorting,
+	// keeps the app read-only and deletes the tenant's data on schedule. Without it nothing
+	// is limited and every feature of the build is everyone's, as on self-host. At most one
+	// module of a build sets it.
+	Billing *Billing
 }
 
 // NoLimit is a limit that does not limit (Limits.Mailboxes, Limits.AIEmails).
 const NoLimit = store.NoLimit
 
-// Limits is how much of the hosted service one tenant may use (Module.Limits). A zero field
-// allows none; NoLimit allows any number.
+// Limits is how much of the hosted service a tenant on a plan may use (PlanTerms.Limits). A
+// zero field allows none; NoLimit allows any number.
 type Limits struct {
 	// Mailboxes is how many mailboxes the tenant may have connected at once, its members'
 	// private ones included. A mailbox over it is refused on every path that adds one: the
 	// add-mailbox wizard (409 mailbox_limit) and Host.AddMailbox (ErrMailboxLimit). The
-	// mailboxes it has already are left alone when the number goes down.
+	// mailboxes it has already are left alone when the number goes down, but the tenant
+	// cannot move to a plan that allows fewer than it has (409 downgrade_refused).
 	Mailboxes int
 	// AIEmails is how many emails a month (a calendar month in UTC) a model may decide for
 	// the tenant on keys the operator holds (MAILRULES_MODE=cloud, the tenant has no key of
@@ -143,20 +145,161 @@ type Limits struct {
 	// per cleanup check that asks a model about it. Once the month's are used up, sender
 	// rules and rules without an intent keep sorting, a decision model on the tenant's own
 	// key decides without the operator's fallback, and mail that needs the operator's model
-	// waits in Needs review, which says why with a way to the person's own key and, with
-	// UpgradeURL, to more. Nothing is charged for going over.
+	// waits in Needs review, which says why with a way to the person's own key and to Plan
+	// and billing. Nothing is charged for going over.
 	AIEmails int
 	// FirstCleanupEmails is a one-time grant of emails the tenant's cleanup checks may have a
 	// model decide on keys the operator holds before they draw on AIEmails, so a first
 	// cleanup of old mail does not use up the month. Each such email of a check takes one of
 	// it while any is left, then counts against AIEmails as before. What was used is kept for
-	// good: it never resets, and raising the number gives the difference. Live sorting never
-	// draws on it. 0 = none.
+	// good: it never resets, and a plan with a larger one gives the difference. Live sorting
+	// never draws on it. 0 = none.
 	FirstCleanupEmails int
-	// UpgradeURL, when set, is where the screens send a tenant at a limit to raise it, such
-	// as the module's plan screen: a path in the web app (#/settings/plan) or an https URL.
-	// Empty = no upgrade is offered.
-	UpgradeURL string
+}
+
+// The plans a tenant may be on (PlanState.Plan, Plan.Plan, Billing.Plans).
+const (
+	// PlanTrial: no plan bought yet, within TrialDays of the tenant's creation. No billing
+	// service is involved and no card is asked for.
+	PlanTrial    = store.PlanTrial
+	PlanPersonal = store.PlanPersonal
+	PlanPro      = store.PlanPro
+	// PlanEnded: the trial ran out with no plan bought, or a paid plan ended. Nothing is
+	// sorted, the app is read-only with a way to subscribe, and the tenant's mailbox
+	// passwords, tokens and model keys are deleted EndedSecretsDays later, everything else
+	// EndedRemovalDays later. Buying a plan before then gives it all back (mailboxes need
+	// their passwords again once they were deleted).
+	PlanEnded = store.PlanEnded
+)
+
+// The billing intervals (Plan.Interval, CheckoutRequest.Interval).
+const (
+	IntervalMonth = store.IntervalMonth
+	IntervalYear  = store.IntervalYear
+)
+
+// The statuses of a paid plan (Plan.Status).
+const (
+	StatusActive = store.StatusActive
+	// StatusPastDue: a renewal is unpaid and the billing service retries it; the plan runs.
+	StatusPastDue = store.StatusPastDue
+	// StatusCancelsAtPeriodEnd: cancelled; the plan runs to Plan.PeriodEnd and ends there.
+	StatusCancelsAtPeriodEnd = store.StatusCancelsAtPeriodEnd
+)
+
+const (
+	// TrialDays is how long a tenant's trial runs from its creation.
+	TrialDays = store.TrialDays
+	// EndedSecretsDays is how many days after a plan ends the tenant's mailbox passwords and
+	// tokens and its model keys are deleted (modules are told of each mailbox they connected,
+	// Module.MailboxRemoved).
+	EndedSecretsDays = store.EndedSecretsDays
+	// EndedRemovalDays is how many days after a plan ends everything else is removed.
+	EndedRemovalDays = store.EndedRemovalDays
+)
+
+// Billing is how a module sells plans (Module.Billing). The daemon decides what a plan
+// allows from Plans and keeps each tenant's plan; the module talks to the billing service:
+// it opens checkout, changes a subscription, links to the service's customer portal and,
+// from its webhook route, reports every change with Host.SetPlan.
+type Billing struct {
+	// Plans are the terms of each plan: PlanTrial, PlanPersonal and PlanPro, each needed.
+	// A tenant whose plan has ended is held to none of them: it sorts nothing.
+	Plans map[string]PlanTerms
+	// Checkout returns what the browser hands to the module's checkout script (Script) to
+	// let the signed-in person buy plan, billed every interval, for their tenant: opaque to
+	// the daemon, such as the billing service's public client token, the price and the
+	// tenant reference the service passes back to the webhook. It must not hold a secret.
+	// The daemon calls it only for a tenant that has not subscribed (its plan has no Record)
+	// and that has no more mailboxes than plan allows.
+	Checkout func(ctx context.Context, c CheckoutRequest) (json.RawMessage, error)
+	// ChangePlan moves a tenant that subscribed (its plan has a Record) to plan and interval
+	// at once, at the billing service: an upgrade charged for what is left of the period, a
+	// downgrade credited on the next bill. The daemon refuses a move to a plan that allows
+	// fewer mailboxes than the tenant has before it calls this. The new plan is what the
+	// module then reports with Host.SetPlan; ChangePlan's success alone changes nothing.
+	ChangePlan func(ctx context.Context, tenantID int64, record, plan, interval string) error
+	// Portal returns the address of the billing service's customer portal for a tenant that
+	// subscribed, where its people cancel, change the payment method and get invoices
+	// (Manage billing).
+	Portal func(ctx context.Context, tenantID int64, record string) (url string, err error)
+	// Script is the path of the module's Public GET route that serves the checkout script.
+	// Plan and billing loads it (same origin) and calls what it defines:
+	// window.mailrulesCheckout.open(checkout, done), where checkout is what Checkout
+	// returned and done(result) is to be called once with "completed" or "closed". The
+	// tenant's plan then changes when the module calls Host.SetPlan.
+	Script string
+	// Sources are the origins outside the daemon the checkout script loads from, which this
+	// build's Content-Security-Policy allows and no other build's does. Each is an https
+	// origin, optionally with a *. wildcard for its subdomains (https://*.example.com).
+	Sources CheckoutSources
+	// Note is a sentence Plan and billing shows under the plan, such as who bills and how
+	// taxes are shown. Empty = none.
+	Note string
+}
+
+// CheckoutSources are the origins a checkout script uses (Billing.Sources).
+type CheckoutSources struct {
+	Scripts []string // script-src
+	Frames  []string // frame-src: a checkout shown in an overlay
+	Connect []string // connect-src: what the script calls
+	Styles  []string // style-src: style sheets it loads
+	Images  []string // img-src
+}
+
+// PlanTerms are what one plan gives and how Plan and billing shows it (Billing.Plans).
+type PlanTerms struct {
+	Name string // as shown: "Personal"
+	// Prices are what the plan costs, as shown, by interval: {"month": "$5 a month",
+	// "year": "$50 a year"}. Empty for the trial.
+	Prices map[string]string
+	// Includes are the lines the plan's card lists ("3 mailboxes", "3,000 AI-sorted emails a
+	// month").
+	Includes []string
+	Limits   Limits
+	// Features are the build's features only tenants on this plan get, named as GET
+	// /api/settings reports them ("suggest", "notifications"). A feature some plan lists is
+	// offered to a tenant only while its plan lists it: the screens hide it, its routes
+	// answer 403 plan_required, and for notifications no notice is written. A feature no
+	// plan lists is everyone's.
+	Features []string
+}
+
+// CheckoutRequest is who is buying what (Billing.Checkout).
+type CheckoutRequest struct {
+	TenantID int64
+	Email    string // the signed-in person's, to fill in at checkout
+	Plan     string // PlanPersonal or PlanPro
+	Interval string // IntervalMonth or IntervalYear
+}
+
+// Plan is a tenant's plan as the module reports it (Host.SetPlan).
+type Plan struct {
+	Plan     string // PlanPersonal, PlanPro or PlanEnded
+	Interval string // IntervalMonth or IntervalYear; empty for PlanEnded
+	Status   string // StatusActive, StatusPastDue or StatusCancelsAtPeriodEnd; empty for PlanEnded
+	// PeriodEnd is when the paid period ends (the plan renews or, cancelled, ends); zero
+	// when not known.
+	PeriodEnd time.Time
+	// Record is the module's own record of the tenant at the billing service, such as its
+	// customer and subscription ids: kept as it is, handed back to Checkout, ChangePlan and
+	// Portal, never shown.
+	Record string
+}
+
+// PlanState is a tenant's plan as the daemon has it (Host.Plan).
+type PlanState struct {
+	Plan
+	// TrialEnd is when the tenant's trial ends or ended: its creation plus TrialDays.
+	TrialEnd time.Time
+	// EndedAt is when the plan ended (Plan.Plan is PlanEnded); zero while one runs.
+	EndedAt time.Time
+}
+
+// Who is the signed-in person a request is for (Host.Who).
+type Who struct {
+	UserID, TenantID int64
+	Email            string
 }
 
 // MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
@@ -341,6 +484,8 @@ const (
 	MailboxConnectFailed = "connect_failed"
 	// MailboxLimitReached: Host.AddMailbox returned ErrMailboxLimit.
 	MailboxLimitReached = "mailbox_limit"
+	// MailboxPlanEnded: Host.AddMailbox or Host.ReconnectMailbox returned ErrPlanEnded.
+	MailboxPlanEnded = "plan_ended"
 )
 
 // Notifications is how a module delivers rule notifications (Module.Notifications). The
@@ -700,6 +845,37 @@ type Host interface {
 	// MailboxFailed sends the browser back to Mailboxes with code, one of the Mailbox*
 	// codes, which it explains (303 to /#/accounts?mailbox_error=<code>).
 	MailboxFailed(w http.ResponseWriter, r *http.Request, code string)
+
+	// Who is the signed-in person the request is for: their user, tenant and email.
+	Who(r *http.Request) Who
+	// Plan returns the tenant's plan as the daemon has it now (Module.Billing): the one last
+	// set with SetPlan, the trial while no plan was bought within TrialDays of the tenant's
+	// creation, else PlanEnded. ErrNoTenant for a tenant that does not exist.
+	Plan(ctx context.Context, tenantID int64) (PlanState, error)
+	// SetPlan records the tenant's plan as the billing service reports it, such as from the
+	// module's webhook route (the tenant comes from the reference Checkout gave the
+	// service), and acts on it at once: a plan bought or bought again starts the tenant's
+	// mailboxes and lifts read-only; one that ended stops them. Reporting the same plan
+	// again changes nothing. It fails, changing nothing, with ErrNoTenant, ErrBadPlan for a
+	// plan, interval or status not among the constants, or an error of the database.
+	SetPlan(ctx context.Context, tenantID int64, p Plan) error
+}
+
+var (
+	// ErrNoTenant is what Host.Plan and Host.SetPlan return for a tenant that does not exist.
+	ErrNoTenant = errors.New("no such tenant")
+	// ErrBadPlan is what Host.SetPlan returns for a plan, interval or status it does not know.
+	ErrBadPlan = store.ErrBadPlan
+	// ErrPlanEnded is what Host.AddMailbox and Host.ReconnectMailbox return while the
+	// signed-in user's tenant's plan has ended: nothing is connected until a plan is bought.
+	// Its text is the sentence to show. Nothing changed.
+	ErrPlanEnded error = planEnded{}
+)
+
+type planEnded struct{}
+
+func (planEnded) Error() string {
+	return "Your plan has ended, so MailRules sorts nothing and nothing can be changed. Subscribe on Plan and billing to sort again."
 }
 
 // ScopeInput is a selection of mail as a request sends it: the fields of the contract's

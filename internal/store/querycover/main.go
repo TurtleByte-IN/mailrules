@@ -118,7 +118,7 @@ func (p profile) has(file string, line int) bool {
 
 // covered reads a coverage profile: the blocks of pkg's files that ran at least once.
 func covered(path, pkg string) (profile, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: the profile the developer or CI names on the command line
 	if err != nil {
 		return nil, err
 	}

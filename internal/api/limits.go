@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -11,47 +10,26 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-// limitsOf is the build's ext.Module.Limits, or nil when no module limits tenants.
-func limitsOf(modules []ext.Module) func(ctx context.Context, tenantID int64) (ext.Limits, error) {
-	for _, m := range modules {
-		if m.Limits != nil {
-			return m.Limits
-		}
-	}
-	return nil
-}
-
-// noLimits is what a tenant may use in a build whose modules limit nothing: self-host.
+// noLimits is what a tenant may use in a build that sells no plans: self-host.
 var noLimits = ext.Limits{Mailboxes: ext.NoLimit, AIEmails: ext.NoLimit}
 
-// limits are what the tenant may use, as the build's module says.
+// limits are what the tenant may use now: its plan's (tenantLimits).
 func (s *server) limits(ctx context.Context, tenantID int64) (ext.Limits, error) {
-	limits := limitsOf(s.Modules)
-	if limits == nil {
-		return noLimits, nil
-	}
-	l, err := limits(ctx, tenantID)
-	if err != nil {
-		return ext.Limits{}, fmt.Errorf("the tenant's limits: %w", err)
-	}
-	return l, nil
+	return tenantLimits(ctx, s.store, s.billing(), tenantID, s.now())
 }
 
 // Allowance is pipeline.Pipeline.Allowance for a build's modules: whether the tenant has used
 // up the month's allowance of emails a model decides on keys the operator holds, at now. It
-// is nil when no module limits tenants.
+// is nil when the build sells no plans.
 func Allowance(st *store.Store, modules []ext.Module) func(ctx context.Context, tenantID int64, now time.Time) (bool, error) {
-	limits := limitsOf(modules)
-	if limits == nil {
+	b := billingOf(modules)
+	if b == nil {
 		return nil
 	}
 	return func(ctx context.Context, tenantID int64, now time.Time) (bool, error) {
-		l, err := limits(ctx, tenantID)
-		if err != nil {
-			return false, fmt.Errorf("the tenant's limits: %w", err)
-		}
-		if l.AIEmails < 0 {
-			return false, nil
+		l, err := tenantLimits(ctx, st, b, tenantID, now)
+		if err != nil || l.AIEmails < 0 {
+			return false, err
 		}
 		used, err := st.AIEmails(ctx, tenantID, store.Month(now))
 		return used >= l.AIEmails, err
@@ -165,8 +143,9 @@ func (s *server) handleLimits(w http.ResponseWriter, r *http.Request) {
 		FirstCleanup *useJSON        `json:"first_cleanup"`
 		UpgradeURL   *string         `json:"upgrade_url"`
 	}{}
-	if l.UpgradeURL != "" {
-		out.UpgradeURL = &l.UpgradeURL
+	if s.morePlan(l) {
+		upgrade := "#/plan"
+		out.UpgradeURL = &upgrade
 	}
 	if l.Mailboxes >= 0 {
 		have, err := s.store.TenantAccounts(ctx, v.TenantID)
@@ -203,4 +182,21 @@ func (s *server) handleLimits(w http.ResponseWriter, r *http.Request) {
 		out.FirstCleanup = &useJSON{Used: min(used, l.FirstCleanupEmails), Limit: l.FirstCleanupEmails}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// morePlan reports whether a plan on sale gives more mailboxes or AI-sorted emails than l:
+// where an upgrade link may go.
+func (s *server) morePlan(l ext.Limits) bool {
+	b := s.billing()
+	if b == nil {
+		return false
+	}
+	more := func(have, other int) bool { return have >= 0 && (other < 0 || other > have) }
+	for _, id := range soldPlans {
+		o := b.Plans[id].Limits
+		if more(l.Mailboxes, o.Mailboxes) || more(l.AIEmails, o.AIEmails) {
+			return true
+		}
+	}
+	return false
 }

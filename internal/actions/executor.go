@@ -60,6 +60,9 @@ type Exec struct {
 	// DryRunDefault is used until the dry_run setting is stored (MAILRULES_DRY_RUN).
 	DryRunDefault bool
 	Now           func() time.Time // nil = time.Now
+	// Notices, when set, says whether a tenant may have rule notifications (its plan includes
+	// them): when not, no notice is written for its mail. nil = every tenant may.
+	Notices func(ctx context.Context, tenantID int64) bool
 }
 
 var _ Executor = (*Exec)(nil)
@@ -131,6 +134,7 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 	}
 	// What follows a mailbox change must be recorded even if the daemon is stopping.
 	recCtx := context.WithoutCancel(ctx)
+	notify := x.Notices == nil || x.Notices(ctx, tenant)
 	for i, a := range acts {
 		last := i == len(acts)-1
 		rec := row(a, store.ActionFailed)
@@ -147,10 +151,10 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 		after, err := x.do(ctx, mb, d.Ref.AccountID, a, cur)
 		if err != nil {
 			rec.Error = err.Error()
-			return append(recs, rec), errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec, true))
+			return append(recs, rec), errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec, notify))
 		}
 		rec.Status, rec.Error, rec.After = store.ActionDone, "", &after
-		if err := x.Store.FinishAction(recCtx, rec, last); err != nil {
+		if err := x.Store.FinishAction(recCtx, rec, last && notify); err != nil {
 			return append(recs, rec), err
 		}
 		recs = append(recs, rec)

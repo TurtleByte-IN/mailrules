@@ -158,7 +158,7 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 	str(&c.PublicURL, "MAILRULES_PUBLIC_URL", "http://127.0.0.1:8080", "Where you open MailRules; links in the summary email start with it. Set it to your proxy's address, such as `https://mailrules.example.com`.")
 
 	group = "Summary email"
-	str(&c.SMTPHost, "MAILRULES_SMTP_HOST", "", "Outgoing mail server the summary email is sent through, such as `smtp.example.com`, without a scheme or port.")
+	str(&c.SMTPHost, "MAILRULES_SMTP_HOST", "", "Outgoing mail server the summary email is sent through, such as `smtp.example.com`, without a scheme or port. A build that sells plans (the hosted service) also sends through it the warnings before a plan's data is deleted, and does not start without it.")
 	integer(&c.SMTPPort, "MAILRULES_SMTP_PORT", 0, "Its port. `0` uses the usual one: 587 for `starttls`, 465 for `implicit`, 25 for `none`.")
 	str(&c.SMTPUser, "MAILRULES_SMTP_USER", "", "User name to sign in to the mail server with. Empty sends without signing in.")
 	str(&c.SMTPPassword, "MAILRULES_SMTP_PASSWORD", "", "Its password; an app password where the provider has them.")
