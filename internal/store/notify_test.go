@@ -234,3 +234,31 @@ func TestNoticeLifecycle(t *testing.T) {
 		t.Errorf("after retention, %d deliveries left, want the two from 1002 on", n)
 	}
 }
+
+// A webhook added over plain http before only https was taken stays listed, marked as
+// needing a new address, and no notice waiting for it is handed over.
+func TestHTTPDestinationGetsNoNotice(t *testing.T) {
+	s, db := open(t)
+	ctx := t.Context()
+	u, _ := s.CreateFirstUser(ctx, "me@example.test", "hash", 1)
+	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "Old", Kind: DestinationWebhook}, DestinationSecret{URL: "http://192.168.1.5/hook"}, 1)
+	secure, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "New", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/hook"}, 1)
+	for _, dest := range []int64{plain.ID, secure.ID} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_name, payload, created_at, next_at)
+			VALUES (?, ?, ?, 7, 'R', '{}', 1, 1)`, u.TenantID, dest, a.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waiting, err := s.WaitingNotices(ctx, 10, 10)
+	if err != nil || len(waiting) != 1 || waiting[0].DestinationID != secure.ID {
+		t.Fatalf("waiting = %+v, %v; want only the https destination's notice", waiting, err)
+	}
+	ds, _ := s.Destinations(ctx, u.TenantID)
+	if len(ds) != 2 || !ds[0].NeedsHTTPS() || ds[1].NeedsHTTPS() {
+		t.Fatalf("destinations = %+v; want both listed, only the http one needing https", ds)
+	}
+}

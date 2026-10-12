@@ -87,7 +87,7 @@ describe('builder', () => {
   });
 
   it('names the destinations it tells, leaving out any no longer known', () => {
-    notifications.destinations = [3, 4].map((id) => ({ id, name: 'Dest ' + id, kind: 'slack' as const, url: '', address_deleted: false, created_at: 0, deliveries: [] }));
+    notifications.destinations = [3, 4].map((id) => ({ id, name: 'Dest ' + id, kind: 'slack' as const, url: '', address_deleted: false, needs_https: false, created_at: 0, deliveries: [] }));
     try {
       expect(english({ ...full, notify: [3, 5] }, 'me@icloud.com')).toMatch(/ · stacks · only me@icloud\.com · notifies Dest 3\.$/);
     } finally {

@@ -24,7 +24,7 @@ function serve(routes: Record<string, [number, unknown?]>) {
   return f;
 }
 
-const dest = (id: number, name: string): Destination => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [] });
+const dest = (id: number, name: string): Destination => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, needs_https: false, created_at: 1791276732, deliveries: [] });
 
 it('fetches nothing in a build without the notifications module', async () => {
   const f = serve({});
