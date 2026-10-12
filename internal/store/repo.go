@@ -17,7 +17,7 @@ var ErrAlreadySetUp = errors.New("already set up")
 // opens the secrets it keeps (WithKeys); a store without one keeps none.
 type Store struct {
 	db   *conn
-	keys *keyring
+	keys *Keyring
 }
 
 // New wraps an open, migrated database, SQLite (Open) or Postgres (OpenPostgres).

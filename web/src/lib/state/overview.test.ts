@@ -49,6 +49,9 @@ it("offers a teammate's mailbox that needs reconnecting no Reconnect: only the p
   expect(health(account({ status: 'reconnect_needed', mine: false, shared: true }))).toEqual({
     detail: 'Sign-in revoked or expired. The person who added this mailbox needs to reconnect it.', chip: 'chip-trash' }));
 
+it('offers nothing to do for a mailbox whose key service is unreachable: the daemon retries it', () =>
+  expect(health(account({ status: 'key_unavailable' }))).toEqual({ detail: 'Key service unreachable · MailRules keeps trying, nothing to do', chip: 'chip-review' }));
+
 it('shows the daemon\'s reason for a failed sign-in', () =>
   expect(health(account({ status: 'auth_failed', last_error: 'App password revoked.' })).detail).toBe('App password revoked.'));
 

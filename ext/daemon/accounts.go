@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/contacts"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
@@ -47,8 +48,9 @@ type accountsCLI struct {
 	stdin     io.Reader
 	stdout    io.Writer
 	getenv    func(string) string
-	tlsConfig *tls.Config // nil outside tests: verify against the system roots
-	cloud     bool        // MAILRULES_MODE=cloud, set by run from the environment (publicDial)
+	tlsConfig *tls.Config  // nil outside tests: verify against the system roots
+	cloud     bool         // MAILRULES_MODE=cloud, set by run from the environment (publicDial)
+	modules   []ext.Module // the build's: the one that holds the keys, when one does (ext.Module.Keys)
 }
 
 func (a accountsCLI) run(ctx context.Context, args []string) error {
@@ -95,11 +97,11 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer done()
-	key, err := openMasterKey(ctx, cfg, st)
+	k, err := openKeys(ctx, cfg, st, a.modules)
 	if err != nil {
 		return err
 	}
-	st = st.WithKeys(key)
+	st = st.WithKeyring(k.ring)
 
 	switch args[0] {
 	case "list":

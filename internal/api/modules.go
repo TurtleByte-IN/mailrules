@@ -13,6 +13,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
@@ -283,9 +284,9 @@ func (s *server) signIn() *ext.Module {
 // signed-in POST routes under /api/, and two forms for one provider; a MailboxRemoved with
 // neither Mailboxes nor MailboxForms; a Notifications with no Notify or no kind, or a kind
 // other than webhook or slack, and more than one module with Notifications; a Moves with no
-// Moved or a negative Every, and more than one module with Moves; and a Billing the daemon
-// cannot serve (checkBilling), and more than one module with Billing. The daemon calls it
-// before it serves anything.
+// Moved or a negative Every, and more than one module with Moves; a Billing the daemon
+// cannot serve (checkBilling), and more than one module with Billing; and a Keys the daemon
+// cannot use (KeyModule). The daemon calls it before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
 	var signIn, mailboxes, notifiers, movers, billers []string
 	built := buildFeatures(modules)
@@ -391,7 +392,33 @@ func CheckModules(mode string, modules []ext.Module) error {
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")
 	}
-	return nil
+	_, err := KeyModule(modules)
+	return err
+}
+
+// KeyModule is the key provider of the build's module that holds the keys (ext.Module.Keys),
+// nil when none does. It refuses more than one, and a KeyID that is empty, longer than 255
+// bytes or the master key's ("master").
+func KeyModule(modules []ext.Module) (ext.KeyProvider, error) {
+	var p ext.KeyProvider
+	var named []string
+	for _, m := range modules {
+		if m.Keys == nil {
+			continue
+		}
+		switch id := m.Keys.KeyID(); {
+		case id == "" || len(id) > 255:
+			return nil, fmt.Errorf("module %s: Keys has a KeyID of %d bytes; it needs 1 to 255", m.Name, len(id))
+		case id == crypto.MasterKeyID:
+			return nil, fmt.Errorf("module %s: Keys has the KeyID %q, which is the master key's", m.Name, id)
+		}
+		p = m.Keys
+		named = append(named, m.Name)
+	}
+	if len(named) > 1 {
+		return nil, fmt.Errorf("more than one module holds the keys: %s", strings.Join(named, ", "))
+	}
+	return p, nil
 }
 
 // moduleStream is eventStream as a module writes it (ext.EventStream).

@@ -13,6 +13,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Config holds every setting from the backend plan's Configuration table.
@@ -31,7 +32,10 @@ type Config struct {
 	// NewMasterKey lets the daemon start although the master key cannot open any stored
 	// mailbox password or model key; see ext/daemon's openMasterKey.
 	NewMasterKey bool
-	DryRun       bool
+	// TenantKeyCache is how long a tenant's unwrapped data key stays in memory before the
+	// key provider is asked for it again (store.Keyring).
+	TenantKeyCache time.Duration
+	DryRun         bool
 
 	Decider          string
 	DeciderModel     string
@@ -124,6 +128,10 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 		fs.Float64Var(p, flagName(env), def, help)
 		add(env)
 	}
+	duration := func(p *time.Duration, env string, def time.Duration, help string) {
+		fs.DurationVar(p, flagName(env), def, help)
+		add(env)
+	}
 
 	// The help strings are written for docs/guide/settings.md, which is Markdown: code in
 	// backticks. Run `make settings-doc` after changing any of them.
@@ -133,7 +141,8 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 	str(&c.Mode, "MAILRULES_MODE", "selfhost", "`selfhost` or `cloud`. `cloud` is for the hosted service: it needs a build with a sign-in module (MailRules does not start without one), treats provider keys from the environment as the operator's (used for a team with no key of its own, never shown to it, and its usage marked as the operator's), connects only to mail servers on the public internet for the mailboxes people add (see Security), and hides the Self-hosting card in Settings. Leave it as `selfhost`.")
 	str(&c.MasterKey, "MAILRULES_MASTER_KEY", "", "The master key itself: 32 bytes, base64-encoded. It encrypts the stored mailbox passwords and provider keys. Set this or `MAILRULES_MASTER_KEY_FILE`, not both; with neither, `master.key` in the data directory is used, and generated on first run. It is never generated while the database holds passwords or keys sealed under an earlier key; see `MAILRULES_NEW_MASTER_KEY`.")
 	str(&c.MasterKeyFile, "MAILRULES_MASTER_KEY_FILE", "", "A file holding the master key, to keep it outside the data directory. MailRules does not start if the file is missing.")
-	boolean(&c.NewMasterKey, "MAILRULES_NEW_MASTER_KEY", false, "Start even though the master key is missing or cannot open any stored mailbox password or model key. Without it MailRules stops with a message instead. A missing `master.key` is then generated, and the stored passwords and keys stay unreadable until you enter them again. Set it for one start only.")
+	boolean(&c.NewMasterKey, "MAILRULES_NEW_MASTER_KEY", false, "Start even though the master key is missing or cannot open any stored mailbox password or model key. Without it MailRules stops with a message instead. A missing `master.key` is then generated, and the stored passwords and keys stay unreadable until you enter them again. In a build whose module keeps the keys in a key service (the hosted service), it lets MailRules start without the master key while some stored keys still need it; those stay unreadable. Set it for one start only.")
+	duration(&c.TenantKeyCache, "MAILRULES_TENANT_KEY_CACHE", time.Hour, "How long a team's data key, which opens its stored passwords and keys, stays in memory once unwrapped, such as `1h` or `15m`; then it is unwrapped again. It matters in a build whose module keeps the keys in a key service (the hosted service): while that service cannot be reached, a team whose key has run out of time can use none of its stored passwords and keys, and its mailboxes wait in Key service unreachable until it answers.")
 	boolean(&c.DryRun, "MAILRULES_DRY_RUN", true, "Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on|off`, that choice wins.")
 	str(&c.LogLevel, "LOG_LEVEL", "info", "`debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email.")
 
@@ -244,6 +253,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ModelConcurrency <= 0 {
 		bad("MAILRULES_MODEL_CONCURRENCY=%d must be positive", c.ModelConcurrency)
+	}
+	if c.TenantKeyCache <= 0 {
+		bad("MAILRULES_TENANT_KEY_CACHE=%v must be positive", c.TenantKeyCache)
 	}
 	switch c.CookieSecure {
 	case "auto", "true", "false":

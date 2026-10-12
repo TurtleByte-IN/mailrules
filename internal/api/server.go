@@ -17,6 +17,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/actions"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/publicnet"
@@ -325,9 +326,19 @@ func clientGone(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// internalError logs the cause and tells the client nothing about it.
+// internalError logs the cause and tells the client nothing about it. A request that needs
+// a secret the key service cannot open right now (crypto.ErrKeyUnavailable) is 503
+// key_unavailable instead: nothing is wrong with it, and it works again once the service
+// answers.
 func internalError(w http.ResponseWriter, r *http.Request, err error) {
 	if clientGone(w, r) {
+		return
+	}
+	if errors.Is(err, crypto.ErrKeyUnavailable) {
+		slog.WarnContext(r.Context(), "request needs a key the key service cannot unwrap right now", "method", r.Method, "path", r.URL.Path, "error", err.Error())
+		w.Header().Set("Retry-After", "30")
+		writeError(w, http.StatusServiceUnavailable, "key_unavailable",
+			"The key service that protects your stored passwords and keys cannot be reached right now. Try again in a minute.", "")
 		return
 	}
 	slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err.Error())

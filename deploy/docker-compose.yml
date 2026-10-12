@@ -57,6 +57,7 @@ services:
       # Only to start again after master.key was lost: every stored password and key must
       # then be entered again. See docs/guide/backup.md.
       MAILRULES_NEW_MASTER_KEY: ${MAILRULES_NEW_MASTER_KEY:-}
+      MAILRULES_TENANT_KEY_CACHE: ${MAILRULES_TENANT_KEY_CACHE:-}
       MAILRULES_MODEL_CONCURRENCY: ${MAILRULES_MODEL_CONCURRENCY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}

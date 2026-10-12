@@ -17,6 +17,7 @@ export const statuses: Record<accountsApi.AccountStatus, { label: string; dot: s
   new: { label: 'Connecting', dot: 'bg-warn-strong' },
   live: { label: 'Live', dot: 'bg-live' },
   reconnecting: { label: 'Reconnecting', dot: 'bg-warn-strong' },
+  key_unavailable: { label: 'Key service unreachable', dot: 'bg-warn-strong' },
   paused: { label: 'Paused', dot: 'bg-warn-strong' },
   auth_failed: { label: 'Sign-in failed', dot: 'bg-trash' },
   reconnect_needed: { label: 'Reconnect needed', dot: 'bg-trash' },

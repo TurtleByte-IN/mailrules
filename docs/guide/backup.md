@@ -95,3 +95,18 @@ To keep the key apart from the database, for example on a different disk or in a
 Set only one of them. The key is 32 random bytes, base64-encoded, the same format as `master.key`. To move an existing install, copy the contents of `master.key` into the new file, set `MAILRULES_MASTER_KEY_FILE`, restart, and then remove `master.key` from the data directory. For a new install you can make a key with `openssl rand -base64 32`.
 
 Commands such as `mailrules accounts add` and `mailrules accounts test` read stored passwords, so they need the same setting as the daemon.
+
+## When a key service holds the keys (hosted version)
+
+A build can have a module keep the key that wraps the data keys in a key service, such as a cloud KMS with keys in hardware security modules, instead of the master key. The hosted version does. Its key never leaves the service, so a backup of the database opens nothing without access to that service's key: back up the database, and keep the key service's key from being deleted (a KMS destroys a key only after a waiting period you set). The master key is not generated in such a build.
+
+Moving an install that used the master key to a key service:
+
+1. Keep `MAILRULES_MASTER_KEY` (or `MAILRULES_MASTER_KEY_FILE`) set, and start the build with the module.
+2. At that start, MailRules wraps each data key again under the key service, once per account, and reseals under it the copies of removed mailboxes' secrets that wait for their module. Passwords and keys stay as they are: they are sealed under the data keys, which do not change. A data key the key service has wrapped is never opened with the master key again.
+3. When the start has nothing left that needs the master key, it logs `nothing in the database needs the master key any more: it can be retired`. Until then it logs `the master key is still needed`, with how many data keys, secrets and removed mailboxes' copies still need it; the next start moves what the key service could not take while it was unreachable.
+4. Once a start has said it can be retired, unset `MAILRULES_MASTER_KEY` and `MAILRULES_MASTER_KEY_FILE` and remove `master.key` from the data directory.
+
+Without the master key, while something still needs it, MailRules does not start and says how many data keys, secrets and copies only it opens. Set the key and start again. If it is gone for good, `MAILRULES_NEW_MASTER_KEY=true` lets MailRules start for once without it: what only it opened stays unreadable and is entered again, as in [If the master key is lost](#if-the-master-key-is-lost).
+
+Commands such as `mailrules accounts` need the build's module too, with the same settings as the daemon.

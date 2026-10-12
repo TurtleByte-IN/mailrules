@@ -118,7 +118,7 @@ it('follows account.status events for listed mailboxes only', () => {
 });
 
 it('has a label and a dot for every status in the contract', () => {
-  expect(Object.keys(statuses).sort()).toEqual(['auth_failed', 'cert_changed', 'error', 'live', 'new', 'paused', 'reconnect_needed', 'reconnecting']);
+  expect(Object.keys(statuses).sort()).toEqual(['auth_failed', 'cert_changed', 'error', 'key_unavailable', 'live', 'new', 'paused', 'reconnect_needed', 'reconnecting']);
 });
 
 it("sends a one-click mailbox to its provider's sign-in to reconnect, when this build has one", () => {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/contacts"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
@@ -35,7 +36,16 @@ const (
 	// the token; or the server refused the password of a mailbox a module's sign-in form
 	// connected. It waits until the person signs in to the provider again.
 	StatusReconnectNeeded = "reconnect_needed"
+	// StatusKeyUnavailable: the key service that holds the tenant's key (ext.Module.Keys)
+	// cannot be reached, so the mailbox's password cannot be opened (crypto.ErrKeyUnavailable).
+	// Unlike auth_failed nothing is wrong with the mailbox: it is retried, with the same
+	// growing delay as reconnecting, until the service answers.
+	StatusKeyUnavailable = "key_unavailable"
 )
+
+// errKeyUnavailable is what a mailbox in StatusKeyUnavailable says, in place of the
+// provider's own error, which is logged.
+var errKeyUnavailable = errors.New("the key service that protects this mailbox's password cannot be reached; MailRules keeps trying")
 
 // Supervisor owns one account's connection, watcher and processor goroutine.
 type Supervisor struct {
@@ -100,7 +110,8 @@ func or(d, def time.Duration) time.Duration {
 // a watch folder that does not exist, or a server the hosted build does not connect to
 // (mail.ErrNotPublic); or until the tenant's plan ends (pipeline.ErrHalted), leaving the
 // status as it is: the mailbox starts again when a plan is bought. Anything else is
-// retried with a growing delay. Wrong credentials of a mailbox a module connected
+// retried with a growing delay: in key_unavailable while the key service cannot unwrap the
+// tenant's key, else in reconnecting. Wrong credentials of a mailbox a module connected
 // (store.Account.Module, such as one its sign-in form added with Bridge's password, which
 // the person never saw) wait in reconnect_needed, for the person to sign in through the
 // module again, rather than in auth_failed.
@@ -126,6 +137,12 @@ func (s *Supervisor) Run(ctx context.Context) {
 		case errors.Is(err, pipeline.ErrHalted):
 			slog.InfoContext(ctx, "the tenant's plan has ended; the mailbox stopped sorting", "account", s.Account.ID)
 			return
+		case errors.Is(err, crypto.ErrKeyUnavailable):
+			if s.status != StatusKeyUnavailable {
+				slog.WarnContext(ctx, "the key service cannot unwrap the mailbox's key; retrying", "account", s.Account.ID, "error", err.Error())
+			}
+			s.wait(ctx, StatusKeyUnavailable, errKeyUnavailable, &backoff)
+			continue
 		case errors.Is(err, mail.ErrAuth) && !byModule:
 			s.setStatus(ctx, StatusAuthFailed, err)
 			return
@@ -143,13 +160,19 @@ func (s *Supervisor) Run(ctx context.Context) {
 			s.setStatus(ctx, StatusError, mail.ErrNotPublic)
 			return
 		}
-		s.setStatus(ctx, StatusReconnecting, err)
-		select {
-		case <-ctx.Done():
-		case <-time.After(backoff):
-		}
-		backoff = min(backoff*2, or(s.BackoffMax, 5*time.Minute))
+		s.wait(ctx, StatusReconnecting, err, &backoff)
 	}
+}
+
+// wait sets status for err, then waits backoff before the next try, doubling it up to
+// BackoffMax.
+func (s *Supervisor) wait(ctx context.Context, status string, err error, backoff *time.Duration) {
+	s.setStatus(ctx, status, err)
+	select {
+	case <-ctx.Done():
+	case <-time.After(*backoff):
+	}
+	*backoff = min(*backoff*2, or(s.BackoffMax, 5*time.Minute))
 }
 
 // setStatus stores and announces a status change. err is the reason; nil clears it.

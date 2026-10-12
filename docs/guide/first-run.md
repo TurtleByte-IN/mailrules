@@ -105,7 +105,7 @@ The last step of the guide, **You're set**, suggests the next move: watch **Acti
 
 ## Managing mailboxes
 
-**Mailboxes** lists every connected mailbox with its status: Connecting, Live, Reconnecting, Paused, Sign-in failed, Reconnect needed, Certificate changed or Error. For each one:
+**Mailboxes** lists every connected mailbox with its status: Connecting, Live, Reconnecting, Key service unreachable (hosted version only), Paused, Sign-in failed, Reconnect needed, Certificate changed or Error. For each one:
 
 - **Test** logs in once more and reports what it found, without touching the running connection.
 - **Pause** stops sorting that mailbox until you click **Resume**.
