@@ -1,7 +1,6 @@
 package moved
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -15,8 +14,6 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
-
-var master = bytes.Repeat([]byte{3}, 32)
 
 // world is one mailbox, in the fake server and in the store, with the folders a person
 // files into and the ones they throw mail away in.
@@ -40,7 +37,7 @@ func newWorld(t *testing.T) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acct, err := st.CreateAccount(ctx, master, store.Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993,
+	acct, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993,
 		TLSMode: "implicit", Username: "me@example.test", WatchFolder: "INBOX"}, "pw")
 	if err != nil {
 		t.Fatal(err)

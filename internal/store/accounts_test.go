@@ -26,10 +26,11 @@ func newAccount(t *testing.T, s *Store, username, secret string) Account {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := s.CreateAccount(t.Context(), testMaster, Account{
+	a, err := s.CreateAccount(t.Context(), Account{
 		UserID: u.ID, Label: "Personal", Preset: "icloud", Host: "imap.mail.me.com", Port: 993, TLSMode: "implicit",
 		Username: username, Capabilities: []string{"IDLE", "MOVE"}, CreatedAt: 200,
 	}, secret)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestAccountsCRUD(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"get":    func() error { _, err := s.Account(ctx, a.ID); return err }(),
-		"secret": func() error { _, err := s.AccountSecret(ctx, testMaster, a.ID); return err }(),
+		"secret": func() error { _, err := s.AccountSecret(ctx, a.ID); return err }(),
 		"status": s.SetAccountStatus(ctx, a.ID, "live", "", 1),
 		"caps":   s.SetAccountCapabilities(ctx, a.ID, nil),
 		"cert":   s.SetAccountCert(ctx, a.ID, ""),
@@ -109,8 +110,9 @@ func TestAccountModuleMark(t *testing.T) {
 	s, _ := open(t)
 	ctx := t.Context()
 	person := newAccount(t, s, "me@icloud.com", "pw")
-	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: person.UserID, Label: "Bridge", Preset: "proton", Host: "127.0.0.1", Port: 1143,
+	a, err := s.CreateAccount(ctx, Account{UserID: person.UserID, Label: "Bridge", Preset: "proton", Host: "127.0.0.1", Port: 1143,
 		TLSMode: "starttls", Username: "me@proton.me", Module: true}, "bridge-pw")
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,8 +139,9 @@ func TestAccountModuleMark(t *testing.T) {
 		}
 	}
 	for _, edit := range []func(*Account){func(a *Account) { a.Host = "10.0.0.2" }, func(a *Account) { a.TLSMode = "implicit" }} {
-		b, err := s.CreateAccount(ctx, testMaster, Account{UserID: person.UserID, Label: "B", Preset: "proton", Host: "127.0.0.1", Port: 1143,
+		b, err := s.CreateAccount(ctx, Account{UserID: person.UserID, Label: "B", Preset: "proton", Host: "127.0.0.1", Port: 1143,
 			TLSMode: "starttls", Username: "b@proton.me", Module: true}, "pw")
+
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +183,7 @@ func TestMigrationModuleMark(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	s := New(db)
+	s := keyed(db)
 	for id, want := range map[int64]bool{password: false, oneClick: true} {
 		if a, err := s.Account(ctx, id); err != nil || a.Module != want {
 			t.Errorf("account %d: module = %v, %v; want %v", id, a.Module, err, want)
@@ -193,7 +196,7 @@ func TestMigrationModuleMark(t *testing.T) {
 func TestMigrationModuleMailboxesReconnect(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 16)
-	s := New(db)
+	s := keyed(db)
 	u, err := s.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -208,12 +211,15 @@ func TestMigrationModuleMailboxesReconnect(t *testing.T) {
 		{false, "auth_failed", "auth_failed"},
 		{true, "error", "error"},
 	} {
-		a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "m", Preset: "proton", Host: "127.0.0.1", Port: 1143, TLSMode: "starttls",
-			Username: fmt.Sprintf("me%d@proton.test", i), WatchFolder: "INBOX", Status: c.status, Module: c.module}, "pw")
+		// Written by hand: the store seals a secret under its tenant's key, which 0025 adds.
+		var id int64
+		err := db.QueryRowContext(ctx, `INSERT INTO accounts (user_id, label, preset, host, port, tls_mode, username, secret_enc, dek_enc, watch_folder, status, created_at, module)
+			VALUES (?, 'm', 'proton', '127.0.0.1', 1143, 'starttls', ?, x'00', x'00', 'INBOX', ?, 1, ?) RETURNING id`,
+			u.ID, fmt.Sprintf("me%d@proton.test", i), c.status, c.module).Scan(&id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want[a.ID] = c.want
+		want[id] = c.want
 	}
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
@@ -263,18 +269,21 @@ func TestAccountSecretIsEncrypted(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	s := New(db)
+	s := keyed(db)
 	const secretA, secretB = "abcd-efgh-ijkl-mnop", "qrst-uvwx-yzab-cdef"
 	a := newAccount(t, s, "me@icloud.com", secretA)
 	b := newAccount(t, s, "other@icloud.com", secretB)
 
 	for id, want := range map[int64]string{a.ID: secretA, b.ID: secretB} {
-		if got, err := s.AccountSecret(ctx, testMaster, id); err != nil || got != want {
+		if got, err := s.AccountSecret(ctx, id); err != nil || got != want {
 			t.Errorf("secret %d = %q, %v", id, got, err)
 		}
 	}
-	if _, err := s.AccountSecret(ctx, bytes.Repeat([]byte{8}, 32), a.ID); !errors.Is(err, crypto.ErrDecrypt) {
+	if _, err := New(db).WithKeys(crypto.MasterKey(bytes.Repeat([]byte{8}, 32))).AccountSecret(ctx, a.ID); !errors.Is(err, crypto.ErrDecrypt) {
 		t.Errorf("wrong master key: %v, want ErrDecrypt", err)
+	}
+	if _, err := New(db).AccountSecret(ctx, a.ID); !errors.Is(err, ErrNoKeys) {
+		t.Errorf("no keys: %v, want ErrNoKeys", err)
 	}
 
 	// Nothing on disk holds the plaintext: not the database, not its write-ahead log.
@@ -308,7 +317,7 @@ func TestAccountSecretIsEncrypted(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, enc, dek, b.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AccountSecret(ctx, testMaster, b.ID); !errors.Is(err, crypto.ErrDecrypt) {
+	if _, err := s.AccountSecret(ctx, b.ID); !errors.Is(err, crypto.ErrDecrypt) {
 		t.Errorf("swapped ciphertext: %v, want ErrDecrypt", err)
 	}
 }

@@ -185,7 +185,7 @@ func TestActivityOrder(t *testing.T) {
 func TestMigrationActedAt(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 5)
-	s := New(db)
+	s := keyed(db)
 	a := Account{ID: legacyAccount(t, db, legacyUser(t, db))}
 	exec := func(q string, args ...any) int64 {
 		res, err := db.ExecContext(ctx, q, args...)
@@ -217,9 +217,13 @@ func TestMigrationActedAt(t *testing.T) {
 func TestMigrationSenderSource(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 18)
-	s := New(db)
-	a := newAccount(t, s, "me@icloud.com", "pw")
-	// The row is written by hand: the store's own queries read columns later migrations add.
+	s := keyed(db)
+	// The rows are written by hand: the store's own queries read columns later migrations add
+	// (a mailbox's secret is sealed under its tenant's key, 0025).
+	if _, err := s.CreateFirstUser(ctx, "me@icloud.com", "hash", 1); err != nil {
+		t.Fatal(err)
+	}
+	a := Account{ID: legacyAccount(t, db, 1)}
 	res, err := db.ExecContext(ctx, `INSERT INTO messages (account_id, folder, uidvalidity, uid, created_at, acted_at) VALUES (?, 'INBOX', 1, 1, 100, 100)`, a.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +367,7 @@ func TestRebind(t *testing.T) {
 func TestMigrationOneReviewRowPerEmail(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 4)
-	s := New(db)
+	s := keyed(db)
 	a := Account{ID: legacyAccount(t, db, legacyUser(t, db))}
 	rows := []struct {
 		messageID, state, want string

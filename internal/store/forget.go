@@ -140,7 +140,7 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		return Forget{}, fmt.Errorf("forget identity: list mailboxes: %w", err)
 	}
 	out.Keys = alone
-	if err := deleteSecrets(ctx, tx, out.TenantID, out.Accounts, out.Keys, forgottenMessage, forgottenOAuthMessage, now); err != nil {
+	if err := s.deleteSecrets(ctx, tx, out.TenantID, out.Accounts, out.Keys, forgottenMessage, forgottenOAuthMessage, now); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
 	}
 
@@ -173,9 +173,9 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 // (oauth or module). When keys, the tenant's stored model API keys go too, and the
 // addresses and signing secrets of its notification destinations. A mailbox whose secret
 // is already gone keeps its status, so a second call changes nothing.
-func deleteSecrets(ctx context.Context, tx *txn, tenantID int64, accounts []int64, keys bool, msg, oauthMsg string, now int64) error {
+func (s *Store) deleteSecrets(ctx context.Context, tx *txn, tenantID int64, accounts []int64, keys bool, msg, oauthMsg string, now int64) error {
 	// The mailboxes a module connected are queued for it with their secrets before those go.
-	if err := queueRemovedMailboxes(ctx, tx, accounts, now); err != nil {
+	if err := s.queueRemovedMailboxes(ctx, tx, accounts, now); err != nil {
 		return err
 	}
 	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
@@ -346,7 +346,7 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)
 	}
 	// Their secrets went when they were forgotten, so normally none is queued here.
-	if err := queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
+	if err := s.queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)
 	}
 	if out.Tenant {
@@ -367,6 +367,11 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 // mailbox cascades to its folders, contacts, messages, decisions, actions, corrections and
 // notices (and to its rules, which go anyway); deleting a notification destination to its
 // delivery log; deleting a user to their sessions, identity, summaries and forgotten row.
+// Deleting the tenant row deletes the tenant's data key (tenants.dek_enc): a copy of one of
+// its secrets kept apart from that row no longer opens (crypto-shred). A backup of the
+// whole database holds its own copy of the key until the backup itself is gone. A removed
+// mailbox queued for its module keeps a copy of its secret that does not depend on the
+// tenant's key (queueRemovedMailboxes).
 func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 	for _, q := range []struct{ what, query string }{
 		{"mailboxes", `DELETE FROM accounts WHERE tenant_id = ?`},

@@ -44,7 +44,6 @@ func notifications(modules []ext.Module) *ext.Notifications {
 // least once each: a notice stays waiting until Notify takes it, across restarts.
 type noticeWorker struct {
 	store      *store.Store
-	master     []byte
 	notify     *ext.Notifications
 	deliveries deliveries
 	publicURL  string           // MAILRULES_PUBLIC_URL, which Notice.Link starts with
@@ -52,8 +51,8 @@ type noticeWorker struct {
 	now        func() time.Time // nil = time.Now
 }
 
-func newNoticeWorker(st *store.Store, master []byte, n *ext.Notifications, hub *events.Hub, publicURL string) *noticeWorker {
-	return &noticeWorker{store: st, master: master, notify: n, deliveries: deliveries{store: st, hub: hub}, publicURL: publicURL}
+func newNoticeWorker(st *store.Store, n *ext.Notifications, hub *events.Hub, publicURL string) *noticeWorker {
+	return &noticeWorker{store: st, notify: n, deliveries: deliveries{store: st, hub: hub}, publicURL: publicURL}
 }
 
 func (w *noticeWorker) clock() time.Time {
@@ -112,7 +111,7 @@ func (w *noticeWorker) hand(ctx context.Context, n store.Notice) error {
 	if err != nil {
 		return err
 	}
-	sec, err := w.store.DestinationSecret(ctx, w.master, d.ID)
+	sec, err := w.store.DestinationSecret(ctx, d.ID)
 	if errors.Is(err, store.ErrNoSecret) {
 		if err := w.deliveries.Record(ctx, ext.Delivery{NoticeID: n.ID, Reason: "Its address was deleted with the sign-in of the team's only member."}); err != nil {
 			return err

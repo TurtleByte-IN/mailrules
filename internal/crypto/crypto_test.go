@@ -12,21 +12,25 @@ import (
 
 func key(b byte) []byte { return bytes.Repeat([]byte{b}, keyLen) }
 
-func TestSealOpen(t *testing.T) {
+// Envelope 1, as versions before tenant keys sealed: still opened by the master key.
+func TestEnvelopeOne(t *testing.T) {
 	master := key(1)
-	secret, dek, err := Seal(master, 7, []byte("abcd-efgh-ijkl-mnop"))
+	secret, dek, err := sealV1(master, 7, []byte("abcd-efgh-ijkl-mnop"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(secret, []byte("abcd")) {
 		t.Fatal("ciphertext contains plaintext")
 	}
-	got, err := Open(master, 7, secret, dek)
+	if Envelope(dek) != 1 {
+		t.Fatalf("envelope %d, want 1", Envelope(dek))
+	}
+	got, err := MasterKey(master).OpenLegacy(7, secret, dek)
 	if err != nil || string(got) != "abcd-efgh-ijkl-mnop" {
 		t.Fatalf("round trip: %q, %v", got, err)
 	}
 
-	otherSecret, otherDek, _ := Seal(master, 8, []byte("other"))
+	otherSecret, otherDek, _ := sealV1(master, 8, []byte("other"))
 	flipped := append([]byte(nil), secret...)
 	flipped[len(flipped)-1] ^= 1
 	fails := []struct {
@@ -44,9 +48,106 @@ func TestSealOpen(t *testing.T) {
 		{"truncated", master, 7, secret[:4], dek},
 	}
 	for _, tt := range fails {
-		if _, err := Open(tt.master, tt.row, tt.secret, tt.dek); !errors.Is(err, ErrDecrypt) {
+		if _, err := MasterKey(tt.master).OpenLegacy(tt.row, tt.secret, tt.dek); !errors.Is(err, ErrDecrypt) {
 			t.Errorf("%s: want ErrDecrypt, got %v", tt.name, err)
 		}
+	}
+	// A tenant's key opens the tenant's envelope-1 secrets through the master key.
+	tk := NewTenantKey(1, key(9), MasterKey(master))
+	if got, err := tk.Open("account", "7", 7, secret, dek); err != nil || string(got) != "abcd-efgh-ijkl-mnop" {
+		t.Fatalf("tenant key on envelope 1: %q, %v", got, err)
+	}
+	if _, err := NewTenantKey(1, key(9), nil).Open("account", "7", 7, secret, dek); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("envelope 1 without the master key: %v", err)
+	}
+}
+
+// A tenant's data key, wrapped by the master key, seals each secret to its tenant, kind and
+// row: it opens nowhere else.
+func TestTenantKey(t *testing.T) {
+	ctx := t.Context()
+	master := MasterKey(key(1))
+	dk, err := NewDataKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := master.Wrap(ctx, 5, dk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := master.Unwrap(ctx, 5, MasterKeyID, wrapped); err != nil || !bytes.Equal(got, dk) {
+		t.Fatalf("unwrap: %v", err)
+	}
+	for name, unwrap := range map[string]func() ([]byte, error){
+		"another tenant": func() ([]byte, error) { return master.Unwrap(ctx, 6, MasterKeyID, wrapped) },
+		"another KEK id": func() ([]byte, error) { return master.Unwrap(ctx, 5, "kms:1", wrapped) },
+		"another master": func() ([]byte, error) { return MasterKey(key(2)).Unwrap(ctx, 5, MasterKeyID, wrapped) },
+	} {
+		if _, err := unwrap(); !errors.Is(err, ErrDecrypt) {
+			t.Errorf("unwrap as %s: %v", name, err)
+		}
+	}
+
+	k := NewTenantKey(5, dk, master)
+	secret, dek, err := k.Seal("account", "7", []byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Envelope(dek) != 2 {
+		t.Fatalf("envelope %d, want 2", Envelope(dek))
+	}
+	if got, err := k.Open("account", "7", 7, secret, dek); err != nil || string(got) != "pw" {
+		t.Fatalf("round trip: %q, %v", got, err)
+	}
+	other, _ := NewDataKey()
+	for _, tt := range []struct {
+		name      string
+		k         TenantKey
+		kind, ref string
+	}{
+		{"another tenant with the same key", NewTenantKey(6, dk, master), "account", "7"},
+		{"another tenant's key", NewTenantKey(5, other, master), "account", "7"},
+		{"another row", k, "account", "8"},
+		{"another kind", k, "destination", "7"},
+		// Length-prefixed: ("accoun", "t7") reads "account7" run together, as ("account", "7") does.
+		{"a binding that runs together alike", k, "accoun", "t7"},
+	} {
+		if _, err := tt.k.Open(tt.kind, tt.ref, 7, secret, dek); !errors.Is(err, ErrDecrypt) {
+			t.Errorf("%s: want ErrDecrypt, got %v", tt.name, err)
+		}
+	}
+	if _, err := k.Open("account", "7", 7, secret, []byte{2}); !errors.Is(err, ErrDecrypt) {
+		t.Errorf("a truncated key: %v", err)
+	}
+	if a, b := k.MAC("x", []byte("d")), NewTenantKey(5, other, nil).MAC("x", []byte("d")); bytes.Equal(a, b) || !bytes.Equal(a, k.MAC("x", []byte("d"))) {
+		t.Error("MAC is not a function of the tenant's key")
+	}
+}
+
+// A copy sealed under the KEK itself opens with the provider alone, after any tenant key is gone.
+func TestSealKEK(t *testing.T) {
+	ctx := t.Context()
+	master := MasterKey(key(1))
+	b := Binding{Kind: "removed", Ref: "7", LegacyRow: 7}
+	secret, dek, err := SealKEK(ctx, master, b, []byte("token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Envelope(dek) != 3 {
+		t.Fatalf("envelope %d, want 3", Envelope(dek))
+	}
+	if got, err := OpenKEK(ctx, master, master, b, secret, dek); err != nil || string(got) != "token" {
+		t.Fatalf("round trip: %q, %v", got, err)
+	}
+	if _, err := OpenKEK(ctx, master, master, Binding{Kind: "removed", Ref: "8"}, secret, dek); !errors.Is(err, ErrDecrypt) {
+		t.Errorf("another row: %v", err)
+	}
+	if _, err := OpenKEK(ctx, MasterKey(key(2)), nil, b, secret, dek); !errors.Is(err, ErrDecrypt) {
+		t.Errorf("another KEK: %v", err)
+	}
+	old, oldDek, _ := sealV1(key(1), 7, []byte("old"))
+	if got, err := OpenKEK(ctx, master, master, b, old, oldDek); err != nil || string(got) != "old" {
+		t.Errorf("envelope 1 copy: %q, %v", got, err)
 	}
 }
 

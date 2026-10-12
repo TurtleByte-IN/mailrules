@@ -355,7 +355,7 @@ func (s *server) handleStoredAccountTest(w http.ResponseWriter, r *http.Request)
 	var secret string
 	if !a.OAuth { // a one-click mailbox's secret goes to the module that signs in to it, nowhere else
 		var err error
-		if secret, err = s.store.AccountSecret(r.Context(), s.Master, a.ID); err != nil {
+		if secret, err = s.store.AccountSecret(r.Context(), a.ID); err != nil {
 			internalError(w, r, err)
 			return
 		}
@@ -463,7 +463,7 @@ func (s *server) alreadyConnected(ctx context.Context, tenantID int64, host, use
 // one over it is a *store.MailboxLimitError, and nothing is stored.
 func (s *server) saveAccount(ctx context.Context, userID int64, c connected, secret string, max int) (store.Account, error) {
 	c.account.UserID, c.account.CreatedAt = userID, s.now().Unix()
-	acct, err := s.store.CreateAccountWithin(ctx, s.Master, c.account, secret, max)
+	acct, err := s.store.CreateAccountWithin(ctx, c.account, secret, max)
 	if err == nil {
 		err = s.store.SaveFolders(ctx, acct.ID, c.folders)
 	}
@@ -574,7 +574,7 @@ func (s *server) handleAccountPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.store.UpdateAccount(ctx, a)
 	if err == nil && sent["password"] {
-		if err = s.store.SetAccountSecret(ctx, s.Master, a.ID, password); err == nil {
+		if err = s.store.SetAccountSecret(ctx, a.ID, password); err == nil {
 			a.SecretGone = false
 		}
 	}
@@ -613,7 +613,7 @@ func (s *server) tryMove(w http.ResponseWriter, r *http.Request, a store.Account
 		}
 	}
 	if password == "" {
-		password, err = s.store.AccountSecret(r.Context(), s.Master, a.ID)
+		password, err = s.store.AccountSecret(r.Context(), a.ID)
 		if errors.Is(err, store.ErrNoSecret) {
 			secretGone(w, a)
 			return false

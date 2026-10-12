@@ -95,7 +95,7 @@ func newEnv(t *testing.T) *env {
 	if e.user, err = e.st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)
 	}
-	acct, err := e.st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: e.user.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
+	acct, err := e.st.CreateAccount(ctx, store.Account{UserID: e.user.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}

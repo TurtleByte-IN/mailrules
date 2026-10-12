@@ -92,7 +92,7 @@ func TestNotificationDestinations(t *testing.T) {
 		t.Errorf("slack = %v", slack)
 	}
 	hookID, slackID := id(hd["id"]), id(slack["destination"].(map[string]any)["id"])
-	if sec, err := e.st.DestinationSecret(t.Context(), make([]byte, 32), hookID); err != nil || sec.URL != hookURL || sec.Secret != secret {
+	if sec, err := e.st.DestinationSecret(t.Context(), hookID); err != nil || sec.URL != hookURL || sec.Secret != secret {
 		t.Errorf("stored = %+v, %v", sec, err)
 	}
 

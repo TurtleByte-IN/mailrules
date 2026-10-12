@@ -148,9 +148,17 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	for _, r := range fixed {
 		slog.Info("a rule naming a removed mailbox was changed", "rule_id", r.ID, "rule", r.Name, "switched_off", r.MailboxRemoved)
 	}
-	master, err := openMasterKey(ctx, cfg, st)
+	key, err := openMasterKey(ctx, cfg, st)
 	if err != nil {
 		return err
+	}
+	st = st.WithKeys(key) // every secret is sealed and opened under its tenant's key, which key wraps
+	upgraded, err := st.UpgradeSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	if upgraded > 0 {
+		slog.Info("resealed stored secrets under their tenant's key", "secrets", upgraded)
 	}
 
 	// The decider, its models, the thresholds and the provider keys can be changed in the
@@ -160,7 +168,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		return err
 	}
 	deps := models.Deps{Caller: models.NewCaller(cfg.ModelConcurrency), Prices: prices}
-	sett := &settings.Settings{Store: st, Master: master, Env: cfg, Deps: deps,
+	sett := &settings.Settings{Store: st, Env: cfg, Deps: deps,
 		Workspaces: models.AnthropicWorkspaces{Deps: deps}} // finds the workspace a Claude key that covers a whole organisation needs
 	// Logs now if self-host's decider is not ready, rather than at the first email. Another
 	// tenant's settings are read when its first email arrives.
@@ -199,7 +207,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		exec.Notices = api.PlanFeature(st, modules, "notifications")
 	}
 	// One-click mailboxes sign in through the module that connects them.
-	logins := newMailLogins(st, master, modules)
+	logins := newMailLogins(st, modules)
 	logins.tlsConfig, logins.cloud = imapTLS, cfg.Mode == "cloud"
 	// The build's module that learns from the person's moves, when it has one: one watcher
 	// for every mailbox, swept on each mailbox's own connection, and the worker that hands
@@ -268,7 +276,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	// Notices of what rules did go to the module that delivers them, when the build has one:
 	// those still waiting now, then each within seconds of the rule acting.
 	if n := notifications(modules); n != nil {
-		notices := newNoticeWorker(st, master, n, hub, cfg.PublicURL)
+		notices := newNoticeWorker(st, n, hub, cfg.PublicURL)
 		handing := make(chan struct{})
 		defer func() { stopAll(); <-handing }()
 		go func() {
@@ -291,7 +299,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	defer func() { stopAll(); <-telling }()
 	go func() {
 		defer close(telling)
-		(&removedWorker{store: st, master: master, modules: modules}).Run(ctx)
+		(&removedWorker{store: st, modules: modules}).Run(ctx)
 	}()
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
@@ -324,7 +332,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	}
 
 	handler := api.NewHandler(api.Options{
-		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett, Master: master,
+		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett,
 		Metrics: telemetry.NewMetrics(version), Version: version,
 		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
 			mb, username, err := dial(ctx, acct, password, imapTLS, logins.cloud)
@@ -451,7 +459,7 @@ func openAccount(logins *mailLogins, acct store.Account) func(context.Context) (
 		if acct.OAuth {
 			return logins.open(ctx, acct, nil)
 		}
-		password, err := logins.st.AccountSecret(ctx, logins.master, acct.ID)
+		password, err := logins.st.AccountSecret(ctx, acct.ID)
 		if errors.Is(err, store.ErrNoSecret) {
 			return nil, fmt.Errorf("%w: %w", mail.ErrAuth, err)
 		}

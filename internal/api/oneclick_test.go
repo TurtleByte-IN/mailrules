@@ -124,7 +124,7 @@ func TestOneClickMailboxes(t *testing.T) {
 	if err != nil || !a.OAuth || a.Preset != "outlook" || a.Host != "outlook.office365.com" || a.Port != 993 || a.Username != "jo@outlook.test" {
 		t.Fatalf("stored account = %+v, %v", a, err)
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 2); got != "refresh-1-rotated" {
+	if got, _ := e.st.AccountSecret(t.Context(), 2); got != "refresh-1-rotated" {
 		t.Errorf("stored secret = %q, want the one the provider rotated to", got)
 	}
 	view := e.call(http.MethodGet, "/api/accounts/2", "", http.StatusOK)["account"].(map[string]any)
@@ -166,7 +166,7 @@ func TestOneClickMailboxes(t *testing.T) {
 			t.Errorf("reconnect %s = %d %s, want %q", c.query, r.status, r.raw, c.want)
 		}
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 2); got != "refresh-1-rotated" {
+	if got, _ := e.st.AccountSecret(t.Context(), 2); got != "refresh-1-rotated" {
 		t.Errorf("a failed reconnect changed the secret to %q", got)
 	}
 	oauthErr = nil
@@ -177,7 +177,7 @@ func TestOneClickMailboxes(t *testing.T) {
 	if r.status != http.StatusSeeOther || r.header.Get("Location") != "/#/accounts?reconnected=2" {
 		t.Fatalf("reconnect = %d %s %s", r.status, r.header.Get("Location"), r.raw)
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 2); got != "refresh-2-rotated" {
+	if got, _ := e.st.AccountSecret(t.Context(), 2); got != "refresh-2-rotated" {
 		t.Errorf("secret after reconnecting = %q", got)
 	}
 	eventually(t, "the reconnected mailbox to be live", func() bool {

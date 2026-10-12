@@ -9,7 +9,6 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
-	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
@@ -43,14 +42,15 @@ func stored(n int) string {
 // unless cfg.NewMasterKey is set. A fresh install, with no stored secrets, is unaffected:
 // its key is generated as before. When only some secrets fail to open, it logs and goes on,
 // since those rows are individual: a mailbox whose password was stored by another key.
-func openMasterKey(ctx context.Context, cfg *config.Config, st *store.Store) ([]byte, error) {
+// st is the store without keys; the caller seals and opens with st.WithKeys(key).
+func openMasterKey(ctx context.Context, cfg *config.Config, st *store.Store) (crypto.MasterKey, error) {
 	dataDir := cfg.DataDir
 	if abs, err := filepath.Abs(dataDir); err == nil {
 		dataDir = abs
 	}
-	key, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir)
+	loaded, err := crypto.LoadMasterKey(cfg.MasterKey, cfg.MasterKeyFile, cfg.DataDir)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
-		check, err := settings.CheckSecrets(ctx, st, nil)
+		check, err := st.CheckSecrets(ctx) // without keys: every stored secret counts as unreadable
 		if err != nil {
 			return nil, err
 		}
@@ -60,21 +60,27 @@ func openMasterKey(ctx context.Context, cfg *config.Config, st *store.Store) ([]
   2. If the key is gone for good, start once with MAILRULES_NEW_MASTER_KEY=true (or --new-master-key). MailRules then makes a new key, and you enter the mailbox passwords and model keys again.
 See docs/guide/backup.md`, dataDir, stored(check.Total))}
 		}
-		key, err := crypto.GenerateMasterKey(cfg.DataDir)
+		generated, err := crypto.GenerateMasterKey(cfg.DataDir)
 		if err != nil {
 			return nil, err
 		}
+		key := crypto.MasterKey(generated)
 		if check.Total > 0 {
 			slog.Warn("made a new master key because MAILRULES_NEW_MASTER_KEY is set; the stored mailbox passwords and model keys cannot be read until you enter them again",
 				"stored_secrets", check.Total, "data_dir", dataDir)
+		}
+		// No tenant key made under the lost key unwraps under the new one.
+		if err := replaceTenantKeys(ctx, st.WithKeys(key)); err != nil {
+			return nil, err
 		}
 		return key, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	key := crypto.MasterKey(loaded)
 
-	check, err := settings.CheckSecrets(ctx, st, key)
+	check, err := st.WithKeys(key).CheckSecrets(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -91,5 +97,25 @@ See docs/guide/backup.md`, crypto.MasterKeySource(cfg.MasterKey, cfg.MasterKeyFi
 		slog.Warn("some stored mailbox passwords or model keys cannot be opened with this master key; enter them again where a mailbox says decrypt failed",
 			"unreadable", check.Unreadable, "stored_secrets", check.Total)
 	}
+	// A tenant key this key cannot unwrap is replaced once it protects nothing readable, or
+	// once the person said to go on with this key, so secrets can be entered again under it.
+	if check.Total == 0 || (cfg.NewMasterKey && check.Unreadable > 0) {
+		if err := replaceTenantKeys(ctx, st.WithKeys(key)); err != nil {
+			return nil, err
+		}
+	}
 	return key, nil
+}
+
+// replaceTenantKeys drops the tenant keys st's key cannot unwrap, so the next secret a
+// tenant stores makes it a new one. What was sealed under the old ones stays unreadable.
+func replaceTenantKeys(ctx context.Context, st *store.Store) error {
+	n, err := st.ReplaceUnopenableTenantKeys(ctx)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		slog.Warn("made new tenant keys under this master key; what was sealed under the old ones cannot be read until it is entered again", "tenants", n)
+	}
+	return nil
 }

@@ -45,7 +45,7 @@ func newMailboxes(t *testing.T) *mailboxes {
 	m := &mailboxes{env: e}
 	for i := range m.srv {
 		m.srv[i] = imaptest.Start(t, goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapMove: {}, goimap.CapUIDPlus: {}})
-		m.acct[i], err = e.st.CreateAccount(t.Context(), make([]byte, 32), store.Account{UserID: u.ID, Label: fmt.Sprintf("Box %d", i+1), Preset: "generic",
+		m.acct[i], err = e.st.CreateAccount(t.Context(), store.Account{UserID: u.ID, Label: fmt.Sprintf("Box %d", i+1), Preset: "generic",
 			Host: m.srv[i].Host, Port: m.srv[i].Port, TLSMode: presets.TLSImplicit, Username: imaptest.Username}, imaptest.Password)
 		if err != nil {
 			t.Fatal(err)

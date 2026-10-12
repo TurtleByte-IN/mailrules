@@ -33,7 +33,7 @@ func newRemovalWorld(t *testing.T) (removalWorld, *store.Store, *sql.DB) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: sub, Preset: "generic",
+		a, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: sub, Preset: "generic",
 			Host: "h", Port: 993, TLSMode: "implicit", Username: email}, "pw")
 		if err != nil {
 			t.Fatal(err)

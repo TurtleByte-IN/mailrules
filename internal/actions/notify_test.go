@@ -43,14 +43,13 @@ func TestApplyQueuesNotices(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
 			ctx := t.Context()
-			master := make([]byte, 32)
 			var ids []int64
 			scheme := "https"
 			if tt.plainHTTP {
 				scheme = "http"
 			}
 			for _, name := range []string{"Ops", "Me"} {
-				d, err := e.st.CreateDestination(ctx, master, store.Destination{TenantID: 1, Name: name, Kind: store.DestinationWebhook},
+				d, err := e.st.CreateDestination(ctx, store.Destination{TenantID: 1, Name: name, Kind: store.DestinationWebhook},
 					store.DestinationSecret{URL: scheme + "://hooks.example/" + name}, 1)
 				if err != nil {
 					t.Fatal(err)
@@ -121,7 +120,7 @@ func TestApplyQueuesNotices(t *testing.T) {
 func TestUndoQueuesNoNotice(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
-	dest, err := e.st.CreateDestination(ctx, make([]byte, 32), store.Destination{TenantID: 1, Name: "Ops", Kind: store.DestinationSlack},
+	dest, err := e.st.CreateDestination(ctx, store.Destination{TenantID: 1, Name: "Ops", Kind: store.DestinationSlack},
 		store.DestinationSecret{URL: "https://hooks.slack.com/services/T/B/x"}, 1)
 	if err != nil {
 		t.Fatal(err)

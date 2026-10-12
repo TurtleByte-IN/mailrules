@@ -205,7 +205,7 @@ func TestManagerSortPerAccount(t *testing.T) {
 	userID := e.sup.Account.UserID
 
 	// A second account on the same user, with its own mailbox and the same rules.
-	acct2, err := e.st.CreateAccount(ctx, make([]byte, 32),
+	acct2, err := e.st.CreateAccount(ctx,
 		store.Account{UserID: userID, Label: "two", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me2"}, "pw")
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestManagerSortAll(t *testing.T) {
 	e := newEnv(t)
 	ctx := t.Context()
 	one, userID := e.sup.Account.ID, e.sup.Account.UserID
-	acct2, err := e.st.CreateAccount(ctx, make([]byte, 32),
+	acct2, err := e.st.CreateAccount(ctx,
 		store.Account{UserID: userID, Label: "two", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me2"}, "pw")
 	if err != nil {
 		t.Fatal(err)

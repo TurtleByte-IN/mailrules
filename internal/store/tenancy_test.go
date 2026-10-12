@@ -40,8 +40,9 @@ func twoTenants(t *testing.T) tworld {
 		t.Fatal(err)
 	}
 	mk := func(owner User, user string) Account {
-		a, err := s.CreateAccount(ctx, testMaster, Account{UserID: owner.ID, Label: user, Preset: "generic",
+		a, err := s.CreateAccount(ctx, Account{UserID: owner.ID, Label: user, Preset: "generic",
 			Host: "imap.test", Port: 993, TLSMode: "implicit", Username: user, CreatedAt: 1}, "pw")
+
 		if err != nil {
 			t.Fatal(err)
 		}

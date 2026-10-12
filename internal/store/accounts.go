@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
-	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
@@ -104,18 +104,18 @@ func (s *Store) FirstUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-// CreateAccount stores an account with its secret encrypted under the master key. The
+// CreateAccount stores an account with its secret sealed under its tenant's data key. The
 // account goes into its owner's (a.UserID's) tenant and starts shared or not as
 // NewAccountShared says; a.TenantID and a.Shared are ignored. The ciphertext is bound to
 // the row id, which only exists after the insert, so the row is inserted, sealed and
 // updated in one transaction: no reader ever sees it without a secret. Its tenant may have
 // any number of mailboxes; CreateAccountWithin caps them.
-func (s *Store) CreateAccount(ctx context.Context, master []byte, a Account, secret string) (Account, error) {
-	return s.CreateAccountWithin(ctx, master, a, secret, NoLimit)
+func (s *Store) CreateAccount(ctx context.Context, a Account, secret string) (Account, error) {
+	return s.CreateAccountWithin(ctx, a, secret, NoLimit)
 }
 
 // createAccount is CreateAccount's insert in tx.
-func createAccount(ctx context.Context, tx *txn, master []byte, a Account, secret string) (Account, error) {
+func (s *Store) createAccount(ctx context.Context, tx *txn, a Account, secret string) (Account, error) {
 	caps, err := json.Marshal(append([]string{}, a.Capabilities...))
 	if err != nil {
 		return Account{}, fmt.Errorf("encode capabilities: %w", err)
@@ -146,7 +146,11 @@ func createAccount(ctx context.Context, tx *txn, master []byte, a Account, secre
 		Scan(&a.ID); err != nil {
 		return Account{}, fmt.Errorf("create account: %w", err)
 	}
-	secretEnc, dekEnc, err := crypto.Seal(master, a.ID, []byte(secret))
+	key, err := s.tenantKey(ctx, tx, a.TenantID)
+	if err != nil {
+		return Account{}, fmt.Errorf("create account: %w", err)
+	}
+	secretEnc, dekEnc, err := key.Seal(secretAccount, strconv.FormatInt(a.ID, 10), []byte(secret))
 	if err != nil {
 		return Account{}, fmt.Errorf("encrypt account secret: %w", err)
 	}
@@ -254,12 +258,13 @@ func (s *Store) SetAccountShared(ctx context.Context, id int64, shared bool) err
 var ErrNoSecret = errors.New("the mailbox's password was deleted; enter it again")
 
 // AccountSecret decrypts an account's app password or token. It returns crypto.ErrDecrypt
-// when the master key is not the one the secret was sealed under, and ErrNoSecret when the
-// secret was deleted.
-func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (string, error) {
+// when the key it was sealed under does not open, and ErrNoSecret when the secret was
+// deleted.
+func (s *Store) AccountSecret(ctx context.Context, id int64) (string, error) {
 	ctx = s.tenantFor(ctx, ofAccount, id)
+	var tenantID int64
 	var secretEnc, dekEnc []byte
-	err := s.db.QueryRowContext(ctx, `SELECT secret_enc, dek_enc FROM accounts WHERE id = ?`, id).Scan(&secretEnc, &dekEnc)
+	err := s.db.QueryRowContext(ctx, `SELECT tenant_id, secret_enc, dek_enc FROM accounts WHERE id = ?`, id).Scan(&tenantID, &secretEnc, &dekEnc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -269,7 +274,11 @@ func (s *Store) AccountSecret(ctx context.Context, master []byte, id int64) (str
 	if len(secretEnc) == 0 {
 		return "", ErrNoSecret
 	}
-	secret, err := crypto.Open(master, id, secretEnc, dekEnc)
+	key, err := s.tenantKey(WithTenant(ctx, tenantID), s.db, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("decrypt account secret: %w", err)
+	}
+	secret, err := key.Open(secretAccount, strconv.FormatInt(id, 10), id, secretEnc, dekEnc)
 	if err != nil {
 		return "", fmt.Errorf("decrypt account secret: %w", err)
 	}
@@ -345,7 +354,7 @@ func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule,
 	if err != nil {
 		return nil, fmt.Errorf("delete account: %w", err)
 	}
-	if err := queueRemovedMailboxes(ctx, tx, []int64{id}, now); err != nil {
+	if err := s.queueRemovedMailboxes(ctx, tx, []int64{id}, now); err != nil {
 		return nil, fmt.Errorf("delete account: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id); err != nil {
@@ -523,19 +532,35 @@ func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
 	return nil
 }
 
-// SetAccountSecret replaces an account's app password, sealed under a fresh data key.
-func (s *Store) SetAccountSecret(ctx context.Context, master []byte, id int64, secret string) error {
+// SetAccountSecret replaces an account's app password, sealed under its tenant's key.
+func (s *Store) SetAccountSecret(ctx context.Context, id int64, secret string) error {
 	ctx = s.tenantFor(ctx, ofAccount, id)
-	secretEnc, dekEnc, err := crypto.Seal(master, id, []byte(secret))
-	if err != nil {
-		return fmt.Errorf("encrypt account secret: %w", err)
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("set account secret: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	var tenantID int64
+	err = tx.QueryRowContext(ctx, `SELECT tenant_id FROM accounts WHERE id = ?`, id).Scan(&tenantID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("set account secret: %w", err)
+	}
+	key, err := s.tenantKey(ctx, tx, tenantID)
+	if err != nil {
+		return fmt.Errorf("set account secret: %w", err)
+	}
+	secretEnc, dekEnc, err := key.Seal(secretAccount, strconv.FormatInt(id, 10), []byte(secret))
+	if err != nil {
+		return fmt.Errorf("encrypt account secret: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, id); err != nil {
+		return fmt.Errorf("set account secret: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set account secret: %w", err)
 	}
 	return nil
 }

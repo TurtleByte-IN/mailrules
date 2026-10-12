@@ -2,17 +2,17 @@
 // switch, the decision models and thresholds, retention, where trashed mail goes, whether
 // the mailbox's own mail is left alone, and the model provider keys. They live in the
 // settings table and lie over the environment (internal/config), which supplies the
-// defaults. Provider keys are stored encrypted under the master key and are never handed
-// back out of this package except inside the config the model adapters are built from.
+// defaults. Provider keys are stored sealed under the tenant's data key and are never
+// handed back out of this package except inside the config the model adapters are built
+// from.
 package settings
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"net/url"
 	"slices"
@@ -144,10 +144,9 @@ type Patch struct {
 // calls made with it are booked with the operator mark (store.Ledger). In selfhost mode an
 // environment key is the admin's own and is shown as set in the environment.
 type Settings struct {
-	Store  *store.Store
-	Master []byte
-	Env    *config.Config // the defaults
-	Deps   models.Deps    // shared by every router built here
+	Store *store.Store   // with keys (store.Store.WithKeys): it opens the stored provider keys
+	Env   *config.Config // the defaults
+	Deps  models.Deps    // shared by every router built here
 	// Workspaces looks up the workspace a Claude key needs; nil = never looked up, the
 	// user types it.
 	Workspaces WorkspaceFinder
@@ -181,26 +180,26 @@ var usageKeys = map[string][]string{
 }
 
 // operatorKey reports whether the provider key name in force for a tenant, whose stored
-// rows are rows, is the operator's: cloud mode, none stored by the tenant, one in the
-// environment.
-func (s *Settings) operatorKey(rows map[string]string, name string) bool {
+// rows are rows and data key k, is the operator's: cloud mode, none stored by the tenant,
+// one in the environment.
+func (s *Settings) operatorKey(rows map[string]string, k crypto.TenantKey, name string) bool {
 	if !s.cloud() || keyFields[name] == nil || *keyFields[name](s.Env) == "" {
 		return false
 	}
 	stored, ok := rows[keyPrefix+name]
 	if ok {
-		_, err := s.open(name, stored)
-		ok = !errors.Is(err, crypto.ErrDecrypt) // one the master key cannot open is not set
+		_, err := store.OpenSetting(k, name, stored)
+		ok = !errors.Is(err, crypto.ErrDecrypt) // one the tenant's key cannot open is not set
 	}
 	return !ok
 }
 
-// operator says, for the tenant whose stored rows are rows, which providers' calls go out
-// on an operator key.
-func (s *Settings) operator(rows map[string]string) func(provider string) bool {
+// operator says, for the tenant whose stored rows are rows and data key k, which
+// providers' calls go out on an operator key.
+func (s *Settings) operator(rows map[string]string, k crypto.TenantKey) func(provider string) bool {
 	return func(provider string) bool {
 		for _, name := range usageKeys[provider] {
-			if s.operatorKey(rows, name) {
+			if s.operatorKey(rows, k, name) {
 				return true
 			}
 		}
@@ -209,19 +208,33 @@ func (s *Settings) operator(rows map[string]string) func(provider string) bool {
 }
 
 // ledger books a tenant's model calls, marking those made on an operator key.
-func (s *Settings) ledger(tenantID int64, rows map[string]string) store.Ledger {
-	return store.Ledger{Store: s.Store, TenantID: tenantID, Operator: s.operator(rows)}
+func (s *Settings) ledger(tenantID int64, rows map[string]string, k crypto.TenantKey) store.Ledger {
+	return store.Ledger{Store: s.Store, TenantID: tenantID, Operator: s.operator(rows, k)}
+}
+
+// stored is the tenant's stored settings rows, and its data key, which opens the provider
+// keys among them.
+func (s *Settings) stored(ctx context.Context, tenantID int64) (map[string]string, crypto.TenantKey, error) {
+	rows, err := s.Store.Settings(ctx, tenantID)
+	if err != nil {
+		return nil, crypto.TenantKey{}, err
+	}
+	k, err := s.Store.TenantKey(ctx, tenantID)
+	if err != nil {
+		return nil, crypto.TenantKey{}, fmt.Errorf("read the tenant's key: %w", err)
+	}
+	return rows, k, nil
 }
 
 // Ledger books a tenant's model calls made outside a router (the rule composer, a module),
 // marking those made on an operator key as the tenant's settings stand now.
 func (s *Settings) Ledger(ctx context.Context, tenantID int64) store.Ledger {
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read settings to book model usage", "error", err.Error())
 		rows = map[string]string{}
 	}
-	return s.ledger(tenantID, rows)
+	return s.ledger(tenantID, rows, k)
 }
 
 // ErrNoComposer means no generative model is configured for the rule composer.
@@ -247,45 +260,6 @@ func (e *ComposerMissing) Message() string {
 	return fmt.Sprintf("This needs an AI model. The rule composer model, %s, needs %s: add it in Settings, then try again. Rules built from conditions work without one.", e.Model, e.What)
 }
 
-// aad binds a key's ciphertext to its name, so rows cannot be swapped.
-func aad(name string) int64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(name))
-	return int64(h.Sum64()) // #nosec G115 -- bit pattern only
-}
-
-// sealed is a provider key as stored: both parts are ciphertext, base64-encoded.
-type sealed struct {
-	Sealed string `json:"sealed"`
-	DEK    string `json:"dek"`
-}
-
-func (s *Settings) seal(name, value string) (string, error) {
-	secret, dek, err := crypto.Seal(s.Master, aad(name), []byte(value))
-	if err != nil {
-		return "", err
-	}
-	b, err := json.Marshal(sealed{base64.StdEncoding.EncodeToString(secret), base64.StdEncoding.EncodeToString(dek)})
-	return string(b), err
-}
-
-func (s *Settings) open(name, stored string) (string, error) {
-	var v sealed
-	if err := json.Unmarshal([]byte(stored), &v); err != nil {
-		return "", fmt.Errorf("decode stored key %s: %w", name, err)
-	}
-	secret, err1 := base64.StdEncoding.DecodeString(v.Sealed)
-	dek, err2 := base64.StdEncoding.DecodeString(v.DEK)
-	if err := errors.Join(err1, err2); err != nil {
-		return "", fmt.Errorf("decode stored key %s: %w", name, err)
-	}
-	plain, err := crypto.Open(s.Master, aad(name), secret, dek)
-	if err != nil {
-		return "", fmt.Errorf("stored key %s: %w", name, err)
-	}
-	return string(plain), nil
-}
-
 // own are the settings no environment variable sets: they have a built-in default only.
 type own struct {
 	retention     int
@@ -293,8 +267,9 @@ type own struct {
 	leaveOwnMail  bool
 }
 
-// effective lays the stored rows over the environment.
-func (s *Settings) effective(rows map[string]string) (config.Config, own, error) {
+// effective lays the stored rows over the environment; k is the tenant's data key, which
+// opens the provider keys among them.
+func (s *Settings) effective(rows map[string]string, k crypto.TenantKey) (config.Config, own, error) {
 	cfg := *s.Env
 	o := own{retention: DefaultRetentionDays, trashToFolder: store.DefaultTrashToFolder, leaveOwnMail: store.DefaultLeaveOwnMail}
 	for key, dst := range map[string]any{
@@ -313,9 +288,9 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 	}
 	for name, field := range keyFields {
 		if v, ok := rows[keyPrefix+name]; ok {
-			plain, err := s.open(name, v)
+			plain, err := store.OpenSetting(k, name, v)
 			if errors.Is(err, crypto.ErrDecrypt) {
-				// Sealed under a master key this install no longer has: as good as not set,
+				// Sealed under a key this install no longer has: as good as not set,
 				// and it must not take every other setting down with it. Entering the key
 				// again replaces it.
 				continue
@@ -328,17 +303,17 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 	}
 	// A workspace MailRules found itself belongs to the key it was found for: with another
 	// key (one set in the environment and changed since) it is not used.
-	if l := readLookup(rows); l.Found != "" && cfg.AnthropicWorkspaceID == l.Found && l.Key != s.fingerprint(cfg.AnthropicAPIKey) {
+	if l := readLookup(rows); l.Found != "" && cfg.AnthropicWorkspaceID == l.Found && l.Key != fingerprint(k, cfg.AnthropicAPIKey) {
 		cfg.AnthropicWorkspaceID = s.Env.AnthropicWorkspaceID
 	}
 	// While an operator's key is in force (cloud mode, the tenant has none of its own), the
 	// settings that say where that key is sent are the operator's too: a tenant's own base
 	// URL would receive the operator's key in its Authorization header. The tenant's stored
 	// values stay stored and take effect once it stores a key of its own.
-	if s.operatorKey(rows, "openai_api_key") {
+	if s.operatorKey(rows, k, "openai_api_key") {
 		cfg.OpenAIBaseURL = s.Env.OpenAIBaseURL
 	}
-	if s.operatorKey(rows, "anthropic_api_key") {
+	if s.operatorKey(rows, k, "anthropic_api_key") {
 		cfg.AnthropicWorkspaceID = s.Env.AnthropicWorkspaceID
 	}
 	return cfg, o, nil
@@ -348,17 +323,17 @@ func (s *Settings) effective(rows map[string]string) (config.Config, own, error)
 // tenant's stored settings laid over it. It holds decrypted provider keys, so it is for
 // building model adapters, never for showing.
 func (s *Settings) Effective(ctx context.Context, tenantID int64) (config.Config, error) {
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		return config.Config{}, err
 	}
-	cfg, _, err := s.effective(rows)
+	cfg, _, err := s.effective(rows, k)
 	return cfg, err
 }
 
-func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
-	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
-	if s.operatorKey(rows, "anthropic_api_key") {
+func (s *Settings) view(rows map[string]string, k crypto.TenantKey, cfg config.Config, o own) View {
+	l := s.lookupFor(rows, k, cfg.AnthropicAPIKey)
+	if s.operatorKey(rows, k, "anthropic_api_key") {
 		l = workspaceLookup{} // learnt about the operator's key: not the tenant's to see
 	}
 	reason := models.FallbackSkipped(&cfg, cfg.DeciderSpec())
@@ -372,10 +347,10 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	// Under an operator's key the effective endpoint and workspace are the operator's; the
 	// screen shows the tenant's own stored values instead (empty when none), never the
 	// operator's.
-	if s.operatorKey(rows, "anthropic_api_key") {
+	if s.operatorKey(rows, k, "anthropic_api_key") {
 		v.AnthropicWorkspaceID = storedString(rows, settingWorkspace)
 	}
-	if s.operatorKey(rows, "openai_api_key") {
+	if s.operatorKey(rows, k, "openai_api_key") {
 		v.OpenAIBaseURL = storedString(rows, "openai_base_url")
 	}
 	for _, w := range l.Workspaces {
@@ -386,8 +361,8 @@ func (s *Settings) view(rows map[string]string, cfg config.Config, o own) View {
 	for name, field := range keyFields {
 		stored, hasRow := rows[keyPrefix+name]
 		if hasRow {
-			// A stored key the master key cannot open is not set, as far as the screen goes.
-			_, err := s.open(name, stored)
+			// A stored key the tenant's key cannot open is not set, as far as the screen goes.
+			_, err := store.OpenSetting(k, name, stored)
 			hasRow = !errors.Is(err, crypto.ErrDecrypt)
 		}
 		switch {
@@ -473,15 +448,15 @@ func composerMissing(cfg config.Config) *ComposerMissing {
 
 // View returns the tenant's settings in force.
 func (s *Settings) View(ctx context.Context, tenantID int64) (View, error) {
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		return View{}, err
 	}
-	cfg, o, err := s.effective(rows)
+	cfg, o, err := s.effective(rows, k)
 	if err != nil {
 		return View{}, err
 	}
-	return s.view(rows, cfg, o), nil
+	return s.view(rows, k, cfg, o), nil
 }
 
 // resettable are the settings Patch.Reset may name.
@@ -510,7 +485,7 @@ func (s *Settings) Apply(ctx context.Context, tenantID int64, p Patch) error {
 // apply is Apply under lookupMu. newKey reports that a Claude key was saved while no
 // workspace is set, so its workspace is to be looked up.
 func (s *Settings) apply(ctx context.Context, tenantID int64, p Patch) (newKey bool, err error) {
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		return false, err
 	}
@@ -524,7 +499,7 @@ func (s *Settings) apply(ctx context.Context, tenantID int64, p Patch) (newKey b
 		delete(rows, name) // the environment's default shows through
 		set[name] = nil
 	}
-	cfg, o, err := s.effective(rows)
+	cfg, o, err := s.effective(rows, k)
 	if err != nil {
 		return false, err
 	}
@@ -586,7 +561,7 @@ func (s *Settings) apply(ctx context.Context, tenantID int64, p Patch) (newKey b
 			set[keyPrefix+name] = nil
 			continue
 		}
-		enc, err := s.seal(name, value)
+		enc, err := store.SealSetting(k, name, value)
 		if err != nil {
 			return false, fmt.Errorf("encrypt key %s: %w", name, err)
 		}
@@ -634,35 +609,38 @@ func (s *Settings) apply(ctx context.Context, tenantID int64, p Patch) (newKey b
 func (s *Settings) Live(ctx context.Context, tenantID int64) (router *models.Router, minConfidence float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, _ := s.live(ctx, tenantID)
+	t, _, _ := s.live(ctx, tenantID)
 	if t == nil {
 		return nil, s.Env.MinConfidence
 	}
 	return t.router, t.minCon
 }
 
-// live is Live under mu: the tenant's routers, rebuilt when its rows changed. It is nil
-// when the settings cannot be read and nothing was built before.
-func (s *Settings) live(ctx context.Context, tenantID int64) (*routers, map[string]string) {
+// live is Live under mu: the tenant's routers, rebuilt when its rows or its data key
+// changed, with the rows and key read. It is nil when the settings cannot be read and
+// nothing was built before; the rows are nil when they could not be read just now.
+func (s *Settings) live(ctx context.Context, tenantID int64) (*routers, map[string]string, crypto.TenantKey) {
 	t := s.tenants[tenantID]
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read settings; keeping the last ones", "error", err.Error())
-		return t, nil
+		return t, nil, crypto.TenantKey{}
 	}
 	keys := make([]string, 0, len(rows))
-	for k := range rows {
-		keys = append(keys, k)
+	for name := range rows {
+		keys = append(keys, name)
 	}
 	sort.Strings(keys)
 	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k + "\x00" + rows[k] + "\x00")
+	for _, name := range keys {
+		b.WriteString(name + "\x00" + rows[name] + "\x00")
 	}
+	// The same rows under another data key (the tenant's key was made anew) open otherwise.
+	b.WriteString(hex.EncodeToString(k.MAC("settings_cache", nil)))
 	if t != nil && b.String() == t.print {
-		return t, rows
+		return t, rows, k
 	}
-	cfg, _, err := s.effective(rows)
+	cfg, _, err := s.effective(rows, k)
 	if err != nil {
 		slog.WarnContext(ctx, "stored settings cannot be used; mail that needs a model waits in Needs review", "error", err.Error())
 		cfg = *s.Env
@@ -670,11 +648,11 @@ func (s *Settings) live(ctx context.Context, tenantID int64) (*routers, map[stri
 	t = &routers{print: b.String(), cfg: cfg, overrides: map[string]*models.Router{}, minCon: cfg.MinConfidence}
 	if ready := cfg.DeciderReady(); ready != nil {
 		slog.WarnContext(ctx, "no decision model yet; new mail that needs one waits in Needs review until it is set", "tenant", tenantID, "missing", ready.Error())
-	} else if t.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(tenantID), s.ledger(tenantID, rows)); err != nil {
+	} else if t.router, err = models.NewRouter(&cfg, cfg.DeciderSpec(), s.deps(tenantID), s.ledger(tenantID, rows, k)); err != nil {
 		slog.WarnContext(ctx, "could not set up the decision model", "tenant", tenantID, "error", err.Error())
 		t.router = nil
 	} else {
-		t.router.Metered = s.operator(rows)
+		t.router.Metered = s.operator(rows, k)
 	}
 	if t.router != nil {
 		// One line each time the settings change, not per email: this runs only on a rebuild.
@@ -686,7 +664,7 @@ func (s *Settings) live(ctx context.Context, tenantID int64) (*routers, map[stri
 		s.tenants = map[int64]*routers{}
 	}
 	s.tenants[tenantID] = t
-	return t, rows
+	return t, rows, k
 }
 
 // CheckModel says, in a sentence, what is wrong with a rule's model override, or "" when it
@@ -713,7 +691,7 @@ func CheckModel(spec string) string {
 func (s *Settings) RouterFor(ctx context.Context, tenantID int64, spec string) *models.Router {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, rows := s.live(ctx, tenantID) // rebuilds, and forgets the overrides, when a stored setting changed
+	t, rows, k := s.live(ctx, tenantID) // rebuilds, and forgets the overrides, when a stored setting changed
 	if t == nil {
 		return nil
 	}
@@ -723,12 +701,12 @@ func (s *Settings) RouterFor(ctx context.Context, tenantID int64, spec string) *
 	if rows == nil { // the settings could not be read just now: book as the last build did
 		rows = map[string]string{}
 	}
-	r, err := models.NewRouter(&t.cfg, spec, s.deps(tenantID), s.ledger(tenantID, rows))
+	r, err := models.NewRouter(&t.cfg, spec, s.deps(tenantID), s.ledger(tenantID, rows, k))
 	if err != nil {
 		slog.WarnContext(ctx, "a rule's model cannot be used; the default decides instead", "model", spec, "error", err.Error())
 		r = nil
 	} else {
-		r.Metered = s.operator(rows)
+		r.Metered = s.operator(rows, k)
 	}
 	t.overrides[spec] = r
 	return r

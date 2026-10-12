@@ -99,10 +99,11 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		return err
 	}
 	st := store.New(db)
-	master, err := openMasterKey(ctx, cfg, st)
+	key, err := openMasterKey(ctx, cfg, st)
 	if err != nil {
 		return err
 	}
+	st = st.WithKeys(key)
 
 	switch args[0] {
 	case "list":
@@ -140,7 +141,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		return a.add(ctx, st, master, acct, preset, password)
+		return a.add(ctx, st, acct, preset, password)
 	case "test":
 		if len(positional) != 1 {
 			return errors.New("accounts test: give one account id (see `mailrules accounts list`)")
@@ -149,7 +150,7 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("accounts test: %q is not an account id", positional[0])
 		}
-		return a.test(ctx, st, master, id, *watch)
+		return a.test(ctx, st, id, *watch)
 	default:
 		fmt.Fprint(os.Stderr, accountsUsage)
 		return fmt.Errorf("accounts: unknown subcommand %q", args[0])
@@ -240,7 +241,7 @@ func certHelp(err error, hint string) error {
 
 // add checks the account against the server before anything is stored, then does the
 // first-connect work: folder discovery, the watch baseline and the contacts scan.
-func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, acct store.Account, preset presets.Preset, password string) error {
+func (a accountsCLI) add(ctx context.Context, st *store.Store, acct store.Account, preset presets.Preset, password string) error {
 	user, err := st.FirstUser(ctx)
 	if errors.Is(err, store.ErrNotFound) {
 		return errors.New("accounts add: no admin user yet; run `mailrules serve`, finish first-run setup in the browser, then add accounts")
@@ -269,7 +270,7 @@ func (a accountsCLI) add(ctx context.Context, st *store.Store, master []byte, ac
 		return err
 	}
 	acct.Capabilities = mb.Capabilities().All
-	if acct, err = st.CreateAccount(ctx, master, acct, password); err != nil {
+	if acct, err = st.CreateAccount(ctx, acct, password); err != nil {
 		return err
 	}
 	rows := make([]store.Folder, len(folders))
@@ -326,7 +327,7 @@ func (a accountsCLI) list(ctx context.Context, st *store.Store) error {
 }
 
 // test logs in with the stored credentials and changes nothing, in the database or the mailbox.
-func (a accountsCLI) test(ctx context.Context, st *store.Store, master []byte, id int64, watch bool) error {
+func (a accountsCLI) test(ctx context.Context, st *store.Store, id int64, watch bool) error {
 	acct, err := st.Account(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("accounts test: no account with id %d", id)
@@ -338,7 +339,7 @@ func (a accountsCLI) test(ctx context.Context, st *store.Store, master []byte, i
 		// Only the module that connected it can sign in to it, and the command line runs none.
 		return fmt.Errorf("accounts test: account %d signs in with one-click sign-in; test it in the web UI: Mailboxes, then Test", id)
 	}
-	password, err := st.AccountSecret(ctx, master, id)
+	password, err := st.AccountSecret(ctx, id)
 	if err != nil {
 		return err
 	}

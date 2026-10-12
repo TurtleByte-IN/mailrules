@@ -128,7 +128,7 @@ MAILRULES_TRUSTED_PROXIES=172.18.0.0/16,10.0.0.5
 
 ## Secrets and logs
 
-- Mailbox passwords and model keys entered in the browser, and the addresses and signing secrets of notification destinations (hosted version), are encrypted with AES-256-GCM under the master key before they are stored. See [Backup and the master key](./backup.md).
+- Mailbox passwords and model keys entered in the browser, and the addresses and signing secrets of notification destinations (hosted version), are encrypted with AES-256-GCM before they are stored, each under a key of its own that is sealed with the data key of its account (its team, in the hosted version). The database holds each data key only wrapped by the master key, so a copy of the database alone opens nothing, and the secrets of one account do not open with another's key. See [Backup and the master key](./backup.md).
 - They are write-only: no API response contains them. Settings only says whether a key is set, and where from, and shows a destination's address cut short; a webhook's signing secret is shown once, when it is added.
 - Logs never contain passwords, keys, tokens, notification addresses or the text of an email, at any `LOG_LEVEL`.
 - `mailrules accounts add` and `mailrules users reset-password` never take a password as a flag, where other users of the machine could see it in the process list.

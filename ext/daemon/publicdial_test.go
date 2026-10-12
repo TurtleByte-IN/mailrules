@@ -53,17 +53,16 @@ func TestCloudModeConnectsOnlyToPublicServers(t *testing.T) {
 	named := store.Account{Preset: "generic", Host: "127.0.0.1", Port: port, TLSMode: presets.TLSImplicit, Username: imaptest.Username}
 
 	st, _ := storetest.New(t)
-	master := bytes.Repeat([]byte{5}, 32)
 	user, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	named.UserID = user.ID
-	stored, err := st.CreateAccount(ctx, master, named, imaptest.Password)
+	stored, err := st.CreateAccount(ctx, named, imaptest.Password)
 	if err != nil {
 		t.Fatal(err)
 	}
-	logins := &mailLogins{st: st, master: master, locks: map[int64]*sync.Mutex{}, cloud: true}
+	logins := &mailLogins{st: st, locks: map[int64]*sync.Mutex{}, cloud: true}
 	oneClick := stored
 	oneClick.OAuth = true
 

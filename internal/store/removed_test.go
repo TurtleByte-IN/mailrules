@@ -25,7 +25,7 @@ func (w fworld) waiting(t *testing.T) []told {
 	}
 	var out []told
 	for _, r := range rs {
-		sec, err := w.s.RemovedMailboxSecret(t.Context(), testMaster, r.ID)
+		sec, err := w.s.RemovedMailboxSecret(t.Context(), r.ID)
 		if err != nil {
 			t.Fatalf("secret of %d: %v", r.ID, err)
 		}
@@ -97,7 +97,7 @@ func TestRemovedMailboxesQueued(t *testing.T) {
 	if _, err := s.ForgetIdentity(ctx, "workos", "user_solo", fNow); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAccountSecret(ctx, testMaster, w.soloBox, "refresh-new"); err != nil {
+	if err := s.SetAccountSecret(ctx, w.soloBox, "refresh-new"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DeleteAccount(ctx, w.soloBox, fNow+2); err != nil {
@@ -151,14 +151,14 @@ func TestRemovedMailboxLifecycle(t *testing.T) {
 	if rs, _ := s.WaitingRemovedMailboxes(ctx, fNow+100, 10); len(rs) != 2 || rs[1].ID != first || rs[1].Attempts != 1 {
 		t.Fatalf("after the retry: %+v", rs)
 	}
-	if _, err := s.RemovedMailboxSecret(ctx, bytes.Repeat([]byte{8}, 32), first); !errors.Is(err, crypto.ErrDecrypt) {
+	if _, err := s.WithKeys(crypto.MasterKey(bytes.Repeat([]byte{8}, 32))).RemovedMailboxSecret(ctx, first); !errors.Is(err, crypto.ErrDecrypt) {
 		t.Errorf("another master key: %v, want ErrDecrypt", err)
 	}
 
 	if err := s.RemovedMailboxTaken(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RemovedMailboxSecret(ctx, testMaster, first); !errors.Is(err, ErrNotFound) {
+	if _, err := s.RemovedMailboxSecret(ctx, first); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a taken one's secret: %v, want ErrNotFound", err)
 	}
 	if got := ids(fNow + 1000); !slices.Equal(got, []int64{w.otherBox}) {

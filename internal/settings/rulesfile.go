@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
@@ -22,7 +23,7 @@ type ImportProblem struct{ Path, Message string }
 func (e *ImportProblem) Error() string { return e.Path + ": " + e.Message }
 
 // models are the tenant's models in force, for comparing with a rules file. The provider
-// keys are not read, so this works where there is no master key (the command line).
+// keys are not read, so this works with a store that has no keys (the command line).
 func (s *Settings) models(ctx context.Context, tenantID int64) (config.Config, error) {
 	rows, err := s.Store.Settings(ctx, tenantID)
 	if err != nil {
@@ -33,7 +34,7 @@ func (s *Settings) models(ctx context.Context, tenantID int64) (config.Config, e
 			delete(rows, k)
 		}
 	}
-	cfg, _, err := s.effective(rows)
+	cfg, _, err := s.effective(rows, crypto.TenantKey{}) // no provider key left to open
 	return cfg, err
 }
 

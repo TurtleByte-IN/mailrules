@@ -27,8 +27,9 @@ func newMovesWorld(t *testing.T) *movesWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit",
+	a, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit",
 		Username: "me@example.test", WatchFolder: "INBOX"}, "pw")
+
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,7 +36,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acct, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
+	acct, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}

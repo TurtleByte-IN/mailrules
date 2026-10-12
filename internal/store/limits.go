@@ -39,7 +39,7 @@ func (e *MailboxLimitError) Is(target error) bool { return target == ErrMailboxL
 // database's write lock (on Postgres, the tenant's) from its start, so two mailboxes added at
 // once cannot both take the last place. A tenant at or over max gets a *MailboxLimitError and
 // nothing is stored.
-func (s *Store) CreateAccountWithin(ctx context.Context, master []byte, a Account, secret string, max int) (Account, error) {
+func (s *Store) CreateAccountWithin(ctx context.Context, a Account, secret string, max int) (Account, error) {
 	ctx = s.tenantFor(ctx, ofUser, a.UserID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -56,7 +56,7 @@ func (s *Store) CreateAccountWithin(ctx context.Context, master []byte, a Accoun
 			return Account{}, &MailboxLimitError{Limit: max, Connected: n}
 		}
 	}
-	if a, err = createAccount(ctx, tx, master, a, secret); err != nil {
+	if a, err = s.createAccount(ctx, tx, a, secret); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(); err != nil {

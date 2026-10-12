@@ -69,28 +69,27 @@ func (f *fakeNotifier) module() ext.Module {
 // noticeWorld is a store with a mailbox, a rule and one destination, and a way to queue
 // notices the way the executor does.
 type noticeWorld struct {
-	db     *sql.DB
-	st     *store.Store
-	master []byte
-	acct   store.Account
-	rule   rules.Rule
-	dest   store.Destination
+	db   *sql.DB
+	st   *store.Store
+	acct store.Account
+	rule rules.Rule
+	dest store.Destination
 }
 
 func newNoticeWorld(t *testing.T) noticeWorld {
 	t.Helper()
 	ctx := t.Context()
 	st, db := storetest.New(t)
-	w := noticeWorld{db: db, st: st, master: testKey(3)}
+	w := noticeWorld{db: db, st: st}
 	u, err := w.st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.acct, err = w.st.CreateAccount(ctx, w.master, store.Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993,
+	if w.acct, err = w.st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993,
 		TLSMode: "implicit", Username: "me@example.test"}, "pw"); err != nil {
 		t.Fatal(err)
 	}
-	if w.dest, err = w.st.CreateDestination(ctx, w.master, store.Destination{TenantID: u.TenantID, Name: "Ops", Kind: store.DestinationWebhook},
+	if w.dest, err = w.st.CreateDestination(ctx, store.Destination{TenantID: u.TenantID, Name: "Ops", Kind: store.DestinationWebhook},
 		store.DestinationSecret{URL: "https://hooks.test/ops", Secret: "whsec_test"}, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +139,7 @@ func TestNoticeWorkerHandsOverAtLeastOnce(t *testing.T) {
 	f := &fakeNotifier{refuse: 1}
 	hub := events.NewHub()
 	now := time.Unix(1_800_000_000, 0)
-	nw := newNoticeWorker(w.st, w.master, f.module().Notifications, hub, "https://mail.example.test/mailrules/")
+	nw := newNoticeWorker(w.st, f.module().Notifications, hub, "https://mail.example.test/mailrules/")
 	nw.now = func() time.Time { return now }
 	w.queue(t, 1, now.Unix())
 
@@ -211,7 +210,7 @@ func TestNoticeWorkerAddressDeleted(t *testing.T) {
 	w := newNoticeWorld(t)
 	ctx := t.Context()
 	f := &fakeNotifier{}
-	nw := newNoticeWorker(w.st, w.master, f.module().Notifications, events.NewHub(), "http://127.0.0.1:8080")
+	nw := newNoticeWorker(w.st, f.module().Notifications, events.NewHub(), "http://127.0.0.1:8080")
 	w.queue(t, 1, time.Now().Unix())
 	// What ForgetIdentity does to the destinations of a tenant's only member.
 	if _, err := w.db.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = ?, dek_enc = ?`, []byte{}, []byte{}); err != nil {

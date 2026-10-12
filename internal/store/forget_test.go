@@ -92,8 +92,9 @@ func forgetWorld(t *testing.T) fworld {
 func (w fworld) seed(t *testing.T, u User, name string) int64 {
 	t.Helper()
 	s, ctx := w.s, t.Context()
-	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: name, Preset: "generic",
+	a, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: name, Preset: "generic",
 		Host: "imap.test", Port: 993, TLSMode: "implicit", Username: name + "@imap.test", CreatedAt: 1}, "pw-"+name)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +135,9 @@ func (w fworld) seed(t *testing.T, u User, name string) int64 {
 	must(s.CreateSession(ctx, "session-"+name, u.ID, 1000, fDue*2))
 	_, _, _, err = s.ClaimSummary(ctx, u.ID, 2000, 2000, 3)
 	must(err)
-	dest, err := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "Hook " + name, Kind: DestinationWebhook},
+	dest, err := s.CreateDestination(ctx, Destination{TenantID: u.TenantID, Name: "Hook " + name, Kind: DestinationWebhook},
 		DestinationSecret{URL: "https://hooks.test/" + name, Secret: "whsec_" + name}, 1000)
+
 	must(err)
 	var notice int64
 	must(w.db.QueryRowContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
@@ -312,20 +314,20 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 	if a := as[0]; !a.SecretGone || a.Status != "auth_failed" || a.LastError != forgottenMessage {
 		t.Errorf("the mailbox after coming back = %+v", a)
 	}
-	if _, err := s.AccountSecret(ctx, testMaster, w.soloBox); !errors.Is(err, ErrNoSecret) {
+	if _, err := s.AccountSecret(ctx, w.soloBox); !errors.Is(err, ErrNoSecret) {
 		t.Errorf("its secret: %v, want ErrNoSecret", err)
 	}
 	if _, err := s.Setting(ctx, w.solo.TenantID, "key.anthropic_api_key"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the model key came back: %v", err)
 	}
 	// A new password brings the mailbox back.
-	if err := s.SetAccountSecret(ctx, testMaster, w.soloBox, "new-pw"); err != nil {
+	if err := s.SetAccountSecret(ctx, w.soloBox, "new-pw"); err != nil {
 		t.Fatal(err)
 	}
 	if a, _ := s.Account(ctx, w.soloBox); a.SecretGone {
 		t.Errorf("the mailbox has no secret after a new one: %+v", a)
 	}
-	if pw, err := s.AccountSecret(ctx, testMaster, w.soloBox); err != nil || pw != "new-pw" {
+	if pw, err := s.AccountSecret(ctx, w.soloBox); err != nil || pw != "new-pw" {
 		t.Errorf("secret = %q, %v", pw, err)
 	}
 }
@@ -351,7 +353,7 @@ func TestDeleteOwnAccountNeverComesBack(t *testing.T) {
 	if _, err := s.UserByEmail(ctx, "solo@example.com"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the email is still held: %v", err)
 	}
-	if _, err := s.AccountSecret(ctx, testMaster, w.soloBox); !errors.Is(err, ErrNoSecret) {
+	if _, err := s.AccountSecret(ctx, w.soloBox); !errors.Is(err, ErrNoSecret) {
 		t.Errorf("the mailbox secret: %v, want ErrNoSecret", err)
 	}
 	// Deleting again, or the service's notice, reaches nobody and moves nothing.
@@ -477,7 +479,7 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 			t.Fatalf("%s: destinations = %v, %v", c.sub, ds, err)
 		}
 		for _, d := range ds {
-			_, err := s.DestinationSecret(ctx, testMaster, d.ID)
+			_, err := s.DestinationSecret(ctx, d.ID)
 			if gone := errors.Is(err, ErrNoSecret); gone != c.keys || d.AddressDeleted != c.keys {
 				t.Errorf("%s: destination %+v address gone = %v (%v), want %v", c.sub, d, gone, err, c.keys)
 			}
@@ -499,7 +501,7 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 		if err != nil || !a.SecretGone || a.Status != c.status || a.LastError != c.msg {
 			t.Errorf("mailbox %d = %+v, %v; want its secret gone and %s", id, a, err, c.status)
 		}
-		if _, err := s.AccountSecret(ctx, testMaster, id); !errors.Is(err, ErrNoSecret) {
+		if _, err := s.AccountSecret(ctx, id); !errors.Is(err, ErrNoSecret) {
 			t.Errorf("mailbox %d secret: %v, want ErrNoSecret", id, err)
 		}
 	}
@@ -507,7 +509,7 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 		if a, err := s.Account(ctx, id); err != nil || a.SecretGone || a.Status != "new" {
 			t.Errorf("someone else's mailbox %d = %+v, %v", id, a, err)
 		}
-		if _, err := s.AccountSecret(ctx, testMaster, id); err != nil {
+		if _, err := s.AccountSecret(ctx, id); err != nil {
 			t.Errorf("someone else's secret %d: %v", id, err)
 		}
 	}
@@ -516,7 +518,7 @@ func TestForgetIdentityDeletesSecrets(t *testing.T) {
 	}
 	if ds, _ := s.Destinations(ctx, w.other.TenantID); len(ds) != 1 || ds[0].AddressDeleted {
 		t.Errorf("another tenant's destinations = %+v", ds)
-	} else if sec, err := s.DestinationSecret(ctx, testMaster, ds[0].ID); err != nil || sec.URL != "https://hooks.test/other" || sec.Secret != "whsec_other" {
+	} else if sec, err := s.DestinationSecret(ctx, ds[0].ID); err != nil || sec.URL != "https://hooks.test/other" || sec.Secret != "whsec_other" {
 		t.Errorf("another tenant's destination secret = %+v, %v", sec, err)
 	}
 	ids, err := s.IdentityMailboxes(ctx, "workos", "user_leaver")

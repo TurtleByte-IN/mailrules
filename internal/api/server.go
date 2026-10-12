@@ -42,7 +42,6 @@ type Options struct {
 	Exec     *actions.Exec      // undo and corrections: the only way this package changes a mailbox
 	Settings *settings.Settings // the settings the user changes at runtime
 	Models   ModelSource        // the models the composer and tester use; nil = Settings
-	Master   []byte             // seals account passwords
 	Metrics  *telemetry.Metrics // nil = a private registry
 	Version  string             // shown in GET /api/settings
 
