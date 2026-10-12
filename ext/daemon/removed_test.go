@@ -17,6 +17,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // fakeUndoer is a module's MailboxRemoved: it refuses the first `refuse` hand-overs, then
@@ -60,24 +61,11 @@ type removedWorld struct {
 	gmail, proton, password store.Account
 }
 
-func openStore(t *testing.T, dir string) (*sql.DB, *store.Store) {
-	t.Helper()
-	db, err := store.Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	return db, store.New(db)
-}
-
 func newRemovedWorld(t *testing.T) removedWorld {
 	t.Helper()
 	ctx := t.Context()
 	w := removedWorld{dir: t.TempDir(), master: testKey(4)}
-	w.db, w.st = openStore(t, w.dir)
+	w.st, w.db = storetest.InDir(t, w.dir)
 	u, err := w.st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: "user_jo", Email: "jo@example.test", Tenant: "org_jo"}, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +174,7 @@ func TestRemovedMailboxSurvivesRestart(t *testing.T) {
 	}
 	_ = w.db.Close() // the daemon stops before the worker ran
 
-	db, st := openStore(t, w.dir)
+	st, db := storetest.InDir(t, w.dir)
 	oneClick := &fakeUndoer{}
 	oneClick.before = func() { _ = db.Close() } // and stops again as the module takes it
 	rw := &removedWorker{store: st, master: w.master, modules: undoModules(oneClick, &fakeUndoer{}), now: func() time.Time { return now }}
@@ -194,7 +182,7 @@ func TestRemovedMailboxSurvivesRestart(t *testing.T) {
 		t.Fatal("recording the hand-over on a closed database did not fail")
 	}
 
-	_, st = openStore(t, w.dir)
+	st, _ = storetest.InDir(t, w.dir)
 	again := &fakeUndoer{}
 	rw = &removedWorker{store: st, master: w.master, modules: undoModules(again, &fakeUndoer{}), now: func() time.Time { return now }}
 	if err := rw.once(ctx); err != nil {

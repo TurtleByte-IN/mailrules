@@ -16,6 +16,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/settings"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // Tue 6 Oct 2026, 08:00 UTC.
@@ -34,15 +35,9 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	f := &fixture{st: store.New(db)}
+	st, _ := storetest.New(t)
+	var err error
+	f := &fixture{st: st}
 	if f.user, err = f.st.CreateFirstUser(ctx, "admin@example.com", "hash", 1); err != nil {
 		t.Fatal(err)
 	}

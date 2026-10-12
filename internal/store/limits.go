@@ -87,7 +87,7 @@ func (s *Store) AIEmails(ctx context.Context, tenantID int64, month string) (int
 func (s *Store) SpendAIEmails(ctx context.Context, tenantID int64, at time.Time, n int) error {
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO ai_emails (tenant_id, month, emails) VALUES (?, ?, ?)
-		 ON CONFLICT (tenant_id, month) DO UPDATE SET emails = emails + excluded.emails`, tenantID, Month(at), n); err != nil {
+		 ON CONFLICT (tenant_id, month) DO UPDATE SET emails = ai_emails.emails + excluded.emails`, tenantID, Month(at), n); err != nil {
 		return fmt.Errorf("count AI-sorted emails: %w", err)
 	}
 	return nil
@@ -115,7 +115,7 @@ func (s *Store) SpendCleanupEmail(ctx context.Context, tenantID int64, at time.T
 	if grant > 0 {
 		res, err := s.db.ExecContext(ctx,
 			`INSERT INTO first_cleanup (tenant_id, emails) VALUES (?, 1)
-			 ON CONFLICT (tenant_id) DO UPDATE SET emails = emails + 1 WHERE emails < ?`, tenantID, grant)
+			 ON CONFLICT (tenant_id) DO UPDATE SET emails = first_cleanup.emails + 1 WHERE first_cleanup.emails < ?`, tenantID, grant)
 		if err != nil {
 			return false, fmt.Errorf("count against the first-cleanup grant: %w", err)
 		}
@@ -128,7 +128,7 @@ func (s *Store) SpendCleanupEmail(ctx context.Context, tenantID int64, at time.T
 
 // meter counts, in tx, the message's email against its tenant's allowance for the month of
 // at, unless it was counted before.
-func meter(ctx context.Context, tx *sql.Tx, messageID, at int64) error {
+func meter(ctx context.Context, tx *txn, messageID, at int64) error {
 	res, err := tx.ExecContext(ctx, `UPDATE messages SET metered = 1 WHERE id = ? AND metered = 0`, messageID)
 	if err != nil {
 		return fmt.Errorf("count AI-sorted email: %w", err)
@@ -139,7 +139,7 @@ func meter(ctx context.Context, tx *sql.Tx, messageID, at int64) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO ai_emails (tenant_id, month, emails)
 		 SELECT a.tenant_id, ?, 1 FROM messages m JOIN accounts a ON a.id = m.account_id WHERE m.id = ?
-		 ON CONFLICT (tenant_id, month) DO UPDATE SET emails = emails + 1`, Month(time.Unix(at, 0)), messageID); err != nil {
+		 ON CONFLICT (tenant_id, month) DO UPDATE SET emails = ai_emails.emails + 1`, Month(time.Unix(at, 0)), messageID); err != nil {
 		return fmt.Errorf("count AI-sorted email: %w", err)
 	}
 	return nil

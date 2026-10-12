@@ -128,7 +128,7 @@ func (s *Store) IngestMessage(ctx context.Context, ref mail.MsgRef, now int64) (
 		return Message{}, false, fmt.Errorf("ingest message: %w", err)
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO messages (account_id, folder, uidvalidity, uid, created_at, acted_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (account_id, folder, uidvalidity, uid, created_at, acted_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID, now, now)
 	if err != nil {
 		return Message{}, false, fmt.Errorf("ingest message: %w", err)
@@ -261,7 +261,7 @@ func (s *Store) AdvanceFolder(ctx context.Context, ref mail.MsgRef) error {
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO folders (account_id, name, uidvalidity, last_uid) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (account_id, name) DO UPDATE SET
-		   last_uid = CASE WHEN folders.uidvalidity IS excluded.uidvalidity
+		   last_uid = CASE WHEN folders.uidvalidity IS NOT DISTINCT FROM excluded.uidvalidity
 		                   THEN MAX(folders.last_uid, excluded.last_uid) ELSE excluded.last_uid END,
 		   uidvalidity = excluded.uidvalidity`,
 		ref.AccountID, ref.Folder, ref.UIDValidity, ref.UID); err != nil {
@@ -340,16 +340,15 @@ func (s *Store) AddDecision(ctx context.Context, d Decision, state string) (int6
 		}
 		probs = string(b)
 	}
-	res, err := tx.ExecContext(ctx,
+	var id int64
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO decisions (message_id, stage, rule_id, rule_name, rule_version, confidence, reason, model,
 		                        tokens_in, tokens_out, cost_usd, latency_ms, created_at, probabilities, sender_source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		d.MessageID, d.Stage, null(d.RuleID), null(d.RuleName), null(d.RuleVersion), d.Confidence, d.Reason, null(d.Model),
-		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt, probs, null(d.SenderSource))
-	if err != nil {
+		d.TokensIn, d.TokensOut, d.CostUSD, d.LatencyMS, d.CreatedAt, probs, null(d.SenderSource)).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = ?, next_attempt_at = NULL, acted_at = ? WHERE id = ?`, state, d.CreatedAt, d.MessageID); err != nil {
 		return 0, fmt.Errorf("add decision: %w", err)
 	}
@@ -433,10 +432,10 @@ func (s *Store) activity(ctx context.Context, v *Viewer, f ActivityFilter) ([]Ac
 	}
 	// Only the filters in force go into the query, so the planner can walk messages_acted
 	// from the cursor, or look one message up by its id.
-	where, args := []string{"1"}, []any{}
+	where, args := []string{"TRUE"}, []any{}
 	add := func(cond string, arg ...any) { where, args = append(where, cond), append(args, arg...) }
 	if v != nil {
-		add(inVisible("m.account_id", *v))
+		add(inVisible("m.account_id"), v.tenantArg(), v.userArg())
 	}
 	if f.ID != 0 {
 		add(`m.id = ?`, f.ID)
@@ -466,7 +465,6 @@ func (s *Store) activity(ctx context.Context, v *Viewer, f ActivityFilter) ([]Ac
 		}
 		add(outcome)
 	}
-	//nolint:gosec // G202: every condition is built in this package; values are bound arguments or ids printed as numbers
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+messageCols+`, `+decisionCols+`
 		 FROM messages m LEFT JOIN decisions d ON d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
@@ -541,14 +539,13 @@ type SenderDecision struct {
 // actions were recorded in dry-run is left out, so a dry-run period teaches the learner
 // nothing, then or once MailRules is live.
 func (s *Store) RecentSenderDecisions(ctx context.Context, v Viewer, address string, n int) ([]SenderDecision, error) {
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.stage, COALESCE(d.rule_id, 0), COALESCE(d.confidence, 0),
 		        EXISTS (SELECT 1 FROM corrections c WHERE c.message_id = m.id)
 		 FROM decisions d JOIN messages m ON m.id = d.message_id
-		 WHERE `+inVisible("m.account_id", v)+` AND m.from_addr = ? AND d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
+		 WHERE `+inVisible("m.account_id")+` AND m.from_addr = ? AND d.id = (SELECT MAX(id) FROM decisions WHERE message_id = m.id)
 		   AND NOT EXISTS (SELECT 1 FROM actions x WHERE x.message_id = m.id AND x.decision_id = d.id AND x.status = 'dry_run')
-		 ORDER BY d.id DESC LIMIT ?`, address, n)
+		 ORDER BY d.id DESC LIMIT ?`, address, n, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("list sender decisions: %w", err)
 	}
@@ -621,13 +618,12 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 	if err != nil {
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO corrections (message_id, wrong_rule_id, right_rule_id, example, kind, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		c.MessageID, null(c.WrongRuleID), null(c.RightRuleID), c.Example, cmp.Or(c.Kind, CorrectionFix), c.CreatedAt)
-	if err != nil {
+	var id int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO corrections (message_id, wrong_rule_id, right_rule_id, example, kind, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+		c.MessageID, null(c.WrongRuleID), null(c.RightRuleID), c.Example, cmp.Or(c.Kind, CorrectionFix), c.CreatedAt).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM sender_rules WHERE tenant_id = ? AND match_type = ? AND value = ? AND (source = 'learned' OR ?)`,
 		tenantID, rules.MatchAddress, sender, always == rules.MatchAddress); err != nil {
@@ -659,7 +655,7 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 // correction's Always, or Yes to a question about their moves): sr.Verdict for sr.Value,
 // replacing whatever the tenant had for that address or domain, with its count of emails
 // settled starting again.
-func putUserSenderRule(ctx context.Context, tx *sql.Tx, tenantID int64, sr rules.SenderRule, now int64) error {
+func putUserSenderRule(ctx context.Context, tx *txn, tenantID int64, sr rules.SenderRule, now int64) error {
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 'user', 0, ?)
@@ -672,11 +668,10 @@ func putUserSenderRule(ctx context.Context, tx *sql.Tx, tenantID int64, sr rules
 // Corrections lists the newest corrections made to mail in the mailboxes the viewer sees,
 // newest first, with the example each stored: the pool few-shot retrieval ranks.
 func (s *Store) Corrections(ctx context.Context, v Viewer, limit int) ([]Correction, error) {
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT c.id, c.message_id, COALESCE(c.wrong_rule_id, 0), COALESCE(c.right_rule_id, 0), c.example, c.created_at
 		 FROM corrections c JOIN messages m ON m.id = c.message_id
-		 WHERE `+inVisible("m.account_id", v)+` ORDER BY c.id DESC LIMIT ?`, limit)
+		 WHERE `+inVisible("m.account_id")+` ORDER BY c.id DESC LIMIT ?`, limit, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("list corrections: %w", err)
 	}
@@ -746,7 +741,7 @@ func (s *Store) MessageCorrections(ctx context.Context, messageID int64) ([]Corr
 func (s *Store) CountMessages(ctx context.Context, v Viewer, state string) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM messages m WHERE m.state = ? AND `+inVisible("m.account_id", v), state).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM messages m WHERE m.state = ? AND `+inVisible("m.account_id"), state, v.tenantArg(), v.userArg()).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count messages: %w", err)
 	}
 	return n, nil
@@ -755,7 +750,7 @@ func (s *Store) CountMessages(ctx context.Context, v Viewer, state string) (int,
 // VisibleMessage returns one message of a mailbox the viewer sees, or ErrNotFound.
 func (s *Store) VisibleMessage(ctx context.Context, v Viewer, id int64) (Message, error) {
 	m, err := scanMessage(s.db.QueryRowContext(ctx,
-		`SELECT `+messageCols+` FROM messages m WHERE m.id = ? AND `+inVisible("m.account_id", v), id))
+		`SELECT `+messageCols+` FROM messages m WHERE m.id = ? AND `+inVisible("m.account_id"), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}

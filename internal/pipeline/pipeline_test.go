@@ -20,6 +20,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 // recorder is the executor the pipeline tests use: it remembers what it was asked to
@@ -87,15 +88,9 @@ func answer(ruleID int64, confidence float64) func(models.DecideRequest) (models
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	e := &env{t: t, db: db, st: store.New(db), exec: &recorder{}, now: time.Unix(1_800_000_000, 0),
+	st, db := storetest.New(t)
+	var err error
+	e := &env{t: t, db: db, st: st, exec: &recorder{}, now: time.Unix(1_800_000_000, 0),
 		primary: &models.Fake{NameValue: "primary"}, fallback: &models.Fake{NameValue: "fallback"}}
 	if e.user, err = e.st.CreateFirstUser(ctx, "me@example.test", "hash", 1); err != nil {
 		t.Fatal(err)

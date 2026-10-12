@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
@@ -78,19 +77,19 @@ func (s *Store) InsertAction(ctx context.Context, a Action) (int64, error) {
 		}
 		params = string(b)
 	}
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	if err := s.db.QueryRowContext(ctx,
 		`INSERT INTO actions (decision_id, batch_id, message_id, account_id, kind, params, before, status, error, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		null(a.DecisionID), null(a.BatchID), a.MessageID, a.AccountID, a.Kind, params, string(before), a.Status, null(a.Error), a.CreatedAt)
-	if err != nil {
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		null(a.DecisionID), null(a.BatchID), a.MessageID, a.AccountID, a.Kind, params, string(before), a.Status, null(a.Error), a.CreatedAt).
+		Scan(&id); err != nil {
 		return 0, fmt.Errorf("insert action: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return id, nil
 }
 
 // setLocation records where a message now is, inside tx.
-func setLocation(ctx context.Context, tx *sql.Tx, messageID int64, ref mail.MsgRef) error {
+func setLocation(ctx context.Context, tx *txn, messageID int64, ref mail.MsgRef) error {
 	_, err := tx.ExecContext(ctx, `UPDATE messages SET cur_folder = ?, cur_uidvalidity = ?, cur_uid = ? WHERE id = ?`,
 		ref.Folder, ref.UIDValidity, ref.UID, messageID)
 	return err
@@ -190,7 +189,7 @@ func (s *Store) Action(ctx context.Context, id int64) (Action, error) {
 // VisibleAction returns one action on a mailbox the viewer sees, or ErrNotFound.
 func (s *Store) VisibleAction(ctx context.Context, v Viewer, id int64) (Action, error) {
 	a, err := scanAction(s.db.QueryRowContext(ctx,
-		`SELECT `+actionCols+` FROM actions WHERE id = ? AND `+inVisible("account_id", v), id))
+		`SELECT `+actionCols+` FROM actions WHERE id = ? AND `+inVisible("account_id"), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Action{}, ErrNotFound
 	}
@@ -240,7 +239,8 @@ func (s *Store) BatchActions(ctx context.Context, batchID int64) ([]Action, erro
 // first. A tenant's batch without a mailbox (the day's live batch, a correction or an undo)
 // can hold actions on mailboxes of several people; each sees only theirs and shared ones.
 func (s *Store) VisibleBatchActions(ctx context.Context, v Viewer, batchID int64) ([]Action, error) {
-	return s.listActions(ctx, `SELECT `+actionCols+` FROM actions WHERE batch_id = ? AND `+inVisible("account_id", v)+` ORDER BY id`, batchID)
+	return s.listActions(ctx, `SELECT `+actionCols+` FROM actions WHERE batch_id = ? AND `+inVisible("account_id")+` ORDER BY id`,
+		batchID, v.tenantArg(), v.userArg())
 }
 
 // Batch is one row of batches: a group of actions that can be undone together.
@@ -286,9 +286,9 @@ func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
 
 // visibleBatch is the condition that the batches row (unaliased) is one the viewer sees: a
 // batch of a mailbox when they see the mailbox, a batch of no mailbox when it is their
-// tenant's.
-func visibleBatch(v Viewer) string {
-	return `(tenant_id = ` + strconv.FormatInt(v.TenantID, 10) + ` AND (account_id IS NULL OR ` + inVisible("account_id", v) + `))`
+// tenant's. It binds the viewer as visibleAccounts does.
+func visibleBatch() string {
+	return `(tenant_id = @viewer_tenant AND (account_id IS NULL OR ` + inVisible("account_id") + `))`
 }
 
 // CleanupBatch is what a cleanup batch is opened with.
@@ -303,25 +303,24 @@ type CleanupBatch struct {
 	Total                  int // emails the batch sorts
 }
 
-func insertCleanupBatch(ctx context.Context, db interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, c CleanupBatch, runID any, now int64) (int64, error) {
+func insertCleanupBatch(ctx context.Context, q querier, c CleanupBatch, runID any, now int64) (int64, error) {
 	var matched any // an empty range (0) is a fact when a limit was recorded
 	if c.ScanLimit > 0 {
 		matched = c.ScanMatched
 	}
 	// The batch belongs to the tenant of the mailbox it sorts.
-	res, err := db.ExecContext(ctx,
+	var id int64
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO batches (tenant_id, kind, status, total, account_id, folder, since, scan_limit, scan_matched, run_id, created_at)
-		 SELECT tenant_id, ?, ?, ?, id, ?, ?, ?, ?, ?, ? FROM accounts WHERE id = ?`,
-		BatchCleanup, BatchRunning, c.Total, c.Folder, null(c.Since), null(c.ScanLimit), matched, runID, now, c.AccountID)
+		 SELECT tenant_id, ?, ?, ?, id, ?, ?, ?, ?, ?, ? FROM accounts WHERE id = ? RETURNING id`,
+		BatchCleanup, BatchRunning, c.Total, c.Folder, null(c.Since), null(c.ScanLimit), matched, runID, now, c.AccountID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("create cleanup batch: account %d: %w", c.AccountID, ErrNotFound)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("create cleanup batch: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return 0, fmt.Errorf("create cleanup batch: account %d: %w", c.AccountID, ErrNotFound)
-	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // CreateCleanupBatch opens the batch of one cleanup run over total emails, running.
@@ -397,9 +396,9 @@ func (s *Store) FailRunningBatches(ctx context.Context) error {
 // when kind is empty. before is the cursor (only batches with a smaller id; 0 = from the
 // newest).
 func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64, limit int) ([]Batch, error) {
-	//nolint:gosec // G202: visibleBatch prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+batchCols+` FROM batches WHERE `+visibleBatch(v)+` AND (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`, kind, before, limit)
+		`SELECT `+batchCols+` FROM batches WHERE `+visibleBatch()+` AND (?1 = '' OR kind = ?1) AND (?2 = 0 OR id < ?2) ORDER BY id DESC LIMIT ?3`,
+		kind, before, limit, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("list batches: %w", err)
 	}
@@ -420,9 +419,8 @@ func (s *Store) Batches(ctx context.Context, v Viewer, kind string, before int64
 
 // BatchActionCounts counts a batch's own actions on the mailboxes the viewer sees, by status.
 func (s *Store) BatchActionCounts(ctx context.Context, v Viewer, batchID int64) (map[string]int, error) {
-	//nolint:gosec // G202: inVisible prints ids as numbers; values are bound arguments
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT status, COUNT(*) FROM actions WHERE batch_id = ? AND `+inVisible("account_id", v)+` GROUP BY status`, batchID)
+		`SELECT status, COUNT(*) FROM actions WHERE batch_id = ? AND `+inVisible("account_id")+` GROUP BY status`, batchID, v.tenantArg(), v.userArg())
 	if err != nil {
 		return nil, fmt.Errorf("count batch actions: %w", err)
 	}
@@ -444,11 +442,11 @@ func (s *Store) BatchActionCounts(ctx context.Context, v Viewer, batchID int64) 
 
 // CreateBatch opens a batch of the tenant, with no mailbox, and returns its id.
 func (s *Store) CreateBatch(ctx context.Context, tenantID int64, kind, status string, now int64) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO batches (tenant_id, kind, status, created_at) VALUES (?, ?, ?, ?)`, tenantID, kind, status, now)
-	if err != nil {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO batches (tenant_id, kind, status, created_at) VALUES (?, ?, ?, ?) RETURNING id`,
+		tenantID, kind, status, now).Scan(&id); err != nil {
 		return 0, fmt.Errorf("create batch: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return id, nil
 }
 
@@ -467,7 +465,7 @@ func (s *Store) Batch(ctx context.Context, id int64) (Batch, error) {
 
 // VisibleBatch returns one batch the viewer sees, or ErrNotFound.
 func (s *Store) VisibleBatch(ctx context.Context, v Viewer, id int64) (Batch, error) {
-	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ? AND `+visibleBatch(v), id))
+	b, err := scanBatch(s.db.QueryRowContext(ctx, `SELECT `+batchCols+` FROM batches WHERE id = ? AND `+visibleBatch(), id, v.tenantArg(), v.userArg()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Batch{}, ErrNotFound
 	}
@@ -583,7 +581,7 @@ func (s *Store) SetBatchProgress(ctx context.Context, id int64, total, done int)
 func (s *Store) DoneActionsSince(ctx context.Context, v Viewer, ruleID, since int64) ([]Action, error) {
 	return s.listActions(ctx,
 		`SELECT `+actionCols+` FROM actions
-		 WHERE status = 'done' AND created_at >= ?1 AND `+inVisible("account_id", v)+`
+		 WHERE status = 'done' AND created_at >= ?1 AND `+inVisible("account_id")+`
 		   AND (?2 = 0 OR decision_id IN (SELECT id FROM decisions WHERE rule_id = ?2))
-		 ORDER BY id DESC`, since, ruleID)
+		 ORDER BY id DESC`, since, ruleID, v.tenantArg(), v.userArg())
 }

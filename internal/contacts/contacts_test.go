@@ -8,19 +8,12 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
 func TestSyncAndFill(t *testing.T) {
 	ctx := t.Context()
-	db, err := store.Open(ctx, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	st := store.New(db)
+	st, _ := storetest.New(t)
 	u, _ := st.CreateFirstUser(ctx, "me@icloud.com", "hash", 1)
 	acct, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
 	if err != nil {
