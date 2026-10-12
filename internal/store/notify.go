@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
@@ -64,6 +65,13 @@ func URLHint(raw string) string {
 	}
 	return hint
 }
+
+// NeedsHTTPS reports a destination added with a plain http address before only https was
+// taken: it stays listed, but no notice is queued or handed over for it until it is replaced.
+func (d Destination) NeedsHTTPS() bool { return strings.HasPrefix(d.URLHint, "http://") }
+
+// secureDestination is the SQL condition, on notify_destinations, matching NeedsHTTPS false.
+const secureDestination = `url_hint NOT LIKE 'http://%'`
 
 // destinationAAD binds a destination's ciphertext to its row, apart from the accounts rows
 // that seal with their own ids.
@@ -381,7 +389,7 @@ func queueNotices(ctx context.Context, tx *sql.Tx, a Action) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
 		 SELECT ?, id, ?, ?, ?, ?, ?, ?, ? FROM notify_destinations
-		 WHERE tenant_id = ? AND id IN (SELECT value FROM json_each(?)) ORDER BY id`,
+		 WHERE tenant_id = ? AND `+secureDestination+` AND id IN (SELECT value FROM json_each(?)) ORDER BY id`,
 		tenantID, a.AccountID, messageID, ruleID.Int64, ruleName, string(payload), a.CreatedAt, a.CreatedAt, tenantID, notify); err != nil {
 		return fmt.Errorf("queue notices: %w", err)
 	}
@@ -410,8 +418,9 @@ func doneKinds(ctx context.Context, tx *sql.Tx, decisionID int64) ([]string, err
 // now, oldest first.
 func (s *Store) WaitingNotices(ctx context.Context, now int64, limit int) ([]Notice, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tenant_id, destination_id, account_id, message_id, COALESCE(rule_id, 0), rule_name, created_at, attempts, COALESCE(payload, '{}')
-		 FROM notices WHERE handed_at IS NULL AND next_at <= ? ORDER BY next_at, id LIMIT ?`, now, limit)
+		`SELECT n.id, n.tenant_id, n.destination_id, n.account_id, n.message_id, COALESCE(n.rule_id, 0), n.rule_name, n.created_at, n.attempts, COALESCE(n.payload, '{}')
+		 FROM notices n JOIN notify_destinations ON notify_destinations.id = n.destination_id
+		 WHERE n.handed_at IS NULL AND n.next_at <= ? AND `+secureDestination+` ORDER BY n.next_at, n.id LIMIT ?`, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list waiting notices: %w", err)
 	}

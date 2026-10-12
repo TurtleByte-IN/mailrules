@@ -113,6 +113,9 @@
         {#if d.address_deleted}
           <p class="text-[13px] text-review">Its address was deleted with the sign-in of the team's only member, so nothing is delivered to it. Remove it and add it again.</p>
         {/if}
+        {#if d.needs_https}
+          <p class="text-[13px] text-review">Needs a new address: it starts with http://, so nothing is sent to it. Remove it and add it again with an https address, so the email's sender and subject are encrypted on the way.</p>
+        {/if}
         {#if asking === d.id}
           <ConfirmBox question="Remove {d.name}?" note="Rules that notify it stop doing so, and its delivery log goes with it." confirm="Yes, remove it" onconfirm={() => drop(d.id, d.name)} oncancel={() => (asking = 0)} />
         {/if}
