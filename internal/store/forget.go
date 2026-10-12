@@ -350,6 +350,7 @@ func removeTenant(ctx context.Context, tx *sql.Tx, tenantID int64) error {
 		{"settings", `DELETE FROM settings WHERE tenant_id = ?`},
 		{"usage", `DELETE FROM usage_daily WHERE tenant_id = ?`},
 		{"AI-sorted email counts", `DELETE FROM ai_emails WHERE tenant_id = ?`},
+		{"first-cleanup grant", `DELETE FROM first_cleanup WHERE tenant_id = ?`},
 		{"users", `DELETE FROM users WHERE tenant_id = ?`},
 		{"tenant", `DELETE FROM tenants WHERE id = ?`},
 	} {

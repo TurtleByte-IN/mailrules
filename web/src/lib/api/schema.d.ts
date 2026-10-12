@@ -2652,6 +2652,12 @@ export interface components {
                 /** @description The allowance is used up and the decision model runs on the operator's keys: mail that needs a model waits in Needs review until `resets_at`, or until the tenant adds a key of its own in Settings */
                 paused: boolean;
             } | null;
+            /** @description The one-time first-cleanup grant: emails cleanup checks may have a model decide on the operator's keys before they draw on `ai_emails`. It never resets, and live sorting never draws on it. null = no grant */
+            first_cleanup: {
+                /** @description Used so far, never more than `limit`; what is left is `limit - used` */
+                used: number;
+                limit: number;
+            } | null;
             /** @description Where to raise the limits, as the module gives it: a path in the web app (`#/…`) or an https URL. null = no upgrade is offered */
             upgrade_url: string | null;
         };

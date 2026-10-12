@@ -138,6 +138,13 @@ type Limits struct {
 	// waits in Needs review, which says why with a way to the person's own key and, with
 	// UpgradeURL, to more. Nothing is charged for going over.
 	AIEmails int
+	// FirstCleanupEmails is a one-time grant of emails the tenant's cleanup checks may have a
+	// model decide on keys the operator holds before they draw on AIEmails, so a first
+	// cleanup of old mail does not use up the month. Each such email of a check takes one of
+	// it while any is left, then counts against AIEmails as before. What was used is kept for
+	// good: it never resets, and raising the number gives the difference. Live sorting never
+	// draws on it. 0 = none.
+	FirstCleanupEmails int
 	// UpgradeURL, when set, is where the screens send a tenant at a limit to raise it, such
 	// as the module's plan screen: a path in the web app (#/settings/plan) or an https URL.
 	// Empty = no upgrade is offered.

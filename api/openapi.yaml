@@ -2659,7 +2659,7 @@ components:
         without_model: { type: integer, description: 'Of the `processed` emails, those a sender rule or a condition rule acted on, with no model asked (not the ones waiting in Needs review, nor those no rule matched). Never more than `processed`; the free share is `without_model / processed`, not over `emails`' }
     Limits:
       type: object
-      required: [mailboxes, ai_emails, upgrade_url]
+      required: [mailboxes, ai_emails, first_cleanup, upgrade_url]
       properties:
         mailboxes:
           type: [object, 'null']
@@ -2680,6 +2680,13 @@ components:
             resets_at: { type: integer, format: int64, description: 'When the next month starts and the count starts again from 0' }
             counted: { type: boolean, description: 'The decision model, or its fallback, runs on the operator''s keys now, so what it decides counts. false = the tenant''s own keys: show no limit' }
             paused: { type: boolean, description: 'The allowance is used up and the decision model runs on the operator''s keys: mail that needs a model waits in Needs review until `resets_at`, or until the tenant adds a key of its own in Settings' }
+        first_cleanup:
+          type: [object, 'null']
+          description: 'The one-time first-cleanup grant: emails cleanup checks may have a model decide on the operator''s keys before they draw on `ai_emails`. It never resets, and live sorting never draws on it. null = no grant'
+          required: [used, limit]
+          properties:
+            used: { type: integer, description: 'Used so far, never more than `limit`; what is left is `limit - used`' }
+            limit: { type: integer }
         upgrade_url:
           type: [string, 'null']
           description: 'Where to raise the limits, as the module gives it: a path in the web app (`#/…`) or an https URL. null = no upgrade is offered'

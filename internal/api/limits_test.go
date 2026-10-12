@@ -195,20 +195,27 @@ func TestLimitsShowTheMonthsUse(t *testing.T) {
 	}
 }
 
-// A cleanup check counts every email a model decides on the operator's keys, and once the
-// allowance is used up leaves those for Needs review while condition rules still sort.
+// A cleanup check counts every email a model decides on the operator's keys: against the
+// tenant's one-time first-cleanup grant while any is left, then against the month. Once both
+// are used up it leaves those for Needs review, while condition rules still sort.
 func TestCleanupCheckAgainstTheAllowance(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
-		used               int
+		grant, grantUsed   int // the first-cleanup grant, and how much of it earlier checks used
+		used               int // the month's AI-sorted emails before the check
 		wantModel, wantRev int // rows a model decided, rows left for review because of the allowance
-		wantUsed           int
+		wantGrant          int // the grant used afterwards
+		wantUsed           int // the month's afterwards
 	}{
-		{"below the allowance", 0, 3, 0, 3},
-		{"at the allowance", 100, 0, 3, 100},
+		{"below the allowance, no grant", 0, 0, 0, 3, 0, 0, 3},
+		{"at the allowance, no grant", 0, 0, 100, 0, 3, 0, 100},
+		{"the grant is drawn on before the month", 10, 0, 0, 3, 0, 3, 0},
+		{"the grant lets a first cleanup run at the allowance", 10, 0, 100, 3, 0, 3, 100},
+		{"a grant used up part way falls through to the month", 10, 8, 0, 3, 0, 10, 1},
+		{"a used-up grant at the allowance leaves mail for review", 10, 10, 100, 0, 3, 10, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			limits := ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100}
+			limits := ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100, FirstCleanupEmails: tc.grant}
 			e := newEnv(t, limitsModule(&limits))
 			e.metered = operatorKeys
 			for range 3 {
@@ -220,6 +227,11 @@ func TestCleanupCheckAgainstTheAllowance(t *testing.T) {
 			e.decider.DecideFunc = cleanupDeciderFunc
 			if err := e.st.SpendAIEmails(t.Context(), 1, e.ck.t, tc.used); err != nil {
 				t.Fatal(err)
+			}
+			for range tc.grantUsed {
+				if _, err := e.st.SpendCleanupEmail(t.Context(), 1, e.ck.t, tc.grant); err != nil {
+					t.Fatal(err)
+				}
 			}
 			chk := e.checkReady(`{"account_id":1}`)
 			model, review, food := 0, 0, 0
@@ -239,6 +251,37 @@ func TestCleanupCheckAgainstTheAllowance(t *testing.T) {
 			if n, _ := e.st.AIEmails(t.Context(), 1, store.Month(e.ck.t)); n != tc.wantUsed {
 				t.Errorf("AI-sorted emails = %d, want %d", n, tc.wantUsed)
 			}
+			if n, _ := e.st.FirstCleanupUsed(t.Context(), 1); n != tc.wantGrant {
+				t.Errorf("first-cleanup grant used = %d, want %d", n, tc.wantGrant)
+			}
 		})
+	}
+}
+
+// Live sorting never draws on the first-cleanup grant: a model's decision on the operator's
+// keys counts against the month even while the grant is untouched.
+func TestLiveSortingLeavesTheFirstCleanupGrant(t *testing.T) {
+	limits := ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100, FirstCleanupEmails: 10_000}
+	e := newEnv(t, limitsModule(&limits))
+	e.metered = operatorKeys
+	e.connect()
+	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated)
+	e.decider.DecideFunc = cleanupDeciderFunc
+	e.deliver("hello@news.example", "reading issue live")
+	e.item("reading issue live", "acted")
+	if n, _ := e.st.AIEmails(t.Context(), 1, store.Month(e.ck.t)); n != 1 {
+		t.Errorf("AI-sorted emails = %d, want 1", n)
+	}
+	if n, _ := e.st.FirstCleanupUsed(t.Context(), 1); n != 0 {
+		t.Errorf("live sorting drew %d on the first-cleanup grant", n)
+	}
+	got := e.call(http.MethodGet, "/api/limits", "", http.StatusOK)
+	conform(t, e.doc, "Limits", got)
+	if fc := got["first_cleanup"].(map[string]any); fc["used"] != float64(0) || fc["limit"] != float64(10_000) {
+		t.Errorf("first_cleanup = %v", fc)
+	}
+	limits.FirstCleanupEmails = 0
+	if got := e.call(http.MethodGet, "/api/limits", "", http.StatusOK); got["first_cleanup"] != nil {
+		t.Errorf("first_cleanup without a grant = %v", got["first_cleanup"])
 	}
 }

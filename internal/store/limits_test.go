@@ -151,3 +151,86 @@ func TestAIEmailsCountOncePerEmailAndMonth(t *testing.T) {
 		t.Error("Month is not in UTC")
 	}
 }
+
+// A cleanup check's AI-sorted emails draw on the tenant's one-time first-cleanup grant first,
+// then on the month's allowance. The grant is kept across restarts, never resets, and checks
+// running at once never take more of it than there is.
+func TestFirstCleanupGrant(t *testing.T) {
+	dir := t.TempDir()
+	ctx := t.Context()
+	openAt := func() *Store {
+		t.Helper()
+		db, err := Open(ctx, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if err := Migrate(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		return New(db)
+	}
+	s := openAt()
+	oct := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	spend := func(s *Store, at time.Time, grant int) bool {
+		t.Helper()
+		fromGrant, err := s.SpendCleanupEmail(ctx, 7, at, grant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fromGrant
+	}
+	state := func(s *Store, month string) (grant, monthly int) {
+		t.Helper()
+		g, err1 := s.FirstCleanupUsed(ctx, 7)
+		m, err2 := s.AIEmails(ctx, 7, month)
+		if err := errors.Join(err1, err2); err != nil {
+			t.Fatal(err)
+		}
+		return g, m
+	}
+
+	// No grant: straight to the month's allowance.
+	if spend(s, oct, 0) {
+		t.Error("an email drew on a grant of 0")
+	}
+	// A grant of 3: the next three draw on it, the fourth on the month.
+	for i := range 3 {
+		if !spend(s, oct, 3) {
+			t.Fatalf("email %d did not draw on the grant", i+1)
+		}
+	}
+	if spend(s, oct, 3) {
+		t.Error("an email drew on a used-up grant")
+	}
+	if g, m := state(s, "2026-10"); g != 3 || m != 2 {
+		t.Errorf("grant used %d, October %d; want 3 and 2", g, m)
+	}
+
+	// After a restart, and in another month, the grant is still used up.
+	s = openAt()
+	nov := oct.AddDate(0, 1, 0)
+	if spend(s, nov, 3) {
+		t.Error("the grant came back after a restart or a new month")
+	}
+	if g, m := state(s, "2026-11"); g != 3 || m != 1 {
+		t.Errorf("grant used %d, November %d; want 3 and 1", g, m)
+	}
+
+	// A bigger grant (another plan) has room again, and concurrent checks share it exactly.
+	var fromGrant atomic.Int32
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Go(func() {
+			if ok, err := s.SpendCleanupEmail(ctx, 7, nov, 8); err != nil {
+				t.Error(err)
+			} else if ok {
+				fromGrant.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	if g, m := state(s, "2026-11"); fromGrant.Load() != 5 || g != 8 || m != 1+7 {
+		t.Errorf("concurrently: %d from the grant, grant used %d, November %d; want 5, 8, 8", fromGrant.Load(), g, m)
+	}
+}

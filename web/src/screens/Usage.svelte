@@ -75,6 +75,11 @@
           Counts start again on {resets(ai.resets_at)}. Sender rules, rules built from conditions and your own model keys are not counted.{#if l.upgrade_url}{' '}<a href={l.upgrade_url} class="underline">Upgrade</a>{/if}
         </p>
       {/if}
+      {#if l.first_cleanup && l.first_cleanup.used < l.first_cleanup.limit}
+        <p class="text-[12.5px] text-secondary">
+          First cleanup: {n(l.first_cleanup.limit - l.first_cleanup.used)} of {n(l.first_cleanup.limit)} free AI-sorted emails left, used before this month's.
+        </p>
+      {/if}
     </section>
   {/if}
 

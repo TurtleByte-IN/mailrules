@@ -14,6 +14,16 @@ CREATE TABLE ai_emails (
 
 ALTER TABLE messages ADD COLUMN metered INTEGER NOT NULL DEFAULT 0; -- 1 = counted in ai_emails
 
+-- The one-time first-cleanup grant a module may give a tenant (ext.Limits.FirstCleanupEmails):
+-- how many of it the tenant's cleanup checks have used. Emails a cleanup check has a model
+-- decide on the operator's keys draw on it first, then on the month's ai_emails. It never
+-- resets; live sorting never draws on it.
+CREATE TABLE first_cleanup (
+  tenant_id INTEGER PRIMARY KEY,
+  emails    INTEGER NOT NULL
+);
+
 -- +goose Down
+DROP TABLE first_cleanup;
 ALTER TABLE messages DROP COLUMN metered;
 DROP TABLE ai_emails;

@@ -651,8 +651,9 @@ func (s *server) checkJSON(st worker.CheckState) cleanupCheckJSON {
 // cleanupDecider is the deciding step of a cleanup check of acct's mail: the routers in
 // force, with their calls booked under the "cleanup" purpose so Usage can tell them from
 // live sorting, leaving the account's own mail alone as live sorting does. Each email a
-// model decides on keys the operator holds counts against the tenant's monthly allowance as
-// it is decided, and once the allowance is used up such mail is left for Needs review.
+// model decides on keys the operator holds draws on the tenant's first-cleanup grant, then
+// on its monthly allowance, as it is decided (cleanupMeter), and once both are used up such
+// mail is left for Needs review.
 func (s *server) cleanupDecider(ctx context.Context, v store.Viewer, acct store.Account) (pipeline.Decider, error) {
 	src := s.modelSource()
 	router, minConfidence := src.Live(ctx, acct.TenantID)
@@ -662,11 +663,8 @@ func (s *server) cleanupDecider(ctx context.Context, v store.Viewer, acct store.
 		Override: func(ctx context.Context, spec string) *models.Router {
 			return src.RouterFor(ctx, acct.TenantID, spec).For("cleanup")
 		},
-		Spend: func(ctx context.Context) error { return s.store.SpendAIEmails(ctx, acct.TenantID, s.now(), 1) },
 	}
-	if allowance := Allowance(s.store, s.Modules); allowance != nil {
-		d.Allowance = func(ctx context.Context) (bool, error) { return allowance(ctx, acct.TenantID, s.now()) }
-	}
+	d.Allowance, d.Spend = s.cleanupMeter(acct.TenantID)
 	return d, err
 }
 

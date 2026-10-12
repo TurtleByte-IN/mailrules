@@ -58,6 +58,41 @@ func Allowance(st *store.Store, modules []ext.Module) func(ctx context.Context, 
 	}
 }
 
+// cleanupMeter is Decider.Allowance and Decider.Spend for a cleanup check of the tenant's
+// mail. Each email a model decides on keys the operator holds takes one of the tenant's
+// one-time first-cleanup grant (ext.Limits.FirstCleanupEmails) while any is left, then counts
+// against the month's allowance; the check stops asking such a model only once both are used
+// up. Without a module that limits tenants there is no grant and no allowance, and such
+// emails count against the month as live sorting's do.
+func (s *server) cleanupMeter(tenantID int64) (allowance func(context.Context) (bool, error), spend func(context.Context) error) {
+	spend = func(ctx context.Context) error {
+		l, err := s.limits(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		_, err = s.store.SpendCleanupEmail(ctx, tenantID, s.now(), l.FirstCleanupEmails)
+		return err
+	}
+	monthly := Allowance(s.store, s.Modules)
+	if monthly == nil {
+		return nil, spend
+	}
+	allowance = func(ctx context.Context) (bool, error) {
+		l, err := s.limits(ctx, tenantID)
+		if err != nil {
+			return false, err
+		}
+		if l.FirstCleanupEmails > 0 {
+			used, err := s.store.FirstCleanupUsed(ctx, tenantID)
+			if err != nil || used < l.FirstCleanupEmails {
+				return false, err
+			}
+		}
+		return monthly(ctx, tenantID, s.now())
+	}
+	return allowance, spend
+}
+
 // mailboxRoom answers 409 mailbox_limit, and returns -1 with ok false, when the tenant has
 // all the mailboxes it may; otherwise it returns how many it may have (store.NoLimit for any
 // number), for saveAccount to check again as it stores the new one.
@@ -100,6 +135,12 @@ type mailboxUseJSON struct {
 	Refusal *string `json:"refusal"`
 }
 
+// useJSON is how much of a one-time grant is used.
+type useJSON struct {
+	Used  int `json:"used"`
+	Limit int `json:"limit"`
+}
+
 type aiEmailsJSON struct {
 	Used     int    `json:"used"`
 	Limit    int    `json:"limit"`
@@ -110,7 +151,7 @@ type aiEmailsJSON struct {
 }
 
 // handleLimits is the tenant's use against its limits, for Usage, Needs review and
-// Mailboxes. A limit the tenant does not have is null: on self-host both are.
+// Mailboxes. A limit the tenant does not have is null: on self-host every one is.
 func (s *server) handleLimits(w http.ResponseWriter, r *http.Request) {
 	ctx, v := r.Context(), viewer(r)
 	l, err := s.limits(ctx, v.TenantID)
@@ -119,9 +160,10 @@ func (s *server) handleLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := struct {
-		Mailboxes  *mailboxUseJSON `json:"mailboxes"`
-		AIEmails   *aiEmailsJSON   `json:"ai_emails"`
-		UpgradeURL *string         `json:"upgrade_url"`
+		Mailboxes    *mailboxUseJSON `json:"mailboxes"`
+		AIEmails     *aiEmailsJSON   `json:"ai_emails"`
+		FirstCleanup *useJSON        `json:"first_cleanup"`
+		UpgradeURL   *string         `json:"upgrade_url"`
 	}{}
 	if l.UpgradeURL != "" {
 		out.UpgradeURL = &l.UpgradeURL
@@ -151,6 +193,14 @@ func (s *server) handleLimits(w http.ResponseWriter, r *http.Request) {
 		out.AIEmails = &aiEmailsJSON{Used: used, Limit: l.AIEmails, Month: month,
 			ResetsAt: time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 			Counted:  counted, Paused: counted && used >= l.AIEmails && router.OwnKeysOnly() == nil}
+	}
+	if l.FirstCleanupEmails > 0 {
+		used, err := s.store.FirstCleanupUsed(ctx, v.TenantID)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		out.FirstCleanup = &useJSON{Used: min(used, l.FirstCleanupEmails), Limit: l.FirstCleanupEmails}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

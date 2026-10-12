@@ -82,8 +82,8 @@ func (s *Store) AIEmails(ctx context.Context, tenantID int64, month string) (int
 }
 
 // SpendAIEmails counts n emails a model decided for the tenant on keys the operator holds at
-// at, which no decision row records: those of a cleanup check. Live sorting counts with the
-// decision (Decision.Metered).
+// at, which no decision row records: those of a cleanup check beyond its first-cleanup grant
+// (SpendCleanupEmail). Live sorting counts with the decision (Decision.Metered).
 func (s *Store) SpendAIEmails(ctx context.Context, tenantID int64, at time.Time, n int) error {
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO ai_emails (tenant_id, month, emails) VALUES (?, ?, ?)
@@ -91,6 +91,39 @@ func (s *Store) SpendAIEmails(ctx context.Context, tenantID int64, at time.Time,
 		return fmt.Errorf("count AI-sorted emails: %w", err)
 	}
 	return nil
+}
+
+// FirstCleanupUsed returns how much of its one-time first-cleanup grant the tenant's cleanup
+// checks have used: emails a model decided on keys the operator holds. It never resets.
+func (s *Store) FirstCleanupUsed(ctx context.Context, tenantID int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT emails FROM first_cleanup WHERE tenant_id = ?`, tenantID).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the first-cleanup grant: %w", err)
+	}
+	return n, nil
+}
+
+// SpendCleanupEmail counts one email a cleanup check had a model decide on keys the operator
+// holds, at at: against the tenant's one-time first-cleanup grant while less than grant of it
+// is used, else against the month's AI-sorted emails. The grant is taken in one statement, so
+// checks running at once never take more than grant of it. fromGrant reports which it was.
+func (s *Store) SpendCleanupEmail(ctx context.Context, tenantID int64, at time.Time, grant int) (fromGrant bool, err error) {
+	if grant > 0 {
+		res, err := s.db.ExecContext(ctx,
+			`INSERT INTO first_cleanup (tenant_id, emails) VALUES (?, 1)
+			 ON CONFLICT (tenant_id) DO UPDATE SET emails = emails + 1 WHERE emails < ?`, tenantID, grant)
+		if err != nil {
+			return false, fmt.Errorf("count against the first-cleanup grant: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			return true, nil
+		}
+	}
+	return false, s.SpendAIEmails(ctx, tenantID, at, 1)
 }
 
 // meter counts, in tx, the message's email against its tenant's allowance for the month of

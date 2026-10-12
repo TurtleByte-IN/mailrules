@@ -45,7 +45,7 @@ beforeEach(() => {
   routes = {
     'GET /api/presets': [200, { items: [{ name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: true }] }],
     'GET /api/accounts/1/folders': [200, { items: [{ name: 'Archive', delimiter: '/', special_use: '\\Archive' }, { name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Work', delimiter: '/', special_use: '' }] }],
-    'GET /api/limits': [200, { mailboxes: null, ai_emails: null, upgrade_url: null }],
+    'GET /api/limits': [200, { mailboxes: null, ai_emails: null, first_cleanup: null, upgrade_url: null }],
   };
   fetchMock.mockClear();
   vi.stubGlobal('fetch', fetchMock);
@@ -76,7 +76,7 @@ it('says so when no mailbox is connected', async () => {
 
 it("says why no mailbox can be added when the plan's are all in use, and opens the wizard once there is room", async () => {
   const full = 'Your plan allows 1 mailbox, and it is connected already. Remove it to connect another.';
-  routes['GET /api/limits'] = [200, { mailboxes: { used: 1, limit: 1, refusal: full }, ai_emails: null, upgrade_url: '#/settings/plan' }];
+  routes['GET /api/limits'] = [200, { mailboxes: { used: 1, limit: 1, refusal: full }, ai_emails: null, first_cleanup: null, upgrade_url: '#/settings/plan' }];
   await show(acct());
   await fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' }));
   const why = await screen.findByRole('status');
@@ -88,7 +88,7 @@ it("says why no mailbox can be added when the plan's are all in use, and opens t
   expect(screen.queryByRole('status')).toBeNull();
 
   // A mailbox removed elsewhere, or a bigger plan: the next click asks again and the wizard opens.
-  routes['GET /api/limits'] = [200, { mailboxes: { used: 1, limit: 2, refusal: null }, ai_emails: null, upgrade_url: null }];
+  routes['GET /api/limits'] = [200, { mailboxes: { used: 1, limit: 2, refusal: null }, ai_emails: null, first_cleanup: null, upgrade_url: null }];
   await fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' }));
   expect(await screen.findByRole('button', { name: 'Continue' })).toBeTruthy();
   expect(screen.queryByRole('status')).toBeNull();

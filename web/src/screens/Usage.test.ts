@@ -9,7 +9,7 @@ import Usage from './Usage.svelte';
 let reply: [status: number, body: unknown];
 /** GET /api/limits: self-host's, with no limits, unless a test sets a plan. */
 let plan: Limits;
-const selfHost: Limits = { mailboxes: null, ai_emails: null, upgrade_url: null };
+const selfHost: Limits = { mailboxes: null, ai_emails: null, first_cleanup: null, upgrade_url: null };
 
 const stats = (over: Partial<StatsUsage> = {}): StatsUsage => ({
   range: 'month',
@@ -122,7 +122,7 @@ describe('the plan', () => {
   });
 
   it('meters the mailboxes and the month’s AI-sorted emails against the plan', async () => {
-    plan = { mailboxes: { used: 2, limit: 3, refusal: null }, ai_emails: ai(), upgrade_url: null };
+    plan = { ...selfHost, mailboxes: { used: 2, limit: 3, refusal: null }, ai_emails: ai() };
     render(Usage);
     const region = await screen.findByRole('region', { name: 'Your plan' });
     expect(meter('Mailboxes')).toEqual(['2', '3', '2 of 3']);
@@ -133,7 +133,7 @@ describe('the plan', () => {
   });
 
   it('shows no limit while the tenant’s own keys decide', async () => {
-    plan = { mailboxes: null, ai_emails: ai({ counted: false }), upgrade_url: null };
+    plan = { ...selfHost, ai_emails: ai({ counted: false }) };
     render(Usage);
     await screen.findByRole('region', { name: 'Your plan' });
     expect(meter('AI-sorted emails this month')).toEqual(['0', '0', (1200).toLocaleString() + ' · no limit with your own keys']);
@@ -144,7 +144,7 @@ describe('the plan', () => {
     ['with an upgrade', 'https://mailrules.app/plan', ['Add your own model key', 'upgrade']],
     ['without one', null, ['Add your own model key']],
   ])('used up, says mail waits and offers the own key, %s', async (_name, upgrade, links) => {
-    plan = { mailboxes: null, ai_emails: ai({ used: 3000, paused: true }), upgrade_url: upgrade };
+    plan = { ...selfHost, ai_emails: ai({ used: 3000, paused: true }), upgrade_url: upgrade };
     render(Usage);
     const banner = await screen.findByRole('status');
     const status = within(banner);
@@ -152,5 +152,16 @@ describe('the plan', () => {
     expect(status.getAllByRole('link').map((a) => a.textContent)).toEqual(links);
     expect(status.getByRole('link', { name: 'Add your own model key' }).getAttribute('href')).toBe('#/settings');
     if (upgrade) expect(status.getByRole('link', { name: 'upgrade' }).getAttribute('href')).toBe(upgrade);
+  });
+
+  it.each([
+    ['says what is left of the first-cleanup grant', 2500, `First cleanup: ${(7500).toLocaleString()} of ${(10000).toLocaleString()} free AI-sorted emails left, used before this month's.`],
+    ['says nothing of it once it is used up', 10000, null],
+  ])('%s', async (_name, used, line) => {
+    plan = { ...selfHost, ai_emails: ai(), first_cleanup: { used, limit: 10000 } };
+    render(Usage);
+    const region = await screen.findByRole('region', { name: 'Your plan' });
+    if (line) expect(region.textContent).toContain(line);
+    else expect(region.textContent).not.toContain('First cleanup');
   });
 });

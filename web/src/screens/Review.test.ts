@@ -39,6 +39,7 @@ describe('the month’s AI allowance', () => {
   const plan = (paused: boolean, upgrade: string | null): Limits => ({
     mailboxes: null,
     ai_emails: { used: 3000, limit: 3000, month: '2026-10', resets_at: nov1, counted: true, paused },
+    first_cleanup: null,
     upgrade_url: upgrade,
   });
   const daemon = (l: Limits) => serve((call) => (call === 'GET /api/limits' ? [200, l] : [200, queue([8])]));
