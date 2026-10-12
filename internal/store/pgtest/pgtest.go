@@ -18,8 +18,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -113,6 +116,24 @@ func as(user, pass, database string) pgx.ConnConfig {
 	c := setup.base.Copy()
 	c.User, c.Password, c.Database = user, pass, database
 	return *c
+}
+
+// Roles a test can sign in to its database as, by URL.
+const (
+	AsApp    = appRole
+	AsWorker = workerRole
+	AsOwner  = ownerRole
+)
+
+// URL is a postgres:// URL to the test's database signed in as role (AsApp, AsWorker or
+// AsOwner): what the daemon is given in MAILRULES_*DATABASE_URL.
+func (d *DB) URL(role string) string {
+	u := url.URL{Scheme: "postgres", User: url.UserPassword(role, password),
+		Host: net.JoinHostPort(setup.base.Host, strconv.Itoa(int(setup.base.Port))), Path: "/" + d.Name}
+	if setup.base.TLSConfig == nil {
+		u.RawQuery = "sslmode=disable"
+	}
+	return u.String()
 }
 
 // prepare creates the login roles and the template database, once per process. Several

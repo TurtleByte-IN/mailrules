@@ -136,7 +136,10 @@ func TestRolesCannotBypass(t *testing.T) {
 	}{
 		{"app disables row security", `ALTER TABLE accounts DISABLE ROW LEVEL SECURITY`, db.App},
 		{"app drops a policy", `DROP POLICY mailrules_tenant ON accounts`, db.App},
-		{"app reads the migration history", `SELECT COUNT(*) FROM goose_db_version`, db.App},
+		// It may read which migrations ran (0026, store.CheckSchema), never change them.
+		{"app rewrites the migration history", `DELETE FROM goose_db_version`, db.App},
+		{"worker rewrites the migration history", `UPDATE goose_db_version SET is_applied = FALSE`, db.Worker},
+		{"app creates a table", `CREATE TABLE intruder (id INT)`, db.App},
 		{"worker reads password hashes", `SELECT password_hash FROM users`, db.Worker},
 		{"worker reads sessions", `SELECT COUNT(*) FROM sessions`, db.Worker},
 		{"worker sets a password", `UPDATE users SET password_hash = ''`, db.Worker},

@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -111,6 +112,37 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if _, err := p.Up(ctx); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
+	}
+	return nil
+}
+
+// ErrSchema means the database's schema is not the one this build was made for: migrations
+// it has not run, or one from a newer build.
+var ErrSchema = errors.New("the database schema does not match this build")
+
+// CheckSchema reports, without changing anything, whether every embedded migration of the
+// database's dialect has run, and none it does not know: what a daemon on Postgres checks at
+// start, since it never migrates there (the roles it runs as own no table).
+func CheckSchema(ctx context.Context, db *sql.DB) error {
+	d, fsys := goose.DialectSQLite3, migrations.SQLite()
+	if dialectOf(db) == dialectPostgres {
+		d, fsys = goose.DialectPostgres, migrations.Postgres()
+	}
+	p, err := goose.NewProvider(d, db, fsys)
+	if err != nil {
+		return fmt.Errorf("load migrations: %w", err)
+	}
+	sources := p.ListSources()
+	want := sources[len(sources)-1].Version
+	got, err := p.GetDBVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("read the schema version: %w", err)
+	}
+	switch {
+	case got < want:
+		return fmt.Errorf("%w: it is at version %d and this build needs %d; run `mailrules migrate` (with MAILRULES_MIGRATE_DATABASE_URL, as the owner of the tables) first", ErrSchema, got, want)
+	case got > want:
+		return fmt.Errorf("%w: it is at version %d, from a newer build than this one (%d)", ErrSchema, got, want)
 	}
 	return nil
 }

@@ -39,8 +39,8 @@ func New(t testing.TB) (*store.Store, *sql.DB) {
 // later hands the directory to the daemon, or reopens it. The directory's database is
 // migrated if it is not yet, and closed when the test ends.
 //
-// InDir is always SQLite, whatever the DSN: the daemon opens the database in its data
-// directory itself, and does not yet take a Postgres DSN.
+// InDir is always SQLite, whatever the DSN: it is the database a daemon opens in its data
+// directory. A daemon test on Postgres hands the daemon a URL from pgtest instead.
 func InDir(t testing.TB, dir string) (*store.Store, *sql.DB) {
 	t.Helper()
 	ctx := t.Context()

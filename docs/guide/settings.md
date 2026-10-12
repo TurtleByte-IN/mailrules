@@ -23,6 +23,14 @@ Where to put the variables depends on how you run MailRules; see [Install](./ins
 | `MAILRULES_DRY_RUN` | `--dry-run` | `true` | Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on\|off`, that choice wins. |
 | `LOG_LEVEL` | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email. |
 
+## Database (hosted build)
+
+| Variable | Flag | Default | What it does |
+| --- | --- | --- | --- |
+| `MAILRULES_DATABASE_URL` | `--database-url` | none | For the hosted service only; self-hosting leaves it empty and keeps the database in the data directory. A Postgres URL (`postgres://user:password@host:5432/mailrules?sslmode=require`, Postgres 16 or later) for the web app and the daemon, signed in as a member of the `mailrules_app` role, which owns no table: row-level security keeps each team's rows to that team. MailRules never migrates through it: run `mailrules migrate` first (see `MAILRULES_MIGRATE_DATABASE_URL`), and it does not start while the database's schema is not the one it was built for. |
+| `MAILRULES_WORKER_DATABASE_URL` | `--worker-database-url` | none | Hosted service only: a Postgres URL signed in as a member of `mailrules_worker`, for the mailbox workers and the jobs that hand work to modules. That role reads no password hash and no session. Empty uses `MAILRULES_DATABASE_URL`. |
+| `MAILRULES_MIGRATE_DATABASE_URL` | `--migrate-database-url` | none | Hosted service only: a Postgres URL signed in as the role that owns the tables (it needs `CREATEROLE` the first time, to create the group roles). Only `mailrules migrate` reads it, so the owner's password never reaches a running daemon: set it for that one command. |
+
 ## Decision models
 
 | Variable | Flag | Default | What it does |

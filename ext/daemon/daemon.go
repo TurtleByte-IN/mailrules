@@ -76,12 +76,7 @@ func Run(args []string, version string, modules ...ext.Module) error {
 		if err != nil {
 			return err
 		}
-		db, err := store.Open(ctx, cfg.DataDir)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-		return store.Migrate(ctx, db)
+		return migrate(ctx, cfg)
 	case "accounts":
 		return accountsCLI{stdin: os.Stdin, stdout: os.Stdout, getenv: os.Getenv}.run(ctx, args[1:])
 	case "users":
@@ -130,15 +125,15 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		return err
 	}
 
-	db, err := store.Open(ctx, cfg.DataDir)
+	if cfg.Mode == "cloud" && !cfg.Postgres() {
+		slog.Warn("cloud mode on SQLite: tenants are kept apart by the queries alone; the hosted service runs on Postgres with row-level security (MAILRULES_DATABASE_URL)")
+	}
+	dbs, err := openDatabases(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		return err
-	}
-	st := store.New(db)
+	defer dbs.Close()
+	st, wst := dbs.app, dbs.worker
 	// Rules that still name a mailbox removed before MAI-132 are fixed once, as removing it
 	// now would have.
 	fixed, err := st.ReconcileRemovedMailboxes(ctx, time.Now().Unix())
@@ -153,6 +148,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		return err
 	}
 	st = st.WithKeys(key) // every secret is sealed and opened under its tenant's key, which key wraps
+	wst = wst.WithKeys(key)
 	upgraded, err := st.UpgradeSecrets(ctx)
 	if err != nil {
 		return err
@@ -206,8 +202,16 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	if ended != nil {
 		exec.Notices = api.PlanFeature(st, modules, "notifications")
 	}
+	// The mailbox workers act and read plans through the worker pool: the same executor, on
+	// the worker role's connections.
+	wexec := *exec
+	wexec.Store = wst
+	wended := planEnded(wst, modules)
+	if ended != nil {
+		wexec.Notices = api.PlanFeature(wst, modules, "notifications")
+	}
 	// One-click mailboxes sign in through the module that connects them.
-	logins := newMailLogins(st, modules)
+	logins := newMailLogins(wst, modules)
 	logins.tlsConfig, logins.cloud = imapTLS, cfg.Mode == "cloud"
 	// The build's module that learns from the person's moves, when it has one: one watcher
 	// for every mailbox, swept on each mailbox's own connection, and the worker that hands
@@ -215,8 +219,8 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	var watchMoves func(context.Context, mail.Mailbox, store.Account) error
 	var movesEvery time.Duration
 	if mv := movesModule(modules); mv != nil {
-		handing := newMoveWorker(st, mv, hub)
-		w := moved.New(st)
+		handing := newMoveWorker(wst, mv, hub)
+		w := moved.New(wst)
 		w.Serves, w.Found = mv.Serves, handing.found
 		watchMoves, movesEvery = w.Sweep, cmp.Or(mv.Every, ext.MoveSweepEvery)
 		handed := make(chan struct{})
@@ -231,10 +235,10 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	// AI-sorted emails; without one there is none. A mailbox of a tenant whose plan has ended
 	// is not started: it starts when a plan is bought (ext.Host.SetPlan). Its pipeline stops
 	// at the moment a plan ends between two looks (pipeline.Pipeline.Halted).
-	allowance := api.Allowance(st, modules)
+	allowance := api.Allowance(wst, modules)
 	start := func(acct store.Account) {
-		if ended != nil {
-			switch over, err := ended(ctx, acct.TenantID, time.Now()); {
+		if wended != nil {
+			switch over, err := wended(ctx, acct.TenantID, time.Now()); {
 			case err != nil:
 				// Its pipeline checks again before each email.
 				slog.Warn("could not read the plan of a mailbox's tenant; starting it", "account", acct.ID, "error", err.Error())
@@ -245,9 +249,9 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 			}
 		}
 		supervisors.Start(ctx, &worker.Supervisor{
-			Account: acct, Store: st, Hub: hub, Open: openAccount(logins, acct),
-			Pipeline: pipeline.Pipeline{Store: st, Live: sett.Live, Override: sett.RouterFor, Exec: exec, Hub: hub, BodyChars: cfg.BodyChars,
-				Allowance: allowance, Halted: ended},
+			Account: acct, Store: wst, Hub: hub, Open: openAccount(logins, acct),
+			Pipeline: pipeline.Pipeline{Store: wst, Live: sett.Live, Override: sett.RouterFor, Exec: &wexec, Hub: hub, BodyChars: cfg.BodyChars,
+				Allowance: allowance, Halted: wended},
 			Moves: watchMoves, MovesEvery: movesEvery,
 		})
 	}
@@ -276,7 +280,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	// Notices of what rules did go to the module that delivers them, when the build has one:
 	// those still waiting now, then each within seconds of the rule acting.
 	if n := notifications(modules); n != nil {
-		notices := newNoticeWorker(st, n, hub, cfg.PublicURL)
+		notices := newNoticeWorker(wst, n, hub, cfg.PublicURL)
 		handing := make(chan struct{})
 		defer func() { stopAll(); <-handing }()
 		go func() {
@@ -299,7 +303,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	defer func() { stopAll(); <-telling }()
 	go func() {
 		defer close(telling)
-		(&removedWorker{store: st, modules: modules}).Run(ctx)
+		(&removedWorker{store: wst, modules: modules}).Run(ctx)
 	}()
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
@@ -421,15 +425,11 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 	if err != nil {
 		return err
 	}
-	db, err := store.Open(ctx, cfg.DataDir)
+	st, done, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		return err
-	}
-	st := store.New(db)
+	defer done()
 	// The command line acts for the first user, in that user's tenant (self-host's one).
 	tenant := store.SelfHostTenant
 	if u, err := st.FirstUser(ctx); err == nil {

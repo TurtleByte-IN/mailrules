@@ -17,11 +17,17 @@ import (
 
 // Config holds every setting from the backend plan's Configuration table.
 type Config struct {
-	DataDir       string
-	Listen        string
-	Mode          string
-	MasterKey     string
-	MasterKeyFile string
+	DataDir string
+	// The hosted build's Postgres (MAI-150); all empty = SQLite in DataDir. DatabaseURL is
+	// the app role's, WorkerDatabaseURL the worker role's (empty = DatabaseURL), and
+	// MigrateDatabaseURL the owner's, read by `mailrules migrate` alone. Never logged.
+	DatabaseURL        string
+	WorkerDatabaseURL  string
+	MigrateDatabaseURL string
+	Listen             string
+	Mode               string
+	MasterKey          string
+	MasterKeyFile      string
 	// NewMasterKey lets the daemon start although the master key cannot open any stored
 	// mailbox password or model key; see ext/daemon's openMasterKey.
 	NewMasterKey bool
@@ -130,6 +136,11 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 	boolean(&c.NewMasterKey, "MAILRULES_NEW_MASTER_KEY", false, "Start even though the master key is missing or cannot open any stored mailbox password or model key. Without it MailRules stops with a message instead. A missing `master.key` is then generated, and the stored passwords and keys stay unreadable until you enter them again. Set it for one start only.")
 	boolean(&c.DryRun, "MAILRULES_DRY_RUN", true, "Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on|off`, that choice wins.")
 	str(&c.LogLevel, "LOG_LEVEL", "info", "`debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email.")
+
+	group = "Database (hosted build)"
+	str(&c.DatabaseURL, "MAILRULES_DATABASE_URL", "", "For the hosted service only; self-hosting leaves it empty and keeps the database in the data directory. A Postgres URL (`postgres://user:password@host:5432/mailrules?sslmode=require`, Postgres 16 or later) for the web app and the daemon, signed in as a member of the `mailrules_app` role, which owns no table: row-level security keeps each team's rows to that team. MailRules never migrates through it: run `mailrules migrate` first (see `MAILRULES_MIGRATE_DATABASE_URL`), and it does not start while the database's schema is not the one it was built for.")
+	str(&c.WorkerDatabaseURL, "MAILRULES_WORKER_DATABASE_URL", "", "Hosted service only: a Postgres URL signed in as a member of `mailrules_worker`, for the mailbox workers and the jobs that hand work to modules. That role reads no password hash and no session. Empty uses `MAILRULES_DATABASE_URL`.")
+	str(&c.MigrateDatabaseURL, "MAILRULES_MIGRATE_DATABASE_URL", "", "Hosted service only: a Postgres URL signed in as the role that owns the tables (it needs `CREATEROLE` the first time, to create the group roles). Only `mailrules migrate` reads it, so the owner's password never reaches a running daemon: set it for that one command.")
 
 	group = "Decision models"
 	str(&c.Decider, "MAILRULES_DECIDER", "jev", "The decision model, which picks the rule an email matches: `jev`, `clef`, `anthropic`, `openai` or `ollama`.")
@@ -248,8 +259,35 @@ func (c *Config) Validate() error {
 		bad("LOG_LEVEL=%q must be debug, info, warn or error", c.LogLevel)
 	}
 	errs = append(errs, c.validateSMTP()...)
+	errs = append(errs, c.ValidateDatabase())
 	return errors.Join(errs...)
 }
+
+// ValidateDatabase reports what is wrong with the Postgres URLs, never quoting one: they
+// hold passwords.
+func (c *Config) ValidateDatabase() error {
+	var errs []error
+	for _, u := range []struct{ env, value string }{
+		{"MAILRULES_DATABASE_URL", c.DatabaseURL},
+		{"MAILRULES_WORKER_DATABASE_URL", c.WorkerDatabaseURL},
+		{"MAILRULES_MIGRATE_DATABASE_URL", c.MigrateDatabaseURL},
+	} {
+		if u.value == "" {
+			continue
+		}
+		p, err := url.Parse(u.value)
+		if err != nil || (p.Scheme != "postgres" && p.Scheme != "postgresql") || p.Host == "" {
+			errs = append(errs, fmt.Errorf("%s must be a postgres:// URL with a host", u.env))
+		}
+	}
+	if c.WorkerDatabaseURL != "" && c.DatabaseURL == "" {
+		errs = append(errs, errors.New("MAILRULES_WORKER_DATABASE_URL needs MAILRULES_DATABASE_URL: the workers share the app's Postgres database"))
+	}
+	return errors.Join(errs...)
+}
+
+// Postgres reports whether the daemon's database is Postgres rather than SQLite in DataDir.
+func (c *Config) Postgres() bool { return c.DatabaseURL != "" }
 
 // SMTP TLS modes, as MAILRULES_SMTP_TLS takes them.
 const (

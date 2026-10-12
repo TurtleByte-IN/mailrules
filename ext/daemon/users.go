@@ -65,18 +65,14 @@ func (u usersCLI) run(ctx context.Context, args []string) error {
 	}
 
 	// Opening a data directory that is not there would create an empty database in it.
-	if _, err := os.Stat(filepath.Join(cfg.DataDir, "mailrules.db")); err != nil {
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "mailrules.db")); err != nil && !cfg.Postgres() {
 		return fmt.Errorf("users reset-password: no MailRules database in %s; check --data-dir or MAILRULES_DATA_DIR", cfg.DataDir)
 	}
-	db, err := store.Open(ctx, cfg.DataDir)
+	st, done, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		return err
-	}
-	st := store.New(db)
+	defer done()
 	user, err := st.FirstUser(ctx)
 	if errors.Is(err, store.ErrNotFound) {
 		return errors.New("users reset-password: no admin account yet; open MailRules in the browser and create it")

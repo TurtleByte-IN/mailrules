@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -188,6 +189,12 @@ type running struct {
 // system's roots), and signs a browser in through first-run setup.
 func serveForTest(t *testing.T, imapTLS *tls.Config, modules ...ext.Module) running {
 	t.Helper()
+	return serveWithEnv(t, imapTLS, nil, modules...)
+}
+
+// serveWithEnv is serveForTest with more settings in the daemon's environment.
+func serveWithEnv(t *testing.T, imapTLS *tls.Config, extra map[string]string, modules ...ext.Module) running {
+	t.Helper()
 	l, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +204,7 @@ func serveForTest(t *testing.T, imapTLS *tls.Config, modules ...ext.Module) runn
 	dir := t.TempDir()
 	master := base64.StdEncoding.EncodeToString(storetest.Master) // so storedSecret opens what the daemon sealed
 	env := map[string]string{"MAILRULES_DATA_DIR": dir, "MAILRULES_LISTEN": addr, "LOG_LEVEL": "error", "MAILRULES_MASTER_KEY": master}
+	maps.Copy(env, extra)
 	cfg, err := config.Load(nil, func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)

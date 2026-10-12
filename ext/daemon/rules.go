@@ -143,15 +143,11 @@ func rulesDB(ctx context.Context, args []string, getenv func(string) string, out
 	if err != nil {
 		return err
 	}
-	db, err := store.Open(ctx, cfg.DataDir)
+	st, done, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		return err
-	}
-	st := store.New(db)
+	defer done()
 	sett := &settings.Settings{Store: st, Env: cfg} // only for the models and mailboxes a rules file names; no keys are read
 	user, err := st.FirstUser(ctx)
 	if errors.Is(err, store.ErrNotFound) {
