@@ -301,7 +301,8 @@ func (s *Store) SetAccountCapabilities(ctx context.Context, id int64, capabiliti
 // actions and corrections: each references the account with ON DELETE CASCADE. The rules
 // are kept: first, in the same transaction, every user's rules that name the mailbox are
 // rewritten as rules.Rule.DropAccount has it, so a rule limited to it is switched off and
-// marked, with no mailbox, before the cascade could reach it. It returns those rules.
+// marked, with no mailbox, before the cascade could reach it. It returns those rules. A
+// mailbox a module connected is queued for that module (queueRemovedMailboxes).
 func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -317,6 +318,9 @@ func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule,
 	}
 	changed, err := dropMailboxes(ctx, tx, func(named int64) bool { return named == id }, now)
 	if err != nil {
+		return nil, fmt.Errorf("delete account: %w", err)
+	}
+	if err := queueRemovedMailboxes(ctx, tx, []int64{id}, now); err != nil {
 		return nil, fmt.Errorf("delete account: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id); err != nil {
