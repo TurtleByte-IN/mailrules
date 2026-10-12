@@ -185,7 +185,7 @@ it('marks a rule whose mailbox was removed and keeps its switch off until All ma
 });
 
 describe('Notify', () => {
-  const dest = (id: number, name: string): Destination => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [] });
+  const dest = (id: number, name: string): Destination => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, needs_https: false, created_at: 1791276732, deliveries: [] });
   const group = () => screen.queryByRole('group', { name: 'Notify' });
 
   beforeEach(() => {

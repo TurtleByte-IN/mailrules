@@ -144,7 +144,7 @@ The hosted version can tell you, or another program, when a rule acts. The free 
 
 1. In **Settings**, under **Notifications and webhooks**, add a destination: a name, the kind, and its address.
    - **Slack**: the incoming webhook URL of a Slack channel, `https://hooks.slack.com/services/…`.
-   - **Webhook**: any https address. MailRules sends it JSON for every email a rule that names it acts on, signed with a secret shown once, when you add it. Copy the secret to the server that receives the webhook, which uses it to tell that the notice came from MailRules; you cannot see it again.
+   - **Webhook**: any https address (an http one is refused, so the email's sender and subject are encrypted on the way; a webhook added over http earlier shows **Needs a new address** and gets nothing until you add it again with https). MailRules sends it JSON for every email a rule that names it acts on, signed with a secret shown once, when you add it. Copy the secret to the server that receives the webhook, which uses it to tell that the notice came from MailRules; you cannot see it again.
 2. Open a rule, and under **Notify** tick the destinations it should tell. In the builder, the same boxes are under **More options**. A rule can tell several destinations.
 
 A notice says which mailbox, which rule, what it did and to which folder, who sent the email, its subject, when, and a link to the email in **Activity**. It never contains the email's text.

@@ -56,12 +56,13 @@ type destinationJSON struct {
 	Kind           string         `json:"kind"`
 	URL            string         `json:"url"` // the address cut short
 	AddressDeleted bool           `json:"address_deleted"`
+	NeedsHTTPS     bool           `json:"needs_https"`
 	CreatedAt      int64          `json:"created_at"`
 	Deliveries     []deliveryJSON `json:"deliveries"`
 }
 
 func toDestinationJSON(d store.Destination, ds []store.Delivery) destinationJSON {
-	out := destinationJSON{ID: d.ID, Name: d.Name, Kind: d.Kind, URL: d.URLHint, AddressDeleted: d.AddressDeleted,
+	out := destinationJSON{ID: d.ID, Name: d.Name, Kind: d.Kind, URL: d.URLHint, AddressDeleted: d.AddressDeleted, NeedsHTTPS: d.NeedsHTTPS(),
 		CreatedAt: d.CreatedAt, Deliveries: make([]deliveryJSON, len(ds))}
 	for i, x := range ds {
 		out.Deliveries[i] = deliveryJSON{At: x.CreatedAt, RuleID: ts(x.RuleID), RuleName: x.RuleName, Status: x.Status, Reason: x.Reason}
@@ -108,7 +109,7 @@ const (
 )
 
 // destinationURLProblem is what is wrong with an address for a destination of kind, as a
-// sentence; empty when it will do. The hosted build takes https only.
+// sentence; empty when it will do. Every destination takes https only.
 func (s *server) destinationURLProblem(kind, raw string) string {
 	u, err := url.Parse(raw)
 	switch {
@@ -116,13 +117,13 @@ func (s *server) destinationURLProblem(kind, raw string) string {
 		if kind == store.DestinationSlack {
 			return "Enter the Slack incoming webhook address, which starts with https://hooks.slack.com/."
 		}
-		return "Enter the address as an http or https URL, such as https://example.com/mailrules."
+		return "Enter the address as an https URL, such as https://example.com/mailrules."
 	case u.User != nil:
 		return "Leave the user name and password out of the address."
 	case kind == store.DestinationSlack && (u.Scheme != "https" || u.Hostname() != "hooks.slack.com"):
 		return "Enter the Slack incoming webhook address, which starts with https://hooks.slack.com/."
-	case u.Scheme != "https" && s.Settings.Env.Mode == "cloud":
-		return "Enter an https address: the notices it receives are sent encrypted."
+	case u.Scheme != "https":
+		return "Use an https address, so the email's sender and subject are encrypted on the way."
 	}
 	return ""
 }

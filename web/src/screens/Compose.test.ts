@@ -352,7 +352,7 @@ it('offers Suggest from my mail only when the daemon has its module', async () =
 it('a condition rule tells the destinations ticked under More options, once the daemon has the notifications module', async () => {
   settings.value.features.notifications = true;
   try {
-    const dest = (id: number, name: string) => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [] });
+    const dest = (id: number, name: string) => ({ id, name, kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, needs_https: false, created_at: 1791276732, deliveries: [] });
     const f = serve({
       'GET /api/notifications': [200, { kinds: ['slack'], destinations: [dest(4, 'Team'), dest(6, 'Ops')] }],
       'POST /api/rules/batch': [200, { rules: [{ ...drafted('Invoices'), id: 3 }] }],

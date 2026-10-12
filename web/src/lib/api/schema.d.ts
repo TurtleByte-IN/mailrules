@@ -2663,6 +2663,8 @@ export interface components {
             url: string;
             /** @description The address and secret were deleted with the sign-in of the person who was the team's only member; nothing is delivered to it. Remove it and add it again */
             address_deleted: boolean;
+            /** @description It was added with a plain http address before only https was taken; no notice is queued or sent to it. Remove it and add it again with an https address */
+            needs_https: boolean;
             /** Format: int64 */
             created_at: number;
             /** @description The last 20 deliveries the module reported */
@@ -2687,7 +2689,7 @@ export interface components {
             /** @description How Settings and the rule editor name it; 1 to 100 characters */
             name: string;
             kind: components["schemas"]["NotificationKind"];
-            /** @description An http or https address (https for a `slack` one, which must be a Slack incoming webhook, `https://hooks.slack.com/…`), with no user name or password in it */
+            /** @description An https address (for a `slack` one, a Slack incoming webhook, `https://hooks.slack.com/…`), with no user name or password in it. An http address is refused: "Use an https address, so the email's sender and subject are encrypted on the way." */
             url: string;
         };
         NotificationDestinationCreated: {

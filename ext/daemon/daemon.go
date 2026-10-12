@@ -256,6 +256,15 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 			}()
 		}
 	}
+	// Mailboxes a module connected and that were removed, or whose owner was forgotten, go
+	// to that module: those still waiting now, then each within seconds. It runs in every
+	// build, so what no module takes is still dropped after RemovedMailboxDays.
+	telling := make(chan struct{})
+	defer func() { stopAll(); <-telling }()
+	go func() {
+		defer close(telling)
+		(&removedWorker{store: st, master: master, modules: modules}).Run(ctx)
+	}()
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
 		return err

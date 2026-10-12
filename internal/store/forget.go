@@ -87,7 +87,8 @@ func identityUser(ctx context.Context, tx *sql.Tx, provider, subject string) (us
 // ForgetDays from now. The secrets are the passwords and tokens of their mailboxes (every
 // mailbox of the tenant when they are its only member, else the ones they own, shared or
 // not), which then show auth_failed asking for a new password, and, when they are the
-// tenant's only member, the tenant's stored model API keys. The caller stops those
+// tenant's only member, the tenant's stored model API keys. A mailbox a module connected is
+// first queued for that module with its secret (queueRemovedMailboxes). The caller stops those
 // mailboxes' supervisors before (IdentityMailboxes) and after (Forget.Accounts) it.
 // Everything else is left as it is until the removal. An identity nobody has is not an
 // error, and forgetting one again changes nothing, the removal time included. Only users
@@ -135,6 +136,10 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		return Forget{}, fmt.Errorf("forget identity: list mailboxes: %w", err)
 	}
 	out.Keys = alone
+	// The mailboxes a module connected are queued for it with their secrets before those go.
+	if err := queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
+		return Forget{}, fmt.Errorf("forget identity: %w", err)
+	}
 	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
 	// one-click mailbox that is its refresh token. A mailbox whose secret is already gone
 	// keeps its status, so a second call changes nothing.
@@ -310,6 +315,10 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 	}
 	out.Tenant, out.Accounts, err = removalAccounts(ctx, tx, userID, out.TenantID)
 	if err != nil {
+		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)
+	}
+	// Their secrets went when they were forgotten, so normally none is queued here.
+	if err := queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)
 	}
 	if out.Tenant {
