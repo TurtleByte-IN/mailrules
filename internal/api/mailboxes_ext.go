@@ -48,6 +48,48 @@ func (s *server) oneClickURL(preset string) *string {
 	return &u
 }
 
+// workspaceJSON is what the wizard's Google Workspace tile shows (ext.GoogleSignIn).
+type workspaceJSON struct {
+	ClientID     string  `json:"client_id"`
+	AdminHelpURL *string `json:"admin_help_url"`
+}
+
+// workspace is the Google Workspace tile's content for preset: on the Gmail preset when a
+// module of this build signs in to Google, nil otherwise.
+func (s *server) workspace(preset string) *workspaceJSON {
+	m := s.mailboxSignIn()
+	if preset != "gmail" || m == nil || m.Google == nil || !slices.Contains(m.Providers, preset) {
+		return nil
+	}
+	out := &workspaceJSON{ClientID: m.Google.ClientID}
+	if m.Google.AdminHelpURL != "" {
+		out.AdminHelpURL = &m.Google.AdminHelpURL
+	}
+	return out
+}
+
+// checkGoogle checks a module's Google sign-in declaration: with "gmail" among its
+// providers it gives the client ID a Workspace admin trusts, and an admin help page only
+// on https; without "gmail" it declares none.
+func checkGoogle(module string, mb *ext.MailboxSignIn) error {
+	g := mb.Google
+	if !slices.Contains(mb.Providers, "gmail") {
+		if g != nil {
+			return fmt.Errorf("module %s: Mailboxes Google is set without the gmail provider", module)
+		}
+		return nil
+	}
+	if g == nil || strings.TrimSpace(g.ClientID) == "" {
+		return fmt.Errorf("module %s: Mailboxes signs in to gmail, so it needs Google.ClientID for the Google Workspace tile", module)
+	}
+	if g.AdminHelpURL != "" {
+		if u, err := url.Parse(g.AdminHelpURL); err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("module %s: Mailboxes Google.AdminHelpURL %q is not an https URL", module, g.AdminHelpURL)
+		}
+	}
+	return nil
+}
+
 // mailboxForm is the sign-in form a module of the build answers for preset, or nil.
 func (s *server) mailboxForm(preset string) *ext.MailboxForm {
 	for i := range s.Modules {

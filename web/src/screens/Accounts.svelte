@@ -26,7 +26,9 @@
   let returnError = $state(back.error);
   /** A mailbox a one-click sign-in just connected: the wizard goes on at Rules for it. */
   let added = $state(back.added);
-  let connecting = $state(!!back.added);
+  /** A personal Google account came back from the Google Workspace sign-in: the wizard opens at Gmail's app-password guide. */
+  let gmailAppPassword = $state(!!back.gmailAppPassword);
+  let connecting = $state(!!back.added || !!back.gmailAppPassword);
   /** The mailbox whose provider's sign-in form, or the note before Google's sign-in, is open to reconnect it, in its row. */
   let reconnecting = $state(reconnectAsked);
   let removing = $state<number>();
@@ -386,9 +388,11 @@
   {#if connecting}
     <Wizard
       {added}
+      {gmailAppPassword}
       onclose={() => {
         connecting = false;
         added = undefined;
+        gmailAppPassword = false;
       }}
     />
   {/if}

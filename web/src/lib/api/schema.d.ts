@@ -1732,6 +1732,13 @@ export interface components {
             one_click_url: string | null;
             /** @description Where the wizard posts each step of the provider's sign-in form (`MailboxFormInput`, answered with `MailboxFormStep`), when a module of this build answers one: Proton on the hosted build, signed in through the operator's Proton Mail Bridge. null otherwise: in the free build always */
             form_url: string | null;
+            /** @description On the Gmail preset when a module of this build signs in to Google (`one_click_url`): what the wizard's Google Workspace tile shows. One-click Google sign-in takes only accounts of a Google Workspace organisation whose admin has marked MailRules as trusted in the Google Admin console; a personal Google account comes back with `mailbox_error=workspace_only`, and connects with an app password on the Gmail tile. null on every other preset, and in a build without such a module */
+            workspace: {
+                /** @description The OAuth client ID of the module's Google sign-in: the app the admin trusts. Not a secret; the tile shows it with a copy button */
+                client_id: string;
+                /** @description An https page that walks the admin through trusting MailRules, linked from the tile; null for no link */
+                admin_help_url: string | null;
+            } | null;
         };
         /** @description One step of a module's mailbox sign-in form, posted to `Preset.form_url` with the CSRF header. What it carries goes to the module only; the daemon neither stores nor logs it */
         MailboxFormInput: {
@@ -3511,7 +3518,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one. A preset a module's sign-in form connects has `form_url` and `password: false`: the wizard offers only the form's tile */
+            /** @description Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one. Gmail is the exception: its tile is always the app-password one, and when a module signs in to Google the Gmail preset has `workspace` and the wizard offers a separate Google Workspace tile that uses its `one_click_url` (one-click Google sign-in takes only Google Workspace accounts whose admin trusts MailRules; a personal account comes back with `mailbox_error=workspace_only`). A preset a module's sign-in form connects has `form_url` and `password: false`: the wizard offers only the form's tile */
             200: {
                 headers: {
                     [name: string]: unknown;

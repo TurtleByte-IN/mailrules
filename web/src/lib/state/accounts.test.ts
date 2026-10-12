@@ -122,7 +122,7 @@ it('has a label and a dot for every status in the contract', () => {
 });
 
 it("sends a one-click mailbox to its provider's sign-in to reconnect, when this build has one", () => {
-  const gmail = { name: 'gmail' as const, label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit' as const, help_url: '', local_part_login: false, secret_label: 'App password', password: true, form_url: null };
+  const gmail = { name: 'gmail' as const, label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit' as const, help_url: '', local_part_login: false, secret_label: 'App password', password: true, form_url: null, workspace: null };
   accounts.presets = [{ ...gmail, one_click_url: '/api/oauth/start?provider=gmail' }];
   expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: true }))).toBe('/api/oauth/start?provider=gmail&account=4');
   expect(reconnectURL(acct({ id: 4, preset: 'gmail', one_click: false }))).toBeUndefined();
@@ -132,7 +132,7 @@ it("sends a one-click mailbox to its provider's sign-in to reconnect, when this 
 });
 
 it("reconnects a mailbox a module's sign-in form connected through that form, when this build has it", () => {
-  const proton = { name: 'proton' as const, label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' as const, help_url: '', local_part_login: false, secret_label: 'Bridge password', password: false, one_click_url: null };
+  const proton = { name: 'proton' as const, label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' as const, help_url: '', local_part_login: false, secret_label: 'Bridge password', password: false, one_click_url: null, workspace: null };
   accounts.presets = [{ ...proton, form_url: '/api/proton/sign-in' }];
   expect(reconnectsByForm(acct({ preset: 'proton', module: true }))).toBe(true);
   expect(reconnectsByForm(acct({ preset: 'proton', module: false }))).toBe(false); // a Bridge of the person's own: its password

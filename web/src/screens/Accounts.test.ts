@@ -100,7 +100,7 @@ it.each([
   ['a build that offers one-click sign-in', '/api/oauth/start?provider=gmail', null, 'Any IMAP mailbox. MailRules sorts on the server, so every app you use sees the result.'],
   ["a build with a module's sign-in form", null, '/api/proton/sign-in', 'Any IMAP mailbox. MailRules sorts on the server, so every app you use sees the result.'],
 ])('says which mailboxes it takes in %s', async (_, url, form, said) => {
-  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: url, form_url: form }];
+  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: url, form_url: form, workspace: null }];
   await show();
   expect(screen.getByRole('heading', { name: 'Mailboxes' }).nextElementSibling!.textContent!.trim()).toBe(said);
 });
@@ -522,11 +522,81 @@ it.each([
 
 it("opens the note before Google's sign-in that Overview's Reconnect of a one-click Gmail mailbox asked for", async () => {
   accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
-    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null }];
+    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null, workspace: { client_id: 'id.apps.googleusercontent.com', admin_help_url: null } }];
   location.hash = '#/accounts?reconnect=1';
   await vi.waitFor(() => expect(router.querystring).toBe('reconnect=1'));
   await show(acct({ preset: 'gmail', one_click: true, module: true, status: 'reconnect_needed' }));
   expect(await screen.findByRole('region', { name: 'Before you sign in to Google' })).toBeTruthy();
+});
+
+it('opens the Gmail app-password guide when a personal Google account came back from the Google Workspace sign-in', async () => {
+  accounts.presets = [{ name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
+    secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null, workspace: { client_id: 'id.apps.googleusercontent.com', admin_help_url: null } }];
+  location.hash = '#/accounts?mailbox_error=workspace_only';
+  await vi.waitFor(() => expect(router.querystring).toBe('mailbox_error=workspace_only'));
+  await show();
+  expect(screen.getByRole('alert').textContent).toContain('Personal Gmail connects with an app password.');
+  const wizard = within(screen.getByRole('region', { name: 'Add a mailbox' }));
+  expect(wizard.getByText('Create a Google app password')).toBeTruthy();
+  expect(wizard.getByRole('link', { name: 'Open Google app passwords' }).getAttribute('href')).toBe('https://myaccount.google.com/apppasswords');
+  expect(wizard.getByLabelText('Gmail email address')).toBeTruthy();
+  expect(wizard.getByLabelText('App password')).toBeTruthy();
+  // Back reaches the tiles, with Gmail's app-password tile picked.
+  await fireEvent.click(wizard.getByRole('button', { name: 'Back' }));
+  expect(wizard.getByRole('button', { name: /^Gmail/ }).getAttribute('aria-pressed')).toBe('true');
+});
+
+const gmailPreset = { name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.google.com/accounts/answer/185833', local_part_login: false,
+  secret_label: 'App password', password: true, one_click_url: null, form_url: null, workspace: null } as const;
+/** Opens the wizard from Add mailbox and lists its provider tiles, by name. */
+async function tilesOf(...items: unknown[]) {
+  routes['GET /api/presets'] = [200, { items }];
+  accounts.presets = [];
+  await show();
+  await fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' }));
+  const wizard = within(await screen.findByRole('region', { name: 'Add a mailbox' }));
+  await waitFor(() => expect(wizard.getAllByRole('button', { pressed: false }).length).toBeGreaterThan(0));
+  return { wizard, names: wizard.getAllByRole('button').filter((b) => b.hasAttribute('aria-pressed')).map((b) => b.textContent!.replace(/\s+/g, ' ').trim()) };
+}
+
+it('offers Gmail only with an app password, and no Google Workspace tile, in a build without a one-click module', async () => {
+  const { wizard, names } = await tilesOf(gmailPreset);
+  expect(names).toEqual(['Gmail App password']);
+  await fireEvent.click(wizard.getByRole('button', { name: /^Gmail/ }));
+  await fireEvent.click(wizard.getByRole('button', { name: 'Continue' }));
+  expect(wizard.getByText('Create a Google app password')).toBeTruthy();
+});
+
+it('keeps the Gmail tile the app-password one, and adds a Google Workspace tile with the client ID to copy, in a build whose module offers Google one-click', async () => {
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  const { wizard, names } = await tilesOf(
+    { ...gmailPreset, one_click_url: '/api/oauth/start?provider=gmail', workspace: { client_id: '1234-abc.apps.googleusercontent.com', admin_help_url: 'https://help.example.test/workspace-admin' } },
+    { ...gmailPreset, name: 'outlook', label: 'Outlook', host: 'outlook.office365.com', secret_label: '', password: false, one_click_url: '/api/oauth/start?provider=outlook' },
+  );
+  expect(names).toEqual(['Gmail App password', 'Google Workspace One-click, once your admin trusts MailRules', 'Outlook One-click sign-in']);
+  expect(wizard.queryByRole('region', { name: 'Google Workspace sign-in' })).toBeNull();
+
+  await fireEvent.click(wizard.getByRole('button', { name: /^Google Workspace/ }));
+  const tile = within(wizard.getByRole('region', { name: 'Google Workspace sign-in' }));
+  expect(tile.getByText("Your organisation's admin must trust MailRules first")).toBeTruthy();
+  expect(tile.getByText('1234-abc.apps.googleusercontent.com')).toBeTruthy();
+  expect(tile.getByRole('link', { name: 'How your admin trusts MailRules' }).getAttribute('href')).toBe('https://help.example.test/workspace-admin');
+  await fireEvent.click(tile.getByRole('button', { name: 'Copy' }));
+  expect(writeText).toHaveBeenCalledWith('1234-abc.apps.googleusercontent.com');
+  expect(await tile.findByRole('button', { name: 'Copied' })).toBeTruthy();
+
+  // Outlook's one-click tile is as before: no Workspace note.
+  await fireEvent.click(wizard.getByRole('button', { name: /^Outlook/ }));
+  expect(wizard.queryByRole('region', { name: 'Google Workspace sign-in' })).toBeNull();
+});
+
+it('shows no admin help link on the Google Workspace tile when the module gives none', async () => {
+  const { wizard } = await tilesOf({ ...gmailPreset, one_click_url: '/api/oauth/start?provider=gmail', workspace: { client_id: 'id.apps.googleusercontent.com', admin_help_url: null } });
+  await fireEvent.click(wizard.getByRole('button', { name: /^Google Workspace/ }));
+  const tile = within(wizard.getByRole('region', { name: 'Google Workspace sign-in' }));
+  expect(tile.getByText('id.apps.googleusercontent.com')).toBeTruthy();
+  expect(tile.queryByRole('link')).toBeNull();
 });
 
 it('tells a teammate that the person who added a one-click mailbox needs to reconnect it', async () => {

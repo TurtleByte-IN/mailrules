@@ -229,7 +229,7 @@ paths:
       summary: Provider presets for the connect wizard
       responses:
         '200':
-          description: 'Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one. A preset a module''s sign-in form connects has `form_url` and `password: false`: the wizard offers only the form''s tile'
+          description: 'Every preset that takes a password, generic last, and Outlook (after Gmail) when a module of this build signs in to it. A preset a module signs in to has `one_click_url`: the wizard offers it as a one-click tile, beside the app-password tile when the preset takes one. Gmail is the exception: its tile is always the app-password one, and when a module signs in to Google the Gmail preset has `workspace` and the wizard offers a separate Google Workspace tile that uses its `one_click_url` (one-click Google sign-in takes only Google Workspace accounts whose admin trusts MailRules; a personal account comes back with `mailbox_error=workspace_only`). A preset a module''s sign-in form connects has `form_url` and `password: false`: the wizard offers only the form''s tile'
           content:
             application/json:
               schema:
@@ -2028,7 +2028,7 @@ components:
 
     Preset:
       type: object
-      required: [name, label, host, port, tls_mode, help_url, local_part_login, secret_label, password, one_click_url, form_url]
+      required: [name, label, host, port, tls_mode, help_url, local_part_login, secret_label, password, one_click_url, form_url, workspace]
       properties:
         name: { $ref: '#/components/schemas/PresetName' }
         label: { type: string, description: 'Shown in the provider picker, e.g. "iCloud Mail"' }
@@ -2041,6 +2041,13 @@ components:
         password: { type: boolean, description: 'The wizard can connect it with a pasted password or app password (`secret_label`). False for Outlook, which takes only Microsoft''s own sign-in, and for a preset with `form_url`, which the module''s form connects instead' }
         one_click_url: { type: [string, 'null'], description: 'Where the browser goes to connect a mailbox here with one-click sign-in (the person signs in to the provider; no password), when a module of this build signs in to the preset; append `&account=<id>` to reconnect a mailbox in `reconnect_needed`. null otherwise: in the free build always' }
         form_url: { type: [string, 'null'], description: 'Where the wizard posts each step of the provider''s sign-in form (`MailboxFormInput`, answered with `MailboxFormStep`), when a module of this build answers one: Proton on the hosted build, signed in through the operator''s Proton Mail Bridge. null otherwise: in the free build always' }
+        workspace:
+          type: [object, 'null']
+          description: 'On the Gmail preset when a module of this build signs in to Google (`one_click_url`): what the wizard''s Google Workspace tile shows. One-click Google sign-in takes only accounts of a Google Workspace organisation whose admin has marked MailRules as trusted in the Google Admin console; a personal Google account comes back with `mailbox_error=workspace_only`, and connects with an app password on the Gmail tile. null on every other preset, and in a build without such a module'
+          required: [client_id, admin_help_url]
+          properties:
+            client_id: { type: string, description: 'The OAuth client ID of the module''s Google sign-in: the app the admin trusts. Not a secret; the tile shows it with a copy button' }
+            admin_help_url: { type: [string, 'null'], description: 'An https page that walks the admin through trusting MailRules, linked from the tile; null for no link' }
     MailboxFormInput:
       type: object
       description: 'One step of a module''s mailbox sign-in form, posted to `Preset.form_url` with the CSRF header. What it carries goes to the module only; the daemon neither stores nor logs it'

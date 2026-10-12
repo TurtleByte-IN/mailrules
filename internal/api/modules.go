@@ -278,8 +278,9 @@ func (s *server) signIn() *ext.Module {
 // serve: a Webhook route that is not Public, a SignIn or SignOut that does not name one of
 // its module's Public GET routes, a SignOut or DeleteIdentity without SignIn, more than one
 // module with SignIn, and cloud mode with no module that signs people in; a Mailboxes with no
-// Login, with a provider other than gmail or outlook, or whose Connect is not one of its
-// module's signed-in GET routes, and more than one module with Mailboxes; a
+// Login, with a provider other than gmail or outlook, with gmail but no Google client ID
+// (or Google without gmail, or an admin help page not on https), or whose Connect is not
+// one of its module's signed-in GET routes, and more than one module with Mailboxes; a
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
 // signed-in POST routes under /api/, and two forms for one provider; a MailboxRemoved with
 // neither Mailboxes nor MailboxForms; a Notifications with no Notify or no kind, or a kind
@@ -315,6 +316,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 				if !slices.Contains(oneClickPresets, p) {
 					return fmt.Errorf("module %s: Mailboxes provider %q must be one of %s", m.Name, p, strings.Join(oneClickPresets, ", "))
 				}
+			}
+			if err := checkGoogle(m.Name, mb); err != nil {
+				return err
 			}
 			if !signedInGet[mb.Connect] {
 				return fmt.Errorf("module %s: Mailboxes Connect %q is not one of its GET routes served to a signed-in user", m.Name, mb.Connect)

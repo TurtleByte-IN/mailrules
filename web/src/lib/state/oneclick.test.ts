@@ -9,6 +9,7 @@ it.each([
   ['mailbox_error=mismatch', { error: "You signed in as another address than this mailbox's. Reconnect, and sign in as the mailbox's own address." }],
   ['mailbox_error=mailbox_limit', { error: "Your plan has no room for another mailbox, so this one wasn't connected. Remove a mailbox to connect another." }],
   ['mailbox_error=plan_ended', { error: "Your plan has ended, so the mailbox wasn't connected. Subscribe on Plan and billing to connect it." }],
+  ['mailbox_error=workspace_only', { error: 'Personal Gmail connects with an app password. Google sign-in is only for Google Workspace accounts whose admin trusts MailRules, so no mailbox was connected.', gmailAppPassword: true }],
   ['mailbox_error=something_new', { error: "That sign-in didn't go through, so no mailbox was connected. Try again." }],
   ['added=x', {}],
 ])('reads %j', (query, want) => {

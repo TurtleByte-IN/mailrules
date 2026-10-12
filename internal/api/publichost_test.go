@@ -69,7 +69,7 @@ func serverModule() ext.Module {
 				h.MailboxAdded(w, r, id)
 			}}}
 		},
-		Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail"}, Connect: "/api/servers/connect",
+		Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail"}, Connect: "/api/servers/connect", Google: &ext.GoogleSignIn{ClientID: workspaceClientID},
 			Login: func(context.Context, string, string) (ext.MailToken, error) { return ext.MailToken{}, nil }},
 	}
 }

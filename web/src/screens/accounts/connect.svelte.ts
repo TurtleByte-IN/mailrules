@@ -85,24 +85,47 @@ export class Wizard {
   /** What the form's later steps ask for. Like `password`, cleared once posted. */
   code = $state('');
   mailboxPassword = $state('');
-  /** Gmail's one-click tile shows what MailRules does with the mailbox before it leaves for Google's sign-in. */
+  /** The Google Workspace tile shows what MailRules does with the mailbox before it leaves for Google's sign-in. */
   googleNotice = $state(false);
+  /** The Google Workspace tile's client ID was just copied. */
+  copied = $state(false);
   templates = $state(starterTemplates.map((t) => ({ ...t })));
   #run = 0;
 
   /**
    * `added`: the id of a mailbox a one-click sign-in just connected, to go on with at Rules. `from`: where a
    * one-click sign-in this run starts should come back to. `reconnect`: a mailbox a module's sign-in form
-   * connected, to sign in to again through that form.
+   * connected, to sign in to again through that form. `gmailAppPassword`: a personal Google account came back
+   * from the Google Workspace sign-in, so the run opens at Gmail's app-password guide.
    */
   readonly from: 'setup' | 'accounts';
-  constructor(added?: number, from: 'setup' | 'accounts' = 'accounts', reconnect?: Account) {
+  constructor(added?: number, from: 'setup' | 'accounts' = 'accounts', reconnect?: Account, gmailAppPassword = false) {
     this.from = from;
     if (added) [this.accountId, this.step, this.test] = [added, 2, 'ok'];
     if (reconnect) {
       this.reconnect = reconnect;
       this.choose(reconnect.preset, 'form');
       [this.step, this.email] = [1, reconnect.username];
+    } else if (gmailAppPassword && !added) {
+      this.choose('gmail', 'password');
+      this.step = 1;
+    }
+  }
+
+  /** The Google Workspace tile: one-click Google sign-in, for organisations whose admin trusts MailRules. */
+  get workspace() {
+    return this.presetId === 'gmail' && this.via === 'one_click' ? this.preset?.workspace : undefined;
+  }
+
+  /** Copies the client ID the Workspace admin trusts, for the person to send them. */
+  async copyClientId() {
+    const id = this.workspace?.client_id;
+    if (!id) return;
+    try {
+      await navigator.clipboard.writeText(id);
+      this.copied = true;
+    } catch {
+      flash('Could not copy it. Select the client ID and copy it yourself.');
     }
   }
 
@@ -144,6 +167,7 @@ export class Wizard {
   choose(name: Preset['name'], via: SignInVia = 'password') {
     this.presetId = name;
     this.via = via;
+    this.copied = false;
     [this.formStep, this.#formState, this.formMessage] = ['sign_in', '', ''];
     const p = this.preset;
     if (p && this.serverFields) {
@@ -276,9 +300,9 @@ export class Wizard {
 
   /**
    * Moves on one step; on the last one saves the mailbox. Resolves true once it is saved, or reconnected. A
-   * one-click tile leaves for the provider's sign-in instead (Gmail's shows `googleNotice` first), and the wizard
-   * comes back at Rules (`accountId`); a form tile's Sign in step posts the form, and goes on at Rules once the
-   * module has connected the mailbox.
+   * one-click tile leaves for the provider's sign-in instead (Google Workspace's shows `googleNotice` first), and
+   * the wizard comes back at Rules (`accountId`); a form tile's Sign in step posts the form, and goes on at Rules
+   * once the module has connected the mailbox.
    */
   async next(): Promise<boolean> {
     if (this.step === 0 && !this.preset) return false;

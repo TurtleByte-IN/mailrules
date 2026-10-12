@@ -6,9 +6,9 @@ order: 100
 
 ## A mailbox says Reconnect needed
 
-Only a mailbox MailRules signs in to for you can say this: one connected with one-click sign-in (Gmail or Outlook, in a build that offers it), or a Proton Mail mailbox connected with your Proton address and password in the hosted MailRules. The provider no longer accepts MailRules' sign-in: you removed its access in your account's security settings, the access expired, or the provider refused it (for example, IMAP was switched off for the account); for Proton, the Bridge MailRules runs for you lost your account's session. MailRules stops trying, and no rule acts on the mailbox, until you sign in again. Mail that arrives meanwhile is sorted once it reconnects.
+Only a mailbox MailRules signs in to for you can say this: one connected with one-click sign-in (Google Workspace or Outlook, in a build that offers it), or a Proton Mail mailbox connected with your Proton address and password in the hosted MailRules. The provider no longer accepts MailRules' sign-in: you removed its access in your account's security settings, the access expired, your Google Workspace admin stopped trusting MailRules, or the provider refused it (for example, IMAP was switched off for the account); for Proton, the Bridge MailRules runs for you lost your account's session. MailRules stops trying, and no rule acts on the mailbox, until you sign in again. Mail that arrives meanwhile is sorted once it reconnects.
 
-- Click **Reconnect** on the mailbox, on **Mailboxes** or **Overview**. For Gmail, read the note on what MailRules does with the mailbox and click **Continue to Google**. For Gmail or Outlook, sign in to Google or Microsoft as the mailbox's own address and allow access. For Proton Mail, the Proton sign-in form opens on the mailbox (also from **Sign in again** in its warning): enter your Proton password, then the two-factor code or mailbox password if your account asks for them. MailRules connects again at once.
+- Click **Reconnect** on the mailbox, on **Mailboxes** or **Overview**. For a Google Workspace mailbox, read the note on what MailRules does with the mailbox and click **Continue to Google**. For Google Workspace or Outlook, sign in to Google or Microsoft as the mailbox's own address and allow access. For Proton Mail, the Proton sign-in form opens on the mailbox (also from **Sign in again** in its warning): enter your Proton password, then the two-factor code or mailbox password if your account asks for them. MailRules connects again at once.
 - Reconnecting keeps the mailbox as it was: its name, watched folder, rules, activity and undo history. There is no need to remove it and add it again.
 - Signing in as another address is refused, and the mailbox stays as it was.
 - On a hosted MailRules, deleting your sign-in account deletes these mailboxes' sign-ins at once. If you sign in again with the same account within 30 days, each says "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it". Click **Reconnect** to sign in to the provider again. (After **Delete my account** in Settings, signing in again starts a new, empty account instead.)
@@ -31,6 +31,12 @@ When adding a mailbox, the same problem reads: "The mail server refused the sign
 - Use an app-specific password from [account.apple.com](https://account.apple.com) → Sign-In and Security → App-Specific Passwords. Your Apple Account needs two-factor authentication to create one.
 - Enter your iCloud address (`name@icloud.com`, `@me.com` or `@mac.com`). MailRules tries the full address, then the part before the `@`.
 - iCloud's special folders are Archive, Junk, Deleted Messages and Sent Messages. iCloud empties Deleted Messages after 30 days, which is why trashed mail goes to `MailRules Trash` by default.
+
+### Gmail and Google Workspace
+
+- Pick **Gmail** and use an [app password](https://myaccount.google.com/apppasswords). Your Google Account needs 2-Step Verification to create one, and a Google Workspace admin can switch app passwords off.
+- "Personal Gmail connects with an app password": you signed in to the **Google Workspace** tile's one-click sign-in with a personal Google account. That sign-in takes only accounts of a Google Workspace organisation whose admin trusts MailRules. Nothing was connected and MailRules kept no access; the wizard opens at the Gmail tile's **Sign in** step to connect it with an app password.
+- A Google Workspace account that Google refuses on the **Google Workspace** tile: your organisation's admin has not yet marked MailRules as trusted in the Google Admin console. Send them the client ID the tile shows (**Copy**), or connect with an app password on the **Gmail** tile if your admin allows app passwords.
 
 ### Proton Mail
 

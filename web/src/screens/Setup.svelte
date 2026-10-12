@@ -22,7 +22,8 @@
 
   // A one-click sign-in started at the mailbox step comes back here (#/setup?added=<id> or
   // ?mailbox_error=<code>, see App): read it once, then clear the address bar. An added mailbox
-  // goes on at Rules; once it is connected, skipping its rules still moves on to Done.
+  // goes on at Rules; once it is connected, skipping its rules still moves on to Done. A personal
+  // Google account turned away by the Google Workspace sign-in opens at Gmail's app-password guide.
   const back = mailboxReturn(router.querystring ?? '');
   if (router.querystring) replace('/setup');
   let returnError = $state(back.error);
@@ -93,7 +94,7 @@
           <button type="button" class="btn" onclick={() => (returnError = undefined)}>Dismiss</button>
         </div>
       {/if}
-      <Wizard cancelLabel="Skip for now" added={back.added} from="setup" onclose={back.added ? next : skip} onconnected={next} />
+      <Wizard cancelLabel="Skip for now" added={back.added} gmailAppPassword={back.gmailAppPassword} from="setup" onclose={back.added ? next : skip} onconnected={next} />
     {:else}
       <section aria-labelledby="setup-done" class="card flex flex-col gap-3.5 p-5">
         <h2 id="setup-done">You're set</h2>
