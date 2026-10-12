@@ -34,6 +34,10 @@ When an email went to the wrong place, click **Wrong?** on its row, or use **Wro
 
 Tick **Always do this for …** to make a sender rule at the same time, for **Everyone at \<domain\>** or **Only \<address\>**. Future mail from that sender then goes straight to that rule, without a model.
 
+### Moving an email in another mail app
+
+In the hosted version, MailRules also notices when you move an email it filed in another mail app (back to the Inbox, or to another folder) within a week of filing it. It does not learn from that by itself. Activity asks once: "You moved 2 emails from this sender to Inbox. Always keep them in Inbox?" **Yes** makes the same sender rule as **Always do this for …**. **No** changes nothing, and MailRules does not ask again about that sender and folder. Deleting, archiving or marking an email as junk teaches nothing. The free self-hosted build does not watch for these moves.
+
 ## Needs review
 
 **Needs review** holds the emails MailRules did not act on because it was not sure. They are still in your inbox, untouched. An email lands here when:

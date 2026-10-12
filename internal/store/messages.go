@@ -638,15 +638,11 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 		value = domain
 	}
 	if always != "" && value != "" {
-		verdict := rules.VerdictRoute
+		sr := rules.SenderRule{UserID: userID, MatchType: always, Value: value, RuleID: c.RightRuleID, Verdict: rules.VerdictRoute}
 		if c.RightRuleID == 0 {
-			verdict = rules.VerdictKeep
+			sr.Verdict = rules.VerdictKeep
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, source, hits, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, 'user', 0, ?)
-			 ON CONFLICT (tenant_id, match_type, value) DO UPDATE SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = NULL, source = 'user', hits = 0`,
-			tenantID, userID, always, value, null(c.RightRuleID), verdict, c.CreatedAt); err != nil {
+		if err := putUserSenderRule(ctx, tx, tenantID, sr, c.CreatedAt); err != nil {
 			return 0, fmt.Errorf("add correction: %w", err)
 		}
 	}
@@ -657,6 +653,20 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 		return 0, fmt.Errorf("add correction: %w", err)
 	}
 	return id, nil
+}
+
+// putUserSenderRule stores, in tx, a sender rule a person made by saying "always" (a
+// correction's Always, or Yes to a question about their moves): sr.Verdict for sr.Value,
+// replacing whatever the tenant had for that address or domain, with its count of emails
+// settled starting again.
+func putUserSenderRule(ctx context.Context, tx *sql.Tx, tenantID int64, sr rules.SenderRule, now int64) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'user', 0, ?)
+		 ON CONFLICT (tenant_id, match_type, value) DO UPDATE
+		 SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = excluded.folder, source = 'user', hits = 0`,
+		tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, null(sr.Folder), now)
+	return err
 }
 
 // Corrections lists the newest corrections made to mail in the mailboxes the viewer sees,

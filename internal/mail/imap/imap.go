@@ -866,6 +866,41 @@ func (m *Mailbox) FindByMessageID(ctx context.Context, folder, messageID string)
 	return ref, nil
 }
 
+// Present sends one UID SEARCH UID <uids> NOT DELETED, after syncFolder, so a message
+// another client moved or expunged since the session last looked is already gone.
+func (m *Mailbox) Present(ctx context.Context, folder string, uidValidity uint32, uids []uint32) ([]uint32, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	var set imap.UIDSet
+	for _, u := range uids {
+		set.AddNum(imap.UID(u))
+	}
+	var out []uint32
+	err := m.do(ctx, fmt.Sprintf("search %q", folder), func(c *imapclient.Client) error {
+		if err := m.syncFolder(c, folder); err != nil {
+			return err
+		}
+		if m.selValidity != uidValidity {
+			return fmt.Errorf("%w: uidvalidity of %q is %d, the references have %d", mail.ErrNotFound, folder, m.selValidity, uidValidity)
+		}
+		crit := &imap.SearchCriteria{UID: []imap.UIDSet{set}, NotFlag: []imap.Flag{imap.FlagDeleted}}
+		data, err := c.UIDSearch(crit, nil).Wait()
+		if err != nil {
+			return err
+		}
+		for _, u := range data.AllUIDs() {
+			out = append(out, uint32(u))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 // SentRecipients peeks at the To and Cc headers of the newest limit messages. The folder is
 // opened read-only (EXAMINE), so nothing in it can change.
 func (m *Mailbox) SentRecipients(ctx context.Context, folder string, limit int) ([]mail.Recipient, error) {

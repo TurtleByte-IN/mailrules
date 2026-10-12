@@ -727,6 +727,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/activity/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The questions Activity asks about emails you moved in other mail apps
+         * @description Works with a module that learns from the emails the person moves (`x-module`), which
+         *     the hosted build includes and the free self-host build does not. Without it this
+         *     route answers 404 `not_available` and `features.move_questions` in GET /api/settings
+         *     is false.
+         *
+         *     With it, the daemon notices when the person moves an email MailRules filed out of the
+         *     folder MailRules put it in, in another mail app: back to the Inbox, or to another
+         *     folder. When the module asks, Activity asks once per sender and destination: "You
+         *     moved 2 emails from this sender to Inbox. Always keep them in Inbox?" (or "Always
+         *     move them to <folder>?"). These are the questions still waiting, on the mailboxes the
+         *     signed-in person sees, newest first.
+         */
+        get: operations["listMoveQuestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/activity/questions/{id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer Yes or No to a question about your moves
+         * @description `yes` stores the sender rule a fix's "Always do this for <sender>" stores, made by the
+         *     signed-in person, replacing whatever the team had for that address: the sender's mail
+         *     stays in the Inbox (`keep`), or goes to the folder (`move`), on every mailbox. `no`
+         *     stores nothing. Either way the question closes and that sender and destination is
+         *     never asked about again. Nothing in any mailbox changes.
+         */
+        post: operations["answerMoveQuestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/messages/{id}": {
         parameters: {
             query?: never;
@@ -1436,6 +1492,7 @@ export interface paths {
          *     | `rules.changed` | `EventEmpty` | a rule was edited, deleted, reordered or imported: refetch the list |
          *     | `usage.updated` | `EventEmpty` | a model call was recorded: refetch stats |
          *     | `notifications.changed` | `EventEmpty` | a notification destination was added or removed, or a delivery recorded: refetch `/api/notifications` |
+         *     | `questions.changed` | `EventEmpty` | a question about the person's moves was asked, brought up to date or answered: refetch `/api/activity/questions` |
          *
          *     The daemon keeps the last 200 events. A client that reconnects sends the last id it saw
          *     in `Last-Event-ID` (EventSource does this by itself) and is first sent what it missed;
@@ -2708,6 +2765,31 @@ export interface components {
             /** @description For `one` and `several`, the organisation's workspaces, the Default Workspace included; otherwise empty */
             workspaces: components["schemas"]["AnthropicWorkspace"][];
         };
+        /** @description One question about the emails the person moved from one sender to one destination, in other mail apps: "You moved `emails` emails from this sender to Inbox. Always keep them in Inbox?", or, for a folder, "Always move them to `folder`?" */
+        MoveQuestion: {
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description The mailbox of the latest move asked about
+             */
+            account_id: number;
+            /** @description That mailbox's address */
+            mailbox: string;
+            /** @description The sender's address */
+            from: string;
+            /** @description The destination is the Inbox (the folder MailRules watches); Yes keeps the sender's mail there */
+            inbox: boolean;
+            /** @description The destination folder: the watched folder's name when `inbox`; else the folder Yes moves the sender's mail to */
+            folder: string;
+            /** @description How many of the sender's emails the person moved there in the last 30 days */
+            emails: number;
+            /**
+             * Format: int64
+             * @description Unix seconds
+             */
+            asked_at: number;
+        };
         NotificationList: {
             /** @description The kinds of destination the module of this build delivers to */
             kinds: components["schemas"]["NotificationKind"][];
@@ -2830,6 +2912,8 @@ export interface components {
                 suggest: boolean;
                 /** @description A module of this build signs people in (the hosted build), so POST /api/auth/delete-account works and Settings offers Delete my account */
                 delete_account: boolean;
+                /** @description A module of this build learns from the emails the person moves out of the folders MailRules filed them in, so Activity may ask about them (GET /api/activity/questions) */
+                move_questions: boolean;
             };
         };
         /** @description For every field: left out = unchanged; `null` = forget the stored value, so the environment's default is back in force; an empty string = that value, stored (see each field), or refused where empty cannot work */
@@ -2943,7 +3027,7 @@ export interface components {
         EventAccountStatus: components["schemas"]["Account"];
         /** @description Data of `batch.progress` */
         EventBatchProgress: components["schemas"]["Batch"];
-        /** @description Data of `rules.changed`, `usage.updated` and `notifications.changed`; refetch */
+        /** @description Data of `rules.changed`, `usage.updated`, `notifications.changed` and `questions.changed`; refetch */
         EventEmpty: Record<string, never>;
     };
     responses: {
@@ -4040,6 +4124,67 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
+        };
+    };
+    listMoveQuestions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The open questions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        questions: components["schemas"]["MoveQuestion"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotAvailable"];
+        };
+    };
+    answerMoveQuestion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    answer: "yes" | "no";
+                };
+            };
+        };
+        responses: {
+            /** @description Answered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        question: components["schemas"]["MoveQuestion"];
+                        /** @enum {string} */
+                        answer: "yes" | "no";
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["CsrfFailed"];
+            404: components["responses"]["NotFound"];
         };
     };
     getMessage: {
