@@ -7,8 +7,9 @@
 // their own account (Module.DeleteIdentity), the way mailboxes of some providers are
 // connected with one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of
 // providers the module connects itself (Module.MailboxForms), what the module is told when a
-// mailbox it connected is removed or forgotten (Module.MailboxRemoved), and the delivery of
-// rule notifications (Module.Notifications).
+// mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
+// rule notifications (Module.Notifications), and what the module is told when the person
+// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
