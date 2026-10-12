@@ -127,6 +127,11 @@ func TestCheckModules(t *testing.T) {
 		{"two sign-in modules", "cloud", []ext.Module{
 			{Name: "one", SignIn: "/api/s/start", Routes: routes(start)},
 			{Name: "two", SignIn: "/api/s/end", Routes: routes(end)}}, "more than one module"},
+		{"MailboxRemoved without mailboxes", "selfhost", []ext.Module{{Name: "m", MailboxRemoved: func(context.Context, ext.RemovedMailbox) error { return nil }, Routes: routes(end)}},
+			"MailboxRemoved is set without Mailboxes or MailboxForms"},
+		{"MailboxRemoved with a sign-in form", "selfhost", []ext.Module{{Name: "m", MailboxRemoved: func(context.Context, ext.RemovedMailbox) error { return nil },
+			MailboxForms: []ext.MailboxForm{{Provider: "proton", Path: "/api/s/form"}},
+			Routes:       routes(ext.Route{Method: http.MethodPost, Path: "/api/s/form", Handler: ok})}}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
