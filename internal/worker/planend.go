@@ -51,9 +51,9 @@ type PlanEnd struct {
 	Stop  func(accountID int64)
 	Start func(store.Account)
 	Hub   *events.Hub // tells the tenant's open screens its mailboxes lost their secrets; may be nil
-	// Sender sends the warnings (the summary email's mail server). nil = the daemon has
-	// none: each warning is logged as not sent and recorded all the same, so the schedule
-	// goes on.
+	// Sender sends the warnings (the summary email's mail server); the daemon does not start
+	// a build that sells plans without one. A warning that reaches no member is not recorded
+	// and is tried again next tick, so no deletion comes before a warning was delivered.
 	Sender    mailer.Sender
 	PublicURL string           // where links in the warnings lead (MAILRULES_PUBLIC_URL)
 	Now       func() time.Time // nil = time.Now
@@ -199,18 +199,17 @@ func dueWarning(endedAt, now int64) int {
 	return 0
 }
 
-// warn sends warning n to every member of the tenant. Nobody to send to, or no mail server,
-// is not an error: the warning counts as given. An address the mail server refuses is
-// passed over; any other failure is returned, and the warning is tried again next tick.
+// warn sends warning n to every member of the tenant. It counts as given once at least one
+// member got it; an address the mail server refuses is passed over. When nobody got it (no
+// mail server, no member, every send failed), it returns an error and the warning is tried
+// again next tick: the schedule waits, and no deletion comes before a delivered warning.
 func (j PlanEnd) warn(ctx context.Context, tenantID int64, p store.PlanState, n int, now time.Time) error {
 	to, err := j.Store.TenantEmails(ctx, tenantID)
 	if err != nil {
 		return err
 	}
 	if j.Sender == nil {
-		slog.WarnContext(ctx, "an end-of-plan warning was not sent: no mail server is set (MAILRULES_SMTP_*)",
-			"tenant_id", tenantID, "warning", n, "members", len(to))
-		return nil
+		return fmt.Errorf("send end-of-plan warning %d: no mail server is set (MAILRULES_SMTP_*)", n)
 	}
 	msg, err := warning(p, n, now, j.PublicURL)
 	if err != nil {
@@ -230,7 +229,10 @@ func (j PlanEnd) warn(ctx context.Context, tenantID int64, p store.PlanState, n 
 		}
 	}
 	// Some got it: the rest are not sent the same warning again and again.
-	if sent == 0 && len(errs) > 0 {
+	if sent == 0 {
+		if len(errs) == 0 {
+			return fmt.Errorf("send end-of-plan warning %d: no member could be sent it", n)
+		}
 		return fmt.Errorf("send end-of-plan warning %d: %w", n, errors.Join(errs...))
 	}
 	slog.InfoContext(ctx, "sent an end-of-plan warning", "tenant_id", tenantID, "warning", n, "members", sent, "failed", len(errs))

@@ -121,6 +121,9 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	if err := api.CheckModules(cfg.Mode, modules); err != nil {
 		return err
 	}
+	if err := checkPlanMail(cfg, modules); err != nil {
+		return err
+	}
 
 	proxies, err := cfg.TrustedProxyPrefixes()
 	if err != nil {
@@ -307,13 +310,11 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		sum.Run(ctx)
 	}()
 	// In a build that sells plans, the end-of-plan job keeps the mailboxes of a tenant whose
-	// plan ended stopped, sends it the warnings through the summary email's mail server,
-	// deletes its secrets and then the rest: now, and then every minute.
+	// plan ended stopped, sends it the warnings through the summary email's mail server
+	// (checkPlanMail made sure there is one), deletes its secrets and then the rest: now, and
+	// then every minute.
 	if ended != nil {
-		var sender mailer.Sender // none: the warnings are logged as not sent
-		if sum.Ready() {
-			sender = sum.Sender
-		}
+		sender := sum.Sender
 		ending := make(chan struct{})
 		defer func() { stopAll(); <-ending }()
 		go func() {
@@ -351,6 +352,20 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shut down http server: %w", err)
+	}
+	return nil
+}
+
+// checkPlanMail refuses a build that sells plans (ext.Module.Billing) while the daemon has no
+// mail server: when a plan ends, people must be warned by email before their passwords and
+// then their data are deleted, and without one they never would be.
+func checkPlanMail(cfg *config.Config, modules []ext.Module) error {
+	if !slices.ContainsFunc(modules, func(m ext.Module) bool { return m.Billing != nil }) {
+		return nil
+	}
+	if missing := cfg.SMTPMissing(); len(missing) > 0 {
+		return fmt.Errorf("this build sells plans, so it emails people before it deletes the data of a plan that ended, and it has no mail server: set %s",
+			strings.Join(missing, ", "))
 	}
 	return nil
 }

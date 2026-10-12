@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -293,23 +294,38 @@ func TestPlanEndBoughtAgain(t *testing.T) {
 	}
 }
 
-// With no mail server the warnings are logged and the schedule goes on all the same.
-func TestPlanEndWithoutSMTP(t *testing.T) {
-	w := newPlanWorld(t)
-	j := w.job(nil)
+// A warning nobody got is not recorded, and nothing is deleted until one was delivered: with
+// no mail server, or one that refuses every member's address, the plan stays ended with
+// everything kept, however long it waits. The mailboxes stay stopped.
+func TestPlanEndDeletesNothingWithoutADeliveredWarning(t *testing.T) {
 	for _, c := range []struct {
-		day     float64
-		warned  int
-		secrets bool
-	}{{0, 1, false}, {23, 2, false}, {30, 2, true}, {83, 3, true}} {
-		w.at(t, j, c.day)
-		if p := w.plan(t); p.Warned != c.warned || p.SecretsDeleted != c.secrets {
-			t.Errorf("day %v: plan = %+v, want warned %d, secrets deleted %v", c.day, p, c.warned, c.secrets)
-		}
-	}
-	w.at(t, j, 90)
-	if w.teamExists(t) {
-		t.Error("the team was not removed on day 90")
+		name   string
+		sender func(w *planWorld) mailer.Sender
+	}{
+		{"no mail server", func(*planWorld) mailer.Sender { return nil }},
+		{"every address refused", func(w *planWorld) mailer.Sender {
+			w.sender.SetErr(fmt.Errorf("550 no such user: %w", mailer.ErrAddress))
+			return w.sender
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newPlanWorld(t)
+			j := w.job(c.sender(w))
+			for _, d := range []float64{0, 23, 30, 83, 90, 200} {
+				w.now = time.Unix(w.end+int64(d*day), 0)
+				if _, err := j.Once(t.Context()); err == nil {
+					t.Fatalf("day %v: an undelivered warning was not reported", d)
+				}
+				if p := w.plan(t); p.Warned != 0 || p.SecretsDeleted || w.secretsGone(t) || !w.teamExists(t) {
+					t.Fatalf("day %v: plan = %+v, secrets gone %v, team kept %v; want nothing recorded or deleted", d, p, w.secretsGone(t), w.teamExists(t))
+				}
+				for _, b := range w.teamBoxes {
+					if w.running(b.ID) {
+						t.Fatalf("day %v: mailbox %d runs", d, b.ID)
+					}
+				}
+			}
+		})
 	}
 }
 
