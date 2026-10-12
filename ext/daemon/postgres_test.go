@@ -8,10 +8,12 @@ import (
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/pressly/goose/v3"
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/imap/imaptest"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
 	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
 
@@ -112,8 +114,19 @@ func TestPostgresMigrateAndSchemaCheck(t *testing.T) {
 		t.Fatalf("open a migrated database: %v", err)
 	}
 	dbs.Close()
-	// One migration short: as a database migrated by an older build would be.
-	if _, err := db.Admin.ExecContext(ctx, `DELETE FROM goose_db_version WHERE version_id = (SELECT MAX(version_id) FROM goose_db_version)`); err != nil {
+	// One migration short: as a database migrated by an older build would be. The newest
+	// migration is rolled back rather than only struck from the history, which would leave
+	// its changes in place for migrating again to run into.
+	owner, err := store.OpenPostgres(ctx, db.URL(pgtest.AsOwner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	p, err := goose.NewProvider(goose.DialectPostgres, owner, migrations.Postgres())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Down(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := openDatabases(ctx, load(app)); !errors.Is(err, store.ErrSchema) {

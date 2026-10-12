@@ -13,6 +13,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
+	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
 
 var testMaster = bytes.Repeat([]byte{7}, 32)
@@ -101,6 +102,48 @@ func TestAccountsCRUD(t *testing.T) {
 	}
 	if _, err := s.Account(ctx, b.ID); err != nil {
 		t.Errorf("deleting one account removed another: %v", err)
+	}
+}
+
+// Removing a mailbox deletes its messages and their decisions row by row, and for each row
+// deleted the database finds the rows that reference it. Every column that references a
+// message or a decision is indexed, so that is a lookup rather than a read of the whole
+// table: before, removing 10,000 messages held the write lock for 5.7 s, past the 5 s other
+// writers wait, and the time grew with the square of the mail (MAI-214).
+func TestReferencesToMessagesAreIndexed(t *testing.T) {
+	_, db := open(t)
+	q := `SELECT m.name || '.' || f."from", EXISTS (SELECT 1 FROM pragma_index_list(m.name) l, pragma_index_info(l.name) i
+		       WHERE i.seqno = 0 AND i.name = f."from")
+		 FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+		 WHERE m.type = 'table' AND f."table" IN ('messages', 'decisions')`
+	if pgtest.DSN() != "" { // the keys there are (tenant_id, id): the other column is the one to look up by
+		q = `SELECT c.conrelid::regclass::text || '.' || a.attname::text, EXISTS (SELECT 1 FROM pg_index i
+		       WHERE i.indrelid = c.conrelid AND i.indkey[0] = a.attnum)
+		 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) AND a.attname <> 'tenant_id'
+		 WHERE c.contype = 'f' AND c.confrelid IN ('messages'::regclass, 'decisions'::regclass)`
+	}
+	rows, err := db.QueryContext(t.Context(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var refs []string
+	for rows.Next() {
+		var ref string
+		var indexed bool
+		if err := rows.Scan(&ref, &indexed); err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, ref)
+		if !indexed {
+			t.Errorf("%s references a message or a decision and has no index", ref)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(refs, "actions.decision_id") {
+		t.Fatalf("references found: %v; want actions.decision_id among them", refs)
 	}
 }
 
