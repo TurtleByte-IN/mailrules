@@ -12,9 +12,10 @@ import Setup from './Setup.svelte';
 
 vi.mock('../lib/state/compose.svelte', () => ({ addTemplatesByName: vi.fn() }));
 
-// GET /api/presets in a build whose module offers one-click sign-in for Gmail.
+// GET /api/presets in a build whose module offers one-click Google sign-in (Google Workspace only).
 const gmail: Preset = { name: 'gmail', label: 'Gmail', host: 'imap.gmail.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false,
-  secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null };
+  secret_label: 'App password', password: true, one_click_url: '/api/oauth/start?provider=gmail', form_url: null,
+  workspace: { client_id: '1234-abc.apps.googleusercontent.com', admin_help_url: null } };
 
 // GET /api/settings from a fresh daemon with no keys anywhere.
 const fresh = (over: Partial<Saved> = {}): Saved => ({
@@ -168,12 +169,15 @@ it('shows the mail server refusing the sign-in on the mailbox step, and stays th
   expect(firstRun.step).toBe('mailbox');
 });
 
-it("shows Gmail's one-click tile what MailRules does first, then sends it to Google's sign-in, noting that the answer comes back to setup", async () => {
+it("shows the Google Workspace tile what MailRules does first, then sends it to Google's sign-in, noting that the answer comes back to setup", async () => {
   routes['GET /api/presets'] = [200, { items: [gmail] }];
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
   await show('mailbox');
-  await fireEvent.click(await screen.findByRole('button', { name: /^Gmail One-click sign-in/ }));
+  // Gmail's own tile stays the app-password one.
+  expect(await screen.findByRole('button', { name: /^Gmail App password/ })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Gmail One-click/ })).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: /^Google Workspace One-click/ }));
   await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
   const notice = within(screen.getByRole('region', { name: 'Before you sign in to Google' }));
   for (const part of ['What MailRules reads', 'What it does', 'What leaves MailRules', 'How to remove access']) expect(notice.getByText(part)).toBeTruthy();
@@ -211,6 +215,17 @@ it('shows a one-click sign-in that failed from setup on the mailbox step', async
   await vi.waitFor(() => expect(router.querystring).toBe('mailbox_error=connect_failed'));
   await show('mailbox');
   expect((await screen.findByRole('alert')).textContent).toContain("The mail server didn't accept the sign-in");
+  expect(firstRun.step).toBe('mailbox');
+});
+
+it('opens the Gmail app-password guide on the mailbox step when a personal Google account tried the Google Workspace sign-in from setup', async () => {
+  routes['GET /api/presets'] = [200, { items: [gmail] }];
+  location.hash = '#/setup?mailbox_error=workspace_only';
+  await vi.waitFor(() => expect(router.querystring).toBe('mailbox_error=workspace_only'));
+  await show('mailbox');
+  expect((await screen.findByRole('alert')).textContent).toContain('Personal Gmail connects with an app password.');
+  expect(screen.getByText('Create a Google app password')).toBeTruthy();
+  expect(await screen.findByLabelText('Gmail email address')).toBeTruthy();
   expect(firstRun.step).toBe('mailbox');
 });
 

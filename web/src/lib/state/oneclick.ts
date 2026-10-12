@@ -12,6 +12,8 @@ const messages: Record<string, string> = {
   connect_failed: "The mail server didn't accept the sign-in, so the mailbox wasn't connected. Check that IMAP is switched on for the account, then try again.",
   mailbox_limit: "Your plan has no room for another mailbox, so this one wasn't connected. Remove a mailbox to connect another.",
   plan_ended: "Your plan has ended, so the mailbox wasn't connected. Subscribe on Plan and billing to connect it.",
+  workspace_only:
+    'Personal Gmail connects with an app password. Google sign-in is only for Google Workspace accounts whose admin trusts MailRules, so no mailbox was connected.',
 };
 
 export interface MailboxReturn {
@@ -21,6 +23,8 @@ export interface MailboxReturn {
   reconnected?: number;
   /** Why the sign-in failed, as a sentence to show (a code it does not know reads as refused). */
   error?: string;
+  /** A personal Google account tried the Google Workspace sign-in: the wizard opens at Gmail's app-password guide. */
+  gmailAppPassword?: boolean;
 }
 
 /** Reads what a one-click sign-in came back with from the route's query string. */
@@ -31,6 +35,7 @@ export function mailboxReturn(query: string): MailboxReturn {
     added: Number(q.get('added')) || undefined,
     reconnected: Number(q.get('reconnected')) || undefined,
     error: code === null ? undefined : Object.hasOwn(messages, code) ? messages[code] : failed,
+    gmailAppPassword: code === 'workspace_only' || undefined,
   };
 }
 

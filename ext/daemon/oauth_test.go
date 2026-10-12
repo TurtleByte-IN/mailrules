@@ -93,7 +93,8 @@ func (f *fakeOAuth) module() ext.Module {
 				}
 			}}}
 		},
-		Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail", "outlook"}, Connect: "/api/oauthtest/connect", Login: f.login},
+		Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail", "outlook"}, Connect: "/api/oauthtest/connect", Login: f.login,
+			Google: &ext.GoogleSignIn{ClientID: "oauthtest.apps.googleusercontent.com"}},
 	}
 }
 
@@ -267,13 +268,17 @@ func TestOneClickMailboxEndToEnd(t *testing.T) {
 	d := serveForTest(t, srv.TLS, fake.module())
 	c := d.c
 
-	// The wizard offers one-click Gmail and Outlook through the module.
+	// The wizard offers one-click Outlook, and one-click Google as the Google Workspace tile
+	// beside Gmail's app-password one, through the module.
 	_, body := c.do(http.MethodGet, "/api/presets", nil, http.StatusOK)
 	var presetList struct {
 		Items []struct {
 			Name        string  `json:"name"`
 			Password    bool    `json:"password"`
 			OneClickURL *string `json:"one_click_url"`
+			Workspace   *struct {
+				ClientID string `json:"client_id"`
+			} `json:"workspace"`
 		}
 	}
 	if err := json.Unmarshal(body, &presetList); err != nil {
@@ -286,6 +291,9 @@ func TestOneClickMailboxEndToEnd(t *testing.T) {
 		}
 		if p.Name == "outlook" && p.Password {
 			t.Error("Outlook is offered with a password")
+		}
+		if p.Name == "gmail" && (!p.Password || p.Workspace == nil || p.Workspace.ClientID != "oauthtest.apps.googleusercontent.com") {
+			t.Errorf("gmail: password %v, workspace %+v; want the app-password tile and the Workspace one", p.Password, p.Workspace)
 		}
 	}
 	if oneClick["gmail"] != "/api/oauthtest/connect?provider=gmail" || oneClick["outlook"] != "/api/oauthtest/connect?provider=outlook" {

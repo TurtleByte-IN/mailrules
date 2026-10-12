@@ -364,10 +364,17 @@ type Who struct {
 // before each login.
 type MailboxSignIn struct {
 	// Providers are the presets whose mailboxes the module signs in to: "gmail", "outlook"
-	// or both. GET /api/presets offers a one-click tile for each, and lists the Outlook
-	// preset only when it is here: Outlook takes no app password. A build without the
-	// module has no Outlook tile, and its Gmail tile is the app-password one.
+	// or both. GET /api/presets gives each its one-click URL, and lists the Outlook preset
+	// only when it is here: Outlook takes no app password, so a build without the module
+	// has no Outlook tile. The wizard's Gmail tile is the app-password one in every build:
+	// one-click Google sign-in is only for Google Workspace organisations whose admin
+	// trusts MailRules, and "gmail" here adds a separate Google Workspace tile (Google).
 	Providers []string
+	// Google is what the Google Workspace tile shows the person to give their admin;
+	// needed with "gmail" in Providers, and only then. Connect answers a personal Google
+	// account (not in a Workspace organisation) with Host.MailboxFailed and
+	// MailboxWorkspaceOnly, which opens the Gmail app-password guide.
+	Google *GoogleSignIn
 	// Connect is the path of the module's GET route, served to a signed-in user (not
 	// Public), that starts the provider's sign-in. The wizard's one-click tile sends the
 	// browser to Connect?provider=<preset>; the Reconnect button of a mailbox in
@@ -385,6 +392,17 @@ type MailboxSignIn struct {
 	// error is retried as a lost connection. Errors are shown to the person and logged, so
 	// they must not contain the secret or a token.
 	Login func(ctx context.Context, provider, secret string) (MailToken, error)
+}
+
+// GoogleSignIn is what a Google Workspace admin needs to trust MailRules in the Google
+// Admin console (MailboxSignIn.Google), shown on the wizard's Google Workspace tile.
+type GoogleSignIn struct {
+	// ClientID is the OAuth client ID of the module's Google sign-in, which the admin
+	// adds as a trusted app. Not a secret. Required.
+	ClientID string
+	// AdminHelpURL is an https page that walks the admin through trusting MailRules, linked
+	// from the tile; empty for no link.
+	AdminHelpURL string
 }
 
 // MailToken is what MailboxSignIn.Login returns.
@@ -541,6 +559,11 @@ const (
 	MailboxLimitReached = "mailbox_limit"
 	// MailboxPlanEnded: Host.AddMailbox or Host.ReconnectMailbox returned ErrPlanEnded.
 	MailboxPlanEnded = "plan_ended"
+	// MailboxWorkspaceOnly: a personal Google account (not in a Google Workspace
+	// organisation) signed in to the one-click Google sign-in, which takes only Workspace
+	// accounts. The module keeps no token for it. The wizard says personal Gmail connects
+	// with an app password and opens the Gmail app-password guide.
+	MailboxWorkspaceOnly = "workspace_only"
 )
 
 // Notifications is how a module delivers rule notifications (Module.Notifications). The

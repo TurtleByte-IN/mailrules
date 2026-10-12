@@ -36,8 +36,8 @@ func TestFreeBuildHasNoOneClick(t *testing.T) {
 	if _, ok := ps["outlook"]; ok {
 		t.Error("the free build offers Outlook")
 	}
-	if g := ps["gmail"]; g["one_click_url"] != nil || g["password"] != true || g["secret_label"] != "App password" {
-		t.Errorf("gmail preset = %v, want the app-password one", g)
+	if g := ps["gmail"]; g["one_click_url"] != nil || g["workspace"] != nil || g["password"] != true || g["secret_label"] != "App password" {
+		t.Errorf("gmail preset = %v, want the app-password one with no Google Workspace tile", g)
 	}
 	if on := e.call(http.MethodGet, "/api/settings", "", http.StatusOK)["features"].(map[string]any)["oauth_providers"]; on != false {
 		t.Errorf("features.oauth_providers = %v without a module", on)
@@ -56,6 +56,10 @@ func oneClickModule() ext.Module {
 		Routes: func(h ext.Host) []ext.Route {
 			return []ext.Route{{Method: http.MethodGet, Path: "/api/oneclick/connect", Handler: func(w http.ResponseWriter, r *http.Request) {
 				q := r.URL.Query()
+				if q.Get("personal") != "" { // a personal Google account, not in a Workspace organisation
+					h.MailboxFailed(w, r, ext.MailboxWorkspaceOnly)
+					return
+				}
 				if acct := q.Get("account"); acct != "" {
 					id, _ := strconv.ParseInt(acct, 10, 64)
 					if err := h.ReconnectMailbox(r.Context(), id, q.Get("address"), q.Get("secret")); err != nil {
@@ -79,9 +83,13 @@ func oneClickModule() ext.Module {
 			}}}
 		},
 		Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail", "outlook"}, Connect: "/api/oneclick/connect",
-			Login: func(context.Context, string, string) (ext.MailToken, error) { return ext.MailToken{}, nil }},
+			Google: &ext.GoogleSignIn{ClientID: workspaceClientID, AdminHelpURL: "https://help.example.test/workspace"},
+			Login:  func(context.Context, string, string) (ext.MailToken, error) { return ext.MailToken{}, nil }},
 	}
 }
+
+// workspaceClientID is the OAuth client ID oneClickModule's Google sign-in declares.
+const workspaceClientID = "1234-abc.apps.googleusercontent.com"
 
 func TestOneClickMailboxes(t *testing.T) {
 	var (
@@ -109,6 +117,18 @@ func TestOneClickMailboxes(t *testing.T) {
 	if g, o := ps["gmail"], ps["outlook"]; g["one_click_url"] != "/api/oneclick/connect?provider=gmail" || g["password"] != true ||
 		o["one_click_url"] != "/api/oneclick/connect?provider=outlook" || o["password"] != false {
 		t.Fatalf("presets: gmail %v, outlook %v", g, o)
+	}
+	// Gmail keeps its app-password tile; the module's Google sign-in is the separate Google
+	// Workspace tile, which shows the client ID the admin trusts and the admin help page.
+	if w, ok := ps["gmail"]["workspace"].(map[string]any); !ok || w["client_id"] != workspaceClientID || w["admin_help_url"] != "https://help.example.test/workspace" {
+		t.Errorf("gmail workspace = %v", ps["gmail"]["workspace"])
+	}
+	if o := ps["outlook"]; o["workspace"] != nil {
+		t.Errorf("outlook workspace = %v, want null", o["workspace"])
+	}
+	// A personal Google account is sent back to the Gmail app-password guide.
+	if r := e.do(http.MethodGet, "/api/oneclick/connect?provider=gmail&personal=1", ""); r.status != http.StatusSeeOther || r.header.Get("Location") != "/#/accounts?mailbox_error=workspace_only" {
+		t.Errorf("a personal Google account = %d %s", r.status, r.header.Get("Location"))
 	}
 	if on := e.call(http.MethodGet, "/api/settings", "", http.StatusOK)["features"].(map[string]any)["oauth_providers"]; on != true {
 		t.Errorf("features.oauth_providers = %v with the module", on)
@@ -195,7 +215,14 @@ func TestCheckModulesOneClick(t *testing.T) {
 		}
 	}
 	mod := func(name string, p []string, path string, l func(context.Context, string, string) (ext.MailToken, error), public bool) ext.Module {
-		return ext.Module{Name: name, Routes: connect(public), Mailboxes: &ext.MailboxSignIn{Providers: p, Connect: path, Login: l}}
+		mb := &ext.MailboxSignIn{Providers: p, Connect: path, Login: l}
+		if slices.Contains(p, "gmail") {
+			mb.Google = &ext.GoogleSignIn{ClientID: workspaceClientID}
+		}
+		return ext.Module{Name: name, Routes: connect(public), Mailboxes: mb}
+	}
+	google := func(g *ext.GoogleSignIn, p ...string) []ext.Module {
+		return []ext.Module{{Name: "o", Routes: connect(false), Mailboxes: &ext.MailboxSignIn{Providers: p, Connect: "/api/o/connect", Login: login, Google: g}}}
 	}
 	for _, c := range []struct {
 		name    string
@@ -210,6 +237,13 @@ func TestCheckModulesOneClick(t *testing.T) {
 		{"Connect is public", []ext.Module{mod("o", []string{"gmail"}, "/api/o/connect", login, true)}, "signed-in user"},
 		{"two modules", []ext.Module{mod("a", []string{"gmail"}, "/api/o/connect", login, false), mod("b", []string{"outlook"}, "/api/o/connect", login, false)},
 			"more than one module connects mailboxes"},
+		{"gmail with a help page", google(&ext.GoogleSignIn{ClientID: "id", AdminHelpURL: "https://mailrules.example/workspace"}, "gmail"), ""},
+		{"gmail without Google", google(nil, "gmail"), "needs Google.ClientID"},
+		{"gmail with an empty client ID", google(&ext.GoogleSignIn{ClientID: " "}, "gmail", "outlook"), "needs Google.ClientID"},
+		{"a help page over http", google(&ext.GoogleSignIn{ClientID: "id", AdminHelpURL: "http://mailrules.example/workspace"}, "gmail"), "not an https URL"},
+		{"a relative help page", google(&ext.GoogleSignIn{ClientID: "id", AdminHelpURL: "/workspace"}, "gmail"), "not an https URL"},
+		{"Google without gmail", google(&ext.GoogleSignIn{ClientID: "id"}, "outlook"), "Google is set without the gmail provider"},
+		{"outlook alone", google(nil, "outlook"), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := CheckModules("selfhost", c.modules)

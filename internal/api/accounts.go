@@ -35,6 +35,9 @@ type presetJSON struct {
 	// FormURL is where the wizard posts the steps of the provider's sign-in form, when a
 	// module of this build answers one (ext.MailboxForm); null otherwise.
 	FormURL *string `json:"form_url"`
+	// Workspace: on the Gmail preset when a module of this build signs in to Google, what
+	// the wizard's separate Google Workspace tile shows; null otherwise.
+	Workspace *workspaceJSON `json:"workspace"`
 }
 
 // accountJSON is an account as the API shows it. The password is not a field of
@@ -124,7 +127,7 @@ func (s *server) handlePresets(w http.ResponseWriter, _ *http.Request) {
 		// only that tile: the password tile would point at a Bridge on the daemon's own
 		// machine. This is the one place that decides it.
 		password := !p.OAuthOnly && form == nil
-		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel, password, oneClick, form})
+		out = append(out, presetJSON{p.Name, p.Label, p.Host, p.Port, p.TLSMode, p.HelpURL, p.LocalPartLogin, p.PasteLabel, password, oneClick, form, s.workspace(p.Name)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }

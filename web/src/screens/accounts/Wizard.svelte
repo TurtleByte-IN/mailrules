@@ -13,6 +13,8 @@
    * just connected: the wizard opens at Rules for it. `from` is the screen a one-click sign-in
    * started here comes back to. `reconnect` is a mailbox a module's sign-in form connected:
    * the wizard is that form alone, signing in to it again, and closes once it is reconnected.
+   * `gmailAppPassword`: a personal Google account came back from the Google Workspace sign-in,
+   * so the wizard opens at Gmail's app-password guide.
    */
   let {
     onclose,
@@ -21,21 +23,26 @@
     added,
     from = 'accounts',
     reconnect,
-  }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number; from?: 'setup' | 'accounts'; reconnect?: Account } = $props();
+    gmailAppPassword = false,
+  }: { onclose: () => void; onconnected?: () => void; cancelLabel?: string; added?: number; from?: 'setup' | 'accounts'; reconnect?: Account; gmailAppPassword?: boolean } = $props();
 
   // svelte-ignore state_referenced_locally -- read once: the wizard is made again for another mailbox
-  const w = new Wizard(added, from, reconnect);
+  const w = new Wizard(added, from, reconnect, gmailAppPassword);
   const apple = $derived(w.presetId === 'icloud');
   const proton = $derived(w.presetId === 'proton');
+  const gmail = $derived(w.presetId === 'gmail');
   const chosen = $derived(w.templates.filter((t) => t.on));
   // A provider a module signs in to has a one-click tile, ahead of its app-password tile when it takes one; one a
-  // module's sign-in form connects has the form's tile instead of a password tile.
+  // module's sign-in form connects has the form's tile instead of a password tile. Gmail is the exception: its tile
+  // is the app-password one in every build, and Google's one-click sign-in, which takes only Google Workspace
+  // accounts whose admin trusts MailRules, is a separate Google Workspace tile after it.
   const tiles = $derived(
-    accounts.presets.flatMap((p) => [
-      ...(p.one_click_url ? [{ p, via: 'one_click' as SignInVia }] : []),
-      ...(p.form_url ? [{ p, via: 'form' as SignInVia }] : []),
-      ...(p.password ? [{ p, via: 'password' as SignInVia }] : []),
-    ]),
+    accounts.presets.flatMap((p) => {
+      const oneClick = p.one_click_url && (p.name !== 'gmail' || p.workspace) ? [{ p, via: 'one_click' as SignInVia }] : [];
+      const password = p.password ? [{ p, via: 'password' as SignInVia }] : [];
+      if (p.name === 'gmail') return [...password, ...oneClick];
+      return [...oneClick, ...(p.form_url ? [{ p, via: 'form' as SignInVia }] : []), ...password];
+    }),
   );
   const tileNote: Record<SignInVia, string> = { one_click: 'One-click sign-in', form: 'Address and password', password: '' };
   if (!accounts.presets.length) loadPresets();
@@ -70,17 +77,37 @@
       <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5">
         {#each tiles as { p, via } (p.name + ' ' + via)}
           {@const on = w.presetId === p.name && w.via === via}
+          {@const workspace = p.name === 'gmail' && via === 'one_click'}
           <button
             type="button"
             aria-pressed={on}
             onclick={() => w.choose(p.name, via)}
             class="min-h-[72px] rounded-md px-3.5 py-3 text-left {on ? 'border-2 border-ink bg-selected-row' : 'border border-line-card bg-surface'}"
           >
-            <div class="font-semibold">{p.label}</div>
-            <div class="text-[12.5px] text-muted">{tileNote[via] || (p.host ? secretLabel(p) : 'Host, port, password')}</div>
+            <div class="font-semibold">{workspace ? 'Google Workspace' : p.label}</div>
+            <div class="text-[12.5px] text-muted">{workspace ? 'One-click, once your admin trusts MailRules' : tileNote[via] || (p.host ? secretLabel(p) : 'Host, port, password')}</div>
           </button>
         {/each}
       </div>
+      {#if w.workspace}
+        <section aria-label="Google Workspace sign-in" class="flex flex-col gap-2.5 rounded-md border border-selected bg-selected-row p-3.5">
+          <div class="font-semibold">Your organisation's admin must trust MailRules first</div>
+          <p class="text-[13.5px] text-nav">
+            One-click Google sign-in works only for Google Workspace accounts, once your organisation's admin has marked MailRules as trusted in the Google Admin console. A personal Gmail address connects with an
+            app password on the Gmail tile.
+          </p>
+          <div class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-semibold">MailRules' OAuth client ID, for your admin</span>
+            <div class="flex flex-wrap items-center gap-2">
+              <code class="rounded bg-surface px-2 py-1.5 font-mono text-[13px] break-all">{w.workspace.client_id}</code>
+              <button type="button" class="btn" onclick={() => w.copyClientId()}>{w.copied ? 'Copied' : 'Copy'}</button>
+            </div>
+          </div>
+          {#if w.workspace.admin_help_url}
+            <a href={w.workspace.admin_help_url} target="_blank" rel="noreferrer" class="text-[13.5px] font-semibold">How your admin trusts MailRules</a>
+          {/if}
+        </section>
+      {/if}
       {#if accounts.presetsError}
         <div role="alert" class="flex flex-wrap items-center justify-between gap-2 rounded bg-trash-bg px-3 py-2 text-trash">
           <span>Could not load the provider list. {accounts.presetsError}</span>
@@ -155,6 +182,18 @@
           </ol>
           <a href="https://account.apple.com" target="_blank" rel="noreferrer" class="text-[13.5px] font-semibold">Open account.apple.com</a>
           <div class="text-[12.5px] text-secondary">MailRules never sees your Apple ID password. You can revoke this one any time.</div>
+        </div>
+      {/if}
+      {#if gmail}
+        <div class="flex flex-[1_1_300px] flex-col gap-2.5 rounded-md border border-selected bg-selected-row p-3.5">
+          <div class="font-semibold">Create a Google app password</div>
+          <ol class="m-0 flex list-decimal flex-col gap-1.5 pl-[18px] text-[13.5px] text-nav">
+            <li>Turn on 2-Step Verification in your Google Account, if it is not on yet. App passwords need it.</li>
+            <li>Open myaccount.google.com/apppasswords, name the password MailRules, and click Create.</li>
+            <li>Copy the 16-letter password and paste it here, with your full Gmail address.</li>
+          </ol>
+          <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" class="text-[13.5px] font-semibold">Open Google app passwords</a>
+          <div class="text-[12.5px] text-secondary">MailRules never sees your Google password. You can revoke this one any time. A Google Workspace admin can switch app passwords off.</div>
         </div>
       {/if}
       {#if proton}

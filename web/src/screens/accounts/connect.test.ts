@@ -12,10 +12,10 @@ const SECRET = 'abcd-efgh-ijkl-mnop';
 
 // GET /api/presets, first and last entry.
 const presets: Preset[] = [
-  { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.apple.com/en-us/102654', local_part_login: true, secret_label: 'App-specific password', password: true, one_click_url: null, form_url: null },
-  { name: 'zoho', label: 'Zoho Mail', host: 'imap.zoho.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: null, form_url: null },
-  { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password', password: true, one_click_url: null, form_url: null },
-  { name: 'generic', label: 'Other IMAP server', host: '', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'Password', password: true, one_click_url: null, form_url: null },
+  { name: 'icloud', label: 'iCloud Mail', host: 'imap.mail.me.com', port: 993, tls_mode: 'implicit', help_url: 'https://support.apple.com/en-us/102654', local_part_login: true, secret_label: 'App-specific password', password: true, one_click_url: null, form_url: null, workspace: null },
+  { name: 'zoho', label: 'Zoho Mail', host: 'imap.zoho.com', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'App password', password: true, one_click_url: null, form_url: null, workspace: null },
+  { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password', password: true, one_click_url: null, form_url: null, workspace: null },
+  { name: 'generic', label: 'Other IMAP server', host: '', port: 993, tls_mode: 'implicit', help_url: '', local_part_login: false, secret_label: 'Password', password: true, one_click_url: null, form_url: null, workspace: null },
 ];
 const found = { username: 'new', folders: [{ name: 'INBOX', delimiter: '/', special_use: '' }, { name: 'Junk', delimiter: '/', special_use: '\\Junk' }], can_move: true, idle: true };
 const created: Account = {
@@ -324,22 +324,53 @@ it('goes back to sign-in with the new certificate when the server presents anoth
   expect([w.step, w.test, w.cert]).toEqual([1, 'err', cert]);
 });
 
-it("shows Gmail's one-click tile what MailRules does with the mailbox, then leaves for Google's sign-in", async () => {
-  accounts.presets = [{ ...presets[0], name: 'gmail', label: 'Gmail', one_click_url: '/api/oauth/start?provider=gmail' }];
+it("shows the Google Workspace tile what MailRules does with the mailbox, then leaves for Google's sign-in", async () => {
+  const workspace = { client_id: '1234-abc.apps.googleusercontent.com', admin_help_url: null };
+  accounts.presets = [{ ...presets[0], name: 'gmail', label: 'Gmail', one_click_url: '/api/oauth/start?provider=gmail', workspace }];
   const assign = vi.fn();
   vi.stubGlobal('location', { ...window.location, assign });
   const w = new Wizard();
   w.choose('gmail', 'one_click');
+  expect(w.workspace).toEqual(workspace);
   expect(await w.next()).toBe(false);
   expect([w.googleNotice, w.step, assign.mock.calls.length]).toEqual([true, 0, 0]);
   w.leave();
   expect(assign).toHaveBeenCalledWith('/api/oauth/start?provider=gmail');
-  // Its app-password tile goes on to Sign in as before.
+  // The Gmail tile is the app-password one, and goes on to Sign in as before.
   w.googleNotice = false;
   w.choose('gmail');
+  expect(w.workspace).toBeUndefined();
   await w.next();
   expect(w.step).toBe(1);
   expect(assign).toHaveBeenCalledTimes(1);
+});
+
+it('copies the client ID a Google Workspace admin trusts, and says so until another tile is picked', async () => {
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  accounts.presets = [{ ...presets[0], name: 'gmail', label: 'Gmail', one_click_url: '/api/oauth/start?provider=gmail', workspace: { client_id: 'abc.apps.googleusercontent.com', admin_help_url: null } }];
+  const w = new Wizard();
+  w.choose('gmail', 'one_click');
+  await w.copyClientId();
+  expect(writeText).toHaveBeenCalledWith('abc.apps.googleusercontent.com');
+  expect(w.copied).toBe(true);
+  w.choose('gmail');
+  expect(w.copied).toBe(false);
+  await w.copyClientId(); // no Workspace tile picked: nothing to copy
+  expect(writeText).toHaveBeenCalledTimes(1);
+
+  writeText.mockRejectedValueOnce(new Error('denied'));
+  w.choose('gmail', 'one_click');
+  await w.copyClientId();
+  expect([w.copied, toast.text]).toEqual([false, 'Could not copy it. Select the client ID and copy it yourself.']);
+});
+
+it("opens at Gmail's app-password Sign in step when a personal Google account came back from the Google Workspace sign-in", () => {
+  const w = new Wizard(undefined, 'accounts', undefined, true);
+  expect([w.presetId, w.via, w.step, w.first]).toEqual(['gmail', 'password', 1, 0]);
+  // A mailbox a one-click sign-in connected goes on at Rules instead.
+  const added = new Wizard(7, 'accounts', undefined, true);
+  expect([added.presetId, added.step]).toEqual(['icloud', 2]);
 });
 
 it("sends Outlook's one-click tile straight to the provider's sign-in", async () => {
