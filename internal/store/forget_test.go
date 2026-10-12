@@ -622,7 +622,7 @@ func TestRemoveForgottenTeamMember(t *testing.T) {
 		"tenants": 1, "users": 1, "identities": 1, "sessions": 1, "summaries": 1, "forgotten": 0,
 		"accounts": 1, "messages": 1, "settings": before["settings"], "usage_daily": before["usage_daily"], "ai_emails": before["ai_emails"],
 		"first_cleanup": before["first_cleanup"],
-		"batches": before["batches"], "rules": before["rules"],
+		"batches":       before["batches"], "rules": before["rules"],
 		// The team's destinations and their log stay; the notices about the leaver's mail go.
 		"notify_destinations": before["notify_destinations"], "notify_deliveries": before["notify_deliveries"],
 		"notices": before["notices"] - 2,
