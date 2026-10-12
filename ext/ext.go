@@ -9,8 +9,9 @@
 // providers the module connects itself (Module.MailboxForms), what the module is told when a
 // mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
 // rule notifications (Module.Notifications), what the module is told when the person
-// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves), and
-// the plans the build sells: what each tenant may use and pays for (Module.Billing).
+// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves),
+// the plans the build sells: what each tenant may use and pays for (Module.Billing), and
+// the key service that holds the key every tenant's data key is wrapped under (Module.Keys).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -29,6 +30,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/config"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
@@ -123,7 +125,60 @@ type Module struct {
 	// is limited and every feature of the build is everyone's, as on self-host. At most one
 	// module of a build sets it.
 	Billing *Billing
+	// Keys, when set, holds the key-encryption key in place of the master key (see
+	// KeyProvider): every tenant's data key, which seals its mailbox passwords, tokens,
+	// model keys and notification addresses, is wrapped and unwrapped by it. Without it the
+	// master key does, as on self-host. At most one module of a build sets it, and the build
+	// must register that module for every command, not only serve: `mailrules accounts`
+	// opens and seals secrets too.
+	//
+	// The first start with it rewraps, under it, each tenant key the master key wrapped and
+	// reseals the removed mailboxes' copies under it, each once; the master key
+	// (MAILRULES_MASTER_KEY or MAILRULES_MASTER_KEY_FILE) must stay set until a start logs
+	// that nothing needs it any more. A tenant key it wrapped never falls back to the master
+	// key. An unwrapped key is kept in memory for MAILRULES_TENANT_KEY_CACHE, then asked for
+	// again; requests that need the same key at once share one call.
+	Keys KeyProvider
 }
+
+// KeyProvider is a key-encryption key held outside the daemon, in a key service such as a
+// cloud KMS with HSM-backed keys (Module.Keys). The daemon gives it 32-byte data keys to
+// wrap and asks it to unwrap them; it never sees the key-encryption key itself. Its methods
+// are called at once from many goroutines, with the ctx of the request or job that needs
+// the key. No error, and nothing it logs, may contain a key, wrapped or not.
+type KeyProvider interface {
+	// KeyID names the key-encryption key new keys are wrapped under, as the daemon stores
+	// it beside each wrapped key and hands it back to Unwrap: for a cloud KMS, the key's
+	// resource name, whose versions the service picks and records in each ciphertext
+	// itself. It must not change while the key does not: keys stored under another KeyID
+	// are rewrapped at the next start. Not empty, at most 255 bytes, and not "master",
+	// which is the master key's.
+	KeyID() string
+	// Wrap encrypts key for tenantID, binding tenantID into the ciphertext (a KMS's
+	// additional authenticated data), so it unwraps for that tenant only. Tenant 0 is a
+	// removed mailbox's copy of its secret, which outlives its tenant. Any error means the
+	// service could not be asked: the daemon stores nothing (a new tenant's sign-in fails)
+	// and answers 503 key_unavailable.
+	Wrap(ctx context.Context, tenantID int64, key []byte) ([]byte, error)
+	// Unwrap decrypts what Wrap returned for tenantID under keyID. It returns ErrWrongKey
+	// when keyID is not a key it holds, or the ciphertext was not wrapped by it for that
+	// tenant: the secrets under it are then as good as lost. Any other error (the service
+	// does not answer, refuses the call, a quota) is taken as the service being
+	// unreachable: the tenant's secrets open again once it answers, and until then its
+	// mailboxes wait in key_unavailable and requests that need a secret answer 503.
+	Unwrap(ctx context.Context, tenantID int64, keyID string, wrapped []byte) ([]byte, error)
+}
+
+var (
+	// ErrWrongKey is what KeyProvider.Unwrap returns for a wrapped key it does not open.
+	ErrWrongKey = crypto.ErrDecrypt
+	// ErrKeyUnavailable is what Host methods that seal or open a secret (Host.SignIn for a
+	// new tenant, Host.AddMailbox, Host.ForgetIdentity and the like) return while the
+	// build's KeyProvider cannot be reached. Nothing changed; try again later.
+	ErrKeyUnavailable = crypto.ErrKeyUnavailable
+)
+
+var _ crypto.KeyProvider = KeyProvider(nil)
 
 // NoLimit is a limit that does not limit (Limits.Mailboxes, Limits.AIEmails).
 const NoLimit = store.NoLimit

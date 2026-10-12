@@ -179,6 +179,9 @@ func (s *Store) checkTenant(ctx context.Context, tenantID int64) (SecretsCheck, 
 	keyOpens := false
 	if wrapped != nil {
 		_, uerr := s.unwrap(ctx, tenantID, kekID, wrapped)
+		if errors.Is(uerr, crypto.ErrKeyUnavailable) {
+			return c, uerr // not a key that is gone: the provider could not say
+		}
 		keyOpens = uerr == nil
 	}
 	legacy := s.legacy()
@@ -204,10 +207,13 @@ func (s *Store) checkTenant(ctx context.Context, tenantID int64) (SecretsCheck, 
 
 // UpgradeSecrets reseals every secret still sealed under the master key itself (envelope
 // 1, before tenant keys) under its tenant's key, and every removed mailbox's copy under the
-// key-encryption key (envelope 3), tenant by tenant, each in one transaction. It returns how
-// many it resealed; a second run reseals none. The daemon runs it at start, after the key
-// check; until it has, envelope 1 still opens wherever a secret is read. A secret the
-// master key does not open is left as it is (CheckSecrets counts it).
+// store's key-encryption key (envelope 3): those of envelope 1 and those sealed under
+// another KEK (the master key, before a module's key service took over), tenant by tenant,
+// each in one transaction. It returns how many it resealed; a second run reseals none. The
+// daemon runs it at start, after the key check; until it has, envelope 1 still opens
+// wherever a secret is read. A secret the master key does not open is left as it is
+// (CheckSecrets counts it). Without the master key there is nothing it could open, and it
+// does nothing.
 func (s *Store) UpgradeSecrets(ctx context.Context) (int, error) {
 	if s.keys == nil {
 		return 0, ErrNoKeys
@@ -284,7 +290,8 @@ func (s *Store) upgradeTenant(ctx context.Context, tenantID int64, legacy crypto
 	return n, tx.Commit()
 }
 
-// upgradeRemoved reseals the removed mailboxes' envelope-1 copies under the KEK.
+// upgradeRemoved reseals under the store's KEK the removed mailboxes' copies of envelope 1
+// and those of envelope 3 sealed under another KEK.
 func (s *Store) upgradeRemoved(ctx context.Context, legacy crypto.LegacyOpener) (int, error) {
 	n := 0
 	err := s.eachTenant(ctx, tenantsRemoved, func(ctx context.Context, _ int64) error {
@@ -308,7 +315,7 @@ func (s *Store) upgradeRemoved(ctx context.Context, legacy crypto.LegacyOpener) 
 				_ = rs.Close()
 				return err
 			}
-			if crypto.Envelope(r.dekEnc) == 1 {
+			if e := crypto.Envelope(r.dekEnc); e == 1 || (e == 3 && crypto.KEKID(r.dekEnc) != s.keys.p.KeyID()) {
 				old = append(old, r)
 			}
 		}
@@ -316,9 +323,12 @@ func (s *Store) upgradeRemoved(ctx context.Context, legacy crypto.LegacyOpener) 
 			return err
 		}
 		for _, r := range old {
-			plain, err := legacy.OpenLegacy(r.accountID, r.secretEnc, r.dekEnc)
+			plain, err := crypto.OpenKEK(ctx, s.keys.p, legacy, removedBinding(r.accountID), r.secretEnc, r.dekEnc)
+			if errors.Is(err, crypto.ErrDecrypt) {
+				continue // not a key this install has: the module gets it without its secret
+			}
 			if err != nil {
-				continue
+				return err
 			}
 			secretEnc, dekEnc, err := crypto.SealKEK(ctx, s.keys.p, removedBinding(r.accountID), plain)
 			if err != nil {

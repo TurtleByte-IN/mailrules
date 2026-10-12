@@ -1773,10 +1773,10 @@ export interface components {
         /** @enum {string} */
         TLSMode: "implicit" | "starttls";
         /**
-         * @description `auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again through the module, for a mailbox a module connected (`Account.module`) whose sign-in was revoked or refused - a one-click one, or one a module's sign-in form connected whose server refuses its password; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`. In the hosted build, a mailbox whose server now resolves to an address off the public internet stops in `error` without connecting, with `last_error` saying that the hosted version can only connect to mail servers on the public internet
+         * @description `auth_failed`, `reconnect_needed`, `cert_changed` and `error` have stopped and wait for the user (fix the password; sign in to the provider again through the module, for a mailbox a module connected (`Account.module`) whose sign-in was revoked or refused - a one-click one, or one a module's sign-in form connected whose server refuses its password; or accept the certificate the server now presents, then reconnect); `paused` was set by the user. No action runs on a mailbox that is not `live`. In the hosted build, a mailbox whose server now resolves to an address off the public internet stops in `error` without connecting, with `last_error` saying that the hosted version can only connect to mail servers on the public internet. `key_unavailable` (only in a build whose module keeps the keys in a key service, the hosted build): the key service that protects the mailbox's password cannot be reached, so it cannot be opened; nothing is wrong with the mailbox, and it is retried with a growing delay, as `reconnecting` is, until the service answers
          * @enum {string}
          */
-        AccountStatus: "new" | "live" | "reconnecting" | "auth_failed" | "reconnect_needed" | "cert_changed" | "error" | "paused";
+        AccountStatus: "new" | "live" | "reconnecting" | "key_unavailable" | "auth_failed" | "reconnect_needed" | "cert_changed" | "error" | "paused";
         AccountInput: {
             preset: components["schemas"]["PresetName"];
             username: string;

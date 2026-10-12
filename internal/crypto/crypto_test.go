@@ -2,10 +2,12 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -148,6 +150,75 @@ func TestSealKEK(t *testing.T) {
 	old, oldDek, _ := sealV1(key(1), 7, []byte("old"))
 	if got, err := OpenKEK(ctx, master, master, b, old, oldDek); err != nil || string(got) != "old" {
 		t.Errorf("envelope 1 copy: %q, %v", got, err)
+	}
+}
+
+// module is a module's key provider: a key of its own under another id, which records the
+// key ids it is asked to unwrap.
+type module struct {
+	MasterKey
+	asked []string
+}
+
+func (m *module) KeyID() string { return "kms/key" }
+
+func (m *module) Unwrap(ctx context.Context, tenantID int64, keyID string, wrapped []byte) ([]byte, error) {
+	m.asked = append(m.asked, keyID)
+	if keyID != "kms/key" {
+		return nil, ErrDecrypt
+	}
+	return m.MasterKey.Unwrap(ctx, tenantID, MasterKeyID, wrapped)
+}
+
+// A module's provider with the master key: what the master key wrapped opens with it, what
+// the module wrapped with the module alone, and the module is never asked for the master
+// key's. Without the master key, what it wrapped does not open, still without asking.
+func TestWithMasterKey(t *testing.T) {
+	ctx := t.Context()
+	master := MasterKey(key(1))
+	m := &module{MasterKey: MasterKey(key(2))}
+	p := WithMasterKey(m, master)
+	if p.KeyID() != "kms/key" {
+		t.Fatalf("KeyID = %q", p.KeyID())
+	}
+	underMaster, _ := master.Wrap(ctx, 5, key(9))
+	underModule, err := p.Wrap(ctx, 5, key(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := p.Unwrap(ctx, 5, MasterKeyID, underMaster); err != nil || !bytes.Equal(got, key(9)) {
+		t.Fatalf("the master key's: %x, %v", got, err)
+	}
+	if got, err := p.Unwrap(ctx, 5, "kms/key", underModule); err != nil || !bytes.Equal(got, key(8)) {
+		t.Fatalf("the module's: %x, %v", got, err)
+	}
+	// A key the module wrapped never falls back to the master key, even given its id.
+	if _, err := p.Unwrap(ctx, 5, MasterKeyID, underModule); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("the module's under the master key's id: %v", err)
+	}
+	old, oldDek, _ := sealV1(key(1), 7, []byte("old"))
+	if got, err := p.(LegacyOpener).OpenLegacy(7, old, oldDek); err != nil || string(got) != "old" {
+		t.Fatalf("envelope 1: %q, %v", got, err)
+	}
+
+	alone := WithMasterKey(m, nil)
+	if _, err := alone.Unwrap(ctx, 5, MasterKeyID, underMaster); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("without the master key: %v", err)
+	}
+	if _, ok := alone.(LegacyOpener); ok {
+		t.Error("without the master key envelope 1 has an opener")
+	}
+	if slices.Contains(m.asked, MasterKeyID) {
+		t.Error("the module was asked to unwrap the master key's")
+	}
+
+	// An envelope-3 copy names the KEK it is under.
+	_, dek, err := SealKEK(ctx, p, Binding{Kind: "removed", Ref: "1"}, []byte("x"))
+	if err != nil || KEKID(dek) != "kms/key" {
+		t.Fatalf("KEKID = %q, %v", KEKID(dek), err)
+	}
+	if KEKID(oldDek) != "" || KEKID([]byte{3, 9, 'x'}) != "" {
+		t.Error("KEKID of something that is not a whole envelope 3")
 	}
 }
 

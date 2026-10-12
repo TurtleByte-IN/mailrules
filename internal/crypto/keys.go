@@ -6,16 +6,18 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
 // Tenant data keys (MAI-150). Every tenant has its own random data key (TDK), stored only
-// wrapped by a key-encryption key (KEK) that a KeyProvider holds: the master key today,
-// a KMS later (MAI-186). A secret is sealed under a fresh per-secret key, which the TDK
-// wraps, and both are bound to (tenant, kind, row or name), so a ciphertext neither opens
-// in another tenant nor in another row of the same one. Deleting a tenant's wrapped TDK
-// makes everything sealed under it unreadable, wherever a copy of it went (crypto-shred);
-// rotating the KEK rewraps one key per tenant, never the secrets.
+// wrapped by a key-encryption key (KEK) that a KeyProvider holds: the master key on
+// self-host, a module's key service in the hosted build (MAI-216). A secret is sealed
+// under a fresh per-secret key, which the TDK wraps, and both are bound to (tenant, kind,
+// row or name), so a ciphertext neither opens in another tenant nor in another row of the
+// same one. Deleting a tenant's wrapped TDK makes everything sealed under it unreadable,
+// wherever a copy of it went (crypto-shred); rotating the KEK rewraps one key per tenant,
+// never the secrets.
 //
 // How a sealed secret is read is told by its wrapped per-secret key (dekEnc):
 //
@@ -26,14 +28,22 @@ import (
 
 // KeyProvider holds a key-encryption key: it wraps tenants' data keys and unwraps them.
 // tenantID is bound into each wrap, so a wrapped key does not open as another tenant's.
+// ext.KeyProvider is the same contract as a module implements it.
 type KeyProvider interface {
 	// KeyID names the KEK new keys are wrapped under; it is stored with each wrapped key,
 	// so a provider holding several (a rotation) knows which one opens it.
 	KeyID() string
 	Wrap(ctx context.Context, tenantID int64, key []byte) ([]byte, error)
-	// Unwrap returns ErrDecrypt when keyID or the tenant is not the one wrapped.
+	// Unwrap returns ErrDecrypt when keyID or the tenant is not the one wrapped. Any other
+	// error means the provider could not answer (ErrKeyUnavailable).
 	Unwrap(ctx context.Context, tenantID int64, keyID string, wrapped []byte) ([]byte, error)
 }
+
+// ErrKeyUnavailable means the key provider could not be asked to wrap or unwrap a key (a
+// key service that does not answer, or refuses for a reason other than the key): nothing
+// sealed under a key it holds opens until it answers again, and nothing new is sealed.
+// It is never a wrong key, which is ErrDecrypt.
+var ErrKeyUnavailable = errors.New("key service unreachable")
 
 // LegacyOpener opens secrets sealed before tenant keys (envelope 1), with the master key
 // they were sealed under.
@@ -72,6 +82,48 @@ func (m MasterKey) Unwrap(_ context.Context, tenantID int64, keyID string, wrapp
 // OpenLegacy implements LegacyOpener.
 func (m MasterKey) OpenLegacy(rowID int64, secretEnc, dekEnc []byte) ([]byte, error) {
 	return openV1(m, rowID, secretEnc, dekEnc)
+}
+
+// WithMasterKey is p, the key provider of a module (ext.Module.Keys), with the master key
+// still unwrapping what was wrapped under it before p held the keys: the tenant keys whose
+// kek_id is MasterKeyID, removed mailboxes' envelope-3 copies under it, and envelope 1.
+// Everything else goes to p alone, so a key p wrapped never falls back to the master key.
+// master may be nil (an install that never had one, or has retired it): what was wrapped
+// under the master key is then ErrDecrypt, without asking p.
+func WithMasterKey(p KeyProvider, master MasterKey) KeyProvider {
+	if master == nil {
+		return withoutMaster{p}
+	}
+	return withMaster{withoutMaster{p}, master}
+}
+
+// withoutMaster is a module's provider; the master key's id is never its.
+type withoutMaster struct{ KeyProvider }
+
+func (w withoutMaster) Unwrap(ctx context.Context, tenantID int64, keyID string, wrapped []byte) ([]byte, error) {
+	if keyID == MasterKeyID {
+		return nil, ErrDecrypt
+	}
+	return w.KeyProvider.Unwrap(ctx, tenantID, keyID, wrapped)
+}
+
+// withMaster is a module's provider and the master key it took over from.
+type withMaster struct {
+	withoutMaster
+	master MasterKey
+}
+
+var _ LegacyOpener = withMaster{}
+
+func (w withMaster) Unwrap(ctx context.Context, tenantID int64, keyID string, wrapped []byte) ([]byte, error) {
+	if keyID == MasterKeyID {
+		return w.master.Unwrap(ctx, tenantID, keyID, wrapped)
+	}
+	return w.withoutMaster.Unwrap(ctx, tenantID, keyID, wrapped)
+}
+
+func (w withMaster) OpenLegacy(rowID int64, secretEnc, dekEnc []byte) ([]byte, error) {
+	return w.master.OpenLegacy(rowID, secretEnc, dekEnc)
 }
 
 // wrapAAD binds a wrapped data key to its tenant.
@@ -127,6 +179,15 @@ func Envelope(dekEnc []byte) int {
 		return int(dekEnc[0])
 	}
 	return 0
+}
+
+// KEKID is the KEK an envelope-3 copy was sealed under (its KeyProvider's KeyID), "" for
+// any other envelope.
+func KEKID(dekEnc []byte) string {
+	if Envelope(dekEnc) != int(envelopeKEK) || len(dekEnc) < 2+int(dekEnc[1]) {
+		return ""
+	}
+	return string(dekEnc[2 : 2+int(dekEnc[1])])
 }
 
 // TenantKey is one tenant's unwrapped data key, with what opens the tenant's secrets sealed

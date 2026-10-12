@@ -78,7 +78,7 @@ func Run(args []string, version string, modules ...ext.Module) error {
 		}
 		return migrate(ctx, cfg)
 	case "accounts":
-		return accountsCLI{stdin: os.Stdin, stdout: os.Stdout, getenv: os.Getenv}.run(ctx, args[1:])
+		return accountsCLI{stdin: os.Stdin, stdout: os.Stdout, getenv: os.Getenv, modules: modules}.run(ctx, args[1:])
 	case "users":
 		return usersCLI{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv}.run(ctx, args[1:])
 	case "eval":
@@ -143,18 +143,15 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	for _, r := range fixed {
 		slog.Info("a rule naming a removed mailbox was changed", "rule_id", r.ID, "rule", r.Name, "switched_off", r.MailboxRemoved)
 	}
-	key, err := openMasterKey(ctx, cfg, st)
+	k, err := openKeys(ctx, cfg, st, modules)
 	if err != nil {
 		return err
 	}
-	st = st.WithKeys(key) // every secret is sealed and opened under its tenant's key, which key wraps
-	wst = wst.WithKeys(key)
-	upgraded, err := st.UpgradeSecrets(ctx)
-	if err != nil {
+	// Every secret is sealed and opened under its tenant's key, which the keyring unwraps:
+	// one keyring for both pools, so a tenant's key is unwrapped once for both.
+	st, wst = st.WithKeyring(k.ring), wst.WithKeyring(k.ring)
+	if err := upgradeKeys(ctx, cfg, st, k); err != nil {
 		return err
-	}
-	if upgraded > 0 {
-		slog.Info("resealed stored secrets under their tenant's key", "secrets", upgraded)
 	}
 
 	// The decider, its models, the thresholds and the provider keys can be changed in the

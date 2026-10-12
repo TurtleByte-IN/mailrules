@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/mail/mailtest"
@@ -261,6 +262,59 @@ func TestSupervisorServerNotPublic(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if n := calls.Load(); n != 1 {
 		t.Errorf("connected %d times; it must not be retried", n)
+	}
+}
+
+// A mailbox whose password the key service cannot open right now waits in key_unavailable,
+// saying so rather than the provider's error, and is retried until the service answers:
+// nothing is wrong with its sign-in, also for one a module connected, whose token comes
+// from the key service's tenant key in the middle of logging in.
+func TestSupervisorKeyServiceUnreachable(t *testing.T) {
+	for name, failure := range map[string]error{
+		"password": fmt.Errorf("decrypt account secret: open the key of tenant 1: %w: rpc error: code = Unavailable", crypto.ErrKeyUnavailable),
+		"one-click token": fmt.Errorf("sign in to imap.gmail.com:993: get an access token: %w: %w", mail.ErrConnection,
+			fmt.Errorf("open the key of tenant 1: %w: deadline exceeded", crypto.ErrKeyUnavailable)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.sup.Account.OAuth, e.sup.Account.Module = name != "password", name != "password"
+			e.sup.BackoffMin, e.sup.BackoffMax = 10*time.Millisecond, 10*time.Millisecond
+			var calls atomic.Int32
+			release := make(chan struct{})
+			e.sup.Open = func(context.Context) (mail.Mailbox, error) {
+				calls.Add(1)
+				select {
+				case <-release:
+					return e.mb, nil
+				default:
+					return nil, failure
+				}
+			}
+			_, evs, cancel := e.sup.Hub.Subscribe(0)
+			defer cancel()
+			stop := e.run(t)
+			defer stop()
+			var a store.Account
+			eventually(t, "status key_unavailable", func() bool {
+				a, _ = e.st.Account(t.Context(), e.sup.Account.ID)
+				return a.Status == StatusKeyUnavailable
+			})
+			if a.LastError != errKeyUnavailable.Error() {
+				t.Errorf("last error = %q", a.LastError)
+			}
+			eventually(t, "retries", func() bool { return calls.Load() >= 3 })
+			close(release)
+			eventually(t, "status live", func() bool {
+				a, _ = e.st.Account(t.Context(), e.sup.Account.ID)
+				return a.Status == StatusLive
+			})
+			// One status change for the outage however often it was retried, then live.
+			for _, want := range []string{StatusKeyUnavailable, StatusLive} {
+				if ev := <-evs; ev.Data.(store.Account).Status != want {
+					t.Fatalf("event = %+v, want %s", ev.Data, want)
+				}
+			}
+		})
 	}
 }
 

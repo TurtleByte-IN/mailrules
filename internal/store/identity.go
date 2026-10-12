@@ -28,7 +28,9 @@ type Identity struct {
 // removal called off. One whose person deleted their own account is no longer known
 // (DeleteOwnAccount), so it gets a new user. It fails, changing nothing, with
 // ErrTenantMismatch when a known identity's user is in another tenant, and with
-// ErrEmailInUse when another user has the email.
+// ErrEmailInUse when another user has the email. A new tenant gets its data key at once,
+// wrapped by the store's key provider (when it has one): a provider that cannot answer
+// fails the sign-in with crypto.ErrKeyUnavailable, and no tenant is made.
 //
 // It runs before anyone is signed in, so on Postgres it finds the tenants through the
 // definer functions (scope.go) and scopes its transaction once it knows the tenant.
@@ -81,13 +83,19 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 			return User{}, fmt.Errorf("sign in identity: cancel removal: %w", err)
 		}
 	} else {
-		if tenantID == 0 {
+		newTenant := tenantID == 0
+		if newTenant {
 			if tenantID, err = s.createTenant(ctx, tx, id.Provider, id.Tenant, now); err != nil {
 				return User{}, fmt.Errorf("sign in identity: create tenant: %w", err)
 			}
 		}
 		if err := tx.scope(ctx, tenantID, true); err != nil {
 			return User{}, fmt.Errorf("sign in identity: %w", err)
+		}
+		if newTenant && s.keys != nil {
+			if _, _, err := s.makeTenantKey(ctx, tx, tenantID); err != nil {
+				return User{}, fmt.Errorf("sign in identity: %w", err)
+			}
 		}
 		var uid int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO users (email, password_hash, created_at, tenant_id) VALUES (?, '', ?, ?) RETURNING id`,

@@ -71,6 +71,9 @@ export function health(a: Account): { detail: string; chip: string; action?: 'te
       return { detail: 'Logging in and syncing folders…', chip: 'chip-neutral', action: 'wait', label: 'Working…' };
     case 'reconnecting':
       return { detail: 'Connection dropped · nothing missed, catch-up runs on reconnect', chip: 'chip-review', action: 'reconnect', label: 'Reconnect now' };
+    case 'key_unavailable':
+      // The hosted build's key service cannot open the mailbox's password; the daemon retries it on its own.
+      return { detail: 'Key service unreachable · MailRules keeps trying, nothing to do', chip: 'chip-review' };
     case 'paused':
       return { detail: 'Paused · new mail is not sorted', chip: 'chip-neutral', action: 'resume', label: 'Resume' };
     case 'auth_failed':

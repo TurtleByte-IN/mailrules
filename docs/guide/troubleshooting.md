@@ -56,6 +56,7 @@ When adding a mailbox, the connection test shows the same check for a server who
 
 - **Error** means the secure connection could not be set up, or the watched folder no longer exists. Check the host, port and encryption (for **Other IMAP server** or **Proton Mail**), or choose another **Watched folder** under **Edit**, then click **Reconnect**.
 - **Reconnecting** means the connection dropped. MailRules retries by itself, waiting longer each time, up to 5 minutes between tries, and catches up on mail that arrived in the meantime. **Reconnect now** on Overview tries at once.
+- **Key service unreachable** (hosted version only) means the key service that protects the mailbox's password cannot be reached, so MailRules cannot open it. Nothing is wrong with the mailbox or its password. MailRules retries by itself, waiting longer each time, up to 5 minutes, and catches up once the service answers.
 - **Reconnecting** with the error `decrypt failed` means the master key is not the one the passwords were stored with. See [If the master key is lost](./backup.md#if-the-master-key-is-lost). A start with no `master.key` at all, after a restore or a move, no longer gets this far: MailRules stops and says the master key is missing, as described in [Restoring](./backup.md#restoring).
 
 ## Nothing is being sorted
