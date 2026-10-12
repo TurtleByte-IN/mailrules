@@ -40,9 +40,11 @@ func TestSettingsDescribed(t *testing.T) {
 
 // deploy/docker-compose.yml passes settings to the container one by one, so a setting added
 // here and forgotten there silently does nothing for Compose users. The ones it leaves out
-// on purpose are fixed by the image or meaningless in a container.
+// on purpose are fixed by the image, meaningless in a container, or the hosted service's
+// alone (the Postgres URLs: the Compose file is for self-hosting, on SQLite).
 func TestComposePassesEverySetting(t *testing.T) {
-	notPassed := map[string]bool{"MAILRULES_LISTEN": true, "MAILRULES_DATA_DIR": true, "MAILRULES_MODE": true}
+	notPassed := map[string]bool{"MAILRULES_LISTEN": true, "MAILRULES_DATA_DIR": true, "MAILRULES_MODE": true,
+		"MAILRULES_DATABASE_URL": true, "MAILRULES_WORKER_DATABASE_URL": true, "MAILRULES_MIGRATE_DATABASE_URL": true}
 	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "docker-compose.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -386,5 +388,39 @@ func TestTrustedProxyPrefixes(t *testing.T) {
 	}
 	if got, err := (&Config{}).TrustedProxyPrefixes(); err != nil || len(got) != 0 {
 		t.Errorf("empty setting = %v, %v; want no proxies", got, err)
+	}
+}
+
+// The Postgres URLs are checked without being quoted: they hold passwords.
+func TestValidateDatabase(t *testing.T) {
+	const secret = "s3cret-pw"
+	for _, tt := range []struct {
+		name               string
+		app, worker, owner string
+		want               string // "" = valid
+	}{
+		{name: "none: SQLite"},
+		{name: "app only", app: "postgres://app:" + secret + "@db:5432/mailrules"},
+		{name: "app and worker", app: "postgresql://app@db/mailrules", worker: "postgres://w@db/mailrules"},
+		{name: "owner alone, for mailrules migrate", owner: "postgres://owner:" + secret + "@db/mailrules"},
+		{name: "worker without app", worker: "postgres://w@db/mailrules", want: "MAILRULES_WORKER_DATABASE_URL needs MAILRULES_DATABASE_URL"},
+		{name: "not postgres", app: "mysql://app:" + secret + "@db/x", want: "MAILRULES_DATABASE_URL must be a postgres:// URL"},
+		{name: "no host", owner: "postgres:///mailrules?password=" + secret, want: "MAILRULES_MIGRATE_DATABASE_URL must be a postgres:// URL"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{DatabaseURL: tt.app, WorkerDatabaseURL: tt.worker, MigrateDatabaseURL: tt.owner}
+			err := c.ValidateDatabase()
+			switch {
+			case tt.want == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			case err != nil && strings.Contains(err.Error(), secret):
+				t.Fatalf("the error quotes a password: %v", err)
+			}
+			if c.Postgres() != (tt.app != "") {
+				t.Errorf("Postgres() = %v", c.Postgres())
+			}
+		})
 	}
 }

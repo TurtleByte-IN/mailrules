@@ -90,15 +90,11 @@ func (a accountsCLI) run(ctx context.Context, args []string) error {
 		rest = fs.Args()[1:]
 	}
 
-	db, err := store.Open(ctx, cfg.DataDir)
+	st, done, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if err := store.Migrate(ctx, db); err != nil {
-		return err
-	}
-	st := store.New(db)
+	defer done()
 	key, err := openMasterKey(ctx, cfg, st)
 	if err != nil {
 		return err

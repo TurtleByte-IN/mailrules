@@ -169,6 +169,36 @@ Set `MAILRULES_DATA_DIR` (or `--data-dir`) to choose another one. Use an absolut
 
 The Settings screen shows the data directory in use, in the Self-hosting card.
 
+## The hosted build's database (Postgres)
+
+Self-hosting keeps the SQLite database in the data directory and needs none of this. The hosted service keeps every team in one Postgres database (16 or later) instead, with row-level security: each query runs for one team, and the database itself returns no other team's rows. It uses three logins, so that the program serving the web app owns no table and cannot change the schema:
+
+| Login | Member of | Used by |
+| --- | --- | --- |
+| the owner | none; it needs `CREATEROLE` | `mailrules migrate` only. It owns the tables and creates the group roles `mailrules_app`, `mailrules_worker` and `mailrules_definer` the first time. |
+| the app login | `mailrules_app` | `mailrules serve`, through `MAILRULES_DATABASE_URL` |
+| the worker login | `mailrules_worker` | the mailbox workers in `mailrules serve`, through `MAILRULES_WORKER_DATABASE_URL`. It cannot read password hashes or sessions. Leave the URL empty to use the app login. |
+
+Set it up once, as a database superuser:
+
+```sql
+CREATE ROLE mailrules_owner LOGIN CREATEROLE PASSWORD '…';
+CREATE DATABASE mailrules OWNER mailrules_owner;
+```
+
+Then create the schema as the owner, and the two logins once the group roles exist:
+
+```bash
+MAILRULES_MIGRATE_DATABASE_URL='postgres://mailrules_owner:…@db:5432/mailrules?sslmode=require' mailrules migrate
+```
+
+```sql
+CREATE ROLE mailrules_web LOGIN PASSWORD '…' IN ROLE mailrules_app;
+CREATE ROLE mailrules_mailboxes LOGIN PASSWORD '…' IN ROLE mailrules_worker;
+```
+
+Start `mailrules serve` with `MAILRULES_DATABASE_URL` and `MAILRULES_WORKER_DATABASE_URL` set to those two logins, and the master key in `MAILRULES_MASTER_KEY`, the same for every copy of the program, so that no copy generates a key of its own. On an upgrade, run `mailrules migrate` with the new version before starting it: on Postgres, `mailrules serve` never changes the schema, and it stops with a message while the schema is not the one it was built for. See [Settings](./settings.md#database-hosted-build) for the three variables.
+
 ## Upgrading
 
 MailRules updates its database by itself the first time a new version starts, so upgrading is: back up, replace the program, restart. Back up the data directory first (see [Backup and the master key](./backup.md)); MailRules has no command to undo a database update, so the backup is how you would go back to the older version.
