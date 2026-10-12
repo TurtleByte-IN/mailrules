@@ -4,7 +4,7 @@
   import ConfirmBox from '../lib/components/ConfirmBox.svelte';
   import { clock, confidence, dayHeading, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
-  import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type Outcome } from '../lib/state/activity.svelte';
+  import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type ActionKind, type Outcome } from '../lib/state/activity.svelte';
   import { load as loadQuestions } from '../lib/state/questions.svelte';
   import { load as loadReview, review } from '../lib/state/review.svelte';
   import { rules } from '../lib/state/rules.svelte';
@@ -16,6 +16,18 @@
 
   // The four groups of Overview's "Where today's mail went", under its labels.
   const outcomes: [Outcome, string][] = [['sorted', 'Sorted'], ['inbox', 'Left in Inbox'], ['review', 'Needs review'], ['trashed', 'Trashed']];
+  // What MailRules did, one entry per action kind the daemon filters by.
+  const actions: [ActionKind, string][] = [
+    ['move', 'Moved to a folder'],
+    ['archive', 'Archived'],
+    ['trash', 'Trashed'],
+    ['junk', 'Moved to Junk'],
+    ['flag', 'Flagged'],
+    ['unflag', 'Unflagged'],
+    ['read', 'Marked read'],
+    ['unread', 'Marked unread'],
+    ['keep', 'Kept in Inbox'],
+  ];
 
   // Other screens link to one group: #/activity?outcome=sorted. An unknown value is ignored.
   const asked = new URLSearchParams(router.querystring);
@@ -48,7 +60,7 @@
     }
     return out;
   });
-  const filtered = $derived(Boolean(activity.filter.rule || activity.filter.account || activity.filter.outcome));
+  const filtered = $derived(Boolean(activity.filter.rule || activity.filter.account || activity.filter.action || activity.filter.outcome));
   // Wide screens always show one decision beside the feed, the first row until one is picked.
   // Narrow screens open it under the row that was tapped.
   const shownId = $derived(rows.find((r) => r.id === selected)?.id ?? (selected !== null && selected === linked ? linked : rows[0]?.id));
@@ -177,6 +189,15 @@
             <option value="">All mailboxes</option>
             {#each accounts.list as a (a.id)}
               <option value={String(a.id)}>{a.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="flex min-w-0 flex-[1_1_140px] flex-col gap-1.5">
+          <span class="label">Action</span>
+          <select class="field" bind:value={activity.filter.action} onchange={load}>
+            <option value="">All actions</option>
+            {#each actions as [value, name] (value)}
+              <option {value}>{name}</option>
             {/each}
           </select>
         </label>

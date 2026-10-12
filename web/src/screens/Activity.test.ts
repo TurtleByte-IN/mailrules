@@ -10,7 +10,7 @@ import Activity from './Activity.svelte';
 
 // The state lives in module scope and a mounted screen cannot be given fresh modules, so each test starts it over.
 beforeEach(() => {
-  Object.assign(activity, { list: [], next: null, loaded: false, error: '', filter: { rule: '', account: '', outcome: '' }, detail: null, detailError: '', stats: null, statsError: '' });
+  Object.assign(activity, { list: [], next: null, loaded: false, error: '', filter: { rule: '', account: '', action: '', outcome: '' }, detail: null, detailError: '', stats: null, statsError: '' });
   Object.assign(review, { list: [], next: null, total: 0, loaded: false, error: '' });
   accounts.list = [];
   go('#/activity');
@@ -146,6 +146,18 @@ it('the Outcome filter offers the four groups of the Overview and sends the one 
 
   await fireEvent.change(select, { target: { value: 'inbox' } });
   expect(feedCalls(calls)).toEqual(['GET /api/activity', 'GET /api/activity?outcome=inbox']);
+});
+
+it('the Action filter sends the action chosen, together with the other filters', async () => {
+  const calls = daemon();
+  render(Activity);
+  const select = screen.getByLabelText('Action') as HTMLSelectElement;
+  expect(select.options[0].text).toBe('All actions');
+
+  await fireEvent.change(select, { target: { value: 'flag' } });
+  await fireEvent.change(screen.getByLabelText('Outcome'), { target: { value: 'sorted' } });
+  expect(feedCalls(calls)).toEqual(['GET /api/activity', 'GET /api/activity?action=flag', 'GET /api/activity?action=flag&outcome=sorted']);
+  expect(screen.queryByText('Nothing sorted yet. New mail shows up here as it arrives.')).toBeNull();
 });
 
 it.each(['sorted', 'trashed', 'inbox', 'review'])('#/activity?outcome=%s opens the feed with that filter chosen and applied', async (outcome) => {
