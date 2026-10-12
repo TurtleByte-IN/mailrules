@@ -136,32 +136,10 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		return Forget{}, fmt.Errorf("forget identity: list mailboxes: %w", err)
 	}
 	out.Keys = alone
-	// The mailboxes a module connected are queued for it with their secrets before those go.
-	if err := queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
+	if err := deleteSecrets(ctx, tx, out.TenantID, out.Accounts, out.Keys, forgottenMessage, forgottenOAuthMessage, now); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
 	}
-	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
-	// one-click mailbox that is its refresh token. A mailbox whose secret is already gone
-	// keeps its status, so a second call changes nothing.
-	for _, id := range out.Accounts {
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ?,
-			status = CASE WHEN oauth = 1 OR module = 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
-			last_error = CASE WHEN oauth = 1 OR module = 1 THEN ? ELSE ? END, last_event_at = ?
-			WHERE id = ? AND length(secret_enc) > 0`, []byte{}, []byte{}, forgottenOAuthMessage, forgottenMessage, now, id); err != nil {
-			return Forget{}, fmt.Errorf("forget identity: delete mailbox secret: %w", err)
-		}
-	}
-	if out.Keys {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = ? AND `+providerKeys, out.TenantID); err != nil {
-			return Forget{}, fmt.Errorf("forget identity: delete model keys: %w", err)
-		}
-		// The destinations stay, named, for the same person signing in again; nothing can be
-		// delivered to them until they are added again.
-		if _, err := tx.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = ?, dek_enc = ? WHERE tenant_id = ?`,
-			[]byte{}, []byte{}, out.TenantID); err != nil {
-			return Forget{}, fmt.Errorf("forget identity: delete notification addresses: %w", err)
-		}
-	}
+
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO forgotten (user_id, forgotten_at, remove_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING`,
 		out.UserID, now, now+ForgetDays*day); err != nil {
@@ -182,6 +160,43 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
 	}
 	return out, nil
+}
+
+// deleteSecrets deletes, in tx, the secrets of the mailboxes in accounts, all of the
+// tenant's: each one a module connected is first queued for that module with its secret
+// (queueRemovedMailboxes), then every one's password or token is blanked and it shows
+// auth_failed with msg, or reconnect_needed with oauthMsg for a mailbox a module connected
+// (oauth or module). When keys, the tenant's stored model API keys go too, and the
+// addresses and signing secrets of its notification destinations. A mailbox whose secret
+// is already gone keeps its status, so a second call changes nothing.
+func deleteSecrets(ctx context.Context, tx *txn, tenantID int64, accounts []int64, keys bool, msg, oauthMsg string, now int64) error {
+	// The mailboxes a module connected are queued for it with their secrets before those go.
+	if err := queueRemovedMailboxes(ctx, tx, accounts, now); err != nil {
+		return err
+	}
+	// secret_enc and dek_enc are NOT NULL: empty is "deleted" (Account.SecretGone); for a
+	// one-click mailbox that is its refresh token.
+	for _, id := range accounts {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ?,
+			status = CASE WHEN oauth = 1 OR module = 1 THEN 'reconnect_needed' ELSE 'auth_failed' END,
+			last_error = CASE WHEN oauth = 1 OR module = 1 THEN ? ELSE ? END, last_event_at = ?
+			WHERE id = ? AND length(secret_enc) > 0`, []byte{}, []byte{}, oauthMsg, msg, now, id); err != nil {
+			return fmt.Errorf("delete mailbox secret: %w", err)
+		}
+	}
+	if !keys {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = ? AND `+providerKeys, tenantID); err != nil {
+		return fmt.Errorf("delete model keys: %w", err)
+	}
+	// The destinations stay, named; nothing can be delivered to them until they are added
+	// again.
+	if _, err := tx.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = ?, dek_enc = ? WHERE tenant_id = ?`,
+		[]byte{}, []byte{}, tenantID); err != nil {
+		return fmt.Errorf("delete notification addresses: %w", err)
+	}
+	return nil
 }
 
 // Forgotten is a forgotten user whose removal is waiting.
@@ -336,10 +351,10 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 	return out, nil
 }
 
-// removeTenant deletes, in tx, a tenant and everything in it. Deleting a mailbox cascades
-// to its folders, contacts, messages, decisions, actions, corrections and notices (and to
-// its rules, which go anyway); deleting a notification destination to its delivery log;
-// deleting a user to their sessions, identity, summaries and forgotten row.
+// removeTenant deletes, in tx, a tenant and everything in it, its plan too. Deleting a
+// mailbox cascades to its folders, contacts, messages, decisions, actions, corrections and
+// notices (and to its rules, which go anyway); deleting a notification destination to its
+// delivery log; deleting a user to their sessions, identity, summaries and forgotten row.
 func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 	for _, q := range []struct{ what, query string }{
 		{"mailboxes", `DELETE FROM accounts WHERE tenant_id = ?`},
@@ -352,6 +367,7 @@ func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 		{"usage", `DELETE FROM usage_daily WHERE tenant_id = ?`},
 		{"AI-sorted email counts", `DELETE FROM ai_emails WHERE tenant_id = ?`},
 		{"first-cleanup grant", `DELETE FROM first_cleanup WHERE tenant_id = ?`},
+		{"plan", `DELETE FROM plans WHERE tenant_id = ?`}, // no foreign key, and tenant ids can be reused
 		{"users", `DELETE FROM users WHERE tenant_id = ?`},
 		{"tenant", `DELETE FROM tenants WHERE id = ?`},
 	} {

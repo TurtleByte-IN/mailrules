@@ -3,10 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,32 +14,15 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
-// limitsModule limits every tenant to what *l says when asked, as the cloud module does
-// until billing sets a plan per tenant.
-func limitsModule(l *ext.Limits) ext.Module {
-	return ext.Module{Name: "limits", Limits: func(context.Context, int64) (ext.Limits, error) { return *l, nil }}
-}
-
 // operatorKeys makes every model the tenant's routers ask run on the operator's keys.
 func operatorKeys(string) bool { return true }
-
-func TestCheckModulesLimits(t *testing.T) {
-	limits := ext.Limits{Mailboxes: 3, AIEmails: 3000}
-	if err := CheckModules("selfhost", []ext.Module{limitsModule(&limits)}); err != nil {
-		t.Errorf("one module that limits tenants: %v", err)
-	}
-	err := CheckModules("selfhost", []ext.Module{limitsModule(&limits), {Name: "other", Limits: limitsModule(&limits).Limits}})
-	if err == nil || !strings.Contains(err.Error(), "more than one module limits tenants") {
-		t.Errorf("two modules that limit tenants: %v", err)
-	}
-}
 
 // A tenant with all the mailboxes its limits allow is refused another on every path that
 // adds one, with the sentence the screen shows, and before anything is dialed. Raising the
 // limit lets the next one in.
 func TestMailboxLimitOnEveryPath(t *testing.T) {
 	const full = "Your plan allows 3 mailboxes, and 3 are connected already. Remove one to connect another."
-	limits := ext.Limits{Mailboxes: 3, AIEmails: ext.NoLimit}
+	m := limitsModule(ext.Limits{Mailboxes: 3, AIEmails: ext.NoLimit})
 	oauth := 0 // one-click logins
 	var e *env
 	e = newEnvWith(t, func(o *Options) {
@@ -49,7 +30,8 @@ func TestMailboxLimitOnEveryPath(t *testing.T) {
 			oauth++
 			return e.box(acct), nil
 		}
-	}, oneClickModule(), formModule(), limitsModule(&limits))
+	}, oneClickModule(), formModule(), m)
+	e.onPlan(store.PlanPersonal)
 	e.signIn()
 	form := func(username string) map[string]any {
 		t.Helper()
@@ -100,24 +82,11 @@ func TestMailboxLimitOnEveryPath(t *testing.T) {
 		t.Errorf("GET /api/limits mailboxes = %v, want 3 of 3 with the refusal", mb)
 	}
 
-	// A plan with room for one more, as billing will set it.
-	limits.Mailboxes = 4
+	// A plan with room for one more, as billing sets it.
+	m.Billing.Plans[store.PlanPersonal] = termsGiving("Personal", ext.Limits{Mailboxes: 4, AIEmails: ext.NoLimit})
 	e.call(http.MethodPost, "/api/accounts", wizard("four@example.test"), http.StatusCreated)
 	if got := oneClick("five@outlook.test"); got != "/#/accounts?mailbox_error=mailbox_limit" {
 		t.Errorf("one-click over the raised limit = %s", got)
-	}
-}
-
-// A module that cannot say what a tenant may have refuses the mailbox rather than letting it
-// in unchecked.
-func TestMailboxLimitUnknown(t *testing.T) {
-	e := newEnv(t, ext.Module{Name: "limits", Limits: func(context.Context, int64) (ext.Limits, error) {
-		return ext.Limits{}, errors.New("plan store down")
-	}})
-	e.signIn()
-	e.refuse(http.MethodPost, "/api/accounts", accountBody, http.StatusInternalServerError, "internal", "")
-	if all, _ := e.st.TenantAccounts(t.Context(), 1); len(all) != 0 {
-		t.Errorf("%d mailboxes stored", len(all))
 	}
 }
 
@@ -141,8 +110,11 @@ func TestLimitsSelfHostHasNone(t *testing.T) {
 // GET /api/limits shows a tenant's use against its limits, counted per UTC calendar month,
 // and whether mail that needs a model now waits in Needs review.
 func TestLimitsShowTheMonthsUse(t *testing.T) {
-	limits := ext.Limits{Mailboxes: 3, AIEmails: 3000, UpgradeURL: "#/settings/plan"}
-	e := newEnv(t, limitsModule(&limits))
+	limits := ext.Limits{Mailboxes: 3, AIEmails: 3000}
+	m := limitsModule(limits)
+	m.Billing.Plans[store.PlanPro] = termsGiving("Pro", ext.Limits{Mailboxes: 10, AIEmails: 10_000}) // more: an upgrade is offered
+	e := newEnv(t, m)
+	e.onPlan(store.PlanPersonal)
 	e.signIn()
 	e.call(http.MethodPost, "/api/accounts", accountBody, http.StatusCreated)
 	jan := e.ck.t // 15 January 2027, UTC
@@ -180,7 +152,7 @@ func TestLimitsShowTheMonthsUse(t *testing.T) {
 	for _, tt := range tests {
 		tt.setup()
 		mb, ai, upgrade := get()
-		if mb["used"] != float64(1) || mb["limit"] != float64(3) || upgrade != "#/settings/plan" {
+		if mb["used"] != float64(1) || mb["limit"] != float64(3) || upgrade != "#/plan" {
 			t.Errorf("%s: mailboxes %v, upgrade %v", tt.name, mb, upgrade)
 		}
 		want := map[string]any{"used": tt.used, "limit": float64(3000), "month": tt.month, "resets_at": tt.resets, "counted": tt.counted, "paused": tt.paused}
@@ -215,8 +187,8 @@ func TestCleanupCheckAgainstTheAllowance(t *testing.T) {
 		{"a used-up grant at the allowance leaves mail for review", 10, 10, 100, 0, 3, 10, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			limits := ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100, FirstCleanupEmails: tc.grant}
-			e := newEnv(t, limitsModule(&limits))
+			e := newEnv(t, limitsModule(ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100, FirstCleanupEmails: tc.grant}))
+			e.onPlan(store.PlanPersonal)
 			e.metered = operatorKeys
 			for range 3 {
 				e.deliver("hello@news.example", "reading issue")
@@ -261,8 +233,9 @@ func TestCleanupCheckAgainstTheAllowance(t *testing.T) {
 // Live sorting never draws on the first-cleanup grant: a model's decision on the operator's
 // keys counts against the month even while the grant is untouched.
 func TestLiveSortingLeavesTheFirstCleanupGrant(t *testing.T) {
-	limits := ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100, FirstCleanupEmails: 10_000}
-	e := newEnv(t, limitsModule(&limits))
+	m := limitsModule(ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100, FirstCleanupEmails: 10_000})
+	e := newEnv(t, m)
+	e.onPlan(store.PlanPersonal)
 	e.metered = operatorKeys
 	e.connect()
 	e.call(http.MethodPost, "/api/rules/batch", cleanupRules, http.StatusCreated)
@@ -280,7 +253,7 @@ func TestLiveSortingLeavesTheFirstCleanupGrant(t *testing.T) {
 	if fc := got["first_cleanup"].(map[string]any); fc["used"] != float64(0) || fc["limit"] != float64(10_000) {
 		t.Errorf("first_cleanup = %v", fc)
 	}
-	limits.FirstCleanupEmails = 0
+	m.Billing.Plans[store.PlanPersonal] = termsGiving("Personal", ext.Limits{Mailboxes: ext.NoLimit, AIEmails: 100})
 	if got := e.call(http.MethodGet, "/api/limits", "", http.StatusOK); got["first_cleanup"] != nil {
 		t.Errorf("first_cleanup without a grant = %v", got["first_cleanup"])
 	}

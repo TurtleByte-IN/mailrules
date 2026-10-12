@@ -35,6 +35,11 @@ func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
+	feats, err := s.tenantFeatures(r.Context(), viewer(r).TenantID)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
 	env := s.Settings.Env
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dry_run": v.DryRun, "decider": v.Decider, "decider_model": v.DeciderModel, "fallback_model": v.FallbackModel,
@@ -49,7 +54,7 @@ func (s *server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		"server":                    map[string]string{"version": s.Version, "data_dir": env.DataDir, "listen": env.Listen, "mode": env.Mode},
 		"limits":                    limits,
 		"summary":                   sum,
-		"features":                  s.features(),
+		"features":                  feats,
 	})
 }
 

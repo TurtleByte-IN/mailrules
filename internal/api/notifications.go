@@ -31,14 +31,16 @@ func (s *server) notifier() *ext.Notifications {
 	return nil
 }
 
-// notificationsOnly refuses a request while no module of the build delivers notifications.
+// notificationsOnly refuses a request while no module of the build delivers notifications
+// (404 not_available), or while the tenant's plan does not include them (403 plan_required).
 func (s *server) notificationsOnly(h http.HandlerFunc) http.HandlerFunc {
+	gated := s.planFeatureOnly("notifications", h)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.notifier() == nil {
 			writeError(w, http.StatusNotFound, "not_available", "Notifications and webhooks are not included in this build of MailRules.", "")
 			return
 		}
-		h(w, r)
+		gated(w, r)
 	}
 }
 
@@ -200,14 +202,23 @@ func (s *server) handleDestinationDelete(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// notifyProblem checks the destinations a rule names: each once, each one of the tenant's.
-// It answers 400 invalid_input at path itself and returns false when they will not do.
+// notifyProblem checks the destinations a rule names: each once, each one of the tenant's,
+// and only while the tenant's plan includes notifications. It answers 400 invalid_input at
+// path (or 403 plan_required) itself and returns false when they will not do.
 func (s *server) notifyProblem(w http.ResponseWriter, r *http.Request, path string, ids []int64) bool {
 	if len(ids) == 0 {
 		return true
 	}
 	if s.notifier() == nil {
 		invalid(w, path, "This build of MailRules does not send notifications.")
+		return false
+	}
+	if ok, err := hasFeature(r.Context(), s.store, s.billing(), viewer(r).TenantID, "notifications", s.now()); err != nil || !ok {
+		if err != nil {
+			internalError(w, r, err)
+		} else {
+			s.planRequired(w, "notifications")
+		}
 		return false
 	}
 	ds, err := s.store.Destinations(r.Context(), viewer(r).TenantID)

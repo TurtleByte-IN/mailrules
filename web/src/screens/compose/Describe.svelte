@@ -1,6 +1,7 @@
 <script lang="ts">
   import { push } from 'svelte-spa-router';
   import { sample } from '../../lib/api/compose';
+  import { readOnly } from '../../lib/state/plan.svelte';
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts } from '../../lib/state/accounts.svelte';
   import { compose, optimize, savable, saveAll, type Draft } from '../../lib/state/compose.svelte';
@@ -28,7 +29,7 @@
   <section class="card flex flex-col gap-3 p-[18px]">
     <TextBox id="compose" label="What should happen to your email?" placeholder="For example: bank statements go to Finance and mark them read. Archive LinkedIn profile-view emails. Trash cold sales pitches from people I've never emailed." bind:value={compose.text}>
       {#snippet actions()}
-        <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={compose.busy} onclick={optimize}>{compose.busy ? 'Tidying up your rules…' : 'Turn into rules'}</button>
+        <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={compose.busy || readOnly()} onclick={optimize}>{compose.busy ? 'Tidying up your rules…' : 'Turn into rules'}</button>
         <button type="button" class="min-h-11 border-0 bg-transparent px-3.5 font-semibold" onclick={() => (compose.text = sample)}>Use an example</button>
       {/snippet}
     </TextBox>
@@ -49,7 +50,7 @@
         <h2>{compose.drafts.length}{compose.drafts.length === 1 ? ' rule found' : ' rules found'}. Check them before saving.</h2>
         <div class="flex gap-2">
           <button type="button" class="btn" disabled={saving} onclick={() => (compose.drafts = [])}>Discard</button>
-          <button type="button" class="btn-primary" disabled={saving} onclick={save}>{saving ? 'Saving…' : `Save ${keep}${keep === 1 ? ' rule' : ' rules'}`}</button>
+          <button type="button" class="btn-primary" disabled={saving || readOnly()} onclick={save}>{saving ? 'Saving…' : `Save ${keep}${keep === 1 ? ' rule' : ' rules'}`}</button>
         </div>
       </div>
       {#each compose.drafts as d}

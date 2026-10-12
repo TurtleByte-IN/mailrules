@@ -34,19 +34,29 @@ var gatedRoutes = []struct{ method, path, module string }{
 	{http.MethodDelete, "/api/notifications/destinations/{id}", "notifications"},
 	{http.MethodGet, "/api/activity/questions", "move_questions"},
 	{http.MethodPost, "/api/activity/questions/{id}/answer", "move_questions"},
+	{http.MethodGet, "/api/plan", "billing"},
+	{http.MethodPost, "/api/plan/checkout", "billing"},
+	{http.MethodPost, "/api/plan/change", "billing"},
+	{http.MethodGet, "/api/plan/portal", "billing"},
 }
 
 // moduleRoutes are the routes the modules serve, then a refusal for each optional route of
-// the contract none of them serves.
+// the contract none of them serves. The signed-in routes of a module whose feature a plan
+// gates answer 403 plan_required to a tenant whose plan does not include it.
 func (s *server) moduleRoutes() []route {
 	var out []route
 	served := map[string]bool{}
+	gated := gatedFeatures(s.billing())
 	for _, m := range s.Modules {
 		if m.Routes == nil {
 			continue
 		}
 		for _, r := range m.Routes(host{s}) {
-			out = append(out, route{method: r.Method, path: r.Path, handler: r.Handler, public: r.Public, webhook: r.Webhook})
+			h := r.Handler
+			if !r.Public && slices.Contains(gated, m.Name) {
+				h = s.planFeatureOnly(m.Name, h)
+			}
+			out = append(out, route{method: r.Method, path: r.Path, handler: h, public: r.Public, webhook: r.Webhook})
 			served[r.Method+" "+r.Path] = true
 		}
 	}
@@ -62,14 +72,18 @@ func (s *server) moduleRoutes() []route {
 	return out
 }
 
-// features are the flags GET /api/settings reports: the later-phase ones, then each
-// module's name, on, oauth_providers while a module connects mailboxes with one-click
-// sign-in (GET /api/presets says for which providers), notifications while a module
-// delivers rule notifications, and delete_account while a module signs people in (the
-// hosted build), whether or not it can delete them at its sign-in service.
-func (s *server) features() map[string]bool {
+// features are the flags GET /api/settings reports, before a plan has a say
+// (tenantFeatures): the later-phase ones, then each module's name, on, oauth_providers while
+// a module connects mailboxes with one-click sign-in (GET /api/presets says for which
+// providers), notifications while a module delivers rule notifications, delete_account while
+// a module signs people in (the hosted build), whether or not it can delete them at its
+// sign-in service, and billing while a module sells plans.
+func (s *server) features() map[string]bool { return buildFeatures(s.Modules) }
+
+// buildFeatures are the features of a build with these modules (server.features).
+func buildFeatures(modules []ext.Module) map[string]bool {
 	out := maps.Clone(features)
-	for _, m := range s.Modules {
+	for _, m := range modules {
 		out[m.Name] = true
 		if m.Mailboxes != nil {
 			out["oauth_providers"] = true
@@ -82,6 +96,9 @@ func (s *server) features() map[string]bool {
 		}
 		if m.SignIn != "" {
 			out["delete_account"] = true
+		}
+		if m.Billing != nil {
+			out["billing"] = true
 		}
 	}
 	return out
@@ -266,10 +283,12 @@ func (s *server) signIn() *ext.Module {
 // signed-in POST routes under /api/, and two forms for one provider; a MailboxRemoved with
 // neither Mailboxes nor MailboxForms; a Notifications with no Notify or no kind, or a kind
 // other than webhook or slack, and more than one module with Notifications; a Moves with no
-// Moved or a negative Every, and more than one module with Moves; and more than one module
-// with Limits. The daemon calls it before it serves anything.
+// Moved or a negative Every, and more than one module with Moves; and a Billing the daemon
+// cannot serve (checkBilling), and more than one module with Billing. The daemon calls it
+// before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn, mailboxes, notifiers, movers, limits []string
+	var signIn, mailboxes, notifiers, movers, billers []string
+	built := buildFeatures(modules)
 	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
 		publicGet, signedInGet, signedInPost := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -347,8 +366,11 @@ func CheckModules(mode string, modules []ext.Module) error {
 		if m.SignIn != "" {
 			signIn = append(signIn, m.Name)
 		}
-		if m.Limits != nil {
-			limits = append(limits, m.Name)
+		if m.Billing != nil {
+			if err := checkBilling(m, publicGet, built); err != nil {
+				return err
+			}
+			billers = append(billers, m.Name)
 		}
 	}
 	if len(signIn) > 1 {
@@ -363,8 +385,8 @@ func CheckModules(mode string, modules []ext.Module) error {
 	if len(movers) > 1 {
 		return fmt.Errorf("more than one module learns from the person's moves: %s", strings.Join(movers, ", "))
 	}
-	if len(limits) > 1 {
-		return fmt.Errorf("more than one module limits tenants: %s", strings.Join(limits, ", "))
+	if len(billers) > 1 {
+		return fmt.Errorf("more than one module sells plans: %s", strings.Join(billers, ", "))
 	}
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")

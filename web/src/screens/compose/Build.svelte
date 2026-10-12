@@ -1,6 +1,7 @@
 <script lang="ts">
   import { push } from 'svelte-spa-router';
   import { ApiError } from '../../lib/api/client';
+  import { readOnly } from '../../lib/state/plan.svelte';
   import * as rulesApi from '../../lib/api/rules';
   import TestRunner from '../../lib/components/TestRunner.svelte';
   import { accounts } from '../../lib/state/accounts.svelte';
@@ -185,7 +186,7 @@
       </div>
     </details>
     <div class="flex flex-wrap gap-2 border-t border-line-divider pt-3.5">
-      <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={saving} onclick={save}>{saving ? 'Saving…' : b.editingId ? 'Update rule' : 'Save rule'}</button>
+      <button type="button" class="btn-primary min-h-11 px-[18px]" disabled={saving || readOnly()} onclick={save}>{saving ? 'Saving…' : b.editingId ? 'Update rule' : 'Save rule'}</button>
       <TestRunner run={test} tall buttonClass="btn min-h-11 px-4 font-semibold" />
       {#if b.editingId}
         <a href="#/rules?id={b.editingId}" class="inline-flex min-h-11 items-center px-3.5 text-secondary">Cancel</a>

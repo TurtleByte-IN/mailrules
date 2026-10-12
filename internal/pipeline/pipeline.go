@@ -44,6 +44,10 @@ const (
 	snippetChars = 200
 )
 
+// ErrHalted is what the pipeline answers, sorting nothing, while the tenant's plan has
+// ended (Pipeline.Halted).
+var ErrHalted = errors.New("the plan has ended, so MailRules sorts nothing")
+
 // Executor is the part of actions.Executor the pipeline needs.
 type Executor interface {
 	Apply(ctx context.Context, d actions.DecisionRecord, acts []rules.Action, batchID int64) ([]actions.ActionRecord, error)
@@ -78,6 +82,13 @@ type Pipeline struct {
 	// decides on keys the operator holds is used up at now (Decider.Allowance). An email
 	// counted already (a message tried again) is decided as before. nil = no allowance.
 	Allowance func(ctx context.Context, tenantID int64, now time.Time) (reached bool, err error)
+	// Halted, when set, says whether the tenant's mail must not be sorted at now: its plan
+	// ended (a build that sells plans, ext.Module.Billing). While it is, Process, Sort,
+	// SortSaved and RetryDue leave every message as it is, the folder's watch position
+	// included, and answer ErrHalted; the supervisor then stops. Mail that arrived meanwhile
+	// is sorted when the mailbox starts again with a plan, as after a pause: the watcher
+	// resumes from the stored position. nil = never halted.
+	Halted func(ctx context.Context, tenantID int64, now time.Time) (bool, error)
 
 	Now func() time.Time // nil = time.Now
 	// Rediscover re-runs folder discovery. It is called once when a step fails because a
@@ -99,6 +110,9 @@ func (p *Pipeline) now() time.Time {
 // error (the daemon is stopping, or the database failed) it does not, so the watcher sends
 // the message again after a restart.
 func (p *Pipeline) Process(ctx context.Context, ref mail.MsgRef) error {
+	if err := p.halted(ctx); err != nil {
+		return err
+	}
 	m, fresh, err := p.Store.IngestMessage(ctx, ref, p.now().Unix())
 	if err != nil {
 		return err
@@ -116,6 +130,9 @@ func (p *Pipeline) Process(ctx context.Context, ref mail.MsgRef) error {
 // rules may have changed since, or dry-run been switched off), and it leaves the folder's
 // watch position alone.
 func (p *Pipeline) Sort(ctx context.Context, ref mail.MsgRef) error {
+	if err := p.halted(ctx); err != nil {
+		return err
+	}
 	m, _, err := p.Store.IngestMessage(ctx, ref, p.now().Unix())
 	if err != nil {
 		return err
@@ -126,6 +143,9 @@ func (p *Pipeline) Sort(ctx context.Context, ref mail.MsgRef) error {
 // RetryDue is the retry job: it re-runs every failed message of the account whose wait is
 // over, and returns how many it ran.
 func (p *Pipeline) RetryDue(ctx context.Context) (int, error) {
+	if err := p.halted(ctx); err != nil {
+		return 0, err
+	}
 	due, err := p.Store.DueMessages(ctx, p.Account.ID, p.now().Unix())
 	if err != nil {
 		return 0, err
@@ -137,6 +157,22 @@ func (p *Pipeline) RetryDue(ctx context.Context) (int, error) {
 		}
 	}
 	return len(due), nil
+}
+
+// halted answers ErrHalted while the tenant's mail must not be sorted (Halted), or the
+// error that kept it from finding out.
+func (p *Pipeline) halted(ctx context.Context) error {
+	if p.Halted == nil {
+		return nil
+	}
+	h, err := p.Halted(ctx, p.Account.TenantID, p.now())
+	if err != nil {
+		return fmt.Errorf("check the tenant's plan: %w", err)
+	}
+	if h {
+		return ErrHalted
+	}
+	return nil
 }
 
 // run makes one attempt and records a failure. It returns an error only when the outcome
@@ -311,6 +347,9 @@ func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.
 // ledger once from the check — and hands the actions to the executor in the run's batch.
 // applied is false when the email has moved or gone since the check: it is passed over.
 func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) (applied bool, err error) {
+	if err := p.halted(ctx); err != nil {
+		return false, err
+	}
 	raw, err := p.Mailbox.Fetch(ctx, ref, 0)
 	if errors.Is(err, mail.ErrNotFound) {
 		return false, nil // moved or deleted since the check: skip it, and say so

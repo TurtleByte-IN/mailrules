@@ -3,6 +3,7 @@
   import { replace, router } from 'svelte-spa-router';
   import type { Account, AccountPatch, ServerCert } from '../lib/api/accounts';
   import { ApiError } from '../lib/api/client';
+  import { readOnly } from '../lib/state/plan.svelte';
   import { clock, day } from '../lib/format';
   import { acceptCert, accounts, checkCert, edit, folderNames, load, loadPresets, reconnect, reconnectsByForm, reconnectsByGoogle, reconnectURL, remove, setPaused, statuses, test } from '../lib/state/accounts.svelte';
   import { mailboxReturn } from '../lib/state/oneclick';
@@ -190,7 +191,8 @@
         {accounts.presets.some((p) => p.one_click_url || p.form_url) ? 'Any IMAP mailbox.' : 'Any IMAP mailbox that signs in with a password or app password.'} MailRules sorts on the server, so every app you use sees the result.
       </p>
     </div>
-    {#if !connecting}
+    <!-- An ended plan connects nothing; the shell's banner says why. -->
+    {#if !connecting && !readOnly()}
       <button type="button" class="btn-primary" onclick={add}>Add mailbox</button>
     {/if}
   </header>
