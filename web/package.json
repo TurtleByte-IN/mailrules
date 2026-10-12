@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "size": "node scripts/bundle-budget.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json && vitest run",
     "test": "vitest run",
     "gen:api": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts"
