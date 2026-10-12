@@ -66,7 +66,7 @@ func TestNotificationDestinations(t *testing.T) {
 	for _, c := range []struct{ name, body, path string }{
 		{"no name", `{"name":" ","kind":"webhook","url":"https://x.test/a"}`, "name"},
 		{"a long name", `{"name":"` + strings.Repeat("n", 101) + `","kind":"webhook","url":"https://x.test/a"}`, "name"},
-		{"an unknown kind", `{"name":"x","kind":"telegram","url":"https://x.test/a"}`, "kind"},
+		{"an unknown kind", `{"name":"x","kind":"pager","url":"https://x.test/a"}`, "kind"},
 		{"not http", `{"name":"x","kind":"webhook","url":"ftp://x.test/a"}`, "url"},
 		{"no host", `{"name":"x","kind":"webhook","url":"https:///a"}`, "url"},
 		{"a password in it", `{"name":"x","kind":"webhook","url":"https://u:p@x.test/a"}`, "url"},
@@ -197,7 +197,7 @@ func TestCheckModulesNotifications(t *testing.T) {
 		{"webhook and slack", []ext.Module{mod("n", &ext.Notifications{Kinds: []string{"webhook", "slack"}, Notify: notify})}, ""},
 		{"no Notify", []ext.Module{mod("n", &ext.Notifications{Kinds: []string{"webhook"}})}, "needs Notify"},
 		{"no kind", []ext.Module{mod("n", &ext.Notifications{Notify: notify})}, "at least one kind"},
-		{"another kind", []ext.Module{mod("n", &ext.Notifications{Kinds: []string{"telegram"}, Notify: notify})}, `kind "telegram"`},
+		{"another kind", []ext.Module{mod("n", &ext.Notifications{Kinds: []string{"pager"}, Notify: notify})}, `kind "pager"`},
 		{"two modules", []ext.Module{mod("a", &ext.Notifications{Kinds: []string{"webhook"}, Notify: notify}),
 			mod("b", &ext.Notifications{Kinds: []string{"slack"}, Notify: notify})}, "more than one module delivers"},
 	} {
@@ -213,20 +213,19 @@ func TestCheckModulesNotifications(t *testing.T) {
 	}
 }
 
-// The hosted build takes https addresses only; self-host takes http too (a server on the
-// same network).
-func TestDestinationURLByMode(t *testing.T) {
-	for _, c := range []struct {
-		mode, url string
-		ok        bool
-	}{
-		{"selfhost", "http://192.168.1.5:5678/webhook", true},
-		{"cloud", "http://example.com/hook", false},
-		{"cloud", "https://example.com/hook", true},
+// Every build takes https addresses only, so a notice's sender and subject never cross the
+// network in clear, a server on the same network included.
+func TestDestinationURLHTTPSOnly(t *testing.T) {
+	const sentence = "Use an https address, so the email's sender and subject are encrypted on the way."
+	for _, c := range []struct{ mode, url, want string }{
+		{"selfhost", "http://192.168.1.5:5678/webhook", sentence},
+		{"cloud", "http://example.com/hook", sentence},
+		{"selfhost", "https://192.168.1.5:5678/webhook", ""},
+		{"cloud", "https://example.com/hook", ""},
 	} {
 		s := &server{Options: Options{Settings: &settings.Settings{Env: &config.Config{Mode: c.mode}}}}
-		if got := s.destinationURLProblem(store.DestinationWebhook, c.url) == ""; got != c.ok {
-			t.Errorf("%s %s: accepted = %v, want %v", c.mode, c.url, got, c.ok)
+		if got := s.destinationURLProblem(store.DestinationWebhook, c.url); got != c.want {
+			t.Errorf("%s %s: problem = %q, want %q", c.mode, c.url, got, c.want)
 		}
 	}
 }

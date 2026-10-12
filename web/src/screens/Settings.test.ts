@@ -437,7 +437,7 @@ describe('Summary email', () => {
 describe('Notifications and webhooks', () => {
   const on = () => fresh({ features: { ...fresh().features, notifications: true } });
   const card = () => within(screen.getByRole('region', { name: 'Notifications and webhooks' }));
-  const dest = (over: Partial<Destination> = {}): Destination => ({ id: 1, name: 'Team channel', kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, created_at: 1791276732, deliveries: [], ...over });
+  const dest = (over: Partial<Destination> = {}): Destination => ({ id: 1, name: 'Team channel', kind: 'slack', url: 'https://hooks.slack.com/…bX9z', address_deleted: false, needs_https: false, created_at: 1791276732, deliveries: [], ...over });
 
   beforeEach(() => {
     Object.assign(notifications, { kinds: [], destinations: [], loaded: false, error: '' });
@@ -505,6 +505,7 @@ describe('Notifications and webhooks', () => {
           { at: 1791276000, rule_id: null, rule_name: 'Old rule', status: 'sent', reason: '' },
         ] }),
         dest({ id: 2, name: 'Gone', kind: 'webhook', url: 'https://example.com/…ules', address_deleted: true }),
+        dest({ id: 3, name: 'Old hook', kind: 'webhook', url: 'http://192.168.1.5/…hook', needs_https: true }),
       ],
     }];
     await show(on());
@@ -522,6 +523,9 @@ describe('Notifications and webhooks', () => {
     expect(gone.getByText('Nothing delivered yet.')).toBeTruthy();
     expect(gone.getByText(/Its address was deleted/).className).toContain('text-review');
     expect(team.queryByText(/Its address was deleted/)).toBeNull();
+    const old = within(card().getByRole('article', { name: 'Old hook' }));
+    expect(old.getByText(/^Needs a new address/).className).toContain('text-review');
+    expect(team.queryByText(/Needs a new address/)).toBeNull();
   });
 
   it('removes a destination once confirmed', async () => {

@@ -21,6 +21,7 @@ func TestApplyQueuesNotices(t *testing.T) {
 		notify      bool // the rule names both destinations
 		acts        []string
 		failOnFlags bool // the server refuses flag changes
+		plainHTTP   bool // the destinations were added over http, before only https was taken
 		wantActions []string
 		wantFolder  string
 	}{
@@ -35,6 +36,7 @@ func TestApplyQueuesNotices(t *testing.T) {
 		{name: "a cleanup", stage: "condition", batch: store.BatchCleanup, notify: true, acts: []string{"move:Food"}},
 		{name: "a sender rule", stage: "sender", batch: store.BatchLive, notify: true, acts: []string{"move:Food"}},
 		{name: "a correction", batch: store.BatchLive, notify: true, acts: []string{"move:Food"}},
+		{name: "destinations over plain http", stage: "condition", batch: store.BatchLive, notify: true, plainHTTP: true, acts: []string{"move:Food"}},
 		{name: "a rule with no destinations", stage: "condition", batch: store.BatchLive, acts: []string{"move:Food"}},
 	}
 	for _, tt := range tests {
@@ -43,9 +45,13 @@ func TestApplyQueuesNotices(t *testing.T) {
 			ctx := t.Context()
 			master := make([]byte, 32)
 			var ids []int64
+			scheme := "https"
+			if tt.plainHTTP {
+				scheme = "http"
+			}
 			for _, name := range []string{"Ops", "Me"} {
 				d, err := e.st.CreateDestination(ctx, master, store.Destination{TenantID: 1, Name: name, Kind: store.DestinationWebhook},
-					store.DestinationSecret{URL: "https://hooks.example/" + name}, 1)
+					store.DestinationSecret{URL: scheme + "://hooks.example/" + name}, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
