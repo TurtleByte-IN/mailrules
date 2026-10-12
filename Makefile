@@ -67,10 +67,11 @@ settings-doc:
 settings-doc-check:
 	go run ./internal/config/docgen -check docs/guide/settings.md
 
-# Type check and tests, then fail if the generated API types are stale against api/openapi.yaml.
+# Type check and tests, a production build held to the gzip size budget in web/scripts/bundle-budget.mjs,
+# then fail if the generated API types are stale against api/openapi.yaml.
 web-check:
 	@if [ -f web/package.json ]; then \
-		cd web && npm ci && npm run check && npm run gen:api && git diff --exit-code -- src/lib/api/schema.d.ts; \
+		cd web && npm ci && npm run check && npm run build && npm run size && npm run gen:api && git diff --exit-code -- src/lib/api/schema.d.ts; \
 	else echo "web/ is not in this checkout: skipping the web checks"; fi
 
 # The UI is embedded from internal/web/dist (go:embed cannot reach web/dist). That
