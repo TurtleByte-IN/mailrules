@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -109,7 +110,23 @@ func serve(ctx context.Context, cfg *config.Config, version string, modules []ex
 // serveIMAP is serve with the TLS settings of every IMAP connection: nil verifies servers
 // against the system's roots, as the daemon does; tests pass the test server's.
 func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules []ext.Module, imapTLS *tls.Config) error {
-	slog.SetDefault(telemetry.NewLogger(os.Stderr, cfg.LogLevel))
+	// Every error logged from here on is handed, as logged, to each module that takes them
+	// (ext.Module.Errors), until serve returns: the sinks stop last.
+	metrics := telemetry.NewMetrics(version)
+	sinks := errorSinks(modules, version, metrics)
+	errs := make([]io.Writer, len(sinks))
+	for i, s := range sinks {
+		errs[i] = s
+	}
+	slog.SetDefault(telemetry.NewLogger(os.Stderr, cfg.LogLevel, errs...))
+	if len(sinks) > 0 {
+		sinkCtx, stopSinks := context.WithCancel(context.WithoutCancel(ctx))
+		var handing sync.WaitGroup
+		defer func() { stopSinks(); handing.Wait() }()
+		for _, s := range sinks {
+			handing.Go(func() { s.Run(sinkCtx) })
+		}
+	}
 	if !cfg.ListensLocally() {
 		slog.Warn("web UI is reachable from other machines; put it behind a reverse proxy with TLS", "listen", cfg.Listen)
 	}
@@ -334,7 +351,7 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 
 	handler := api.NewHandler(api.Options{
 		Store: st, SecureCookies: cfg.SecureCookies(), TrustedProxies: proxies, Hub: hub, Exec: exec, Settings: sett,
-		Metrics: telemetry.NewMetrics(version), Version: version,
+		Metrics: metrics, Version: version,
 		Connect: func(ctx context.Context, acct store.Account, password string) (mail.Mailbox, string, error) {
 			mb, username, err := dial(ctx, acct, password, imapTLS, logins.cloud)
 			if err != nil {

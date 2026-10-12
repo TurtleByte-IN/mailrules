@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
+	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 )
 
 // ErrNotConnected means the account has no open connection right now.
@@ -49,6 +51,8 @@ func (m *Manager) Start(ctx context.Context, s *Supervisor) {
 	if s.Account.SecretGone {
 		return
 	}
+	// What the mailbox's work logs, its cleanup checks and sorts included, says whose it is.
+	ctx = telemetry.WithAttrs(ctx, slog.Int64("account", s.Account.ID), slog.Int64("tenant_id", s.Account.TenantID))
 	ctx, cancel := context.WithCancel(ctx)
 	r := &running{sup: s, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	m.mu.Lock()

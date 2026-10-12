@@ -109,9 +109,11 @@ func or(d, def time.Duration) time.Duration {
 // credentials, a one-click sign-in to renew, a certificate to accept, another TLS failure,
 // a watch folder that does not exist, or a server the hosted build does not connect to
 // (mail.ErrNotPublic); or until the tenant's plan ends (pipeline.ErrHalted), leaving the
-// status as it is: the mailbox starts again when a plan is bought. Anything else is
-// retried with a growing delay: in key_unavailable while the key service cannot unwrap the
-// tenant's key, else in reconnecting. Wrong credentials of a mailbox a module connected
+// status as it is: the mailbox starts again when a plan is bought. Anything else, a panic
+// in the mailbox's work included (logged with its stack), is retried with a growing delay:
+// in key_unavailable while the key service cannot unwrap the tenant's key, else in
+// reconnecting. A session that panicked does not reset the delay, so a panic met again at
+// once is not retried every second. Wrong credentials of a mailbox a module connected
 // (store.Account.Module, such as one its sign-in form added with Bridge's password, which
 // the person never saw) wait in reconnect_needed, for the person to sign in through the
 // module again, rather than in auth_failed.
@@ -123,13 +125,22 @@ func (s *Supervisor) Run(ctx context.Context) {
 	s.mu.Unlock()
 	backoff := or(s.BackoffMin, time.Second)
 	for ctx.Err() == nil {
-		mb, err := s.Open(ctx)
-		if err == nil {
-			backoff = or(s.BackoffMin, time.Second)
+		connected := false
+		err := guard(ctx, "a mailbox's work panicked", s.Account.ID, func() error {
+			mb, err := s.Open(ctx)
+			if err != nil {
+				return err
+			}
+			connected = true
 			s.setMailbox(mb)
-			err = s.session(ctx, mb)
-			s.setMailbox(nil)
-			_ = mb.Close()
+			defer func() {
+				s.setMailbox(nil)
+				_ = mb.Close()
+			}()
+			return s.session(ctx, mb)
+		})
+		if connected && !errors.Is(err, errPanicked) {
+			backoff = or(s.BackoffMin, time.Second)
 		}
 		switch {
 		case ctx.Err() != nil:
@@ -270,7 +281,9 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()
 	go func() {
-		watchErr <- mb.Watch(watchCtx, s.Account.WatchFolder, lastUID, queue)
+		watchErr <- guard(watchCtx, "watching a mailbox panicked", s.Account.ID, func() error {
+			return mb.Watch(watchCtx, s.Account.WatchFolder, lastUID, queue)
+		})
 		close(queue)
 	}()
 
@@ -300,16 +313,15 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 			}
 			// A message whose outcome could not be recorded must not be passed over: end
 			// the session, and the next one watches again from the stored position.
-			s.work.Lock()
-			err := p.Process(procCtx, nm.Ref)
-			s.work.Unlock()
+			err := s.locked(func() error { return p.Process(procCtx, nm.Ref) })
 			if err != nil && procCtx.Err() == nil {
 				return err
 			}
 		case <-retry.C:
-			s.work.Lock()
-			_, err := p.RetryDue(procCtx)
-			s.work.Unlock()
+			err := s.locked(func() error {
+				_, err := p.RetryDue(procCtx)
+				return err
+			})
 			if errors.Is(err, pipeline.ErrHalted) {
 				return err
 			}
@@ -319,9 +331,7 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 		case <-rescan.C:
 			s.syncContacts(procCtx, mb)
 		case <-sweep:
-			s.work.Lock()
-			err := s.Moves(ctx, mb, s.Account)
-			s.work.Unlock()
+			err := s.locked(func() error { return s.Moves(ctx, mb, s.Account) })
 			if err != nil && ctx.Err() == nil {
 				slog.WarnContext(ctx, "could not look for mail moved outside MailRules", "account", s.Account.ID, "error", err.Error())
 			}

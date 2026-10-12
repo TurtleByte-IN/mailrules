@@ -19,6 +19,7 @@ import (
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/telemetry"
 )
 
 const (
@@ -122,6 +123,7 @@ func (s *server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 		// Everything the request has the store do is scoped to the person's tenant: on Postgres
 		// the policies then hide every other tenant's rows, even from a query that forgot to.
 		ctx := store.WithTenant(context.WithValue(r.Context(), userKey{}, u), u.TenantID)
+		telemetry.AddAttrs(ctx, slog.Int64("tenant_id", u.TenantID)) // for what is logged about the request, its outer layers too
 		next(w, r.WithContext(ctx))
 	}
 }
