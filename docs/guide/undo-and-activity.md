@@ -10,7 +10,7 @@ MailRules records every decision and every change it makes to your mailbox, befo
 
 **Activity** lists every decision, newest first, live as mail arrives. The tiles at the top show today's numbers: **Acted on today**, **Needs review**, **Decided without a model** and **Model cost today**.
 
-Filter the list by **Rule**, **Mailbox** and **Outcome** (Sorted, Left in Inbox, Needs review, Trashed). Each row shows the time, sender, subject, why it was decided that way, which rule took it, and how:
+Filter the list by **Rule**, **Mailbox**, **Action** (what MailRules did: moved to a folder, archived, trashed, moved to Junk, flagged, unflagged, marked read or unread, kept in Inbox) and **Outcome** (Sorted, Left in Inbox, Needs review, Trashed). Each row shows the time, sender, subject, why it was decided that way, which rule took it, and how:
 
 - **condition · free**: the rule's conditions decided it;
 - **sender · set by you**: a sender rule you set decided it, on **Senders** or with **Always do this for …**;

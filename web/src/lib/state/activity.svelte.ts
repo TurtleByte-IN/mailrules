@@ -11,10 +11,14 @@ export type Kind = 'ok' | 'trash' | 'none' | 'review';
 /** Where mail ended up: the four groups of Overview's "Where today's mail went". */
 export type Outcome = NonNullable<activityApi.ActivityQuery['outcome']>;
 
+/** What MailRules did to an email: one of the daemon's action kinds. */
+export type ActionKind = NonNullable<activityApi.ActivityQuery['action']>;
+
 /** Empty string means "all". */
 export interface Filter {
   rule: string;
   account: string;
+  action: ActionKind | '';
   outcome: Outcome | '';
 }
 
@@ -25,7 +29,7 @@ export const activity = $state({
   /** False until the first page has arrived, so "no mail yet" is never shown for "not loaded". */
   loaded: false,
   error: '',
-  filter: { rule: '', account: '', outcome: '' } as Filter,
+  filter: { rule: '', account: '', action: '', outcome: '' } as Filter,
   detail: null as activityApi.MessageDetail | null,
   detailError: '',
   /** Null until the tiles have loaded. */
@@ -50,7 +54,7 @@ export function refused(e: unknown) {
 
 function params(cursor?: string | null): activityApi.ActivityQuery {
   const f = activity.filter;
-  return { account: Number(f.account) || undefined, rule: Number(f.rule) || undefined, outcome: f.outcome || undefined, cursor: cursor ?? undefined };
+  return { account: Number(f.account) || undefined, rule: Number(f.rule) || undefined, action: f.action || undefined, outcome: f.outcome || undefined, cursor: cursor ?? undefined };
 }
 
 let asked = 0;
@@ -117,7 +121,7 @@ export async function open(id: number) {
 export function upsert(row: Item) {
   const i = activity.list.findIndex((r) => r.id === row.id);
   const f = activity.filter;
-  if (i < 0 && (f.rule || f.account || f.outcome)) return;
+  if (i < 0 && (f.rule || f.account || f.action || f.outcome)) return;
   if (i >= 0) activity.list.splice(i, 1);
   const at = activity.list.findIndex((r) => row.acted_at > r.acted_at || (row.acted_at === r.acted_at && row.id > r.id));
   activity.list.splice(at < 0 ? activity.list.length : at, 0, row);
