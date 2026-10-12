@@ -4,16 +4,24 @@
 package storetest
 
 import (
+	"bytes"
 	"database/sql"
 	"testing"
 
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
 
+// Master is the master key the stores New and InDir return seal and open secrets with: a
+// fixed 32-byte test key, never one a real install has. A test that hands the data
+// directory to the daemon writes it as master.key (crypto.MasterKeyFile) or sets it as
+// cfg.MasterKey, so the daemon opens what the test sealed.
+var Master = bytes.Repeat([]byte{0x5a}, 32)
+
 // New opens an empty, migrated database for the test and returns the store over it, with
 // the raw handle for tests that seed or inspect rows directly. Both close when the test
-// ends.
+// ends. The store seals and opens secrets with Master.
 //
 // On Postgres the store runs as the app role, under row-level security, and the raw handle
 // is the superuser, which row-level security does not apply to; it takes SQLite's ? and ?N
@@ -22,7 +30,7 @@ func New(t testing.TB) (*store.Store, *sql.DB) {
 	t.Helper()
 	if pgtest.DSN() != "" {
 		db := pgtest.Open(t)
-		return store.New(db.App), db.Admin
+		return store.New(db.App).WithKeys(crypto.MasterKey(Master)), db.Admin
 	}
 	return InDir(t, t.TempDir())
 }
@@ -44,7 +52,7 @@ func InDir(t testing.TB, dir string) (*store.Store, *sql.DB) {
 	if err := store.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	return store.New(db), db
+	return store.New(db).WithKeys(crypto.MasterKey(Master)), db
 }
 
 // SQLiteOnly skips the test when it would run on Postgres; why says what it needs SQLite

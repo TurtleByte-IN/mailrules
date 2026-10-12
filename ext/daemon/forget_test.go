@@ -17,13 +17,12 @@ import (
 func TestDeletedSecretDoesNotLogIn(t *testing.T) {
 	ctx := t.Context()
 	st, db := storetest.New(t)
-	master := make([]byte, 32)
 	u, err := st.SignInIdentity(ctx, store.Identity{Provider: "p", Subject: "s", Email: "a@example.test", Tenant: "o"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	asked := 0
-	logins := newMailLogins(st, master, []ext.Module{{Name: "m", Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail"},
+	logins := newMailLogins(st, []ext.Module{{Name: "m", Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail"},
 		Login: func(context.Context, string, string) (ext.MailToken, error) {
 			asked++
 			return ext.MailToken{AccessToken: "t"}, nil
@@ -35,7 +34,7 @@ func TestDeletedSecretDoesNotLogIn(t *testing.T) {
 		{store.Account{UserID: u.ID, Label: "pw", Preset: "generic", Host: "127.0.0.1", Port: 1, TLSMode: "implicit", Username: "pw@example.test"}, mail.ErrAuth},
 		{store.Account{UserID: u.ID, Label: "oc", Preset: "gmail", Host: "127.0.0.1", Port: 1, TLSMode: "implicit", Username: "oc@example.test", OAuth: true}, mail.ErrReconnect},
 	} {
-		a, err := st.CreateAccount(ctx, master, c.acct, "secret")
+		a, err := st.CreateAccount(ctx, c.acct, "secret")
 		if err != nil {
 			t.Fatal(err)
 		}

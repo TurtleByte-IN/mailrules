@@ -188,7 +188,7 @@ func TestDeleteTenantSecrets(t *testing.T) {
 		if err != nil || !a.SecretGone || a.Status != c.status || a.LastError != c.msg || a.LastEventAt != secretsAt {
 			t.Errorf("mailbox %d = %+v, %v; want its secret gone and %s", c.id, a, err, c.status)
 		}
-		if _, err := s.AccountSecret(ctx, testMaster, c.id); !errors.Is(err, ErrNoSecret) {
+		if _, err := s.AccountSecret(ctx, c.id); !errors.Is(err, ErrNoSecret) {
 			t.Errorf("mailbox %d secret: %v, want ErrNoSecret", c.id, err)
 		}
 	}
@@ -226,7 +226,7 @@ func TestDeleteTenantSecrets(t *testing.T) {
 	}
 	// Nobody else's.
 	for _, id := range []int64{w.adminBox, w.soloBox, w.otherBox} {
-		if _, err := s.AccountSecret(ctx, testMaster, id); err != nil {
+		if _, err := s.AccountSecret(ctx, id); err != nil {
 			t.Errorf("someone else's secret %d: %v", id, err)
 		}
 	}

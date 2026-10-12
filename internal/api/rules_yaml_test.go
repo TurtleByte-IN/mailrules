@@ -15,7 +15,7 @@ func (e *env) addMailboxes(addresses ...string) {
 	e.t.Helper()
 	for _, a := range addresses {
 		acct := store.Account{UserID: 1, Label: "Mail of " + a, Preset: "generic", Host: "imap.example.test", Port: 993, TLSMode: "implicit", Username: a}
-		if _, err := e.st.CreateAccount(e.t.Context(), make([]byte, 32), acct, "app-password-1234"); err != nil {
+		if _, err := e.st.CreateAccount(e.t.Context(), acct, "app-password-1234"); err != nil {
 			e.t.Fatal(err)
 		}
 	}

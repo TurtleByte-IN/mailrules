@@ -40,7 +40,7 @@ func TestModuleForgetOneClickMailbox(t *testing.T) {
 	if _, err := e.mgr.Mailbox(acct); err == nil {
 		t.Error("the one-click mailbox is still running")
 	}
-	if _, err := e.st.AccountSecret(t.Context(), e.sett.Master, acct); !errors.Is(err, store.ErrNoSecret) {
+	if _, err := e.st.AccountSecret(t.Context(), acct); !errors.Is(err, store.ErrNoSecret) {
 		t.Errorf("its refresh token: %v, want ErrNoSecret", err)
 	}
 	logins := e.logins.Load()

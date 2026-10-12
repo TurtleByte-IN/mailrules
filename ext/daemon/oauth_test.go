@@ -195,7 +195,7 @@ func serveForTest(t *testing.T, imapTLS *tls.Config, modules ...ext.Module) runn
 	addr := l.Addr().String()
 	_ = l.Close()
 	dir := t.TempDir()
-	master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	master := base64.StdEncoding.EncodeToString(storetest.Master) // so storedSecret opens what the daemon sealed
 	env := map[string]string{"MAILRULES_DATA_DIR": dir, "MAILRULES_LISTEN": addr, "LOG_LEVEL": "error", "MAILRULES_MASTER_KEY": master}
 	cfg, err := config.Load(nil, func(k string) string { return env[k] })
 	if err != nil {
@@ -238,11 +238,7 @@ func (r running) storedSecret(t *testing.T, id int64) string {
 	t.Helper()
 	r.shutdown()
 	st, _ := storetest.InDir(t, r.dir)
-	key, err := openMasterKey(t.Context(), r.cfg, st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := st.AccountSecret(t.Context(), key, id)
+	got, err := st.AccountSecret(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}

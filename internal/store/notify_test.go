@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
@@ -32,8 +33,9 @@ func TestDestinations(t *testing.T) {
 	s, db := open(t)
 	ctx := t.Context()
 	const url, secret = "https://hooks.slack.com/services/T000/B000/topsecretXYZ9", "whsec_abc"
-	d, err := s.CreateDestination(ctx, testMaster, Destination{TenantID: SelfHostTenant, Name: "Team", Kind: DestinationSlack},
+	d, err := s.CreateDestination(ctx, Destination{TenantID: SelfHostTenant, Name: "Team", Kind: DestinationSlack},
 		DestinationSecret{URL: url, Secret: secret}, 100)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,13 +52,13 @@ func TestDestinations(t *testing.T) {
 	if _, err := s.Destination(ctx, d.ID+1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a missing destination: %v", err)
 	}
-	if sec, err := s.DestinationSecret(ctx, testMaster, d.ID); err != nil || sec.URL != url || sec.Secret != secret {
+	if sec, err := s.DestinationSecret(ctx, d.ID); err != nil || sec.URL != url || sec.Secret != secret {
 		t.Errorf("DestinationSecret = %+v, %v", sec, err)
 	}
-	if _, err := s.DestinationSecret(ctx, testMaster, d.ID+1); !errors.Is(err, ErrNotFound) {
+	if _, err := s.DestinationSecret(ctx, d.ID+1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a missing destination's secret: %v", err)
 	}
-	if _, err := s.DestinationSecret(ctx, make([]byte, 32), d.ID); err == nil {
+	if _, err := s.WithKeys(crypto.MasterKey(make([]byte, 32))).DestinationSecret(ctx, d.ID); err == nil {
 		t.Error("opened with the wrong master key")
 	}
 	var name, kind, hint string
@@ -80,13 +82,13 @@ func TestDeleteDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
+	a, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var ids []int64
 	for _, name := range []string{"A", "B"} {
-		d, err := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: name, Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/" + name}, 1)
+		d, err := s.CreateDestination(ctx, Destination{TenantID: u.TenantID, Name: name, Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/" + name}, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,12 +147,12 @@ func TestNoticeLifecycle(t *testing.T) {
 	s, db := open(t)
 	ctx := t.Context()
 	u, _ := s.CreateFirstUser(ctx, "me@example.test", "hash", 1)
-	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
+	a, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "A", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/a"}, 1)
-	other, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "B", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/b"}, 1)
+	d, _ := s.CreateDestination(ctx, Destination{TenantID: u.TenantID, Name: "A", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/a"}, 1)
+	other, _ := s.CreateDestination(ctx, Destination{TenantID: u.TenantID, Name: "B", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/b"}, 1)
 	notice := func(dest, at int64) int64 {
 		t.Helper()
 		var id int64
@@ -244,12 +246,12 @@ func TestHTTPDestinationGetsNoNotice(t *testing.T) {
 	s, db := open(t)
 	ctx := t.Context()
 	u, _ := s.CreateFirstUser(ctx, "me@example.test", "hash", 1)
-	a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
+	a, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me@example.test"}, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "Old", Kind: DestinationWebhook}, DestinationSecret{URL: "http://192.168.1.5/hook"}, 1)
-	secure, _ := s.CreateDestination(ctx, testMaster, Destination{TenantID: u.TenantID, Name: "New", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/hook"}, 1)
+	plain, _ := s.CreateDestination(ctx, Destination{TenantID: u.TenantID, Name: "Old", Kind: DestinationWebhook}, DestinationSecret{URL: "http://192.168.1.5/hook"}, 1)
+	secure, _ := s.CreateDestination(ctx, Destination{TenantID: u.TenantID, Name: "New", Kind: DestinationWebhook}, DestinationSecret{URL: "https://x.test/hook"}, 1)
 	for _, dest := range []int64{plain.ID, secure.ID} {
 		if _, err := db.ExecContext(ctx, `INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_name, payload, created_at, next_at)
 			VALUES (?, ?, ?, 7, 'R', '{}', 1, 1)`, u.TenantID, dest, a.ID); err != nil {

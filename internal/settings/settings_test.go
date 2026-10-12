@@ -60,7 +60,7 @@ func TestOwnSwitches(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				s := &Settings{Store: st, Master: make([]byte, 32), Env: env}
+				s := &Settings{Store: st, Env: env}
 				p := sw.patch(tt.set)
 				if tt.reset {
 					p.Reset = []string{sw.key}

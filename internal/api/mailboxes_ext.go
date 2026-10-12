@@ -205,7 +205,7 @@ func (h host) ReconnectMailbox(ctx context.Context, accountID int64, address, se
 	}
 	_ = mb.Close()
 	h.s.StopAccount(a.ID) // before the row changes, so the old supervisor cannot write over it
-	if err := h.s.store.SetAccountSecret(ctx, h.s.Master, a.ID, secret); err != nil {
+	if err := h.s.store.SetAccountSecret(ctx, a.ID, secret); err != nil {
 		return fmt.Errorf("reconnect mailbox: %w", err)
 	}
 	a.SecretGone = false

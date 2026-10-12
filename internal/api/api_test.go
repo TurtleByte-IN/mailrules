@@ -106,8 +106,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	for name, role := range map[string]string{"Trash": mail.RoleTrash, "Archive": mail.RoleArchive, "Sent": mail.RoleSent} {
 		e.mb.AddFolder(name, role)
 	}
-	master := make([]byte, 32)
-	e.sett = &settings.Settings{Store: e.st, Master: master, Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
+	e.sett = &settings.Settings{Store: e.st, Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
 	exec := &actions.Exec{Store: e.st, Accounts: e.mgr, Hub: e.hub, DryRunDefault: cfg.DryRun, Now: e.ck.now}
 	e.mail = &mailertest.Sender{}
 	e.summary = &summary.Service{Store: e.st, Sender: e.mail, PublicURL: cfg.PublicURL, DryRunDefault: cfg.DryRun, Now: e.ck.now}
@@ -127,7 +126,7 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 		})
 	}
 	opts := Options{
-		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Models: e, Master: master, Version: "test",
+		Store: e.st, Now: e.ck.now, Hub: e.hub, Exec: exec, Settings: e.sett, Models: e, Version: "test",
 		StartCheck: e.mgr.StartCheck, Checks: e.mgr.Checks(), SortAll: e.mgr.SortAll,
 		Connect: func(_ context.Context, acct store.Account, _ string) (mail.Mailbox, string, error) {
 			e.dialed = acct
@@ -377,7 +376,7 @@ func TestAccounts(t *testing.T) {
 	if acct["status"] != "live" || acct["label"] != "me@example.test" || acct["folder_count"] != float64(4) || acct["watch_folder"] != "INBOX" {
 		t.Errorf("account = %v", acct)
 	}
-	if pw, err := e.st.AccountSecret(ctx, make([]byte, 32), 1); err != nil || pw != "app-password-1234" {
+	if pw, err := e.st.AccountSecret(ctx, 1); err != nil || pw != "app-password-1234" {
 		t.Errorf("stored password = %q, %v", pw, err)
 	}
 	folders := e.call(http.MethodGet, "/api/accounts/1/folders", "", http.StatusOK)["items"].([]any)
@@ -406,7 +405,7 @@ func TestAccounts(t *testing.T) {
 		t.Fatalf("resume = %d %s", r.status, r.raw)
 	}
 	e.live()
-	if pw, _ := e.st.AccountSecret(ctx, make([]byte, 32), 1); pw != "new-app-password" {
+	if pw, _ := e.st.AccountSecret(ctx, 1); pw != "new-app-password" {
 		t.Errorf("password after the change = %q", pw)
 	}
 	e.call(http.MethodPost, "/api/accounts/1/reconnect", "", http.StatusOK)

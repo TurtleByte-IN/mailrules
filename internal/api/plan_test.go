@@ -214,7 +214,7 @@ func TestPlanTrialCheckoutAndChange(t *testing.T) {
 
 	// The service reports the subscription: the plan runs, features follow.
 	for i := range 4 {
-		if _, err := e.st.CreateAccount(t.Context(), e.sett.Master, store.Account{UserID: 1, Label: "box" + string(rune('a'+i)), Preset: "generic",
+		if _, err := e.st.CreateAccount(t.Context(), store.Account{UserID: 1, Label: "box" + string(rune('a'+i)), Preset: "generic",
 			Host: "h", Port: 993, TLSMode: "implicit", Username: "m" + string(rune('a'+i))}, "pw"); err != nil {
 			t.Fatal(err)
 		}
@@ -263,7 +263,7 @@ func TestPlanEndedIsReadOnly(t *testing.T) {
 	}, billingModule(&fakeBilling{}, salePlans()), oneClickModule())
 	e.madeAgo(14 * 24 * time.Hour)
 	e.signIn() // public: signing in still works
-	if _, err := e.st.CreateAccount(t.Context(), e.sett.Master, store.Account{UserID: 1, Label: "box", Preset: "generic",
+	if _, err := e.st.CreateAccount(t.Context(), store.Account{UserID: 1, Label: "box", Preset: "generic",
 		Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw"); err != nil {
 		t.Fatal(err)
 	}

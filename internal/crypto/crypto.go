@@ -90,29 +90,30 @@ func GenerateMasterKey(dataDir string) ([]byte, error) {
 	return key, nil
 }
 
-// Seal encrypts plaintext under a fresh data key and wraps that key with the master key.
-// rowID is bound into both ciphertexts, so they cannot be swapped between rows.
-func Seal(master []byte, rowID int64, plaintext []byte) (secretEnc, dekEnc []byte, err error) {
+// sealV1 is envelope 1, how every secret was sealed before tenant data keys (MAI-150):
+// plaintext under a fresh data key wrapped by the master key, rowID bound into both. Only
+// tests make it now, as an older version wrote it; MasterKey.OpenLegacy reads it.
+func sealV1(master []byte, rowID int64, plaintext []byte) (secretEnc, dekEnc []byte, err error) {
 	dek := make([]byte, keyLen)
 	if _, err := rand.Read(dek); err != nil {
 		return nil, nil, fmt.Errorf("generate data key: %w", err)
 	}
-	if secretEnc, err = seal(dek, rowID, plaintext); err != nil {
+	if secretEnc, err = seal(dek, rowAAD(rowID), plaintext); err != nil {
 		return nil, nil, err
 	}
-	if dekEnc, err = seal(master, rowID, dek); err != nil {
+	if dekEnc, err = seal(master, rowAAD(rowID), dek); err != nil {
 		return nil, nil, err
 	}
 	return secretEnc, dekEnc, nil
 }
 
-// Open reverses Seal. It returns ErrDecrypt for any mismatch of key, row or ciphertext.
-func Open(master []byte, rowID int64, secretEnc, dekEnc []byte) ([]byte, error) {
-	dek, err := open(master, rowID, dekEnc)
+// openV1 reverses sealV1. It returns ErrDecrypt for any mismatch of key, row or ciphertext.
+func openV1(master []byte, rowID int64, secretEnc, dekEnc []byte) ([]byte, error) {
+	dek, err := open(master, rowAAD(rowID), dekEnc)
 	if err != nil {
 		return nil, err
 	}
-	return open(dek, rowID, secretEnc)
+	return open(dek, rowAAD(rowID), secretEnc)
 }
 
 func gcm(key []byte) (cipher.AEAD, error) {
@@ -123,12 +124,13 @@ func gcm(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-func aad(rowID int64) []byte {
+// rowAAD is envelope 1's additional data: the row id alone.
+func rowAAD(rowID int64) []byte {
 	return binary.BigEndian.AppendUint64(nil, uint64(rowID)) // #nosec G115 -- bit pattern only
 }
 
-// seal returns nonce || ciphertext.
-func seal(key []byte, rowID int64, plaintext []byte) ([]byte, error) {
+// seal returns nonce || ciphertext, bound to aad.
+func seal(key, aad, plaintext []byte) ([]byte, error) {
 	a, err := gcm(key)
 	if err != nil {
 		return nil, err
@@ -137,10 +139,10 @@ func seal(key []byte, rowID int64, plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
-	return a.Seal(nonce, nonce, plaintext, aad(rowID)), nil
+	return a.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-func open(key []byte, rowID int64, sealed []byte) ([]byte, error) {
+func open(key, aad, sealed []byte) ([]byte, error) {
 	a, err := gcm(key)
 	if err != nil {
 		return nil, err
@@ -148,7 +150,7 @@ func open(key []byte, rowID int64, sealed []byte) ([]byte, error) {
 	if len(sealed) < a.NonceSize() {
 		return nil, ErrDecrypt
 	}
-	out, err := a.Open(nil, sealed[:a.NonceSize()], sealed[a.NonceSize():], aad(rowID))
+	out, err := a.Open(nil, sealed[:a.NonceSize()], sealed[a.NonceSize():], aad)
 	if err != nil {
 		return nil, ErrDecrypt
 	}

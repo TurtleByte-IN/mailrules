@@ -14,6 +14,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
 	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
@@ -27,7 +28,7 @@ func open(t *testing.T) (*Store, *sql.DB) {
 	if pgtest.DSN() != "" {
 		// The test's database is a copy of a template the owner role migrated.
 		db := pgtest.Open(t)
-		return New(db.App), db.Admin
+		return keyed(db.App), db.Admin
 	}
 	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
@@ -40,8 +41,11 @@ func open(t *testing.T) (*Store, *sql.DB) {
 			t.Fatal(err)
 		}
 	}
-	return New(db), db
+	return keyed(db), db
 }
+
+// keyed is the store over db with testMaster as its key-encryption key.
+func keyed(db *sql.DB) *Store { return New(db).WithKeys(crypto.MasterKey(testMaster)) }
 
 // sqliteOnly skips the test when it would run on Postgres; why says what it needs SQLite
 // for.

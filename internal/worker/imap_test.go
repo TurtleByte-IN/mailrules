@@ -40,7 +40,7 @@ func newIMAPWorld(t *testing.T) *imapWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acct, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: srv.Host, Port: srv.Port, TLSMode: presets.TLSImplicit, Username: imaptest.Username}, imaptest.Password)
+	acct, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: srv.Host, Port: srv.Port, TLSMode: presets.TLSImplicit, Username: imaptest.Username}, imaptest.Password)
 	if err != nil {
 		t.Fatal(err)
 	}

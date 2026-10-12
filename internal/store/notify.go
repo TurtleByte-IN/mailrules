@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
 
@@ -74,8 +72,8 @@ func (d Destination) NeedsHTTPS() bool { return strings.HasPrefix(d.URLHint, "ht
 // secureDestination is the SQL condition, on notify_destinations, matching NeedsHTTPS false.
 const secureDestination = `url_hint NOT LIKE 'http://%'`
 
-// destinationAAD binds a destination's ciphertext to its row, apart from the accounts rows
-// that seal with their own ids.
+// destinationAAD is the number envelope 1 bound a destination's ciphertext to, apart from
+// the accounts rows that seal with their own ids (crypto.Binding.LegacyRow).
 func destinationAAD(id int64) int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte("notify_destination:" + strconv.FormatInt(id, 10)))
@@ -83,8 +81,8 @@ func destinationAAD(id int64) int64 {
 }
 
 // CreateDestination stores a destination of the tenant with its address and secret sealed
-// under the master key, and returns it with its id.
-func (s *Store) CreateDestination(ctx context.Context, master []byte, d Destination, sec DestinationSecret, now int64) (Destination, error) {
+// under the tenant's key, and returns it with its id.
+func (s *Store) CreateDestination(ctx context.Context, d Destination, sec DestinationSecret, now int64) (Destination, error) {
 	ctx = WithTenant(ctx, d.TenantID)
 	plain, err := json.Marshal(sec) //nolint:gosec // G117: the secret is sealed right below, never stored or sent in clear
 	if err != nil {
@@ -102,7 +100,11 @@ func (s *Store) CreateDestination(ctx context.Context, master []byte, d Destinat
 		d.TenantID, d.Name, d.Kind, d.URLHint, []byte{}, []byte{}, now).Scan(&d.ID); err != nil {
 		return Destination{}, fmt.Errorf("create destination: %w", err)
 	}
-	secretEnc, dekEnc, err := crypto.Seal(master, destinationAAD(d.ID), plain)
+	key, err := s.tenantKey(ctx, tx, d.TenantID)
+	if err != nil {
+		return Destination{}, fmt.Errorf("create destination: %w", err)
+	}
+	secretEnc, dekEnc, err := key.Seal(secretDestination, strconv.FormatInt(d.ID, 10), plain)
 	if err != nil {
 		return Destination{}, fmt.Errorf("encrypt destination: %w", err)
 	}
@@ -158,10 +160,12 @@ func (s *Store) Destination(ctx context.Context, id int64) (Destination, error) 
 
 // DestinationSecret opens a destination's address and secret. ErrNoSecret when they were
 // deleted (Destination.AddressDeleted), ErrNotFound when there is no such destination.
-func (s *Store) DestinationSecret(ctx context.Context, master []byte, id int64) (DestinationSecret, error) {
+func (s *Store) DestinationSecret(ctx context.Context, id int64) (DestinationSecret, error) {
 	ctx = s.tenantFor(ctx, ofDestination, id)
+	var tenantID int64
 	var secretEnc, dekEnc []byte
-	err := s.db.QueryRowContext(ctx, `SELECT secret_enc, dek_enc FROM notify_destinations WHERE id = ?`, id).Scan(&secretEnc, &dekEnc)
+	err := s.db.QueryRowContext(ctx, `SELECT tenant_id, secret_enc, dek_enc FROM notify_destinations WHERE id = ?`, id).
+		Scan(&tenantID, &secretEnc, &dekEnc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DestinationSecret{}, ErrNotFound
 	}
@@ -171,7 +175,11 @@ func (s *Store) DestinationSecret(ctx context.Context, master []byte, id int64) 
 	if len(secretEnc) == 0 {
 		return DestinationSecret{}, ErrNoSecret
 	}
-	plain, err := crypto.Open(master, destinationAAD(id), secretEnc, dekEnc)
+	key, err := s.tenantKey(WithTenant(ctx, tenantID), s.db, tenantID)
+	if err != nil {
+		return DestinationSecret{}, fmt.Errorf("decrypt destination: %w", err)
+	}
+	plain, err := key.Open(secretDestination, strconv.FormatInt(id, 10), destinationAAD(id), secretEnc, dekEnc)
 	if err != nil {
 		return DestinationSecret{}, fmt.Errorf("decrypt destination: %w", err)
 	}
@@ -180,32 +188,6 @@ func (s *Store) DestinationSecret(ctx context.Context, master []byte, id int64) 
 		return DestinationSecret{}, fmt.Errorf("decode destination: %w", err)
 	}
 	return sec, nil
-}
-
-// SealedDestinations lists every tenant's destinations whose address is stored (not
-// deleted), for checking the master key opens them.
-func (s *Store) SealedDestinations(ctx context.Context) ([]int64, error) {
-	var out []int64
-	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
-		rows, err := s.db.QueryContext(ctx, `SELECT id FROM notify_destinations WHERE length(secret_enc) > 0 ORDER BY id`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				return err
-			}
-			out = append(out, id)
-		}
-		return rows.Err()
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list sealed destinations: %w", err)
-	}
-	slices.Sort(out)
-	return out, nil
 }
 
 // DeleteDestination removes one of the tenant's destinations with its delivery log and the

@@ -158,7 +158,7 @@ func TestRulesImportExportKeepsMailboxes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: user.ID, Label: "Work", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "work@acme.example"}, "pw"); err != nil {
+	if _, err := st.CreateAccount(ctx, store.Account{UserID: user.ID, Label: "Work", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "work@acme.example"}, "pw"); err != nil {
 		t.Fatal(err)
 	}
 

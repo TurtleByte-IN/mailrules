@@ -177,7 +177,7 @@ func TestMailboxForm(t *testing.T) {
 	if e.dialed.CertFingerprint != acct.CertFingerprint || e.dialed.TLSMode != "starttls" {
 		t.Errorf("the first login dialed %+v", e.dialed)
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword {
+	if got, _ := e.st.AccountSecret(t.Context(), 1); got != formBridgePassword {
 		t.Errorf("stored secret = %q, want the Bridge password", got)
 	}
 	if len(passwords) != 1 || passwords[0] != formBridgePassword {
@@ -293,7 +293,7 @@ func TestReconnectFormMailbox(t *testing.T) {
 	if a, _ := e.st.Account(t.Context(), 1); a.Label != "Jo at Proton" || a.Host != before.Host || a.Port != before.Port || !a.Module {
 		t.Errorf("after Edit = %+v", a)
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword {
+	if got, _ := e.st.AccountSecret(t.Context(), 1); got != formBridgePassword {
 		t.Errorf("Edit changed the secret to %q", got)
 	}
 
@@ -333,7 +333,7 @@ func TestReconnectFormMailbox(t *testing.T) {
 			t.Errorf("reconnect with %s = %v, want a message with %q", c.name, a, c.want)
 		}
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword {
+	if got, _ := e.st.AccountSecret(t.Context(), 1); got != formBridgePassword {
 		t.Errorf("a refused reconnect changed the secret to %q", got)
 	}
 	if a, _ := e.st.Account(t.Context(), 1); a.Status != worker.StatusReconnectNeeded {
@@ -351,7 +351,7 @@ func TestReconnectFormMailbox(t *testing.T) {
 	if len(passwords) != 1 || passwords[0] != formBridgePassword2 {
 		t.Errorf("the reconnect logged in with %q", passwords)
 	}
-	if got, _ := e.st.AccountSecret(t.Context(), e.sett.Master, 1); got != formBridgePassword2 {
+	if got, _ := e.st.AccountSecret(t.Context(), 1); got != formBridgePassword2 {
 		t.Errorf("secret after reconnecting = %q", got)
 	}
 	var sealed []byte

@@ -26,8 +26,9 @@ func TestTransactionsWithConcurrentWriters(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			a, err := s.CreateAccount(ctx, testMaster, Account{UserID: u.ID, Label: "m", Preset: "icloud",
+			a, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: "m", Preset: "icloud",
 				Host: "imap.mail.me.com", Port: 993, TLSMode: "implicit", Username: fmt.Sprintf("m%d@icloud.com", i)}, "pw")
+
 			if err != nil {
 				return err
 			}

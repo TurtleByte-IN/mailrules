@@ -23,8 +23,9 @@ func TestCreateAccountWithin(t *testing.T) {
 	}
 	mate, leaver, other := signIn("mate", "org_team"), signIn("leaver", "org_team"), signIn("other", "org_other")
 	add := func(u User, name string, max int) error {
-		_, err := s.CreateAccountWithin(ctx, testMaster, Account{UserID: u.ID, Label: name, Preset: "generic", Host: "imap.test",
+		_, err := s.CreateAccountWithin(ctx, Account{UserID: u.ID, Label: name, Preset: "generic", Host: "imap.test",
 			Port: 993, TLSMode: "implicit", Username: name + "@imap.test"}, "pw", max)
+
 		return err
 	}
 	// The team has two mailboxes, one of them private to the leaver: both count.
@@ -85,8 +86,9 @@ func TestCreateAccountWithinConcurrently(t *testing.T) {
 	for i := range tries {
 		wg.Go(func() {
 			<-start
-			_, err := s.CreateAccountWithin(ctx, testMaster, Account{UserID: u.ID, Label: "m", Preset: "generic", Host: "imap.test",
+			_, err := s.CreateAccountWithin(ctx, Account{UserID: u.ID, Label: "m", Preset: "generic", Host: "imap.test",
 				Port: 993, TLSMode: "implicit", Username: fmt.Sprintf("m%d@imap.test", i)}, "pw", max)
+
 			switch {
 			case err == nil:
 				added.Add(1)
@@ -168,7 +170,7 @@ func TestFirstCleanupGrant(t *testing.T) {
 		if err := Migrate(ctx, db); err != nil {
 			t.Fatal(err)
 		}
-		return New(db)
+		return keyed(db)
 	}
 	s := openAt()
 	oct := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)

@@ -13,8 +13,12 @@ var ErrNotFound = errors.New("not found")
 // ErrAlreadySetUp means the first-run admin account already exists.
 var ErrAlreadySetUp = errors.New("already set up")
 
-// Store is the repository over the database. All times are unix seconds.
-type Store struct{ db *conn }
+// Store is the repository over the database. All times are unix seconds. keys seals and
+// opens the secrets it keeps (WithKeys); a store without one keeps none.
+type Store struct {
+	db   *conn
+	keys *keyring
+}
 
 // New wraps an open, migrated database, SQLite (Open) or Postgres (OpenPostgres).
 func New(db *sql.DB) *Store { return &Store{db: &conn{db: db, d: dialectOf(db)}} }
@@ -243,36 +247,6 @@ func (s *Store) Settings(ctx context.Context, tenantID int64) (map[string]string
 		out[k] = v
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list settings: %w", err)
-	}
-	return out, nil
-}
-
-// SettingsLike returns, across every tenant, the stored settings whose key starts with
-// prefix, as tenant id and key to JSON value. It is for checks over the whole database (the
-// master key check counts every stored provider key), never for showing.
-func (s *Store) SettingsLike(ctx context.Context, prefix string) (map[int64]map[string]string, error) {
-	out := map[int64]map[string]string{}
-	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
-		rows, err := s.db.QueryContext(ctx, `SELECT tenant_id, key, value FROM settings WHERE substr(key, 1, length(CAST(?1 AS TEXT))) = ?1`, prefix)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var t int64
-			var k, v string
-			if err := rows.Scan(&t, &k, &v); err != nil {
-				return err
-			}
-			if out[t] == nil {
-				out[t] = map[string]string{}
-			}
-			out[t][k] = v
-		}
-		return rows.Err()
-	})
-	if err != nil {
 		return nil, fmt.Errorf("list settings: %w", err)
 	}
 	return out, nil

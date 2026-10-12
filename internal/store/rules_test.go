@@ -94,7 +94,7 @@ func TestRules(t *testing.T) {
 func TestMigrationRuleTemplate(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 6)
-	s := New(db)
+	s := keyed(db)
 	uid := legacyUser(t, db)
 	ids := map[string]int64{}
 	for name, said := range map[string]any{

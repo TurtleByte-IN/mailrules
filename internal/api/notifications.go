@@ -171,7 +171,7 @@ func (s *server) handleDestinationCreate(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	d, err := s.store.CreateDestination(r.Context(), s.Master, store.Destination{TenantID: viewer(r).TenantID, Name: name, Kind: in.Kind}, sec, s.now().Unix())
+	d, err := s.store.CreateDestination(r.Context(), store.Destination{TenantID: viewer(r).TenantID, Name: name, Kind: in.Kind}, sec, s.now().Unix())
 	if err != nil {
 		internalError(w, r, err)
 		return

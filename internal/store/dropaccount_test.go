@@ -42,8 +42,9 @@ func TestDeleteAccountKeepsRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	other, _ := res.LastInsertId()
-	z, err := s.CreateAccount(ctx, testMaster, Account{UserID: other, Label: "Z", Preset: "icloud", Host: "imap.mail.me.com", Port: 993,
+	z, err := s.CreateAccount(ctx, Account{UserID: other, Label: "Z", Preset: "icloud", Host: "imap.mail.me.com", Port: 993,
 		TLSMode: "implicit", Username: "z@icloud.com", CreatedAt: 1}, "pw")
+
 	if err != nil {
 		t.Fatal(err)
 	}

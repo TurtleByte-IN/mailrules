@@ -22,7 +22,7 @@ func withMailboxes(t *testing.T, env map[string]string) (s *Settings, user store
 		t.Fatal(err)
 	}
 	for _, name := range []string{"work@acme.example", "me@icloud.com"} {
-		if _, err := s.Store.CreateAccount(ctx, s.Master, store.Account{UserID: user.ID, Label: "label of " + name, Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: name}, "pw"); err != nil {
+		if _, err := s.Store.CreateAccount(ctx, store.Account{UserID: user.ID, Label: "label of " + name, Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: name}, "pw"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,7 +161,7 @@ func TestPrepareImport(t *testing.T) {
 			ctx := t.Context()
 			s, user := withMailboxes(t, tt.env)
 			if tt.twin {
-				if _, err := s.Store.CreateAccount(ctx, s.Master, store.Account{UserID: user.ID, Label: "twin", Preset: "generic", Host: "other", Port: 993, TLSMode: "implicit", Username: "WORK@acme.example"}, "pw"); err != nil {
+				if _, err := s.Store.CreateAccount(ctx, store.Account{UserID: user.ID, Label: "twin", Preset: "generic", Host: "other", Port: 993, TLSMode: "implicit", Username: "WORK@acme.example"}, "pw"); err != nil {
 					t.Fatal(err)
 				}
 			}

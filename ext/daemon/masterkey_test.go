@@ -17,21 +17,23 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 )
 
-func testKey(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+func testKey(b byte) crypto.MasterKey { return crypto.MasterKey(bytes.Repeat([]byte{b}, 32)) }
 
 func keyB64(b byte) string { return base64.StdEncoding.EncodeToString(testKey(b)) }
 
 // installDir makes a data directory the way an install leaves it: master.key holding
-// key(1) (when withKey), and one mailbox whose password is sealed under it.
+// key(1) (when withKey), and one mailbox whose password is sealed under it. The store it
+// returns has no keys, as openMasterKey takes it.
 func installDir(t *testing.T, withKey bool) (string, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, _ := storetest.InDir(t, dir)
+	_, db := storetest.InDir(t, dir)
+	st := store.New(db)
 	u, err := st.CreateFirstUser(t.Context(), "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateAccount(t.Context(), testKey(1), store.Account{UserID: u.ID, Label: "a", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "u", CreatedAt: 1}, "app password"); err != nil {
+	if _, err := st.WithKeys(testKey(1)).CreateAccount(t.Context(), store.Account{UserID: u.ID, Label: "a", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "u", CreatedAt: 1}, "app password"); err != nil {
 		t.Fatal(err)
 	}
 	if withKey {
@@ -42,11 +44,12 @@ func installDir(t *testing.T, withKey bool) (string, *store.Store) {
 	return dir, st
 }
 
+// emptyStore is a data directory with an empty database, and its store without keys.
 func emptyStore(t *testing.T) (string, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	st, _ := storetest.InDir(t, dir)
-	return dir, st
+	_, db := storetest.InDir(t, dir)
+	return dir, store.New(db)
 }
 
 func loadCfg(t *testing.T, dir string, env map[string]string) *config.Config {
@@ -156,20 +159,79 @@ func TestOpenMasterKeyStartFresh(t *testing.T) {
 	if err != nil || !bytes.Equal(onDisk, key) {
 		t.Fatalf("the new key was not stored: %v", err)
 	}
-	// The old password is unreadable, the way the message promised.
-	if _, err := st.AccountSecret(t.Context(), key, 1); !errors.Is(err, crypto.ErrDecrypt) {
+	// The old password, which nothing can open any more, is gone: the mailbox asks for it.
+	if _, err := st.WithKeys(key).AccountSecret(t.Context(), 1); !errors.Is(err, store.ErrNoSecret) {
 		t.Fatalf("old secret under the new key: %v", err)
 	}
-	// Until the new key holds one secret the check still has nothing it can open, so a start
-	// without the opt-in refuses again; entering the password again ends that.
-	if _, err := openMasterKey(t.Context(), loadCfg(t, dir, nil), st); !errors.Is(err, ErrMasterKeyLost) {
+	// With nothing stored that the new key cannot open, a start without the opt-in goes on.
+	if again, err := openMasterKey(t.Context(), loadCfg(t, dir, nil), st); err != nil || !bytes.Equal(again, key) {
 		t.Fatalf("restart before entering the password again: %v", err)
 	}
-	if err := st.SetAccountSecret(t.Context(), key, 1, "entered again"); err != nil {
+	if err := st.WithKeys(key).SetAccountSecret(t.Context(), 1, "entered again"); err != nil {
 		t.Fatal(err)
 	}
 	if again, err := openMasterKey(t.Context(), loadCfg(t, dir, nil), st); err != nil || !bytes.Equal(again, key) {
 		t.Fatalf("restart after entering it again: %v", err)
+	}
+}
+
+// After MAILRULES_NEW_MASTER_KEY, with a key made anew or one given that is not the old one,
+// the secrets sealed under the old key are gone (nothing could open them again), and
+// entering them again works: a mailbox password and a model key are stored under the new
+// key and read back, and the next start needs no opt-in.
+func TestNewMasterKeyLetsSecretsBeEnteredAgain(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  map[string]string // with MAILRULES_NEW_MASTER_KEY
+	}{
+		{"a new key is made", nil},
+		{"another key is given", map[string]string{"MAILRULES_MASTER_KEY": keyB64(7)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			dir, st := installDir(t, false) // the mailbox password is under key(1), which is gone
+			old := &settings.Settings{Store: st.WithKeys(testKey(1)), Env: loadCfg(t, dir, nil)}
+			if err := old.Apply(ctx, store.SelfHostTenant, settings.Patch{Keys: map[string]string{"openrouter_api_key": "sk-or-old"}}); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := loadCfg(t, dir, mergeEnv(tt.env, map[string]string{"MAILRULES_NEW_MASTER_KEY": "true"}))
+			key, err := openMasterKey(ctx, cfg, st)
+			if err != nil || bytes.Equal(key, testKey(1)) {
+				t.Fatalf("opt-in: %v", err)
+			}
+			keyed := st.WithKeys(key)
+			if _, err := keyed.AccountSecret(ctx, 1); !errors.Is(err, store.ErrNoSecret) {
+				t.Fatalf("old password under the new key: %v", err)
+			}
+			sett := &settings.Settings{Store: keyed, Env: cfg}
+			v, err := sett.View(ctx, store.SelfHostTenant)
+			if err != nil || v.Keys["openrouter_api_key"] != settings.KeyNone {
+				t.Fatalf("old model key after the new key: %q, %v", v.Keys["openrouter_api_key"], err)
+			}
+			if check, err := keyed.CheckSecrets(ctx); err != nil || check.Total != 0 {
+				t.Fatalf("secrets left after the new key: %+v, %v", check, err)
+			}
+
+			if err := keyed.SetAccountSecret(ctx, 1, "entered again"); err != nil {
+				t.Fatalf("entering the password again: %v", err)
+			}
+			if got, err := keyed.AccountSecret(ctx, 1); err != nil || got != "entered again" {
+				t.Fatalf("password read back = %q, %v", got, err)
+			}
+			if err := sett.Apply(ctx, store.SelfHostTenant, settings.Patch{Keys: map[string]string{"openrouter_api_key": "sk-or-new"}}); err != nil {
+				t.Fatalf("entering the model key again: %v", err)
+			}
+			if eff, err := sett.Effective(ctx, store.SelfHostTenant); err != nil || eff.OpenRouterAPIKey != "sk-or-new" {
+				t.Fatalf("model key read back = %q, %v", eff.OpenRouterAPIKey, err)
+			}
+
+			// The next start, without the opt-in, opens them.
+			again, err := openMasterKey(ctx, loadCfg(t, dir, tt.env), st)
+			if err != nil || !bytes.Equal(again, key) {
+				t.Fatalf("restart without the opt-in: %v", err)
+			}
+		})
 	}
 }
 
@@ -230,25 +292,28 @@ func mergeEnv(a, b map[string]string) map[string]string {
 }
 
 // Some secrets sealed under another key is a warning: those rows say decrypt failed one by
-// one, and the others work.
+// one, and the others work. Here a second tenant's key is wrapped under another master key.
 func TestOpenMasterKeySomeUnreadable(t *testing.T) {
 	dir, st := installDir(t, true)
-	u, err := st.FirstUser(t.Context())
+	u, err := st.SignInIdentity(t.Context(), store.Identity{Provider: "p", Subject: "s", Email: "b@example.test", Tenant: "other"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateAccount(t.Context(), testKey(5), store.Account{UserID: u.ID, Label: "b", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "u2", CreatedAt: 1}, "other"); err != nil {
+	if _, err := st.WithKeys(testKey(5)).CreateAccount(t.Context(), store.Account{UserID: u.ID, Label: "b", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "u2", CreatedAt: 1}, "other"); err != nil {
 		t.Fatal(err)
 	}
 	if key, err := openMasterKey(t.Context(), loadCfg(t, dir, nil), st); err != nil || !bytes.Equal(key, testKey(1)) {
 		t.Fatalf("half the secrets readable: %v", err)
+	}
+	if got, err := st.WithKeys(testKey(5)).AccountSecret(t.Context(), 2); err != nil || got != "other" {
+		t.Fatalf("without the opt-in the other tenant's key is kept: %q, %v", got, err)
 	}
 }
 
 func TestOpenMasterKeyOnlyAProviderKeyStored(t *testing.T) {
 	dir, st := emptyStore(t)
 	// A provider key entered in the browser while the install had another key.
-	sett := &settings.Settings{Store: st, Master: testKey(1), Env: loadCfg(t, dir, nil)}
+	sett := &settings.Settings{Store: st.WithKeys(testKey(1)), Env: loadCfg(t, dir, nil)}
 	if err := sett.Apply(t.Context(), store.SelfHostTenant, settings.Patch{Keys: map[string]string{"openrouter_api_key": "sk-or-secret"}}); err != nil {
 		t.Fatal(err)
 	}

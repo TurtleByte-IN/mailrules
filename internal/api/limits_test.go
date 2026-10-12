@@ -94,7 +94,7 @@ func TestLimitsSelfHostHasNone(t *testing.T) {
 	e := newEnv(t)
 	e.signIn()
 	for i := range 4 {
-		if _, err := e.st.CreateAccount(t.Context(), e.sett.Master, store.Account{UserID: 1, Label: "x", Preset: "generic", Host: "h", Port: 993,
+		if _, err := e.st.CreateAccount(t.Context(), store.Account{UserID: 1, Label: "x", Preset: "generic", Host: "h", Port: 993,
 			TLSMode: "implicit", Username: fmt.Sprintf("m%d@example.test", i)}, "pw"); err != nil {
 			t.Fatal(err)
 		}

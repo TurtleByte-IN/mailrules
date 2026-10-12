@@ -74,7 +74,7 @@ func TestEveryTableIsTenantScoped(t *testing.T) {
 func TestTenantsAreApart(t *testing.T) {
 	db := pgOnly(t)
 	ctx := t.Context()
-	s := New(db.App)
+	s := keyed(db.App)
 	var tenants [2]int64
 	for i, org := range []string{"org_a", "org_b"} {
 		u, err := s.SignInIdentity(ctx, Identity{Provider: "workos", Subject: "user_" + org, Email: org + "@example.test", Tenant: org}, 1)
@@ -82,7 +82,7 @@ func TestTenantsAreApart(t *testing.T) {
 			t.Fatal(err)
 		}
 		tenants[i] = u.TenantID
-		if _, err := s.CreateAccount(ctx, make([]byte, 32), Account{UserID: u.ID, Label: org, Preset: "generic", Host: "imap.example.test", Port: 993, Username: org}, "pw"); err != nil {
+		if _, err := s.CreateAccount(ctx, Account{UserID: u.ID, Label: org, Preset: "generic", Host: "imap.example.test", Port: 993, Username: org}, "pw"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: "Rule " + org, Intent: "x", Enabled: true,

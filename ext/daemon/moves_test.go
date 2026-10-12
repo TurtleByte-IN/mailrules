@@ -21,6 +21,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail/presets"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
+	"github.com/TurtleByte-IN/mailrules/internal/store/storetest"
 
 	mrimap "github.com/TurtleByte-IN/mailrules/internal/mail/imap"
 )
@@ -267,13 +268,12 @@ func TestNoMovesWithoutTheModule(t *testing.T) {
 // kept says so.
 func TestMoveWorkerHandsOverAtLeastOnce(t *testing.T) {
 	ctx := t.Context()
-	dir, st := emptyStore(t)
-	_ = dir
+	st, _ := storetest.New(t)
 	u, err := st.CreateFirstUser(ctx, "me@example.test", "hash", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	acct, err := st.CreateAccount(ctx, testKey(1), store.Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993,
+	acct, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: "me", Preset: "generic", Host: "h", Port: 993,
 		TLSMode: "implicit", Username: "me@example.test", WatchFolder: "INBOX"}, "pw")
 	if err != nil {
 		t.Fatal(err)

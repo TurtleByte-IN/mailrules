@@ -112,7 +112,7 @@ func TestDeleteAccount(t *testing.T) {
 	if _, err := e.mgr.Mailbox(acct); err == nil {
 		t.Error("the mailbox is still running")
 	}
-	if _, err := e.st.AccountSecret(t.Context(), e.sett.Master, acct); !errors.Is(err, store.ErrNoSecret) {
+	if _, err := e.st.AccountSecret(t.Context(), acct); !errors.Is(err, store.ErrNoSecret) {
 		t.Errorf("the mailbox password: %v, want ErrNoSecret", err)
 	}
 	if n := e.count(`SELECT COUNT(*) FROM settings WHERE key LIKE 'key.%'`); n != 0 {
@@ -185,7 +185,7 @@ func TestDeleteAccountWithoutSignInHook(t *testing.T) {
 	if _, err := e.mgr.Mailbox(acct); err == nil {
 		t.Error("the mailbox is still running")
 	}
-	if _, err := e.st.AccountSecret(t.Context(), e.sett.Master, acct); !errors.Is(err, store.ErrNoSecret) {
+	if _, err := e.st.AccountSecret(t.Context(), acct); !errors.Is(err, store.ErrNoSecret) {
 		t.Errorf("the mailbox password: %v, want ErrNoSecret", err)
 	}
 	if n := e.count(`SELECT COUNT(*) FROM settings WHERE key LIKE 'key.%'`); n != 0 {

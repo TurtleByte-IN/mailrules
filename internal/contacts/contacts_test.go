@@ -15,7 +15,7 @@ func TestSyncAndFill(t *testing.T) {
 	ctx := t.Context()
 	st, _ := storetest.New(t)
 	u, _ := st.CreateFirstUser(ctx, "me@icloud.com", "hash", 1)
-	acct, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
+	acct, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: "x", Preset: "generic", Host: "h", Port: 993, TLSMode: "implicit", Username: "me"}, "pw")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ func newSettings(t *testing.T, env map[string]string) *Settings {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Settings{Store: st, Master: make([]byte, 32), Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
+	return &Settings{Store: st, Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
 }
 
 // composer_model is a Claude model, or provider:model; anything else is refused on its field.

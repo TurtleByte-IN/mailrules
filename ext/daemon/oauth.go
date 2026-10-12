@@ -21,7 +21,6 @@ import (
 // secret is decrypted for each login and kept nowhere else.
 type mailLogins struct {
 	st        *store.Store
-	master    []byte
 	signIn    *ext.MailboxSignIn // nil: the build connects no mailbox this way
 	tlsConfig *tls.Config        // nil outside tests: verify against the system roots
 	cloud     bool               // MAILRULES_MODE=cloud: a server the person named is reached only on the public internet (publicDial)
@@ -30,8 +29,8 @@ type mailLogins struct {
 	locks map[int64]*sync.Mutex // per mailbox: its connections log in one at a time
 }
 
-func newMailLogins(st *store.Store, master []byte, modules []ext.Module) *mailLogins {
-	l := &mailLogins{st: st, master: master, locks: map[int64]*sync.Mutex{}}
+func newMailLogins(st *store.Store, modules []ext.Module) *mailLogins {
+	l := &mailLogins{st: st, locks: map[int64]*sync.Mutex{}}
 	for i := range modules {
 		if modules[i].Mailboxes != nil {
 			l.signIn = modules[i].Mailboxes
@@ -69,7 +68,7 @@ func (l *mailLogins) stored(acct store.Account) func(context.Context) (string, e
 		mu := l.lock(acct.ID)
 		mu.Lock()
 		defer mu.Unlock()
-		secret, err := l.st.AccountSecret(ctx, l.master, acct.ID)
+		secret, err := l.st.AccountSecret(ctx, acct.ID)
 		if errors.Is(err, store.ErrNoSecret) {
 			return "", fmt.Errorf("%w: %w", mail.ErrReconnect, err)
 		}
@@ -81,7 +80,7 @@ func (l *mailLogins) stored(acct store.Account) func(context.Context) (string, e
 			return "", err
 		}
 		if tok.Secret != "" && tok.Secret != secret {
-			if err := l.st.SetAccountSecret(ctx, l.master, acct.ID, tok.Secret); err != nil {
+			if err := l.st.SetAccountSecret(ctx, acct.ID, tok.Secret); err != nil {
 				return "", fmt.Errorf("store the renewed secret: %w", err)
 			}
 		}

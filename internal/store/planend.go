@@ -154,7 +154,7 @@ func (s *Store) DeleteTenantSecrets(ctx context.Context, tenantID, endedAt, now 
 		if ids, err = tenantAccountIDs(ctx, tx, tenantID); err != nil {
 			return err
 		}
-		if err := deleteSecrets(ctx, tx, tenantID, ids, true, planEndedMessage, planEndedOAuthMessage, now); err != nil {
+		if err := s.deleteSecrets(ctx, tx, tenantID, ids, true, planEndedMessage, planEndedOAuthMessage, now); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO plans (tenant_id, plan, ended_at, secrets_deleted, updated_at)
@@ -184,7 +184,7 @@ func (s *Store) RemoveEndedTenant(ctx context.Context, tenantID, endedAt, now in
 			return err
 		}
 		// Their secrets went after EndedSecretsDays, so normally none is queued here.
-		if err := queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
+		if err := s.queueRemovedMailboxes(ctx, tx, out.Accounts, now); err != nil {
 			return err
 		}
 		return removeTenant(ctx, tx, tenantID)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 )
@@ -28,10 +29,17 @@ type RemovedMailbox struct {
 }
 
 // queueRemovedMailboxes writes, in tx, a removed_mailboxes row for each of ids that a module
-// connected and that still has its secret, copied as sealed, before the caller deletes the
-// mailbox or its secret in the same transaction. A mailbox whose secret is already gone was
-// queued when it went, so it is not queued twice.
-func queueRemovedMailboxes(ctx context.Context, tx *txn, ids []int64, now int64) error {
+// connected and that still has its secret, before the caller deletes the mailbox or its
+// secret in the same transaction. A mailbox whose secret is already gone was queued when it
+// went, so it is not queued twice.
+//
+// The copy is resealed under the key-encryption key itself (crypto.SealKEK, envelope 3),
+// not the tenant's key: the row must open until the module takes it or it expires, and the
+// tenant, with its key, may be deleted in the same transaction (RemoveForgotten,
+// RemoveEndedTenant). The copy lives exactly as long as its row, which is deleted when
+// taken and after RemovedMailboxDays at the latest, so the tenant's key can be destroyed at
+// once without keeping anything else of the tenant.
+func (s *Store) queueRemovedMailboxes(ctx context.Context, tx *txn, ids []int64, now int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -39,13 +47,55 @@ func queueRemovedMailboxes(ctx context.Context, tx *txn, ids []int64, now int64)
 	if err != nil {
 		return fmt.Errorf("queue removed mailboxes: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO removed_mailboxes (account_id, preset, oauth, username, secret_enc, dek_enc, created_at, next_at)
-		SELECT id, preset, oauth, username, secret_enc, dek_enc, CAST(?1 AS BIGINT), CAST(?1 AS BIGINT) FROM accounts
-		WHERE id IN (`+tx.d.jsonValues("?2", "BIGINT")+`) AND (module = TRUE OR oauth = TRUE) AND length(secret_enc) > 0 ORDER BY id`,
-		now, string(enc)); err != nil {
+	type queued struct {
+		id, tenantID      int64
+		preset, username  string
+		oauth             bool
+		secretEnc, dekEnc []byte
+	}
+	rs, err := tx.QueryContext(ctx, `SELECT id, tenant_id, preset, oauth, username, secret_enc, dek_enc FROM accounts
+		WHERE id IN (`+tx.d.jsonValues("?", "BIGINT")+`) AND (module = TRUE OR oauth = TRUE) AND length(secret_enc) > 0 ORDER BY id`, string(enc))
+	if err != nil {
 		return fmt.Errorf("queue removed mailboxes: %w", err)
 	}
+	var qs []queued
+	for rs.Next() {
+		var q queued
+		if err := rs.Scan(&q.id, &q.tenantID, &q.preset, &q.oauth, &q.username, &q.secretEnc, &q.dekEnc); err != nil {
+			_ = rs.Close()
+			return fmt.Errorf("queue removed mailboxes: %w", err)
+		}
+		qs = append(qs, q)
+	}
+	if err := errors.Join(rs.Err(), rs.Close()); err != nil {
+		return fmt.Errorf("queue removed mailboxes: %w", err)
+	}
+	for _, q := range qs {
+		key, err := s.tenantKey(ctx, tx, q.tenantID)
+		if err != nil {
+			return fmt.Errorf("queue removed mailboxes: %w", err)
+		}
+		ref := strconv.FormatInt(q.id, 10)
+		plain, err := key.Open(secretAccount, ref, q.id, q.secretEnc, q.dekEnc)
+		if err != nil {
+			return fmt.Errorf("queue removed mailbox %d: %w", q.id, err)
+		}
+		secretEnc, dekEnc, err := crypto.SealKEK(ctx, s.keys.p, removedBinding(q.id), plain)
+		if err != nil {
+			return fmt.Errorf("queue removed mailbox %d: %w", q.id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO removed_mailboxes (account_id, preset, oauth, username, secret_enc, dek_enc, created_at, next_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, q.id, q.preset, q.oauth, q.username, secretEnc, dekEnc, now, now); err != nil {
+			return fmt.Errorf("queue removed mailboxes: %w", err)
+		}
+	}
 	return nil
+}
+
+// removedBinding is what a removed mailbox's copy of its secret is sealed to: no tenant
+// (the copy outlives it), the kind and the mailbox's id, which envelope 1 bound it to too.
+func removedBinding(accountID int64) crypto.Binding {
+	return crypto.Binding{Kind: secretRemoved, Ref: strconv.FormatInt(accountID, 10), LegacyRow: accountID}
 }
 
 // removedCols are the columns of a RemovedMailbox, as scanRemoved reads them.
@@ -86,9 +136,11 @@ func (s *Store) WaitingRemovedMailboxes(ctx context.Context, now int64, limit in
 }
 
 // RemovedMailboxSecret opens the secret a removed mailbox had. It returns crypto.ErrDecrypt
-// when the master key is not the one it was sealed under, and ErrNotFound when the row is
-// gone.
-func (s *Store) RemovedMailboxSecret(ctx context.Context, master []byte, id int64) (string, error) {
+// when the key-encryption key does not open it, and ErrNotFound when the row is gone.
+func (s *Store) RemovedMailboxSecret(ctx context.Context, id int64) (string, error) {
+	if s.keys == nil {
+		return "", ErrNoKeys
+	}
 	ctx = s.tenantFor(ctx, ofRemoved, id)
 	var accountID int64
 	var secretEnc, dekEnc []byte
@@ -100,7 +152,7 @@ func (s *Store) RemovedMailboxSecret(ctx context.Context, master []byte, id int6
 	if err != nil {
 		return "", fmt.Errorf("get removed mailbox secret: %w", err)
 	}
-	secret, err := crypto.Open(master, accountID, secretEnc, dekEnc)
+	secret, err := crypto.OpenKEK(ctx, s.keys.p, s.legacy(), removedBinding(accountID), secretEnc, dekEnc)
 	if err != nil {
 		return "", fmt.Errorf("decrypt removed mailbox secret: %w", err)
 	}

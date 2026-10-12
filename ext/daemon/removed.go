@@ -43,7 +43,6 @@ func mailboxOwner(modules []ext.Module, preset string, oauth bool) *ext.Module {
 // restarts, until the module takes it or RemovedMailboxDays pass.
 type removedWorker struct {
 	store   *store.Store
-	master  []byte
 	modules []ext.Module
 	every   time.Duration    // 0 = removedEvery
 	now     func() time.Time // nil = time.Now
@@ -116,7 +115,7 @@ func (w *removedWorker) hand(ctx context.Context, r store.RemovedMailbox) error 
 			"removed_id", r.ID, "account_id", r.AccountID, "provider", r.Preset, "one_click", r.OAuth)
 		return w.store.RemovedMailboxRetry(ctx, r.ID, w.clock().Add(noticeRetryMax).Unix())
 	}
-	secret, err := w.store.RemovedMailboxSecret(ctx, w.master, r.ID)
+	secret, err := w.store.RemovedMailboxSecret(ctx, r.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return nil // taken meanwhile

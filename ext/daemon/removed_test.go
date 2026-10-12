@@ -57,14 +57,13 @@ type removedWorld struct {
 	dir                     string
 	db                      *sql.DB
 	st                      *store.Store
-	master                  []byte
 	gmail, proton, password store.Account
 }
 
 func newRemovedWorld(t *testing.T) removedWorld {
 	t.Helper()
 	ctx := t.Context()
-	w := removedWorld{dir: t.TempDir(), master: testKey(4)}
+	w := removedWorld{dir: t.TempDir()}
 	w.st, w.db = storetest.InDir(t, w.dir)
 	u, err := w.st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: "user_jo", Email: "jo@example.test", Tenant: "org_jo"}, 1)
 	if err != nil {
@@ -73,7 +72,7 @@ func newRemovedWorld(t *testing.T) removedWorld {
 	add := func(a store.Account, secret string) store.Account {
 		a.UserID, a.Host, a.Port, a.TLSMode = u.ID, "127.0.0.1", 993, "implicit"
 		a.Label = a.Username
-		out, err := w.st.CreateAccount(ctx, w.master, a, secret)
+		out, err := w.st.CreateAccount(ctx, a, secret)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +102,7 @@ func TestRemovedMailboxesReachTheirModule(t *testing.T) {
 	ctx := t.Context()
 	oneClick, form := &fakeUndoer{refuse: 1}, &fakeUndoer{}
 	now := time.Unix(1_800_000_000, 0)
-	rw := &removedWorker{store: w.st, master: w.master, modules: undoModules(oneClick, form), now: func() time.Time { return now }}
+	rw := &removedWorker{store: w.st, modules: undoModules(oneClick, form), now: func() time.Time { return now }}
 
 	for _, id := range []int64{w.gmail.ID, w.password.ID} {
 		if _, err := w.st.DeleteAccount(ctx, id, now.Unix()); err != nil {
@@ -177,14 +176,14 @@ func TestRemovedMailboxSurvivesRestart(t *testing.T) {
 	st, db := storetest.InDir(t, w.dir)
 	oneClick := &fakeUndoer{}
 	oneClick.before = func() { _ = db.Close() } // and stops again as the module takes it
-	rw := &removedWorker{store: st, master: w.master, modules: undoModules(oneClick, &fakeUndoer{}), now: func() time.Time { return now }}
+	rw := &removedWorker{store: st, modules: undoModules(oneClick, &fakeUndoer{}), now: func() time.Time { return now }}
 	if err := rw.once(ctx); err == nil {
 		t.Fatal("recording the hand-over on a closed database did not fail")
 	}
 
 	st, _ = storetest.InDir(t, w.dir)
 	again := &fakeUndoer{}
-	rw = &removedWorker{store: st, master: w.master, modules: undoModules(again, &fakeUndoer{}), now: func() time.Time { return now }}
+	rw = &removedWorker{store: st, modules: undoModules(again, &fakeUndoer{}), now: func() time.Time { return now }}
 	if err := rw.once(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +207,7 @@ func TestRemovedMailboxWithoutItsModule(t *testing.T) {
 	form := &fakeUndoer{}
 	// The build has the one-click module, without MailboxRemoved, and no Proton module.
 	modules := []ext.Module{{Name: "oneclick", Mailboxes: &ext.MailboxSignIn{Providers: []string{"gmail"}}}}
-	rw := &removedWorker{store: w.st, master: w.master, modules: modules, now: func() time.Time { return now }}
+	rw := &removedWorker{store: w.st, modules: modules, now: func() time.Time { return now }}
 	if err := rw.once(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +218,7 @@ func TestRemovedMailboxWithoutItsModule(t *testing.T) {
 
 	// The Proton module comes back, with another master key.
 	now = now.Add(time.Hour)
-	rw = &removedWorker{store: w.st, master: testKey(9), modules: undoModules(&fakeUndoer{}, form), now: func() time.Time { return now }}
+	rw = &removedWorker{store: store.New(w.db).WithKeys(testKey(9)), modules: undoModules(&fakeUndoer{}, form), now: func() time.Time { return now }}
 	if err := rw.once(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -231,13 +230,13 @@ func TestRemovedMailboxWithoutItsModule(t *testing.T) {
 	if _, err := w.st.DeleteAccount(ctx, w.proton.ID, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.st.SetAccountSecret(ctx, w.master, w.gmail.ID, "refresh-2"); err != nil {
+	if err := w.st.SetAccountSecret(ctx, w.gmail.ID, "refresh-2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := w.st.DeleteAccount(ctx, w.gmail.ID, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	rw = &removedWorker{store: w.st, master: w.master, modules: nil, now: func() time.Time { return now }}
+	rw = &removedWorker{store: w.st, modules: nil, now: func() time.Time { return now }}
 	for range 2 {
 		if err := rw.once(ctx); err != nil {
 			t.Fatal(err)

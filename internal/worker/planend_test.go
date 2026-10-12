@@ -41,7 +41,7 @@ func newPlanWorld(t *testing.T) *planWorld {
 	st, _ := storetest.New(t)
 	w := &planWorld{st: st, m: &Manager{}, hub: events.NewHub(), sender: &mailertest.Sender{}}
 	box := func(u store.User, name string) store.Account {
-		a, err := st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: u.ID, Label: name, Preset: "generic",
+		a, err := st.CreateAccount(ctx, store.Account{UserID: u.ID, Label: name, Preset: "generic",
 			Host: "h", Port: 993, TLSMode: "implicit", Username: name + "@example.com"}, "pw-"+name)
 		if err != nil {
 			t.Fatal(err)
@@ -166,7 +166,7 @@ func (w *planWorld) secretsGone(t *testing.T) bool {
 	t.Helper()
 	gone := 0
 	for _, a := range w.teamBoxes {
-		if _, err := w.st.AccountSecret(t.Context(), make([]byte, 32), a.ID); errors.Is(err, store.ErrNoSecret) {
+		if _, err := w.st.AccountSecret(t.Context(), a.ID); errors.Is(err, store.ErrNoSecret) {
 			gone++
 		}
 	}
@@ -245,7 +245,7 @@ func TestPlanEndSchedule(t *testing.T) {
 			if !w.running(a.ID) {
 				t.Fatalf("day %v: %s's mailbox was stopped", c.day, a.Label)
 			}
-			if _, err := w.st.AccountSecret(t.Context(), make([]byte, 32), a.ID); err != nil {
+			if _, err := w.st.AccountSecret(t.Context(), a.ID); err != nil {
 				t.Fatalf("day %v: %s's secret: %v", c.day, a.Label, err)
 			}
 		}

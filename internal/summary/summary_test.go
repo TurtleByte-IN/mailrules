@@ -41,7 +41,7 @@ func newFixture(t *testing.T) *fixture {
 	if f.user, err = f.st.CreateFirstUser(ctx, "admin@example.com", "hash", 1); err != nil {
 		t.Fatal(err)
 	}
-	if f.acct, err = f.st.CreateAccount(ctx, make([]byte, 32), store.Account{UserID: f.user.ID, Label: "Personal", Preset: "generic",
+	if f.acct, err = f.st.CreateAccount(ctx, store.Account{UserID: f.user.ID, Label: "Personal", Preset: "generic",
 		Host: "imap.example.com", Port: 993, TLSMode: "implicit", Username: "me@example.com", CreatedAt: 1}, "pw"); err != nil {
 		t.Fatal(err)
 	}

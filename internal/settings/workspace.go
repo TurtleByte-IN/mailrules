@@ -9,8 +9,6 @@ package settings
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/config"
+	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
 )
 
@@ -68,15 +67,13 @@ func (l workspaceLookup) answer() WorkspaceLookup {
 	return WorkspaceLookup{Status: l.Status, Workspaces: ws}
 }
 
-// fingerprint ties lookupRow to one key without storing it: an HMAC under the master key.
-// It is "" for no key.
-func (s *Settings) fingerprint(apiKey string) string {
+// fingerprint ties lookupRow to one key without storing it: a MAC under the tenant's data
+// key k. It is "" for no key.
+func fingerprint(k crypto.TenantKey, apiKey string) string {
 	if apiKey == "" {
 		return ""
 	}
-	m := hmac.New(sha256.New, s.Master)
-	_, _ = m.Write([]byte("anthropic_api_key\x00" + apiKey))
-	return hex.EncodeToString(m.Sum(nil)[:16])
+	return hex.EncodeToString(k.MAC("anthropic_api_key", []byte(apiKey))[:16])
 }
 
 // readLookup decodes lookupRow; a missing or unreadable row is no lookup.
@@ -89,8 +86,8 @@ func readLookup(rows map[string]string) workspaceLookup {
 }
 
 // lookupFor is lookupRow when it is about apiKey, and no lookup otherwise.
-func (s *Settings) lookupFor(rows map[string]string, apiKey string) workspaceLookup {
-	if l := readLookup(rows); l.Key != "" && l.Key == s.fingerprint(apiKey) {
+func (s *Settings) lookupFor(rows map[string]string, k crypto.TenantKey, apiKey string) workspaceLookup {
+	if l := readLookup(rows); l.Key != "" && l.Key == fingerprint(k, apiKey) {
 		return l
 	}
 	return workspaceLookup{}
@@ -114,22 +111,22 @@ func workspaceWarning(cfg config.Config, l workspaceLookup) []Warning {
 func (s *Settings) LookupWorkspaces(ctx context.Context, tenantID int64) (WorkspaceLookup, error) {
 	s.lookupMu.Lock()
 	defer s.lookupMu.Unlock()
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		return WorkspaceLookup{}, err
 	}
-	cfg, _, err := s.effective(rows)
+	cfg, _, err := s.effective(rows, k)
 	if err != nil {
 		return WorkspaceLookup{}, err
 	}
-	if cfg.AnthropicAPIKey == "" || s.operatorKey(rows, "anthropic_api_key") {
+	if cfg.AnthropicAPIKey == "" || s.operatorKey(rows, k, "anthropic_api_key") {
 		return workspaceLookup{Status: WorkspaceNoneNeeded}.answer(), nil // no key of theirs, nothing to name
 	}
-	l := s.lookupFor(rows, cfg.AnthropicAPIKey)
+	l := s.lookupFor(rows, k, cfg.AnthropicAPIKey)
 	if l.Status == WorkspaceNoneNeeded || l.Status == WorkspaceOne || l.Status == WorkspaceSeveral {
 		return l.answer(), nil
 	}
-	return s.lookup(ctx, tenantID, cfg, l, false)
+	return s.lookup(ctx, tenantID, k, cfg, l, false)
 }
 
 // applyWorkspace adds to set a change of anthropic_workspace_id, and what a saved, replaced
@@ -170,10 +167,10 @@ func (s *Settings) applyWorkspace(p Patch, cfg *config.Config, before workspaceL
 }
 
 // lookup asks Anthropic and stores what it said in the tenant's rows. The caller holds
-// lookupMu; l is what was known about this key before. refused records that a Claude
-// request was refused.
-func (s *Settings) lookup(ctx context.Context, tenantID int64, cfg config.Config, l workspaceLookup, refused bool) (WorkspaceLookup, error) {
-	next := workspaceLookup{Key: s.fingerprint(cfg.AnthropicAPIKey), Refused: refused || l.Refused, Found: l.Found}
+// lookupMu; k is the tenant's data key; l is what was known about this key before.
+// refused records that a Claude request was refused.
+func (s *Settings) lookup(ctx context.Context, tenantID int64, k crypto.TenantKey, cfg config.Config, l workspaceLookup, refused bool) (WorkspaceLookup, error) {
+	next := workspaceLookup{Key: fingerprint(k, cfg.AnthropicAPIKey), Refused: refused || l.Refused, Found: l.Found}
 	if s.Workspaces == nil {
 		next.Status = WorkspaceFailed
 	} else {
@@ -223,12 +220,12 @@ func (s *Settings) lookup(ctx context.Context, tenantID int64, cfg config.Config
 func (s *Settings) workspaceNeeded(ctx context.Context, tenantID int64, apiKey string) string {
 	s.lookupMu.Lock()
 	defer s.lookupMu.Unlock()
-	rows, err := s.Store.Settings(ctx, tenantID)
+	rows, k, err := s.stored(ctx, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "could not read settings to find the Anthropic workspace", "error", err.Error())
 		return ""
 	}
-	cfg, _, err := s.effective(rows)
+	cfg, _, err := s.effective(rows, k)
 	switch {
 	case err != nil:
 		slog.WarnContext(ctx, "stored settings cannot be used to find the Anthropic workspace", "error", err.Error())
@@ -237,10 +234,10 @@ func (s *Settings) workspaceNeeded(ctx context.Context, tenantID int64, apiKey s
 		return ""
 	case cfg.AnthropicWorkspaceID != "":
 		return cfg.AnthropicWorkspaceID
-	case s.operatorKey(rows, "anthropic_api_key"):
+	case s.operatorKey(rows, k, "anthropic_api_key"):
 		return ""
 	}
-	l := s.lookupFor(rows, apiKey)
+	l := s.lookupFor(rows, k, apiKey)
 	if l.Refused && (l.Status == WorkspaceSeveral || l.Status == WorkspaceFailed) {
 		return ""
 	}
@@ -253,7 +250,7 @@ func (s *Settings) workspaceNeeded(ctx context.Context, tenantID int64, apiKey s
 		}
 		return ""
 	}
-	res, err := s.lookup(ctx, tenantID, cfg, l, true)
+	res, err := s.lookup(ctx, tenantID, k, cfg, l, true)
 	if err != nil {
 		slog.WarnContext(ctx, "could not look up the Anthropic workspace", "error", err.Error())
 		return ""
