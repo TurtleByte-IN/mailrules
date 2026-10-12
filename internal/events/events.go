@@ -19,6 +19,9 @@ const (
 	// NotificationsChanged: a notification destination was added or removed, or a module
 	// reported a delivery. Data: nil
 	NotificationsChanged = "notifications.changed"
+	// QuestionsChanged: a question about the person's moves was asked, brought up to date
+	// or answered (GET /api/activity/questions). Data: nil
+	QuestionsChanged = "questions.changed"
 )
 
 // Keep is how many past events a reconnecting subscriber can replay.

@@ -7,8 +7,9 @@
 // their own account (Module.DeleteIdentity), the way mailboxes of some providers are
 // connected with one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of
 // providers the module connects itself (Module.MailboxForms), what the module is told when a
-// mailbox it connected is removed or forgotten (Module.MailboxRemoved), and the delivery of
-// rule notifications (Module.Notifications).
+// mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
+// rule notifications (Module.Notifications), and what the module is told when the person
+// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -30,6 +31,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/message"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/moved"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
@@ -106,6 +108,12 @@ type Module struct {
 	// destinations acts on live it writes one notice per destination and hands each to
 	// Notify. At most one module of a build sets it.
 	Notifications *Notifications
+	// Moves, when set, tells the module when the person moves an email MailRules filed out
+	// of the folder MailRules put it in, in another mail app, and lets it ask in Activity
+	// whether to learn the sender. The daemon then watches the mailboxes for such moves
+	// (none without it) and GET /api/settings reports features.move_questions. At most one
+	// module of a build sets it.
+	Moves *Moves
 }
 
 // MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
@@ -385,6 +393,92 @@ type Delivery struct {
 
 // ErrNoNotice is what Deliveries.Record returns for a notice the daemon no longer keeps.
 var ErrNoNotice = errors.New("no such notice is kept")
+
+// Moves is how a module learns of the emails the person moves out of the folders MailRules
+// filed them in (Module.Moves). The daemon does the watching: every Every it looks, on
+// each mailbox's own connection and between two emails, at what MailRules filed in the
+// last MoveWatchDays (moves, archives, trashes and junks it did live and that nothing
+// undid or fixed since), with one search per folder it filed into, and follows each email
+// that is gone by its Message-ID. Mail MailRules moves itself (an undo, a fix, a cleanup)
+// is never a move. It tells the module only of an email the person filed in the Inbox or an
+// ordinary folder; one deleted, archived, marked as junk or expunged is not told. Every
+// fetch is BODY.PEEK and the watching changes nothing in the mailbox.
+type Moves struct {
+	// Every is how often each mailbox is looked at; 0 = MoveSweepEvery. A sweep costs a few
+	// IMAP commands per folder MailRules filed into, plus a search per folder for each
+	// email found gone.
+	Every time.Duration
+	// Serves, when set, says whether the mailboxes of a tenant are watched, as each sweep
+	// starts; nil = every mailbox of the build. It must be quick: it holds up the
+	// mailbox's new mail while it runs.
+	Serves func(ctx context.Context, tenantID int64) bool
+	// Moved takes one move. One worker calls it, one move at a time, within a few seconds of
+	// the daemon finding it, with a ctx that ends after 30 seconds, and calls it again for
+	// the same move (the same Move.ID) until it returns nil. An error is logged and the move
+	// handed over again, after a few seconds at first and at most an hour apart, until
+	// MoveDays have passed. To ask the person, call q.Ask, then or later (q stays valid while
+	// the daemon runs).
+	Moved func(ctx context.Context, m Move, q Questions) error
+}
+
+// MoveSweepEvery is how often each mailbox is looked at when Moves.Every is 0.
+const MoveSweepEvery = 10 * time.Minute
+
+// MoveWatchDays is how long after MailRules filed an email a move of it is noticed.
+const MoveWatchDays = moved.WatchDays
+
+// MoveDays is how long the daemon keeps a move: what Moves.Moved is handed and what a
+// question counts.
+const MoveDays = store.MoveDays
+
+// Move is one email the person moved out of the folder MailRules filed it in. It never
+// carries the email's text or subject.
+type Move struct {
+	// ID is the move's own: the same on every hand-over of it, and what Questions.Ask takes.
+	ID        int64
+	TenantID  int64
+	AccountID int64
+	// Mailbox is the address of the mailbox the email is in, as Mailboxes names it.
+	Mailbox string
+	From    string // the sender's address
+	Filed   string // the folder MailRules filed it in
+	Chosen  string // the folder the person moved it to
+	// Inbox: Chosen is the mailbox's Inbox (the folder MailRules watches).
+	Inbox bool
+	// RuleID is the rule that decided where MailRules filed it, or for an email fixed in
+	// MailRules the rule it was fixed to; 0 for none (a sender rule that moves to a folder)
+	// or once the rule is deleted. RuleName is its name then.
+	RuleID   int64
+	RuleName string
+	FiledAt  time.Time // when MailRules filed it
+	At       time.Time // when the daemon found it moved: the person moved it before
+	// Count is how many of the sender's emails the person has moved to Chosen (the Inbox
+	// of any mailbox, or a folder of that name) in the last MoveDays, this one included.
+	Count int
+}
+
+// Questions is where a module asks the person about their moves, in Activity.
+type Questions interface {
+	// Ask shows, at the top of Activity for the people who see the move's mailbox, the one
+	// question about the move's sender and destination: "You moved 2 emails from this
+	// sender to Inbox. Always keep them in Inbox?" (or "Always move them to <folder>?"),
+	// with Yes and No, counting every move of that sender there the daemon keeps. Asking
+	// again while it waits brings its count up to date. Yes stores the sender rule a fix's
+	// "Always do this for <sender>" stores: the sender's mail stays in the Inbox, or goes to
+	// the folder, on every mailbox of the team. No stores nothing. Once answered, either
+	// way, that sender and destination is never asked about again: Ask returns ErrAnswered.
+	// A move the daemon no longer keeps is ErrNoMove.
+	Ask(ctx context.Context, moveID int64) error
+}
+
+var (
+	// ErrAnswered is what Questions.Ask returns when the person already answered the
+	// question about that sender and destination. Nothing is shown.
+	ErrAnswered = store.ErrAnswered
+	// ErrNoMove is what Questions.Ask returns for a move the daemon no longer keeps: older
+	// than MoveDays, or its mailbox was removed.
+	ErrNoMove = errors.New("no such move is kept")
+)
 
 // Route is one API endpoint of a module, as http.ServeMux patterns it: a method and a
 // path such as "/api/rules/suggest".

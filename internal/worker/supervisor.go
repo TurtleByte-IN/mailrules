@@ -47,6 +47,11 @@ type Supervisor struct {
 	// Pipeline is the template for the account's pipeline; the supervisor fills in
 	// Mailbox, Account and Rediscover.
 	Pipeline pipeline.Pipeline
+	// Moves, when set, looks through the account's filed mail for emails the person moved
+	// outside MailRules (moved.Watcher.Sweep), every MovesEvery, on the account's connection
+	// and between two emails, like the retry job. nil (the free build) = never.
+	Moves      func(ctx context.Context, mb mail.Mailbox, acct store.Account) error
+	MovesEvery time.Duration // 0 = 10 minutes
 
 	// Timers. Zero means the default; tests shrink them.
 	RetryEvery    time.Duration // the retry job (pipeline.RetryEvery)
@@ -248,7 +253,15 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 	defer retry.Stop()
 	rescan := time.NewTicker(or(s.ContactsEvery, 6*time.Hour))
 	defer rescan.Stop()
-
+	// The move sweep, when the build has one. Mailboxes started together do not all sweep
+	// at once: each first sweeps at its own offset, then every MovesEvery after a sweep ends.
+	var sweep <-chan time.Time
+	every := or(s.MovesEvery, 10*time.Minute)
+	if s.Moves != nil {
+		t := time.NewTimer(time.Duration(uint64(s.Account.ID) * 2654435761 % uint64(every))) //nolint:gosec // G115: ids and durations are positive
+		defer t.Stop()
+		sweep = t.C
+	}
 	for {
 		select {
 		case nm, ok := <-queue:
@@ -272,6 +285,14 @@ func (s *Supervisor) session(ctx context.Context, mb mail.Mailbox) error {
 			}
 		case <-rescan.C:
 			s.syncContacts(procCtx, mb)
+		case <-sweep:
+			s.work.Lock()
+			err := s.Moves(ctx, mb, s.Account)
+			s.work.Unlock()
+			if err != nil && ctx.Err() == nil {
+				slog.WarnContext(ctx, "could not look for mail moved outside MailRules", "account", s.Account.ID, "error", err.Error())
+			}
+			sweep = time.After(every)
 		}
 	}
 }

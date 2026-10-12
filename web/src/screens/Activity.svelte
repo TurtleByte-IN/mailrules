@@ -5,11 +5,14 @@
   import { clock, confidence, dayHeading, money } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
   import { activity, canUndo, kind, load, loadMore, loadStats, open, outcome, ruleName, undo, undoLastHour, undone, type Outcome } from '../lib/state/activity.svelte';
+  import { load as loadQuestions } from '../lib/state/questions.svelte';
   import { load as loadReview, review } from '../lib/state/review.svelte';
   import { rules } from '../lib/state/rules.svelte';
+  import { settings } from '../lib/state/settings.svelte';
   import { UNDO_IGNORES_DRY_RUN } from '../lib/undo';
   import Detail from './activity/Detail.svelte';
   import LoadError from './activity/LoadError.svelte';
+  import MoveQuestions from './activity/MoveQuestions.svelte';
 
   // The four groups of Overview's "Where today's mail went", under its labels.
   const outcomes: [Outcome, string][] = [['sorted', 'Sorted'], ['inbox', 'Left in Inbox'], ['review', 'Needs review'], ['trashed', 'Trashed']];
@@ -25,6 +28,10 @@
   load();
   loadStats();
   loadReview();
+  // Settings may arrive after the screen opens; the questions load once they say the build asks any.
+  $effect(() => {
+    if (settings.value.features.move_questions) loadQuestions();
+  });
 
   let selected = $state<number | null>(linked);
   // "Undo the last hour" moves real mail even in dry-run, so it asks first. One row's Undo does not.
@@ -118,6 +125,7 @@
       oncancel={() => (askingLastHour = false)}
     />
   {/if}
+  {#if settings.value.features.move_questions}<MoveQuestions />{/if}
 
   {#if activity.statsError}<LoadError message={activity.statsError} retry={loadStats} />{/if}
   <section aria-label="Today at a glance" class="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">

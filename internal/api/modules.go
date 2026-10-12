@@ -32,6 +32,8 @@ var gatedRoutes = []struct{ method, path, module string }{
 	{http.MethodGet, "/api/notifications", "notifications"},
 	{http.MethodPost, "/api/notifications/destinations", "notifications"},
 	{http.MethodDelete, "/api/notifications/destinations/{id}", "notifications"},
+	{http.MethodGet, "/api/activity/questions", "move_questions"},
+	{http.MethodPost, "/api/activity/questions/{id}/answer", "move_questions"},
 }
 
 // moduleRoutes are the routes the modules serve, then a refusal for each optional route of
@@ -74,6 +76,9 @@ func (s *server) features() map[string]bool {
 		}
 		if m.Notifications != nil {
 			out["notifications"] = true
+		}
+		if m.Moves != nil {
+			out["move_questions"] = true
 		}
 		if m.SignIn != "" {
 			out["delete_account"] = true
@@ -259,11 +264,12 @@ func (s *server) signIn() *ext.Module {
 // module's signed-in GET routes, and more than one module with Mailboxes; a
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
 // signed-in POST routes under /api/, and two forms for one provider; a MailboxRemoved with
-// neither Mailboxes nor MailboxForms; and a Notifications with no Notify or no kind, or a
-// kind other than webhook or slack, and more than one module with Notifications. The daemon
-// calls it before it serves anything.
+// neither Mailboxes nor MailboxForms; a Notifications with no Notify or no kind, or a kind
+// other than webhook or slack, and more than one module with Notifications; and a Moves with
+// no Moved or a negative Every, and more than one module with Moves. The daemon calls it
+// before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn, mailboxes, notifiers []string
+	var signIn, mailboxes, notifiers, movers []string
 	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
 		publicGet, signedInGet, signedInPost := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -321,6 +327,12 @@ func CheckModules(mode string, modules []ext.Module) error {
 			}
 			notifiers = append(notifiers, m.Name)
 		}
+		if mv := m.Moves; mv != nil {
+			if mv.Moved == nil || mv.Every < 0 {
+				return fmt.Errorf("module %s: Moves needs Moved and an Every that is not negative", m.Name)
+			}
+			movers = append(movers, m.Name)
+		}
 		if m.SignOut != "" && m.SignIn == "" {
 			return fmt.Errorf("module %s: SignOut is set without SignIn", m.Name)
 		}
@@ -344,6 +356,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 	}
 	if len(notifiers) > 1 {
 		return fmt.Errorf("more than one module delivers rule notifications: %s", strings.Join(notifiers, ", "))
+	}
+	if len(movers) > 1 {
+		return fmt.Errorf("more than one module learns from the person's moves: %s", strings.Join(movers, ", "))
 	}
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")

@@ -147,6 +147,8 @@ func (s *server) routes() []route {
 		on(post, "/api/senders/{type}/{value}/unsubscribe", s.handleSenderUnsubscribe),
 
 		on(get, "/api/activity", s.handleActivity),
+		on(get, "/api/activity/questions", s.questionsOnly(s.handleQuestions)),
+		on(post, "/api/activity/questions/{id}/answer", s.questionsOnly(s.handleQuestionAnswer)),
 		on(get, "/api/messages/{id}", s.handleMessage),
 		on(post, "/api/messages/{id}/correct", s.handleCorrect),
 		on(post, "/api/messages/{id}/undo", s.handleMessageUndo),

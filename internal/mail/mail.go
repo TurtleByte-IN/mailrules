@@ -125,6 +125,11 @@ type Mailbox interface {
 	Flags(ctx context.Context, ref MsgRef) ([]string, error)
 	// FindByMessageID returns the newest message in folder with that Message-ID, or ErrNotFound.
 	FindByMessageID(ctx context.Context, folder, messageID string) (MsgRef, error)
+	// Present reports which of uids are still in folder, with one search that reads nothing
+	// of the messages and changes nothing. A message marked \Deleted counts as gone. When
+	// the folder's UIDVALIDITY is no longer uidValidity the UIDs name other messages or
+	// none, and it fails with ErrNotFound.
+	Present(ctx context.Context, folder string, uidValidity uint32, uids []uint32) ([]uint32, error)
 	// SentRecipients reads the To and Cc addresses of the newest limit messages in folder
 	// (headers only), one entry per address with the latest time it was written to.
 	SentRecipients(ctx context.Context, folder string, limit int) ([]Recipient, error)
