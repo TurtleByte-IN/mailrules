@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -40,6 +41,7 @@ func ruleJSON(r rules.Rule) (conditions, exceptions, actions, notify []byte, err
 // CreateRule inserts a rule of the tenant at version 1 and returns it with its id.
 // r.UserID is its author. The caller validates the rule first.
 func (s *Store) CreateRule(ctx context.Context, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
+	ctx = WithTenant(ctx, tenantID)
 	return createRule(ctx, s.db, tenantID, r, now)
 }
 
@@ -64,6 +66,7 @@ func createRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, no
 // version, so past decisions keep pointing at the wording they were made under. The
 // author (UserID) stays as it is. A rule of another tenant is ErrNotFound.
 func (s *Store) UpdateRule(ctx context.Context, tenantID int64, r rules.Rule, now int64) error {
+	ctx = WithTenant(ctx, tenantID)
 	return updateRule(ctx, s.db, tenantID, r, now)
 }
 
@@ -122,6 +125,7 @@ func scanRule(row interface{ Scan(...any) error }, more ...any) (rules.Rule, err
 
 // Rule returns one of the tenant's rules, or ErrNotFound.
 func (s *Store) Rule(ctx context.Context, tenantID, id int64) (rules.Rule, error) {
+	ctx = WithTenant(ctx, tenantID)
 	r, err := scanRule(s.db.QueryRowContext(ctx, `SELECT `+ruleColumns+` FROM rules WHERE id = ? AND tenant_id = ?`, id, tenantID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return rules.Rule{}, ErrNotFound
@@ -134,7 +138,13 @@ func (s *Store) Rule(ctx context.Context, tenantID, id int64) (rules.Rule, error
 
 // Rules returns all of the tenant's rules, disabled ones included, in priority order.
 func (s *Store) Rules(ctx context.Context, tenantID int64) ([]rules.Rule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+ruleColumns+` FROM rules WHERE tenant_id = ? ORDER BY priority, id`, tenantID)
+	ctx = WithTenant(ctx, tenantID)
+	return listRules(ctx, s.db, tenantID)
+}
+
+// listRules reads, through q, all of the tenant's rules in priority order.
+func listRules(ctx context.Context, q querier, tenantID int64) ([]rules.Rule, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+ruleColumns+` FROM rules WHERE tenant_id = ? ORDER BY priority, id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list rules: %w", err)
 	}
@@ -157,6 +167,7 @@ func (s *Store) Rules(ctx context.Context, tenantID int64) ([]rules.Rule, error)
 // route to it along (ON DELETE CASCADE) and keeps its decisions and corrections, with their
 // rule set to NULL.
 func (s *Store) DeleteRule(ctx context.Context, tenantID, id int64) error {
+	ctx = WithTenant(ctx, tenantID)
 	res, err := s.db.ExecContext(ctx, `DELETE FROM rules WHERE id = ? AND tenant_id = ?`, id, tenantID)
 	if err != nil {
 		return fmt.Errorf("delete rule: %w", err)
@@ -229,10 +240,26 @@ func dropMailboxes(ctx context.Context, tx *txn, gone func(id int64) bool, now i
 
 // ReconcileRemovedMailboxes fixes the rules that still name a mailbox removed before
 // DeleteAccount kept them (MAI-132): every mailbox a rule names that has no account any
-// more is dropped from it as DeleteAccount would have, for every tenant, in one
-// transaction. It returns the rules it changed; a second run changes nothing.
+// more is dropped from it as DeleteAccount would have, for every tenant, each in one
+// transaction of its own. It returns the rules it changed, by id; a second run changes
+// nothing.
 func (s *Store) ReconcileRemovedMailboxes(ctx context.Context, now int64) ([]rules.Rule, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var changed []rules.Rule
+	if err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		ch, err := reconcileRemovedMailboxes(ctx, s.db, now)
+		changed = append(changed, ch...)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(changed, func(a, b rules.Rule) int { return cmp.Compare(a.ID, b.ID) })
+	return changed, nil
+}
+
+// reconcileRemovedMailboxes is ReconcileRemovedMailboxes over the rules and mailboxes ctx
+// sees, in one transaction.
+func reconcileRemovedMailboxes(ctx context.Context, db *conn, now int64) ([]rules.Rule, error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("reconcile removed mailboxes: %w", err)
 	}
@@ -273,6 +300,7 @@ func accountIDs(ctx context.Context, tx *txn) (map[int64]bool, error) {
 // earlier one for the same sender, and returns it with its id. sr.UserID is who made it.
 // A rule_id that is not one of the tenant's rules is refused as ErrNotFound.
 func (s *Store) PutSenderRule(ctx context.Context, tenantID int64, sr rules.SenderRule, now int64) (rules.SenderRule, error) {
+	ctx = WithTenant(ctx, tenantID)
 	if sr.RuleID != 0 {
 		if _, err := s.Rule(ctx, tenantID, sr.RuleID); err != nil {
 			return rules.SenderRule{}, err
@@ -294,6 +322,7 @@ func (s *Store) PutSenderRule(ctx context.Context, tenantID int64, sr rules.Send
 
 // SenderRules returns all of the tenant's sender rules.
 func (s *Store) SenderRules(ctx context.Context, tenantID int64) ([]rules.SenderRule, error) {
+	ctx = WithTenant(ctx, tenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at
 		 FROM sender_rules WHERE tenant_id = ? ORDER BY id`, tenantID)
@@ -320,6 +349,7 @@ func (s *Store) SenderRules(ctx context.Context, tenantID int64) ([]rules.Sender
 
 // HitSenderRule counts one more email settled by a sender rule.
 func (s *Store) HitSenderRule(ctx context.Context, id int64) error {
+	ctx = s.tenantFor(ctx, ofSenderRule, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE sender_rules SET hits = hits + 1 WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("count sender rule hit: %w", err)
 	}
@@ -329,6 +359,7 @@ func (s *Store) HitSenderRule(ctx context.Context, id int64) error {
 // DeleteSenderRule removes one of the tenant's sender verdicts; deleting a missing one is
 // not an error.
 func (s *Store) DeleteSenderRule(ctx context.Context, tenantID int64, matchType, value string) error {
+	ctx = WithTenant(ctx, tenantID)
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM sender_rules WHERE tenant_id = ? AND match_type = ? AND value = ?`, tenantID, matchType, value); err != nil {
 		return fmt.Errorf("delete sender rule: %w", err)
@@ -346,6 +377,7 @@ type RuleStat struct {
 // `since` in the mailboxes the viewer sees, with the time of the latest one ever. Mail
 // waiting in Needs review does not count: nothing was applied.
 func (s *Store) RuleStats(ctx context.Context, v Viewer, since int64) (map[int64]RuleStat, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT d.rule_id, COALESCE(SUM(CASE WHEN d.created_at >= ? THEN 1 ELSE 0 END), 0), MAX(d.created_at)
 		 FROM decisions d JOIN messages m ON m.id = d.message_id JOIN rules r ON r.id = d.rule_id
@@ -377,6 +409,7 @@ var ErrRuleSet = errors.New("the list must name every rule exactly once")
 // ReorderRules sets the priorities of the tenant's rules to the order of ids, in one
 // transaction. A reorder is not an edit, so versions stay as they are.
 func (s *Store) ReorderRules(ctx context.Context, tenantID int64, ids []int64) error {
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("reorder rules: %w", err)
@@ -421,7 +454,13 @@ type NewRule struct {
 // order, or at the end; the priorities of all the tenant's rules are then renumbered from
 // 1, which is not an edit, so versions stay. The caller validates the rules first.
 func (s *Store) CreateRules(ctx context.Context, tenantID, userID int64, added []NewRule, now int64) ([]rules.Rule, error) {
-	existing, err := s.Rules(ctx, tenantID)
+	ctx = WithTenant(ctx, tenantID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create rules: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	existing, err := listRules(ctx, tx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -429,11 +468,6 @@ func (s *Store) CreateRules(ctx context.Context, tenantID, userID int64, added [
 	for _, r := range existing {
 		order = append(order, r.ID)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create rules: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // a no-op after Commit
 	out := make([]rules.Rule, len(added))
 	for i, n := range added {
 		n.Rule.UserID = userID
@@ -467,7 +501,13 @@ func (s *Store) CreateRules(ctx context.Context, tenantID, userID int64, added [
 // existing rules, in file order. Rules the file does not name are left alone. The caller
 // validates the rules first.
 func (s *Store) ImportRules(ctx context.Context, tenantID, userID int64, imported []rules.Rule, now int64) (created, updated int, err error) {
-	existing, err := s.Rules(ctx, tenantID)
+	ctx = WithTenant(ctx, tenantID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("import rules: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	existing, err := listRules(ctx, tx, tenantID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -477,11 +517,6 @@ func (s *Store) ImportRules(ctx context.Context, tenantID, userID int64, importe
 		byName[r.Name] = r
 		last = max(last, r.Priority)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("import rules: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // a no-op after Commit
 	for _, r := range imported {
 		r.UserID = userID
 		if old, ok := byName[r.Name]; ok {

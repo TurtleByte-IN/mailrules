@@ -4,13 +4,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io/fs"
 	"testing"
 
 	"github.com/pressly/goose/v3"
 
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
 )
 
 func TestMessagesAndDecisions(t *testing.T) {
@@ -269,16 +269,13 @@ func TestMigrationSenderSource(t *testing.T) {
 // migratedTo opens a database migrated up to version n only.
 func migratedTo(t *testing.T, n int64) *sql.DB {
 	t.Helper()
+	sqliteOnly(t, "steps through the SQLite migration history")
 	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	fsys, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.SQLite())
 	if err != nil {
 		t.Fatal(err)
 	}

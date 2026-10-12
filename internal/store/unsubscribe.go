@@ -16,6 +16,7 @@ type UnsubscribeLink struct {
 // unsubscribed from address yet, the one-click link of the newest email from address seen
 // since `since` that offers one. A mailbox whose mail from address offers none is not listed.
 func (s *Store) UnsubscribeLinks(ctx context.Context, v Viewer, address string, since int64) ([]UnsubscribeLink, error) {
+	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT m.account_id, m.unsubscribe_url FROM messages m
 		 WHERE m.id IN (SELECT MAX(n.id) FROM messages n
@@ -44,6 +45,7 @@ func (s *Store) UnsubscribeLinks(ctx context.Context, v Viewer, address string, 
 // AddUnsubscribe records that MailRules unsubscribed a mailbox from address at host (the
 // site that took it; the link is not kept).
 func (s *Store) AddUnsubscribe(ctx context.Context, accountID int64, address, host string, now int64) error {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO unsubscribes (account_id, address, host, created_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (account_id, address) DO UPDATE SET host = excluded.host, created_at = excluded.created_at`,

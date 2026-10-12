@@ -119,7 +119,10 @@ func (s *server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			s.writeNoSession(w, r, err)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userKey{}, u)))
+		// Everything the request has the store do is scoped to the person's tenant: on Postgres
+		// the policies then hide every other tenant's rows, even from a query that forgot to.
+		ctx := store.WithTenant(context.WithValue(r.Context(), userKey{}, u), u.TenantID)
+		next(w, r.WithContext(ctx))
 	}
 }
 

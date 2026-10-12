@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -84,6 +85,7 @@ func destinationAAD(id int64) int64 {
 // CreateDestination stores a destination of the tenant with its address and secret sealed
 // under the master key, and returns it with its id.
 func (s *Store) CreateDestination(ctx context.Context, master []byte, d Destination, sec DestinationSecret, now int64) (Destination, error) {
+	ctx = WithTenant(ctx, d.TenantID)
 	plain, err := json.Marshal(sec) //nolint:gosec // G117: the secret is sealed right below, never stored or sent in clear
 	if err != nil {
 		return Destination{}, fmt.Errorf("encode destination: %w", err)
@@ -123,6 +125,7 @@ func scanDestination(row interface{ Scan(...any) error }) (Destination, error) {
 
 // Destinations lists the tenant's destinations, oldest first.
 func (s *Store) Destinations(ctx context.Context, tenantID int64) ([]Destination, error) {
+	ctx = WithTenant(ctx, tenantID)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+destinationCols+` FROM notify_destinations WHERE tenant_id = ? ORDER BY id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list destinations: %w", err)
@@ -142,6 +145,7 @@ func (s *Store) Destinations(ctx context.Context, tenantID int64) ([]Destination
 // Destination returns one destination, or ErrNotFound. It does not look at who asks: it is
 // for the delivery worker.
 func (s *Store) Destination(ctx context.Context, id int64) (Destination, error) {
+	ctx = s.tenantFor(ctx, ofDestination, id)
 	d, err := scanDestination(s.db.QueryRowContext(ctx, `SELECT `+destinationCols+` FROM notify_destinations WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Destination{}, ErrNotFound
@@ -155,6 +159,7 @@ func (s *Store) Destination(ctx context.Context, id int64) (Destination, error) 
 // DestinationSecret opens a destination's address and secret. ErrNoSecret when they were
 // deleted (Destination.AddressDeleted), ErrNotFound when there is no such destination.
 func (s *Store) DestinationSecret(ctx context.Context, master []byte, id int64) (DestinationSecret, error) {
+	ctx = s.tenantFor(ctx, ofDestination, id)
 	var secretEnc, dekEnc []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secret_enc, dek_enc FROM notify_destinations WHERE id = ?`, id).Scan(&secretEnc, &dekEnc)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -180,20 +185,27 @@ func (s *Store) DestinationSecret(ctx context.Context, master []byte, id int64) 
 // SealedDestinations lists every tenant's destinations whose address is stored (not
 // deleted), for checking the master key opens them.
 func (s *Store) SealedDestinations(ctx context.Context) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM notify_destinations WHERE length(secret_enc) > 0 ORDER BY id`)
+	var out []int64
+	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT id FROM notify_destinations WHERE length(secret_enc) > 0 ORDER BY id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			out = append(out, id)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list sealed destinations: %w", err)
 	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("list sealed destinations: %w", err)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+	slices.Sort(out)
+	return out, nil
 }
 
 // DeleteDestination removes one of the tenant's destinations with its delivery log and the
@@ -201,6 +213,7 @@ func (s *Store) SealedDestinations(ctx context.Context) ([]int64, error) {
 // in one transaction. It returns the rules it changed, as saved (an edit: their versions
 // go up). A destination of another tenant is ErrNotFound.
 func (s *Store) DeleteDestination(ctx context.Context, tenantID, id, now int64) ([]rules.Rule, error) {
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("delete destination: %w", err)
@@ -234,7 +247,7 @@ func (s *Store) DeleteDestination(ctx context.Context, tenantID, id, now int64) 
 // rulesNaming lists, in tx, the tenant's rules that notify the destination.
 func rulesNaming(ctx context.Context, tx *txn, tenantID, destinationID int64) ([]rules.Rule, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT `+ruleColumns+` FROM rules
-		WHERE tenant_id = ? AND EXISTS (SELECT 1 FROM json_each(rules.notify) WHERE value = ?) ORDER BY id`, tenantID, destinationID)
+		WHERE tenant_id = ? AND ? IN (`+tx.d.jsonValues("rules.notify", "BIGINT")+`) ORDER BY id`, tenantID, destinationID)
 	if err != nil {
 		return nil, fmt.Errorf("rules naming it: %w", err)
 	}
@@ -276,13 +289,14 @@ type Delivery struct {
 // why. It returns the notice's tenant. A notice that is no longer kept (its destination or
 // mailbox was removed, or it is older than NoticeDays) is ErrNotFound.
 func (s *Store) RecordDelivery(ctx context.Context, noticeID int64, sent bool, reason string, at int64) (tenantID int64, err error) {
+	ctx = s.tenantFor(ctx, ofNotice, noticeID)
 	status := DeliveryFailed
 	if sent {
 		status, reason = DeliverySent, ""
 	}
 	err = s.db.QueryRowContext(ctx,
 		`INSERT INTO notify_deliveries (tenant_id, destination_id, notice_id, rule_id, rule_name, status, reason, created_at)
-		 SELECT tenant_id, destination_id, id, rule_id, rule_name, ?, ?, ? FROM notices WHERE id = ?
+		 SELECT tenant_id, destination_id, id, rule_id, rule_name, CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT) FROM notices WHERE id = ?
 		 RETURNING tenant_id`, status, reason, at, noticeID).Scan(&tenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
@@ -296,10 +310,11 @@ func (s *Store) RecordDelivery(ctx context.Context, noticeID int64, sent bool, r
 // RecentDeliveries lists, for each of the tenant's destinations, the last perDestination
 // deliveries reported, newest first.
 func (s *Store) RecentDeliveries(ctx context.Context, tenantID int64, perDestination int) (map[int64][]Delivery, error) {
+	ctx = WithTenant(ctx, tenantID)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, destination_id, notice_id, COALESCE(rule_id, 0), rule_name, status, reason, created_at FROM (
 		   SELECT *, ROW_NUMBER() OVER (PARTITION BY destination_id ORDER BY created_at DESC, id DESC) AS n
-		   FROM notify_deliveries WHERE tenant_id = ?)
+		   FROM notify_deliveries WHERE tenant_id = ?) AS ranked
 		 WHERE n <= ? ORDER BY destination_id, created_at DESC, id DESC`, tenantID, perDestination)
 	if err != nil {
 		return nil, fmt.Errorf("list deliveries: %w", err)
@@ -388,8 +403,9 @@ func queueNotices(ctx context.Context, tx *txn, a Action) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO notices (tenant_id, destination_id, account_id, message_id, rule_id, rule_name, payload, created_at, next_at)
-		 SELECT ?, id, ?, ?, ?, ?, ?, ?, ? FROM notify_destinations
-		 WHERE tenant_id = ? AND `+secureDestination+` AND id IN (SELECT value FROM json_each(?)) ORDER BY id`,
+		 SELECT CAST(? AS BIGINT), id, CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT),
+		        CAST(? AS BIGINT), CAST(? AS BIGINT) FROM notify_destinations
+		 WHERE tenant_id = ? AND `+secureDestination+` AND id IN (`+tx.d.jsonValues("?", "BIGINT")+`) ORDER BY id`,
 		tenantID, a.AccountID, messageID, ruleID.Int64, ruleName, string(payload), a.CreatedAt, a.CreatedAt, tenantID, notify); err != nil {
 		return fmt.Errorf("queue notices: %w", err)
 	}
@@ -417,32 +433,42 @@ func doneKinds(ctx context.Context, tx *txn, decisionID int64) ([]string, error)
 // WaitingNotices lists up to limit notices the module has not taken yet that are due by
 // now, oldest first.
 func (s *Store) WaitingNotices(ctx context.Context, now int64, limit int) ([]Notice, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT n.id, n.tenant_id, n.destination_id, n.account_id, n.message_id, COALESCE(n.rule_id, 0), n.rule_name, n.created_at, n.attempts, COALESCE(n.payload, '{}')
-		 FROM notices n JOIN notify_destinations ON notify_destinations.id = n.destination_id
-		 WHERE n.handed_at IS NULL AND n.next_at <= ? AND `+secureDestination+` ORDER BY n.next_at, n.id LIMIT ?`, now, limit)
+	var waiting []outboxRow[Notice]
+	err := s.eachTenant(ctx, tenantsNotices, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT n.id, n.tenant_id, n.destination_id, n.account_id, n.message_id, COALESCE(n.rule_id, 0), n.rule_name, n.created_at, n.attempts,
+			        COALESCE(n.payload, '{}'), n.next_at
+			 FROM notices n JOIN notify_destinations ON notify_destinations.id = n.destination_id
+			 WHERE n.handed_at IS NULL AND n.next_at <= ? AND `+secureDestination+` ORDER BY n.next_at, n.id LIMIT ?`, now, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var n Notice
+			var payload string
+			var next int64
+			if err := rows.Scan(&n.ID, &n.TenantID, &n.DestinationID, &n.AccountID, &n.MessageID, &n.RuleID, &n.RuleName, &n.CreatedAt, &n.Attempts,
+				&payload, &next); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(payload), &n.NoticePayload); err != nil {
+				return fmt.Errorf("decode notice %d: %w", n.ID, err)
+			}
+			waiting = append(waiting, outboxRow[Notice]{row: n, next: next, id: n.ID})
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list waiting notices: %w", err)
 	}
-	defer rows.Close()
-	var out []Notice
-	for rows.Next() {
-		var n Notice
-		var payload string
-		if err := rows.Scan(&n.ID, &n.TenantID, &n.DestinationID, &n.AccountID, &n.MessageID, &n.RuleID, &n.RuleName, &n.CreatedAt, &n.Attempts, &payload); err != nil {
-			return nil, fmt.Errorf("list waiting notices: %w", err)
-		}
-		if err := json.Unmarshal([]byte(payload), &n.NoticePayload); err != nil {
-			return nil, fmt.Errorf("decode notice %d: %w", n.ID, err)
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
+	return firstDue(waiting, limit), nil
 }
 
 // NoticeHanded records that the module took a notice: it is not handed over again, and the
 // email's details it held are blanked.
 func (s *Store) NoticeHanded(ctx context.Context, id, now int64) error {
+	ctx = s.tenantFor(ctx, ofNotice, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE notices SET handed_at = ?, payload = NULL WHERE id = ?`, now, id); err != nil {
 		return fmt.Errorf("mark notice handed over: %w", err)
 	}
@@ -451,6 +477,7 @@ func (s *Store) NoticeHanded(ctx context.Context, id, now int64) error {
 
 // NoticeRetry records that the module refused a notice; it is handed over again at next.
 func (s *Store) NoticeRetry(ctx context.Context, id, next int64) error {
+	ctx = s.tenantFor(ctx, ofNotice, id)
 	if _, err := s.db.ExecContext(ctx, `UPDATE notices SET attempts = attempts + 1, next_at = ? WHERE id = ?`, next, id); err != nil {
 		return fmt.Errorf("retry notice: %w", err)
 	}

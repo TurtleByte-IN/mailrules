@@ -7,6 +7,19 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The tests run a second time on Postgres, the hosted build's database.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -18,6 +31,9 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: make check
+      - run: make test-postgres
+        env:
+          MAILRULES_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
       - run: make vuln
       # `make check` already ran the web app's own checks; this is the build and embed a release does.
       - run: make build

@@ -16,8 +16,8 @@ var ErrAlreadySetUp = errors.New("already set up")
 // Store is the repository over the database. All times are unix seconds.
 type Store struct{ db *conn }
 
-// New wraps an open, migrated database.
-func New(db *sql.DB) *Store { return &Store{db: &conn{db: db, d: dialectSQLite}} }
+// New wraps an open, migrated database, SQLite (Open) or Postgres (OpenPostgres).
+func New(db *sql.DB) *Store { return &Store{db: &conn{db: db, d: dialectOf(db)}} }
 
 // User is a person who signs in. Self-host has one, the admin, in SelfHostTenant.
 type User struct {
@@ -39,10 +39,12 @@ func scanUser(row interface{ Scan(...any) error }) (User, error) {
 // CreateFirstUser inserts the admin account, in the self-host tenant, only if no user
 // exists yet.
 func (s *Store) CreateFirstUser(ctx context.Context, email, passwordHash string, now int64) (User, error) {
+	ctx = WithTenant(ctx, SelfHostTenant)
 	var id int64
 	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO users (email, password_hash, created_at, tenant_id)
-		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`, email, passwordHash, now, SelfHostTenant).Scan(&id)
+		 SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS BIGINT) WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`,
+		email, passwordHash, now, SelfHostTenant).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrAlreadySetUp
 	}
@@ -52,18 +54,23 @@ func (s *Store) CreateFirstUser(ctx context.Context, email, passwordHash string,
 	return User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: SelfHostTenant}, nil
 }
 
-// HasUsers reports whether first-run setup has been done.
+// HasUsers reports whether first-run setup has been done: whether any tenant has a user.
 func (s *Store) HasUsers(ctx context.Context) (bool, error) {
-	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users)`).Scan(&n); err != nil {
+	query := `SELECT EXISTS (SELECT 1 FROM users)`
+	if s.db.d == dialectPostgres {
+		query = `SELECT mailrules_tenant_of('first_user', NULL, NULL) IS NOT NULL`
+	}
+	var ok bool
+	if err := s.db.QueryRowContext(ctx, query).Scan(&ok); err != nil {
 		return false, fmt.Errorf("count users: %w", err)
 	}
-	return n == 1, nil
+	return ok, nil
 }
 
 // UserByEmail looks an account up by its (case-insensitive) email.
 func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
-	u, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE email = ? COLLATE NOCASE`, email))
+	ctx = s.tenantFor(ctx, ofEmail, email)
+	u, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE lower(email) = lower(?)`, email))
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -73,8 +80,10 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 	return u, nil
 }
 
-// CreateSession stores a login session by the hash of its token, and sweeps expired ones.
+// CreateSession stores a login session by the hash of its token, and sweeps expired ones
+// (on Postgres, those of the user's tenant).
 func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID, now, expiresAt int64) error {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now); err != nil {
 		return fmt.Errorf("sweep sessions: %w", err)
 	}
@@ -88,6 +97,7 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID, now
 
 // SessionUser returns the user behind a live session and when it expires.
 func (s *Store) SessionUser(ctx context.Context, tokenHash string, now int64) (User, int64, error) {
+	ctx = s.tenantFor(ctx, ofSession, tokenHash)
 	var u User
 	var expiresAt int64
 	err := s.db.QueryRowContext(ctx,
@@ -106,6 +116,7 @@ func (s *Store) SessionUser(ctx context.Context, tokenHash string, now int64) (U
 
 // ExtendSession slides a session's expiry forward.
 func (s *Store) ExtendSession(ctx context.Context, tokenHash string, expiresAt int64) error {
+	ctx = s.tenantFor(ctx, ofSession, tokenHash)
 	if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE token_hash = ?`, expiresAt, tokenHash); err != nil {
 		return fmt.Errorf("extend session: %w", err)
 	}
@@ -114,6 +125,7 @@ func (s *Store) ExtendSession(ctx context.Context, tokenHash string, expiresAt i
 
 // DeleteSession ends a session; deleting a missing one is not an error.
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
+	ctx = s.tenantFor(ctx, ofSession, tokenHash)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash); err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -124,6 +136,7 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 // session the user has: a session someone else holds does not outlive the password that
 // opened it. A missing user is ErrNotFound.
 func (s *Store) SetPassword(ctx context.Context, userID int64, passwordHash string) error {
+	ctx = s.tenantFor(ctx, ofUser, userID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("set password: %w", err)
@@ -147,6 +160,7 @@ func (s *Store) SetPassword(ctx context.Context, userID int64, passwordHash stri
 
 // Setting returns one of a tenant's stored JSON values, or ErrNotFound.
 func (s *Store) Setting(ctx context.Context, tenantID int64, key string) (string, error) {
+	ctx = WithTenant(ctx, tenantID)
 	var v string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE tenant_id = ? AND key = ?`, tenantID, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -160,6 +174,7 @@ func (s *Store) Setting(ctx context.Context, tenantID int64, key string) (string
 
 // SetSetting stores a tenant's JSON value under key, replacing any previous one.
 func (s *Store) SetSetting(ctx context.Context, tenantID int64, key, value string) error {
+	ctx = WithTenant(ctx, tenantID)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO settings (tenant_id, key, value) VALUES (?, ?, ?) ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value`,
 		tenantID, key, value); err != nil {
@@ -173,6 +188,7 @@ func (s *Store) SetSetting(ctx context.Context, tenantID int64, key, value strin
 // operator marks calls made with a key the operator holds (MAILRULES_MODE=cloud): they are
 // booked on rows of their own, so billing can charge for them.
 func (s *Store) AddUsage(ctx context.Context, tenantID int64, operator bool, day, provider, model, purpose string, calls, tokensIn, tokensOut int, costUSD float64) error {
+	ctx = WithTenant(ctx, tenantID)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO usage_daily (tenant_id, operator, day, provider, model, purpose, calls, tokens_in, tokens_out, cost_usd)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -212,6 +228,7 @@ func (s *Store) Ping(ctx context.Context) error {
 
 // Settings returns every setting a tenant has stored, key to JSON value.
 func (s *Store) Settings(ctx context.Context, tenantID int64) (map[string]string, error) {
+	ctx = WithTenant(ctx, tenantID)
 	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings WHERE tenant_id = ?`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list settings: %w", err)
@@ -235,24 +252,27 @@ func (s *Store) Settings(ctx context.Context, tenantID int64) (map[string]string
 // prefix, as tenant id and key to JSON value. It is for checks over the whole database (the
 // master key check counts every stored provider key), never for showing.
 func (s *Store) SettingsLike(ctx context.Context, prefix string) (map[int64]map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id, key, value FROM settings WHERE substr(key, 1, length(?1)) = ?1`, prefix)
-	if err != nil {
-		return nil, fmt.Errorf("list settings: %w", err)
-	}
-	defer rows.Close()
 	out := map[int64]map[string]string{}
-	for rows.Next() {
-		var t int64
-		var k, v string
-		if err := rows.Scan(&t, &k, &v); err != nil {
-			return nil, fmt.Errorf("list settings: %w", err)
+	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT tenant_id, key, value FROM settings WHERE substr(key, 1, length(CAST(?1 AS TEXT))) = ?1`, prefix)
+		if err != nil {
+			return err
 		}
-		if out[t] == nil {
-			out[t] = map[string]string{}
+		defer rows.Close()
+		for rows.Next() {
+			var t int64
+			var k, v string
+			if err := rows.Scan(&t, &k, &v); err != nil {
+				return err
+			}
+			if out[t] == nil {
+				out[t] = map[string]string{}
+			}
+			out[t][k] = v
 		}
-		out[t][k] = v
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("list settings: %w", err)
 	}
 	return out, nil
@@ -261,6 +281,7 @@ func (s *Store) SettingsLike(ctx context.Context, prefix string) (map[int64]map[
 // SetSettings stores several of a tenant's settings in one transaction, so a change is
 // never half applied. A nil value removes the key, which puts its default back in force.
 func (s *Store) SetSettings(ctx context.Context, tenantID int64, values map[string]*string) error {
+	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("set settings: %w", err)

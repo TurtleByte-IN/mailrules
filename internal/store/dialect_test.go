@@ -81,7 +81,8 @@ func TestNamedArgumentsRun(t *testing.T) {
 	s, _ := open(t)
 	ctx := t.Context()
 	var a, b, c int64
-	if err := s.db.QueryRowContext(ctx, `SELECT ?2, @x, ?1 + @x`, int64(1), int64(2), sql.Named("x", int64(40))).Scan(&a, &b, &c); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT CAST(?2 AS BIGINT), CAST(@x AS BIGINT), CAST(?1 AS BIGINT) + CAST(@x AS BIGINT)`,
+		int64(1), int64(2), sql.Named("x", int64(40))).Scan(&a, &b, &c); err != nil {
 		t.Fatal(err)
 	}
 	if a != 2 || b != 40 || c != 41 {
@@ -101,7 +102,7 @@ func TestNamedArgumentsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := tx.QueryRowContext(ctx, `SELECT @x`, sql.Named("x", int64(5))).Scan(&a); err != nil || a != 5 {
+	if err := tx.QueryRowContext(ctx, `SELECT CAST(@x AS BIGINT)`, sql.Named("x", int64(5))).Scan(&a); err != nil || a != 5 {
 		t.Fatalf("in a transaction: %d, %v", a, err)
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT @missing`, sql.Named("x", 1)); err == nil {

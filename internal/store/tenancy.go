@@ -1,10 +1,12 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // SelfHostTenant is the one tenant of a self-hosted install, made by migration 0011.
@@ -38,7 +40,7 @@ func (a Account) Owner() Viewer { return Viewer{UserID: a.UserID, TenantID: a.Te
 // @viewer_user, so the condition fits a query wherever it numbers its own parameters: pass
 // v.tenantArg() and v.userArg() with the query's arguments.
 func visibleAccounts(alias string) string {
-	return "(" + alias + ".tenant_id = @viewer_tenant AND (" + alias + ".user_id = @viewer_user OR " + alias + ".shared = 1))"
+	return "(" + alias + ".tenant_id = @viewer_tenant AND (" + alias + ".user_id = @viewer_user OR " + alias + ".shared = TRUE))"
 }
 
 // inVisible is the condition that the account id in column is one the viewer sees; it binds
@@ -55,9 +57,8 @@ func (v Viewer) userArg() sql.NamedArg { return sql.Named("viewer_user", v.UserI
 
 // CreateTenant adds a tenant for a sign-in service's organisation and returns its id.
 func (s *Store) CreateTenant(ctx context.Context, provider, externalID string, now int64) (int64, error) {
-	var id int64
-	if err := s.db.QueryRowContext(ctx, `INSERT INTO tenants (provider, external_id, created_at) VALUES (?, ?, ?) RETURNING id`,
-		null(provider), null(externalID), now).Scan(&id); err != nil {
+	id, err := s.createTenant(ctx, s.db, provider, externalID, now)
+	if err != nil {
 		return 0, fmt.Errorf("create tenant: %w", err)
 	}
 	return id, nil
@@ -66,9 +67,11 @@ func (s *Store) CreateTenant(ctx context.Context, provider, externalID string, n
 // CreateUser adds a user to a tenant. An empty passwordHash makes a user who cannot sign
 // in with a password (one made from a sign-in service's identity).
 func (s *Store) CreateUser(ctx context.Context, tenantID int64, email, passwordHash string, now int64) (User, error) {
+	ctx = WithTenant(ctx, tenantID)
 	var id int64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO users (email, password_hash, created_at, tenant_id) SELECT ?, ?, ?, id FROM tenants WHERE id = ? RETURNING id`,
+		`INSERT INTO users (email, password_hash, created_at, tenant_id)
+		 SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), id FROM tenants WHERE id = ? RETURNING id`,
 		email, passwordHash, now, tenantID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, fmt.Errorf("create user: tenant %d: %w", tenantID, ErrNotFound)
@@ -81,6 +84,7 @@ func (s *Store) CreateUser(ctx context.Context, tenantID int64, email, passwordH
 
 // TenantMembers counts the users in a tenant.
 func (s *Store) TenantMembers(ctx context.Context, tenantID int64) (int, error) {
+	ctx = WithTenant(ctx, tenantID)
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = ?`, tenantID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count tenant members: %w", err)
@@ -89,8 +93,13 @@ func (s *Store) TenantMembers(ctx context.Context, tenantID int64) (int, error) 
 }
 
 // Tenants lists every tenant's id, oldest first: what per-tenant jobs (retention) walk.
+// Within a tenant's scope it is that tenant alone.
 func (s *Store) Tenants(ctx context.Context) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tenants ORDER BY id`)
+	query := `SELECT id FROM tenants ORDER BY id`
+	if s.db.d == dialectPostgres && TenantOf(ctx) == 0 {
+		query = `SELECT t FROM mailrules_tenants('all') AS t ORDER BY t`
+	}
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants: %w", err)
 	}
@@ -112,27 +121,32 @@ func (s *Store) Tenants(ctx context.Context) ([]int64, error) {
 // Users lists every user, oldest first, but those forgotten (ForgetIdentity) whose removal
 // waits: who the summary email is checked for.
 func (s *Store) Users(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users WHERE id NOT IN (SELECT user_id FROM forgotten) ORDER BY id`)
+	var out []User
+	err := s.eachTenant(ctx, tenantsAll, func(ctx context.Context, _ int64) error {
+		rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users WHERE id NOT IN (SELECT user_id FROM forgotten) ORDER BY id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			u, err := scanUser(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, u)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
-	defer rows.Close()
-	var out []User
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list users: %w", err)
-		}
-		out = append(out, u)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list users: %w", err)
-	}
+	slices.SortStableFunc(out, func(a, b User) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
 // User returns one user, or ErrNotFound.
 func (s *Store) User(ctx context.Context, id int64) (User, error) {
+	ctx = s.tenantFor(ctx, ofUser, id)
 	u, err := scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -145,6 +159,7 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 
 // AccountTenant returns the tenant an account belongs to, or ErrNotFound.
 func (s *Store) AccountTenant(ctx context.Context, accountID int64) (int64, error) {
+	ctx = s.tenantFor(ctx, ofAccount, accountID)
 	var t int64
 	err := s.db.QueryRowContext(ctx, `SELECT tenant_id FROM accounts WHERE id = ?`, accountID).Scan(&t)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -158,10 +173,11 @@ func (s *Store) AccountTenant(ctx context.Context, accountID int64) (int64, erro
 
 // CanSee reports whether the viewer sees the account: the visibility rule for one id.
 func (s *Store) CanSee(ctx context.Context, v Viewer, accountID int64) (bool, error) {
-	var n int
+	ctx = WithTenant(ctx, v.TenantID)
+	var ok bool
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a")+`)`, accountID, v.tenantArg(), v.userArg()).Scan(&n); err != nil {
+		`SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND `+visibleAccounts("a")+`)`, accountID, v.tenantArg(), v.userArg()).Scan(&ok); err != nil {
 		return false, fmt.Errorf("check account visibility: %w", err)
 	}
-	return n == 1, nil
+	return ok, nil
 }

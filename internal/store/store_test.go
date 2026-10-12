@@ -5,16 +5,30 @@ import (
 	"database/sql"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pressly/goose/v3"
+
+	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
+	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
 
+// open gives the test a fresh, migrated store and the raw handle to its database: on
+// Postgres when MAILRULES_TEST_POSTGRES_DSN is set, where the store runs as the app role and
+// the handle is the superuser (which takes SQLite's ? placeholders; see pgtest), and on
+// SQLite otherwise.
 func open(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
+	if pgtest.DSN() != "" {
+		// The test's database is a copy of a template the owner role migrated.
+		db := pgtest.Open(t)
+		return New(db.App), db.Admin
+	}
 	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +43,17 @@ func open(t *testing.T) (*Store, *sql.DB) {
 	return New(db), db
 }
 
+// sqliteOnly skips the test when it would run on Postgres; why says what it needs SQLite
+// for.
+func sqliteOnly(t *testing.T, why string) {
+	t.Helper()
+	if pgtest.DSN() != "" {
+		t.Skip("needs SQLite: " + why)
+	}
+}
+
 func TestOpenAndMigrate(t *testing.T) {
+	sqliteOnly(t, "checks SQLite pragmas and sqlite_master")
 	_, db := open(t)
 	ctx := context.Background()
 	for _, q := range []struct{ pragma, want string }{{"journal_mode", "wal"}, {"foreign_keys", "1"}} {
@@ -74,12 +98,10 @@ func TestOpenAndMigrate(t *testing.T) {
 // migration by its version number alone, so every embedded migration must keep its number
 // for as long as there are databases that ran it, wherever its file lives.
 func TestMigrateAgainRunsNothing(t *testing.T) {
+	sqliteOnly(t, "replays the SQLite migration set with goose's SQLite dialect")
 	_, db := open(t) // migrated twice already
 	ctx := t.Context()
-	fsys, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
+	fsys := migrations.SQLite()
 	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
 	if err != nil {
 		t.Fatal(err)
@@ -115,10 +137,34 @@ func TestMigrateAgainRunsNothing(t *testing.T) {
 	}
 }
 
+// Every schema change is written once per dialect under the same version, so a version
+// means the same schema on either: from the Postgres baseline (0023) on, the two sets list
+// the same versions.
+func TestMigrationSetsAgree(t *testing.T) {
+	versions := func(fsys fs.FS) map[string]bool {
+		names, err := fs.Glob(fsys, "*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, n := range names {
+			if v, _, ok := strings.Cut(n, "_"); ok && v >= "0023" {
+				out[v] = true
+			}
+		}
+		return out
+	}
+	lite, pg := versions(migrations.SQLite()), versions(migrations.Postgres())
+	if len(pg) == 0 || !maps.Equal(lite, pg) {
+		t.Fatalf("versions from 0023: SQLite %v, Postgres %v", slices.Sorted(maps.Keys(lite)), slices.Sorted(maps.Keys(pg)))
+	}
+}
+
 // The database is opened in the data directory given, whatever characters its path holds:
 // SQLite reads a "file:" name as a URI, where "#" would end the path and "?" start the
 // parameters, so a data dir such as "Mail #2" put the database in another file (MAI-172).
 func TestOpenInAnyDataDir(t *testing.T) {
+	sqliteOnly(t, "opens the SQLite database file in a data dir")
 	for _, tc := range []struct {
 		name, dir string
 		relative  bool
