@@ -595,6 +595,41 @@ func TestWatchPollSeesMailArrivedSinceLastSearch(t *testing.T) {
 	}
 }
 
+// With IDLE, mail delivered after Watch's last search but before the server is idling
+// still wakes it, on a connection's first IDLE and on every later one: the server
+// announces as IDLE begins what changed since the last command, as Dovecot does
+// (MAI-241, MAI-245). IdleRestart is an hour, so nothing else could wake Watch in time.
+func TestWatchIdleSeesMailDeliveredAsIdleBegins(t *testing.T) {
+	s := imaptest.Start(t, capsMove)
+	idling, finished := make(chan chan struct{}), make(chan struct{})
+	s.OnIdle(func() { // hands the test each IDLE, and holds it until the test has delivered
+		delivered := make(chan struct{})
+		select {
+		case idling <- delivered:
+			select {
+			case <-delivered:
+			case <-finished:
+			}
+		case <-finished:
+		}
+	})
+	cfg := config(s)
+	cfg.IdleRestart = time.Hour
+	out := watch(t, open(t, cfg), 0)
+	t.Cleanup(func() { close(finished) })
+	for round := 1; round <= 2; round++ { // the IDLE after connecting, then the one after a wake-up
+		var delivered chan struct{}
+		select {
+		case delivered = <-idling:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: Watch never began IDLE", round)
+		}
+		uid := s.Append(t, "INBOX", eml(round))
+		close(delivered)
+		expect(t, out, uid)
+	}
+}
+
 func TestFoldersAndEnsureFolder(t *testing.T) {
 	ctx := t.Context()
 	s := imaptest.Start(t, capsMove)
