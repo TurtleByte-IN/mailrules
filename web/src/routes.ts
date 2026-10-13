@@ -60,3 +60,24 @@ export const routes: Record<string, Component<any>> = {
   '/setup': Setup,
   '*': Pending,
 };
+
+/**
+ * The app routes in the hash (/#/rules), the form of its own links and of the daemon's (the summary
+ * email, a mailbox sign-in coming back). The daemon serves the app at any other path too, so an
+ * address typed, bookmarked or shared without the hash (/rules, /activity?outcome=moved) names a
+ * screen as well: this is the same screen's hash address. Undefined when the address already has
+ * a hash route, or its path is no screen's.
+ */
+export function hashAddress({ pathname, search, hash }: Pick<Location, 'pathname' | 'search' | 'hash'>): string | undefined {
+  const path = pathname.replace(/(.)\/+$/, '$1');
+  if (path === '/' || hash.startsWith('#/') || !Object.hasOwn(routes, path)) return undefined;
+  return '/#' + path + search;
+}
+
+/** Opens the screen a path address names (see hashAddress); called once, before the screens are drawn. */
+export function followPathRoute() {
+  const to = hashAddress(location);
+  if (!to) return;
+  history.replaceState(history.state, '', to);
+  window.dispatchEvent(new Event('hashchange')); // the router reads the hash on this event; replaceState sends none
+}
