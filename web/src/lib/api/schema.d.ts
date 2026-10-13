@@ -1254,6 +1254,10 @@ export interface paths {
          *     is sorted and the app is read-only; `secrets_deleted_at` and `removed_at` say when its
          *     mailbox passwords, tokens and model keys, then everything else, are deleted unless a
          *     plan is bought before. The `plan.changed` event says when it changed.
+         *
+         *     Every role may read it, so everyone sees the trial ending or the plan ended. An Admin
+         *     or Member gets the status alone: `plans` is empty and `note` is null, so no prices; only
+         *     an Owner buys, changes or manages a plan.
          */
         get: operations["getPlan"];
         put?: never;
@@ -3417,13 +3421,13 @@ export interface components {
             id: number;
             /** Format: int64 */
             at: number;
-            /** @description Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules) */
+            /** @description Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules); `removed member #<user id>` once that person was forgotten or removed */
             actor: string;
             /** @enum {string} */
             action: "rule.created" | "rule.changed" | "rule.deleted" | "rules.reordered" | "sender_rule.set" | "sender_rule.deleted" | "mailbox.added" | "mailbox.changed" | "mailbox.removed" | "settings.changed" | "notification.added" | "notification.removed" | "plan.changed" | "member.joined" | "member.role_changed" | "member.removed" | "invitation.created" | "invitation.revoked" | "invitation.accepted" | "invitation.withdrawn";
-            /** @description What was changed, by name: a rule, a sender, a mailbox's address, a member's email; empty for settings and reorders */
+            /** @description What was changed, by name: a rule, a sender, a mailbox's address, a member's email (`removed member #<user id>` once they were forgotten or removed); empty for settings and reorders */
             target: string;
-            /** @description How, in a few words: what of a rule changed, a role from and to, the settings changed (a value only when it is true, false or a number) */
+            /** @description How, in a few words: what of a rule changed, a role from and to, who invited a member (`member #<user id>`), the settings changed (a value only when it is true, false or a number). Never an address: one in a name quoted here reads `an address` */
             detail: string;
         };
     };
@@ -5155,7 +5159,6 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
         };
     };
