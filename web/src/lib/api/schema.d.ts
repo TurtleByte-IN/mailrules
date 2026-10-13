@@ -1308,6 +1308,11 @@ export interface paths {
          *     mailboxes than the tenant has is refused (409 `downgrade_refused`, the message says
          *     which to remove). The answer is the plan as it stands; the change shows once the
          *     billing service reports it (the `plan.changed` event).
+         *
+         *     The company sign-in add-on stays with a Team plan, at its new interval, and goes with a
+         *     move to any other plan. Fewer seats than company sign-in comes with
+         *     (`company_sign_in.included_seats`) and no add-on, or a move off Team, end company
+         *     sign-in once reported; nothing is refused for it, so Plan and billing warns first.
          */
         post: operations["planChange"];
         delete?: never;
@@ -1330,6 +1335,38 @@ export interface paths {
         get: operations["planPortal"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plan/company-sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add the company sign-in add-on to the Team plan, or remove it
+         * @description Only while the build sells company sign-in (`company_sign_in` in GET /api/plan is not
+         *     null; 404 `not_available` otherwise), for a tenant subscribed to Team. The add-on is a
+         *     second item on the Team subscription, billed at the plan's interval; it gives company
+         *     sign-in to a team with fewer seats than `included_seats`. It is refused while the seats
+         *     include company sign-in already (409 `included`). The billing service adds or removes
+         *     it at once; the answer is the plan as it stands, and the change shows once the service
+         *     reports it (the `plan.changed` event). The request is recorded in the audit log
+         *     (`company_sign_in.add_on`).
+         *
+         *     Removing it below `included_seats`, fewer seats with no add-on, or a move off Team end
+         *     company sign-in once reported: Settings offers its setup no more. The daemon changes
+         *     nothing at the sign-in service, where a connection already made stays; what becomes of
+         *     it is the sign-in service's to decide.
+         */
+        post: operations["planCompanySignIn"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1707,6 +1744,55 @@ export interface paths {
         get: operations["downloadAudit"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/company-sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How the team's company sign-in stands at the sign-in service
+         * @description Only in a build whose sign-in module offers company sign-in (SAML or OIDC), and only
+         *     while the tenant may use it (`features.company_sign_in`): 404 `not_available` in a
+         *     build without it, 403 `plan_required` otherwise, with a message that says how to get
+         *     it (in a build that sells plans, the Team plan from `included_seats` seats, or its
+         *     add-on). The sign-in module reports the state.
+         */
+        get: operations["getCompanySignIn"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/company-sign-in/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A one-time link to set company sign-in up at the sign-in service
+         * @description The sign-in module's admin portal, where the team's IT admin sets up the SAML or OIDC
+         *     connection (`sso`) or proves the company owns its email domain
+         *     (`domain_verification`). Open the link at once: it is short-lived, and anyone who has
+         *     it can change the team's sign-in until it expires. The daemon keeps it nowhere; who
+         *     asked is recorded in the audit log (`company_sign_in.portal`). Refused as GET
+         *     /api/company-sign-in is.
+         */
+        post: operations["companySignInPortal"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3023,6 +3109,15 @@ export interface components {
             per_seat: boolean;
             /** @description The fewest seats that may be bought of a plan sold by the seat; null for any other */
             min_seats: number | null;
+            /** @description How this plan sells company sign-in (Team only): included from `included_seats` paid seats, or as an add-on at `prices` (POST /api/plan/company-sign-in). null: it does not */
+            company_sign_in: {
+                /** @description The paid seats company sign-in comes with, add-on or not; null: only with the add-on */
+                included_seats: number | null;
+                /** @description What the add-on costs a team, as shown, by interval (month, year), billed at the plan's interval */
+                prices: {
+                    [key: string]: string;
+                };
+            } | null;
         };
         PlanInfo: {
             /** @enum {string} */
@@ -3043,6 +3138,15 @@ export interface components {
             seats: number | null;
             /** @description With `seats`: the members still in the team and the invitations waiting, counted as GET /api/members counts them; null otherwise */
             seats_used: number | null;
+            /** @description Where the tenant stands with company sign-in, for every role; null in a build that does not sell it (no sign-in module offers it, or the Team plan does not sell it) */
+            company_sign_in: {
+                /** @description The tenant may use company sign-in now (`features.company_sign_in`): a Team plan that runs with `included_seats` paid seats or more, or with the add-on */
+                allowed: boolean;
+                /** @description The company sign-in add-on is on the Team subscription */
+                add_on: boolean;
+                /** @description The paid Team seats company sign-in comes with; null: only with the add-on */
+                included_seats: number | null;
+            } | null;
             /**
              * Format: int64
              * @description 14 days after the tenant was made
@@ -3273,6 +3377,8 @@ export interface components {
                 move_questions: boolean;
                 /** @description A module of this build invites people to a team, and the tenant's plan includes it: Members (GET /api/members), invitations and the audit log work */
                 team: boolean;
+                /** @description The sign-in module of this build offers company sign-in (SAML or OIDC), and the tenant may use it: in a build that sells plans, the Team plan from `company_sign_in.included_seats` paid seats or with its add-on (GET /api/plan). Settings then shows Owners and Admins the Company sign-in section (GET /api/company-sign-in) */
+                company_sign_in: boolean;
             };
         };
         /** @description For every field: left out = unchanged; `null` = forget the stored value, so the environment's default is back in force; an empty string = that value, stored (see each field), or refused where empty cannot work */
@@ -3437,7 +3543,7 @@ export interface components {
             /** @description Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules); `removed member #<user id>` once that person was forgotten or removed */
             actor: string;
             /** @enum {string} */
-            action: "rule.created" | "rule.changed" | "rule.deleted" | "rules.reordered" | "sender_rule.set" | "sender_rule.deleted" | "mailbox.added" | "mailbox.changed" | "mailbox.removed" | "settings.changed" | "notification.added" | "notification.removed" | "plan.changed" | "member.joined" | "member.role_changed" | "member.removed" | "invitation.created" | "invitation.revoked" | "invitation.accepted" | "invitation.withdrawn";
+            action: "rule.created" | "rule.changed" | "rule.deleted" | "rules.reordered" | "sender_rule.set" | "sender_rule.deleted" | "mailbox.added" | "mailbox.changed" | "mailbox.removed" | "settings.changed" | "notification.added" | "notification.removed" | "plan.changed" | "member.joined" | "member.role_changed" | "member.removed" | "invitation.created" | "invitation.revoked" | "invitation.accepted" | "invitation.withdrawn" | "company_sign_in.add_on" | "company_sign_in.portal";
             /** @description What was changed, by name: a rule, a sender, a mailbox's address, a member's email (`removed member #<user id>` once they were forgotten or removed); empty for settings and reorders */
             target: string;
             /** @description How, in a few words: what of a rule changed, a role from and to, who invited a member (`member #<user id>`), the settings changed (a value only when it is true, false or a number). Never an address: one in a name quoted here reads `an address` */
@@ -5269,6 +5375,39 @@ export interface operations {
             502: components["responses"]["Upstream"];
         };
     };
+    planCompanySignIn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description true: add the add-on; false: remove it */
+                    add_on: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Asked of the billing service */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanInfo"];
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
     getSettings: {
         parameters: {
             query?: never;
@@ -5682,6 +5821,70 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
+        };
+    };
+    getCompanySignIn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * @description `not_set_up`: no connection yet; `domain_pending`: a connection waits for the company's domain to be verified; `active`: people sign in through it
+                         * @enum {string}
+                         */
+                        status: "not_set_up" | "domain_pending" | "active";
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    companySignInPortal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    intent: "sso" | "domain_verification";
+                };
+            };
+        };
+        responses: {
+            /** @description The link */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        url: string;
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
+            502: components["responses"]["Upstream"];
         };
     };
     streamEvents: {

@@ -55,10 +55,12 @@ func seatsNeeded(b *ext.Billing, p store.PlanState, full *store.SeatLimitError) 
 
 // LowerSeats is, for the seat worker, how a tenant's paid seats come down once a seat is
 // freed (store.SeatCheck): when its plan is sold by the seat, it asks the billing module for
-// the seats the tenant uses, never fewer than the plan's least. It asks even when that is
-// the number the daemon last heard of: seats bought for an invitation moments ago may not
-// be reported yet (Host.SetPlan), and asking for the number the subscription has already
-// changes nothing (ext.Billing.ChangePlan), so asking twice is safe. Nil in a build that
+// the seats the tenant uses, never fewer than the plan's least, keeping the company sign-in
+// add-on as it is. It asks even when that is the number the daemon last heard of: seats
+// bought for an invitation moments ago may not be reported yet (Host.SetPlan), and asking
+// for the number the subscription has already changes nothing (ext.Billing.ChangePlan), so
+// asking twice is safe. The seats are not kept up for company sign-in: fewer than it comes
+// with, and no add-on, end it once reported (companySignInAllowed). Nil in a build that
 // sells no plans.
 func LowerSeats(st *store.Store, modules []ext.Module) func(ctx context.Context, tenantID int64, now time.Time) error {
 	b := billingOf(modules)
@@ -82,6 +84,7 @@ func LowerSeats(st *store.Store, modules []ext.Module) func(ctx context.Context,
 			return err
 		}
 		target := max(minSeats(t), used)
-		return b.ChangePlan(ctx, ext.PlanChange{TenantID: tenantID, Record: p.Record, Plan: p.Plan.Plan, Interval: p.Interval, Seats: target})
+		return b.ChangePlan(ctx, ext.PlanChange{TenantID: tenantID, Record: p.Record, Plan: p.Plan.Plan, Interval: p.Interval, Seats: target,
+			CompanySignIn: p.CompanySignInAddOn})
 	}
 }

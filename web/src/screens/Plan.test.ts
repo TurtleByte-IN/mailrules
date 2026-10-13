@@ -19,6 +19,7 @@ const info = (over: Partial<PlanInfo> = {}): PlanInfo => ({
   period_end: null,
   seats: null,
   seats_used: null,
+  company_sign_in: null,
   trial_ends_at: trialEnd,
   trial_days_left: 5,
   ended_at: null,
@@ -28,14 +29,14 @@ const info = (over: Partial<PlanInfo> = {}): PlanInfo => ({
   subscribed: false,
   note: 'Billed by the billing service, taxes included at checkout.',
   plans: [
-    { id: 'personal', name: 'Personal', prices: { month: '$5 a month', year: '$50 a year' }, includes: ['3 mailboxes', '3,000 AI-sorted emails a month'], mailboxes: 3, ai_emails: 3000, features: [], per_seat: false, min_seats: null },
-    { id: 'pro', name: 'Pro', prices: { month: '$10 a month', year: '$100 a year' }, includes: ['10 mailboxes', 'Suggest from my mail'], mailboxes: 10, ai_emails: 10000, features: ['suggest'], per_seat: false, min_seats: null },
+    { id: 'personal', name: 'Personal', prices: { month: '$5 a month', year: '$50 a year' }, includes: ['3 mailboxes', '3,000 AI-sorted emails a month'], mailboxes: 3, ai_emails: 3000, features: [], per_seat: false, min_seats: null, company_sign_in: null },
+    { id: 'pro', name: 'Pro', prices: { month: '$10 a month', year: '$100 a year' }, includes: ['10 mailboxes', 'Suggest from my mail'], mailboxes: 10, ai_emails: 10000, features: ['suggest'], per_seat: false, min_seats: null, company_sign_in: null },
   ],
   ...over,
 });
 const pro = (over: Partial<PlanInfo> = {}) => info({ plan: 'pro', interval: 'month', status: 'active', period_end: trialEnd + 30 * day, trial_days_left: null, subscribed: true, ...over });
 const teamTerms: PlanInfo['plans'][number] = {
-  id: 'team', name: 'Team', prices: { month: '$8 a month', year: '$80 a year' }, includes: ['Shared rules', 'Audit log'], mailboxes: 10, ai_emails: 10000, features: ['team'], per_seat: true, min_seats: 2,
+  id: 'team', name: 'Team', prices: { month: '$8 a month', year: '$80 a year' }, includes: ['Shared rules', 'Audit log'], mailboxes: 10, ai_emails: 10000, features: ['team'], per_seat: true, min_seats: 2, company_sign_in: null,
 };
 const selfHostLimits = { mailboxes: null, ai_emails: null, first_cleanup: null, upgrade_url: null };
 
@@ -225,5 +226,73 @@ describe('the Team plan, sold by the seat', () => {
     render(Plan);
     await fireEvent.click(within(await card('Pro')).getByRole('button', { name: 'Switch to Pro' }));
     await waitFor(() => expect(calls.find((c) => c.call === 'POST /api/plan/change')?.body).toEqual({ plan: 'pro', interval: 'month' }));
+  });
+});
+
+describe('company sign-in on the Team plan', () => {
+  const ssoTerms = { ...teamTerms, company_sign_in: { included_seats: 10, prices: { month: '$180 a month', year: '$1,800 a year' } } };
+  const team = (seats: number, cs: { allowed: boolean; add_on: boolean }) =>
+    pro({ plan: 'team', seats, seats_used: 3, plans: [...info().plans, ssoTerms], company_sign_in: { ...cs, included_seats: 10 } });
+  const section = async () => within(await screen.findByRole('group', { name: 'Company sign-in' }));
+
+  it('offers the add-on below 10 seats, at the plan’s interval, and waits for the billing service', async () => {
+    const current = team(3, { allowed: false, add_on: false });
+    const calls = daemon(() => current, (call) => (call === 'POST /api/plan/company-sign-in' ? [202, current] : [404]));
+    render(Plan);
+    const s = await section();
+    expect(s.getByText(/Included from 10 seats, or add it now for \$180 a month\./)).toBeTruthy();
+    expect((await card('Team')).textContent).toContain('Company sign-in from 10 seats, or $180 a month below that');
+    await fireEvent.click(s.getByRole('button', { name: 'Add company sign-in' }));
+    expect(await screen.findByText('Waiting for the billing service to confirm…')).toBeTruthy();
+    expect(calls.find((c) => c.call === 'POST /api/plan/company-sign-in')?.body).toEqual({ add_on: true });
+  });
+
+  it('asks before removing an add-on the team needs, and says it ends', async () => {
+    const current = team(3, { allowed: true, add_on: true });
+    const calls = daemon(() => current, (call) => (call === 'POST /api/plan/company-sign-in' ? [202, current] : [404]));
+    render(Plan);
+    const s = await section();
+    await fireEvent.click(s.getByRole('button', { name: 'Remove the add-on' }));
+    const ask = s.getByRole('alertdialog');
+    expect(ask.textContent).toContain('Company sign-in ends for your team once the billing service confirms');
+    expect(calls.some((c) => c.call === 'POST /api/plan/company-sign-in')).toBe(false);
+    await fireEvent.click(within(ask).getByRole('button', { name: 'Yes, remove it' }));
+    await waitFor(() => expect(calls.find((c) => c.call === 'POST /api/plan/company-sign-in')?.body).toEqual({ add_on: false }));
+  });
+
+  it('at 10 seats, includes it and warns that fewer seats end it', async () => {
+    daemon(() => team(10, { allowed: true, add_on: false }));
+    render(Plan);
+    const s = await section();
+    expect(s.getByText(/Included with your 10 seats\./)).toBeTruthy();
+    expect(s.getByText(/Under 10 seats it needs the add-on \(\$180 a month\)/)).toBeTruthy();
+    expect(s.queryByRole('button', { name: 'Add company sign-in' })).toBeNull();
+  });
+
+  it.each([
+    ['fewer seats', 'Team', 'Change seats', '9', 'under 10 seats it needs the add-on', { plan: 'team', interval: 'month', seats: 9 }],
+    ['another plan', 'Pro', 'Switch to Pro', '', 'it is part of the Team plan only', { plan: 'pro', interval: 'month' }],
+  ])('warns before a change to %s ends it, and changes only once the Owner accepts', async (_name, name, button, seats, why, body) => {
+    const current = team(10, { allowed: true, add_on: false });
+    const calls = daemon(() => current, (call) => (call === 'POST /api/plan/change' ? [202, current] : [404]));
+    render(Plan);
+    const c = await card(name);
+    if (seats) await fireEvent.input(within(c).getByLabelText('Seats'), { target: { value: seats } });
+    expect(c.textContent).toContain(`Company sign-in ends with this change: ${why}.`);
+    await fireEvent.click(within(c).getByRole('button', { name: button }));
+    expect(calls.some((x) => x.call === 'POST /api/plan/change')).toBe(false);
+    await fireEvent.click(within(within(c).getByRole('alertdialog')).getByRole('button', { name: /^Yes, / }));
+    await waitFor(() => expect(calls.find((x) => x.call === 'POST /api/plan/change')?.body).toEqual(body));
+  });
+
+  it('does not warn when the add-on keeps it', async () => {
+    const current = team(10, { allowed: true, add_on: true });
+    const calls = daemon(() => current, (call) => (call === 'POST /api/plan/change' ? [202, current] : [404]));
+    render(Plan);
+    const c = await card('Team');
+    await fireEvent.input(within(c).getByLabelText('Seats'), { target: { value: '4' } });
+    expect(c.textContent).not.toContain('Company sign-in ends');
+    await fireEvent.click(within(c).getByRole('button', { name: 'Change seats' }));
+    await waitFor(() => expect(calls.find((x) => x.call === 'POST /api/plan/change')?.body).toEqual({ plan: 'team', interval: 'month', seats: 4 }));
   });
 });

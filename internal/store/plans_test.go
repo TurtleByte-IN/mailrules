@@ -1,9 +1,47 @@
 package store
 
 import (
+	"context"
 	"errors"
+	"slices"
 	"testing"
 )
+
+// The company sign-in add-on is kept with the Team plan as the module reports it, refused
+// with any other plan, and its coming and going is in the audit log.
+func TestSetPlanCompanySignInAddOn(t *testing.T) {
+	s, _ := open(t)
+	ctx := WithActor(t.Context(), Actor{Name: "Billing service"})
+	id, err := s.CreateTenant(context.Background(), "workos", "org", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := Plan{Plan: PlanTeam, Interval: IntervalMonth, Status: StatusActive, Record: "sub", Seats: 3, CompanySignInAddOn: true}
+	if _, after, err := s.SetPlan(ctx, id, team, 10); err != nil || !after.CompanySignInAddOn {
+		t.Fatalf("SetPlan = %+v, %v; want the add-on", after, err)
+	}
+	if got, err := s.TenantPlan(ctx, id, 11); err != nil || !got.CompanySignInAddOn || got.Seats != 3 {
+		t.Errorf("TenantPlan = %+v, %v", got, err)
+	}
+	if _, _, err := s.SetPlan(ctx, id, Plan{Plan: PlanPro, Interval: IntervalMonth, Status: StatusActive, CompanySignInAddOn: true}, 12); !errors.Is(err, ErrBadPlan) {
+		t.Errorf("the add-on on Pro = %v, want ErrBadPlan", err)
+	}
+	team.CompanySignInAddOn = false
+	if _, after, err := s.SetPlan(ctx, id, team, 13); err != nil || after.CompanySignInAddOn {
+		t.Fatalf("SetPlan = %+v, %v; want no add-on", after, err)
+	}
+	if err := s.Audit(WithActor(ctx, Actor{UserID: 1, Name: "owner@team.test"}), id, AuditCompanySignInAddOn, "Company sign-in add-on", "asked by owner@team.test"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"plan.changed team: trial to team, month, active, 3 seats, company sign-in add-on (Billing service)",
+		"plan.changed team: team, month, active, 3 seats, company sign-in add-on to team, month, active, 3 seats (Billing service)",
+		"company_sign_in.add_on Company sign-in add-on: asked by an address (owner@team.test)",
+	}
+	if got := audited(t, s, id); !slices.Equal(got, want) {
+		t.Errorf("audit log = %q, want %q", got, want)
+	}
+}
 
 func TestTenantPlan(t *testing.T) {
 	const made, day0 = int64(1_000_000), int64(1_000_000 + TrialDays*day) // the tenant's creation, and its trial's end

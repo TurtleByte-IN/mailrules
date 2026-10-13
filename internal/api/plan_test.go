@@ -18,7 +18,8 @@ import (
 // fakeBilling is the billing service a test's module talks to: it records what it was asked.
 type fakeBilling struct {
 	checkouts []ext.CheckoutRequest
-	changes   []string // "tenant record plan interval"
+	changes   []string // "tenant record plan interval [seats] [sso]"; sso: the company sign-in add-on is kept
+	addOns    []ext.CompanySignInChange
 	err       error
 }
 
@@ -45,11 +46,12 @@ func billingModule(fb *fakeBilling, plans map[string]ext.PlanTerms) ext.Module {
 						Record                 string
 						PeriodEnd              int64
 						Seats                  int
+						CompanySignInAddOn     bool
 					}
 					if !h.ReadJSON(w, r, &in) {
 						return
 					}
-					p := ext.Plan{Plan: in.Plan, Interval: in.Interval, Status: in.Status, Record: in.Record, Seats: in.Seats}
+					p := ext.Plan{Plan: in.Plan, Interval: in.Interval, Status: in.Status, Record: in.Record, Seats: in.Seats, CompanySignInAddOn: in.CompanySignInAddOn}
 					if in.PeriodEnd != 0 {
 						p.PeriodEnd = time.Unix(in.PeriodEnd, 0)
 					}
@@ -74,6 +76,9 @@ func billingModule(fb *fakeBilling, plans map[string]ext.PlanTerms) ext.Module {
 				change := []string{strconv.FormatInt(c.TenantID, 10), c.Record, c.Plan, c.Interval}
 				if c.Seats > 0 {
 					change = append(change, strconv.Itoa(c.Seats))
+				}
+				if c.CompanySignIn {
+					change = append(change, "sso")
 				}
 				fb.changes = append(fb.changes, strings.Join(change, " "))
 				return fb.err

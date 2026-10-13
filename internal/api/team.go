@@ -396,7 +396,7 @@ func (s *server) invite(ctx context.Context, tenantID int64, inv store.Invitatio
 		}
 		// Not cut short by the browser leaving: a seat bought must be known to be bought.
 		if cerr := s.billing().ChangePlan(context.WithoutCancel(ctx), ext.PlanChange{TenantID: tenantID, Record: p.Record, Plan: p.Plan.Plan,
-			Interval: p.Interval, Seats: need}); cerr != nil {
+			Interval: p.Interval, Seats: need, CompanySignIn: p.CompanySignInAddOn}); cerr != nil {
 			return stored, bought, seatRefused{seats: need, err: cerr}
 		}
 		bought = need

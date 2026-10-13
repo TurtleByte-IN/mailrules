@@ -105,8 +105,14 @@ type teamWorld struct {
 
 func newTeamWorld(t *testing.T) teamWorld {
 	t.Helper()
+	return newTeamWorldOf(t, teamModules)
+}
+
+// newTeamWorldOf is newTeamWorld with the modules build makes.
+func newTeamWorldOf(t *testing.T, build func(*fakeTeam, *fakeBilling) []ext.Module) teamWorld {
+	t.Helper()
 	w := teamWorld{ft: &fakeTeam{}, fb: &fakeBilling{}, ids: map[string]int64{}}
-	w.modules = teamModules(w.ft, w.fb)
+	w.modules = build(w.ft, w.fb)
 	e := newEnv(t, w.modules...)
 	w.owner = e.browser()
 	w.owner.teamSignIn("user_o", "owner@team.test")

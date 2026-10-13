@@ -18,7 +18,7 @@ import (
 // the contract.
 var features = map[string]bool{"notifications": false, "timed_actions": false, "draft_replies": false,
 	"billing": false, "unsubscribe": true, "oauth_providers": false, "suggest": false, "delete_account": false,
-	"move_questions": false, "team": false}
+	"move_questions": false, "team": false, "company_sign_in": false}
 
 // limits are the bounds the daemon enforces on how many emails one run reads, reported so
 // the UI's number boxes follow the daemon instead of repeating its numbers (MAI-41).

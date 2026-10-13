@@ -1566,6 +1566,11 @@ paths:
         mailboxes than the tenant has is refused (409 `downgrade_refused`, the message says
         which to remove). The answer is the plan as it stands; the change shows once the
         billing service reports it (the `plan.changed` event).
+
+        The company sign-in add-on stays with a Team plan, at its new interval, and goes with a
+        move to any other plan. Fewer seats than company sign-in comes with
+        (`company_sign_in.included_seats`) and no add-on, or a move off Team, end company
+        sign-in once reported; nothing is refused for it, so Plan and billing warns first.
       requestBody:
         required: true
         content:
@@ -1605,6 +1610,49 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
         '409': { $ref: '#/components/responses/Conflict' } # not_subscribed
+        '502': { $ref: '#/components/responses/Upstream' } # billing_error
+  /api/plan/company-sign-in:
+    post:
+      tags: [Plan]
+      operationId: planCompanySignIn
+      x-role: owner
+      x-module: billing
+      summary: Add the company sign-in add-on to the Team plan, or remove it
+      description: |
+        Only while the build sells company sign-in (`company_sign_in` in GET /api/plan is not
+        null; 404 `not_available` otherwise), for a tenant subscribed to Team. The add-on is a
+        second item on the Team subscription, billed at the plan's interval; it gives company
+        sign-in to a team with fewer seats than `included_seats`. It is refused while the seats
+        include company sign-in already (409 `included`). The billing service adds or removes
+        it at once; the answer is the plan as it stands, and the change shows once the service
+        reports it (the `plan.changed` event). The request is recorded in the audit log
+        (`company_sign_in.add_on`).
+
+        Removing it below `included_seats`, fewer seats with no add-on, or a move off Team end
+        company sign-in once reported: Settings offers its setup no more. The daemon changes
+        nothing at the sign-in service, where a connection already made stays; what becomes of
+        it is the sign-in service's to decide.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [add_on]
+              properties:
+                add_on: { type: boolean, description: 'true: add the add-on; false: remove it' }
+      responses:
+        '202':
+          description: Asked of the billing service
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanInfo' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: add_on), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotAvailable' }
+        '409': { $ref: '#/components/responses/Conflict' } # not_subscribed; team_only: the plan is not Team; same_plan: the add-on is there already, or is not there to remove; included: the seats include company sign-in already
         '502': { $ref: '#/components/responses/Upstream' } # billing_error
   /api/settings:
     get:
@@ -2029,6 +2077,75 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
+  /api/company-sign-in:
+    get:
+      tags: [Team]
+      operationId: getCompanySignIn
+      x-role: admin
+      x-module: company_sign_in
+      summary: How the team's company sign-in stands at the sign-in service
+      description: |
+        Only in a build whose sign-in module offers company sign-in (SAML or OIDC), and only
+        while the tenant may use it (`features.company_sign_in`): 404 `not_available` in a
+        build without it, 403 `plan_required` otherwise, with a message that says how to get
+        it (in a build that sells plans, the Team plan from `included_seats` seats, or its
+        add-on). The sign-in module reports the state.
+      responses:
+        '200':
+          description: The state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [not_set_up, domain_pending, active]
+                    description: '`not_set_up`: no connection yet; `domain_pending`: a connection waits for the company''s domain to be verified; `active`: people sign in through it'
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' } # role_required; plan_required
+        '404': { $ref: '#/components/responses/NotAvailable' }
+        '502': { $ref: '#/components/responses/Upstream' } # sign_in_error
+  /api/company-sign-in/portal:
+    post:
+      tags: [Team]
+      operationId: companySignInPortal
+      x-role: admin
+      x-module: company_sign_in
+      summary: A one-time link to set company sign-in up at the sign-in service
+      description: |
+        The sign-in module's admin portal, where the team's IT admin sets up the SAML or OIDC
+        connection (`sso`) or proves the company owns its email domain
+        (`domain_verification`). Open the link at once: it is short-lived, and anyone who has
+        it can change the team's sign-in until it expires. The daemon keeps it nowhere; who
+        asked is recorded in the audit log (`company_sign_in.portal`). Refused as GET
+        /api/company-sign-in is.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [intent]
+              properties:
+                intent: { type: string, enum: [sso, domain_verification] }
+      responses:
+        '200':
+          description: The link
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url: { type: string }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: intent), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' } # role_required; plan_required
+        '404': { $ref: '#/components/responses/NotAvailable' }
+        '502': { $ref: '#/components/responses/Upstream' } # sign_in_error
   /api/events:
     get:
       tags: [Live]
@@ -3178,7 +3295,7 @@ components:
         seats: { type: integer, minimum: 1, description: 'How many seats of a plan sold by the seat (`per_seat`), from its `min_seats` to 1,000; sent only for such a plan (400 `invalid_input` at `seats` otherwise)' }
     PlanTerms:
       type: object
-      required: [id, name, prices, includes, mailboxes, ai_emails, features, per_seat, min_seats]
+      required: [id, name, prices, includes, mailboxes, ai_emails, features, per_seat, min_seats, company_sign_in]
       properties:
         id: { type: string, enum: [personal, pro, team] }
         name: { type: string }
@@ -3189,9 +3306,16 @@ components:
         features: { type: array, items: { type: string }, description: 'Features only this plan''s tenants get, named as in `features`' }
         per_seat: { type: boolean, description: 'Sold by the seat (Team): checkout and change send `seats`' }
         min_seats: { type: [integer, 'null'], description: 'The fewest seats that may be bought of a plan sold by the seat; null for any other' }
+        company_sign_in:
+          type: [object, 'null']
+          description: 'How this plan sells company sign-in (Team only): included from `included_seats` paid seats, or as an add-on at `prices` (POST /api/plan/company-sign-in). null: it does not'
+          required: [included_seats, prices]
+          properties:
+            included_seats: { type: [integer, 'null'], description: 'The paid seats company sign-in comes with, add-on or not; null: only with the add-on' }
+            prices: { type: object, additionalProperties: { type: string }, description: 'What the add-on costs a team, as shown, by interval (month, year), billed at the plan''s interval' }
     PlanInfo:
       type: object
-      required: [plan, interval, status, period_end, seats, seats_used, trial_ends_at, trial_days_left, ended_at, secrets_deleted_at, removed_at, read_only, subscribed, note, plans]
+      required: [plan, interval, status, period_end, seats, seats_used, company_sign_in, trial_ends_at, trial_days_left, ended_at, secrets_deleted_at, removed_at, read_only, subscribed, note, plans]
       properties:
         plan: { type: string, enum: [trial, personal, pro, team, ended] }
         interval: { type: [string, 'null'], enum: [month, year, null] }
@@ -3199,6 +3323,14 @@ components:
         period_end: { type: [integer, 'null'], format: int64, description: 'When the paid period ends (renews, or ends when cancelled)' }
         seats: { type: [integer, 'null'], description: 'The seats bought of a plan sold by the seat (Team), while it runs; null otherwise' }
         seats_used: { type: [integer, 'null'], description: 'With `seats`: the members still in the team and the invitations waiting, counted as GET /api/members counts them; null otherwise' }
+        company_sign_in:
+          type: [object, 'null']
+          description: 'Where the tenant stands with company sign-in, for every role; null in a build that does not sell it (no sign-in module offers it, or the Team plan does not sell it)'
+          required: [allowed, add_on, included_seats]
+          properties:
+            allowed: { type: boolean, description: 'The tenant may use company sign-in now (`features.company_sign_in`): a Team plan that runs with `included_seats` paid seats or more, or with the add-on' }
+            add_on: { type: boolean, description: 'The company sign-in add-on is on the Team subscription' }
+            included_seats: { type: [integer, 'null'], description: 'The paid Team seats company sign-in comes with; null: only with the add-on' }
         trial_ends_at: { type: integer, format: int64, description: '14 days after the tenant was made' }
         trial_days_left: { type: [integer, 'null'], description: 'Whole days left, rounded up, while in the trial; null otherwise' }
         ended_at: { type: [integer, 'null'], format: int64, description: 'When the trial or plan ended; null while one runs' }
@@ -3351,7 +3483,7 @@ components:
           type: object
           readOnly: true
           description: Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module
-          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest, delete_account, move_questions, team]
+          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest, delete_account, move_questions, team, company_sign_in]
           properties:
             notifications: { type: boolean, description: 'A module of this build delivers rule notifications, so `/api/notifications` works and rules may name destinations in `notify`' }
             timed_actions: { type: boolean }
@@ -3363,6 +3495,7 @@ components:
             delete_account: { type: boolean, description: 'A module of this build signs people in (the hosted build), so POST /api/auth/delete-account works and Settings offers Delete my account' }
             move_questions: { type: boolean, description: 'A module of this build learns from the emails the person moves out of the folders MailRules filed them in, so Activity may ask about them (GET /api/activity/questions)' }
             team: { type: boolean, description: 'A module of this build invites people to a team, and the tenant''s plan includes it: Members (GET /api/members), invitations and the audit log work' }
+            company_sign_in: { type: boolean, description: 'The sign-in module of this build offers company sign-in (SAML or OIDC), and the tenant may use it: in a build that sells plans, the Team plan from `company_sign_in.included_seats` paid seats or with its add-on (GET /api/plan). Settings then shows Owners and Admins the Company sign-in section (GET /api/company-sign-in)' }
     SettingsPatch:
       type: object
       additionalProperties: false
@@ -3507,6 +3640,6 @@ components:
           type: string
           enum: [rule.created, rule.changed, rule.deleted, rules.reordered, sender_rule.set, sender_rule.deleted, mailbox.added, mailbox.changed, mailbox.removed,
             settings.changed, notification.added, notification.removed, plan.changed, member.joined, member.role_changed, member.removed,
-            invitation.created, invitation.revoked, invitation.accepted, invitation.withdrawn]
+            invitation.created, invitation.revoked, invitation.accepted, invitation.withdrawn, company_sign_in.add_on, company_sign_in.portal]
         target: { type: string, description: 'What was changed, by name: a rule, a sender, a mailbox''s address, a member''s email (`removed member #<user id>` once they were forgotten or removed); empty for settings and reorders' }
         detail: { type: string, description: 'How, in a few words: what of a rule changed, a role from and to, who invited a member (`member #<user id>`), the settings changed (a value only when it is true, false or a number). Never an address: one in a name quoted here reads `an address`' }

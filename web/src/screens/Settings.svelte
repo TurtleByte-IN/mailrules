@@ -2,13 +2,15 @@
   import { onMount } from 'svelte';
   import { TRASH_FOLDER } from '../lib/api/settings';
   import AccountCard from './settings/AccountCard.svelte';
+  import CompanySignInCard from './settings/CompanySignInCard.svelte';
   import DeciderFields from './settings/DeciderFields.svelte';
   import KeyFields from './settings/KeyFields.svelte';
   import { keyOrder, keysInUse } from './settings/keysInUse';
   import NotificationsCard from './settings/NotificationsCard.svelte';
   import SummaryCard from './settings/SummaryCard.svelte';
   import { confidence } from '../lib/format';
-  import { canManage, managedNote } from '../lib/state/auth.svelte';
+  import { canManage, isOwner, managedNote } from '../lib/state/auth.svelte';
+  import { plan } from '../lib/state/plan.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import { findWorkspace, hosted, load, patch, settings, toggleDryRun } from '../lib/state/settings.svelte';
   import { choose, stored, type Choice } from '../lib/theme';
@@ -139,6 +141,10 @@
 
     {#if s.features.notifications}
       <NotificationsCard />
+    {/if}
+    <!-- Company sign-in: its setup for Owners and Admins while the team may use it; else, to an Owner, how to get it. -->
+    {#if (s.features.company_sign_in && canManage()) || (isOwner() && s.features.billing && plan.value?.company_sign_in && !plan.value.company_sign_in.allowed)}
+      <CompanySignInCard />
     {/if}
     </fieldset>
 
