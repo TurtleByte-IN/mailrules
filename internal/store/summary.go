@@ -126,15 +126,17 @@ func (s *Store) SummaryRules(ctx context.Context, v Viewer, from, to int64) ([]R
 }
 
 // SummaryTrashed lists the emails of the mailboxes the viewer sees trashed (or, in
-// dry-run, recorded as trashed) in [from, to) and not undone since, newest first, at most
-// limit of them, and how many there are. An email trashed more than once in the window is
-// listed once, as its latest such trash left it.
+// dry-run, recorded as trashed) in [from, to) and still trashed now, as the Overview
+// counts them (outcomeSQL), newest first, at most limit of them, and how many there are.
+// An email trashed more than once in the window is listed once, as its latest such trash
+// left it.
 func (s *Store) SummaryTrashed(ctx context.Context, v Viewer, from, to int64, limit int) ([]SummaryEmail, int, error) {
 	ctx = WithTenant(ctx, v.TenantID)
 	// trashed is the condition on actions alias a of a trash in the window that counts.
 	trashed := func(a string) string {
+		still := outcomeSQL(`(SELECT state FROM messages WHERE id = `+a+`.message_id)`, a+".message_id")["trashed"]
 		return inVisible(a+".account_id") + ` AND ` + a + `.kind = 'trash' AND ` + a + `.status IN ('done', 'dry_run')
-		   AND ` + a + `.created_at >= @from AND ` + a + `.created_at < @to`
+		   AND ` + a + `.created_at >= @from AND ` + a + `.created_at < @to AND ` + still
 	}
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT x.message_id) FROM actions x JOIN messages m ON m.id = x.message_id

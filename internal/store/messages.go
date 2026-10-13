@@ -410,15 +410,21 @@ type ActivityRow struct {
 var Outcomes = []string{"sorted", "trashed", "inbox", "review"}
 
 // outcomeSQL is the condition for each of Outcomes on one message, given the SQL for its
-// state and its id. The stats and the feed's filter are both built from it, so a group's
-// count and the list behind it cannot disagree. An action is in effect when it is done, or
-// recorded in dry-run; one that was undone is not, so a message whose actions were all
-// undone is back in the inbox.
+// state and its id. The stats, the feed's filter and the summary email are all built from
+// it, so a group's count and the list behind it cannot disagree. Like the feed's outcome
+// sentence (api's outcome), it reads only the message's current actions: those of its
+// latest action's decision and batch. Earlier ones were replaced by them or, in dry-run,
+// never happened. An action is in effect when it is done, or recorded in dry-run; one that
+// was undone is not, so a message whose current actions were all undone is back in the
+// inbox, whatever an earlier run recorded.
 func outcomeSQL(state, id string) map[string]string {
+	// The aliases are its own, so id may name a column of an outer actions x or y.
 	inEffect := func(more string) string {
-		return `EXISTS (SELECT 1 FROM actions x WHERE x.message_id = ` + id + ` AND x.status IN ('done', 'dry_run')` + more + `)`
+		return `EXISTS (SELECT 1 FROM actions oa JOIN actions ol ON ol.id = (SELECT MAX(id) FROM actions WHERE message_id = ` + id + `)
+		 WHERE oa.message_id = ` + id + ` AND COALESCE(oa.decision_id, 0) = COALESCE(ol.decision_id, 0)
+		   AND COALESCE(oa.batch_id, 0) = COALESCE(ol.batch_id, 0) AND oa.status IN ('done', 'dry_run')` + more + `)`
 	}
-	acted, trash := state+` = 'acted' AND `+inEffect(""), inEffect(` AND x.kind = 'trash'`)
+	acted, trash := state+` = 'acted' AND `+inEffect(""), inEffect(` AND oa.kind = 'trash'`)
 	return map[string]string{
 		"review":  state + ` = 'review'`,
 		"trashed": acted + ` AND ` + trash,
