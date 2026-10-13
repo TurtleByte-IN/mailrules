@@ -155,6 +155,7 @@ func ruleChanges(old, r rules.Rule) string {
 		{"model", old.Model == r.Model && same(old.MinConfidence, r.MinConfidence)},
 		{"stack", old.Stack == r.Stack},
 		{"notifications", same(old.Notify, r.Notify)},
+		{"draft reply", same(old.Draft, r.Draft)},
 	} {
 		if !f.same {
 			out = append(out, f.what)
