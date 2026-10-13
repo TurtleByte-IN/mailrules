@@ -173,6 +173,39 @@ func TestCheckModulesBilling(t *testing.T) {
 	}
 }
 
+// The policy allows inline styles only where the build sells plans and its checkout asks for
+// them (Paddle.js styles its overlay inline); scripts never run inline or through eval, and a
+// build without billing keeps default-src 'self' alone.
+func TestContentPolicy(t *testing.T) {
+	paddle := ext.CheckoutSources{
+		Scripts: []string{"https://cdn.paddle.com"}, Frames: []string{"https://buy.paddle.com"},
+		Connect: []string{"https://*.paddle.com"}, Styles: []string{"https://cdn.paddle.com"}, Images: []string{"https://*.paddle.com"},
+	}
+	inline := paddle
+	inline.InlineStyles = true
+	for _, c := range []struct {
+		name string
+		b    *ext.Billing
+		want string
+	}{
+		{"self-host", nil, "default-src 'self'"},
+		{"billing, no sources", &ext.Billing{}, "default-src 'self'"},
+		{"billing", &ext.Billing{Sources: paddle}, "default-src 'self'; script-src 'self' https://cdn.paddle.com; frame-src 'self' https://buy.paddle.com; " +
+			"connect-src 'self' https://*.paddle.com; style-src 'self' https://cdn.paddle.com; img-src 'self' https://*.paddle.com"},
+		{"billing, inline styles", &ext.Billing{Sources: inline}, "default-src 'self'; script-src 'self' https://cdn.paddle.com; frame-src 'self' https://buy.paddle.com; " +
+			"connect-src 'self' https://*.paddle.com; style-src 'self' 'unsafe-inline' https://cdn.paddle.com; img-src 'self' https://*.paddle.com"},
+		{"billing, inline styles only", &ext.Billing{Sources: ext.CheckoutSources{InlineStyles: true}}, "default-src 'self'; style-src 'self' 'unsafe-inline'"},
+	} {
+		got := contentPolicy(c.b)
+		if got != c.want {
+			t.Errorf("%s: CSP = %q, want %q", c.name, got, c.want)
+		}
+		if strings.Contains(got, "unsafe-eval") || strings.Contains(got, "script-src 'self' 'unsafe-inline'") {
+			t.Errorf("%s: CSP %q lets scripts run inline or through eval", c.name, got)
+		}
+	}
+}
+
 // A build without billing (self-host) has no plan: no screen, no limits, nothing read-only.
 func TestSelfHostHasNoPlan(t *testing.T) {
 	e := newEnv(t)

@@ -406,6 +406,10 @@ type CheckoutSources struct {
 	Connect []string // connect-src: what the script calls
 	Styles  []string // style-src: style sheets it loads
 	Images  []string // img-src
+	// InlineStyles adds 'unsafe-inline' to style-src, for a checkout script that styles
+	// what it adds to the page through style attributes or <style> elements (Paddle.js
+	// sizes its overlay that way). Scripts never run inline, whatever this says.
+	InlineStyles bool
 }
 
 // PlanTerms are what one plan gives and how Plan and billing shows it (Billing.Plans).
