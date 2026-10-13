@@ -2,6 +2,7 @@
   import { link } from 'svelte-spa-router';
   import type { ActivityItem } from '../../lib/api/activity';
   import { clock, confidence } from '../../lib/format';
+  import { canManage } from '../../lib/state/auth.svelte';
   import { resolve } from '../../lib/state/review.svelte';
   import { rules } from '../../lib/state/rules.svelte';
   import Always from '../activity/Always.svelte';
@@ -47,6 +48,8 @@
   </div>
   <div class="flex flex-wrap items-center gap-x-[18px] gap-y-2 border-t border-line-divider pt-2.5">
     <Always bind:this={always} {item} />
-    <a href="/compose" use:link class="inline-flex min-h-8 items-center text-[13px] font-semibold text-ink no-underline max-md:min-h-11">Create a rule for emails like this</a>
+    {#if canManage()}
+      <a href="/compose" use:link class="inline-flex min-h-8 items-center text-[13px] font-semibold text-ink no-underline max-md:min-h-11">Create a rule for emails like this</a>
+    {/if}
   </div>
 </article>

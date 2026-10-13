@@ -19,6 +19,7 @@ import (
 	"github.com/TurtleByte-IN/mailrules/internal/config"
 	"github.com/TurtleByte-IN/mailrules/internal/crypto"
 	"github.com/TurtleByte-IN/mailrules/internal/models"
+	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
 const (
@@ -203,7 +204,8 @@ func (s *Settings) lookup(ctx context.Context, tenantID int64, k crypto.TenantKe
 	}
 	v := string(b)
 	set[lookupRow] = &v
-	if err := s.Store.SetSettings(ctx, tenantID, set); err != nil {
+	// A lookup is MailRules's own: nothing is recorded in the audit log.
+	if err := s.Store.SetSettings(store.WithoutActor(ctx), tenantID, set); err != nil {
 		return WorkspaceLookup{}, err
 	}
 	slog.InfoContext(ctx, "looked up the Anthropic workspace", "status", next.Status, "workspaces", len(next.Workspaces), "stored", set[settingWorkspace] != nil)
@@ -245,7 +247,7 @@ func (s *Settings) workspaceNeeded(ctx context.Context, tenantID int64, apiKey s
 		l.Refused = true
 		b, _ := json.Marshal(l)
 		v := string(b)
-		if err := s.Store.SetSettings(ctx, tenantID, map[string]*string{lookupRow: &v}); err != nil {
+		if err := s.Store.SetSettings(store.WithoutActor(ctx), tenantID, map[string]*string{lookupRow: &v}); err != nil {
 			slog.WarnContext(ctx, "could not record the refused Claude request", "error", err.Error())
 		}
 		return ""

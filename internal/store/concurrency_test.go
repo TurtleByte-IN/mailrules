@@ -30,7 +30,7 @@ func TestTransactionsWithConcurrentWriters(t *testing.T) {
 		{"sign in identity", func(ctx context.Context, s *Store, i int) (func() error, error) {
 			return func() error {
 				_, err := s.SignInIdentity(ctx, Identity{Provider: "workos", Subject: fmt.Sprintf("user_%d", i),
-					Email: fmt.Sprintf("p%d@example.test", i), Tenant: "org"}, 100)
+					Email: fmt.Sprintf("p%d@example.test", i), Tenant: "org"}, 100, nil)
 				return err
 			}, nil
 		}},

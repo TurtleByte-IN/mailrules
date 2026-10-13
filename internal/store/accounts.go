@@ -157,6 +157,9 @@ func (s *Store) createAccount(ctx context.Context, tx *txn, a Account, secret st
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, a.ID); err != nil {
 		return Account{}, fmt.Errorf("create account: %w", err)
 	}
+	if err := record(ctx, tx, a.TenantID, a.CreatedAt, AuditMailboxAdded, a.Username, a.Label+", "+a.Host); err != nil {
+		return Account{}, err
+	}
 	return a, nil
 }
 
@@ -243,13 +246,42 @@ func (s *Store) listAccounts(ctx context.Context, query string, args ...any) ([]
 // SetAccountShared shares an account with everyone in its tenant, or makes it private to
 // its owner again. The caller checks that the owner asks.
 func (s *Store) SetAccountShared(ctx context.Context, id int64, shared bool) error {
+	return s.accountChange(ctx, id, "share account", func(ctx context.Context, tx *txn, a Account) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET shared = ? WHERE id = ?`, shared, id); err != nil {
+			return fmt.Errorf("share account: %w", err)
+		}
+		if a.Shared == shared {
+			return nil
+		}
+		how := "made private"
+		if shared {
+			how = "shared with the team"
+		}
+		return record(ctx, tx, a.TenantID, 0, AuditMailboxChanged, a.Username, how)
+	})
+}
+
+// accountChange runs fn in one write transaction of the account's tenant, handing it the
+// account as it was. ErrNotFound for an account that does not exist.
+func (s *Store) accountChange(ctx context.Context, id int64, what string, fn func(ctx context.Context, tx *txn, a Account) error) error {
 	ctx = s.tenantFor(ctx, ofAccount, id)
-	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET shared = ? WHERE id = ?`, shared, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("share account: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	a, err := scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountCols+` FROM accounts a WHERE a.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	if err := fn(ctx, tx, a); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	return nil
 }
@@ -343,12 +375,14 @@ func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule,
 		return nil, fmt.Errorf("delete account: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ?`, id).Scan(&exists); err != nil {
-		return nil, fmt.Errorf("delete account: %w", err)
-	}
-	if exists == 0 {
+	var tenantID int64
+	var username string
+	err = tx.QueryRowContext(ctx, `SELECT tenant_id, username FROM accounts WHERE id = ?`, id).Scan(&tenantID, &username)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("delete account: %w", err)
 	}
 	changed, err := dropMailboxes(ctx, tx, func(named int64) bool { return named == id }, now)
 	if err != nil {
@@ -359,6 +393,9 @@ func (s *Store) DeleteAccount(ctx context.Context, id, now int64) ([]rules.Rule,
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id); err != nil {
 		return nil, fmt.Errorf("delete account: %w", err)
+	}
+	if err := record(ctx, tx, tenantID, now, AuditMailboxRemoved, username, ""); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("delete account: %w", err)
@@ -518,51 +555,53 @@ func (s *Store) IsContact(ctx context.Context, accountID int64, address string) 
 // and status (the fields the user edits). A new server clears Module: the server is then
 // the person's, not the module's.
 func (s *Store) UpdateAccount(ctx context.Context, a Account) error {
-	ctx = s.tenantFor(ctx, ofAccount, a.ID)
-	// The right-hand sides read the row as it was, so module stays only on the same server.
-	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?,
-		module = (module AND host = ? AND port = ? AND tls_mode = ?), host = ?, port = ?, tls_mode = ?, status = ? WHERE id = ?`,
-		a.Label, a.WatchFolder, a.Host, a.Port, a.TLSMode, a.Host, a.Port, a.TLSMode, a.Status, a.ID)
-	if err != nil {
-		return fmt.Errorf("update account: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.accountChange(ctx, a.ID, "update account", func(ctx context.Context, tx *txn, old Account) error {
+		// The right-hand sides read the row as it was, so module stays only on the same server.
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET label = ?, watch_folder = ?,
+			module = (module AND host = ? AND port = ? AND tls_mode = ?), host = ?, port = ?, tls_mode = ?, status = ? WHERE id = ?`,
+			a.Label, a.WatchFolder, a.Host, a.Port, a.TLSMode, a.Host, a.Port, a.TLSMode, a.Status, a.ID); err != nil {
+			return fmt.Errorf("update account: %w", err)
+		}
+		var how []string
+		if old.Label != a.Label {
+			how = append(how, "renamed from "+old.Label)
+		}
+		if old.WatchFolder != a.WatchFolder {
+			how = append(how, "watches "+a.WatchFolder)
+		}
+		if old.Host != a.Host || old.Port != a.Port || old.TLSMode != a.TLSMode {
+			how = append(how, "server "+a.Host)
+		}
+		switch {
+		case old.Status != "paused" && a.Status == "paused":
+			how = append(how, "paused")
+		case old.Status == "paused" && a.Status != "paused":
+			how = append(how, "resumed")
+		}
+		if len(how) == 0 {
+			return nil
+		}
+		return record(ctx, tx, old.TenantID, 0, AuditMailboxChanged, old.Username, strings.Join(how, ", "))
+	})
 }
 
-// SetAccountSecret replaces an account's app password, sealed under its tenant's key.
+// SetAccountSecret replaces an account's app password, sealed under its tenant's key. The
+// change is recorded under ctx's actor: one rotated by a provider is made WithoutActor.
 func (s *Store) SetAccountSecret(ctx context.Context, id int64, secret string) error {
-	ctx = s.tenantFor(ctx, ofAccount, id)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("set account secret: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	var tenantID int64
-	err = tx.QueryRowContext(ctx, `SELECT tenant_id FROM accounts WHERE id = ?`, id).Scan(&tenantID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("set account secret: %w", err)
-	}
-	key, err := s.tenantKey(ctx, tx, tenantID)
-	if err != nil {
-		return fmt.Errorf("set account secret: %w", err)
-	}
-	secretEnc, dekEnc, err := key.Seal(secretAccount, strconv.FormatInt(id, 10), []byte(secret))
-	if err != nil {
-		return fmt.Errorf("encrypt account secret: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, id); err != nil {
-		return fmt.Errorf("set account secret: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("set account secret: %w", err)
-	}
-	return nil
+	return s.accountChange(ctx, id, "set account secret", func(ctx context.Context, tx *txn, a Account) error {
+		key, err := s.tenantKey(ctx, tx, a.TenantID)
+		if err != nil {
+			return fmt.Errorf("set account secret: %w", err)
+		}
+		secretEnc, dekEnc, err := key.Seal(secretAccount, strconv.FormatInt(id, 10), []byte(secret))
+		if err != nil {
+			return fmt.Errorf("encrypt account secret: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, id); err != nil {
+			return fmt.Errorf("set account secret: %w", err)
+		}
+		return record(ctx, tx, a.TenantID, 0, AuditMailboxChanged, a.Username, "new password or sign-in")
+	})
 }
 
 // LastMailAt is when the newest email MailRules has seen in an account arrived (its

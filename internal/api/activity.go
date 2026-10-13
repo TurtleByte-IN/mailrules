@@ -514,6 +514,9 @@ func (s *server) correct(w http.ResponseWriter, r *http.Request, m store.Message
 	case c.Always != "" && c.Always != rules.MatchAddress && c.Always != rules.MatchDomain:
 		invalid(w, "always_for", "Choose address or domain.")
 		return
+	case c.Always != "" && !allowed(r, store.RoleAdmin):
+		roleRequired(w, store.RoleAdmin, "make a rule for every email from a sender")
+		return
 	case c.Always == rules.MatchDomain && m.FromDomain == "":
 		invalid(w, "always_for", "This email has no sender domain to make a rule for.")
 		return

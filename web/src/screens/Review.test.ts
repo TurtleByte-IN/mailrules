@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Limits } from '../lib/api/limits';
 import { error, inReview, item, serve } from '../lib/state/activity.fixtures';
+import { auth } from '../lib/state/auth.svelte';
 import { limits } from '../lib/state/limits.svelte';
 import { review } from '../lib/state/review.svelte';
 import Review from './Review.svelte';
@@ -127,4 +128,18 @@ describe('Always do this', () => {
     await fireEvent.click(card.getByRole('button', { name: 'Yes, Recruiters' }));
     await waitFor(() => expect(posts(calls)[1]).toEqual({ rule_id: 3, always_for: 'address' }));
   });
+});
+
+it('offers a Member no sender rule and no new rule: those are the team’s', async () => {
+  serve(() => [200, queue([8])]);
+  auth.user = { id: 3, email: 'cy@example.com', role: 'member' };
+  try {
+    render(Review);
+    const card = within(await screen.findByRole('article'));
+    expect(card.queryByRole('checkbox', { name: /^Always do this/ })).toBeNull();
+    expect(card.queryByRole('link', { name: 'Create a rule for emails like this' })).toBeNull();
+    expect(card.getByRole('button', { name: 'Keep in Inbox' })).toBeTruthy();
+  } finally {
+    auth.user = null;
+  }
 });

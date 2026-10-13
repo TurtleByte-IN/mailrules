@@ -49,7 +49,7 @@ func newPlanWorld(t *testing.T) *planWorld {
 		return a
 	}
 	signIn := func(sub, email, org string) store.User {
-		u, err := st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: sub, Email: email, Tenant: org}, planT0)
+		u, err := st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: sub, Email: email, Tenant: org}, planT0, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

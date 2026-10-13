@@ -29,8 +29,17 @@ func billingOf(modules []ext.Module) *ext.Billing {
 	return nil
 }
 
-// soldPlans are the plans on sale, cheapest first.
-var soldPlans = []string{store.PlanPersonal, store.PlanPro}
+// soldPlans are the plans on sale, cheapest first: Personal and Pro, and Team when the
+// build's Billing has its terms.
+func soldPlans(b *ext.Billing) []string {
+	out := []string{store.PlanPersonal, store.PlanPro}
+	if b != nil {
+		if _, ok := b.Plans[store.PlanTeam]; ok {
+			out = append(out, store.PlanTeam)
+		}
+	}
+	return out
+}
 
 // termsOf are the terms a tenant in st is held to: its plan's, and the trial's in the trial
 // and once the plan has ended (nothing is sorted then; they only fill the meters).
@@ -39,6 +48,30 @@ func termsOf(b *ext.Billing, st store.PlanState) ext.PlanTerms {
 		return t
 	}
 	return b.Plans[store.PlanTrial]
+}
+
+// limitsOf are the limits of a tenant in st: its terms' limits, those of a plan sold by the
+// seat times its seats (NoLimit stays NoLimit), with its seats; any other plan has at least
+// one seat.
+func limitsOf(b *ext.Billing, st store.PlanState) ext.Limits {
+	t := termsOf(b, st)
+	l := t.Limits
+	if !t.PerSeat || st.Ended() {
+		l.Seats = max(l.Seats, 1)
+		if t.Limits.Seats < 0 {
+			l.Seats = ext.NoLimit
+		}
+		return l
+	}
+	n := max(st.Seats, 1)
+	times := func(v int) int {
+		if v < 0 {
+			return v
+		}
+		return v * n
+	}
+	l.Mailboxes, l.AIEmails, l.FirstCleanupEmails, l.Seats = times(l.Mailboxes), times(l.AIEmails), times(l.FirstCleanupEmails), n
+	return l
 }
 
 // tenantLimits are what the tenant may use at now: its plan's limits in a build that sells
@@ -51,7 +84,7 @@ func tenantLimits(ctx context.Context, st *store.Store, b *ext.Billing, tenantID
 	if err != nil {
 		return ext.Limits{}, fmt.Errorf("the tenant's plan: %w", err)
 	}
-	return termsOf(b, p).Limits, nil
+	return limitsOf(b, p), nil
 }
 
 // gatedFeatures are the features some plan includes: each is a tenant's only while its plan
@@ -98,7 +131,8 @@ func PlanFeature(st *store.Store, modules []ext.Module, feature string) func(ctx
 }
 
 // featureNames are how plan_required names a feature.
-var featureNames = map[string]string{"suggest": "Suggest from my mail", "notifications": "Notifications and webhooks", "draft_replies": "Draft replies"}
+var featureNames = map[string]string{"suggest": "Suggest from my mail", "notifications": "Notifications and webhooks", "draft_replies": "Draft replies",
+	"team": "Members and invitations"}
 
 // planRequired answers 403 plan_required for a feature the tenant's plan does not include.
 func (s *server) planRequired(w http.ResponseWriter, feature string) {
@@ -107,7 +141,7 @@ func (s *server) planRequired(w http.ResponseWriter, feature string) {
 		name = "This feature"
 	}
 	var on []string
-	for _, id := range soldPlans {
+	for _, id := range soldPlans(s.billing()) {
 		if slices.Contains(s.billing().Plans[id].Features, feature) {
 			on = append(on, s.billing().Plans[id].Name)
 		}
@@ -202,6 +236,8 @@ type planTermsJSON struct {
 	Mailboxes *int              `json:"mailboxes"`
 	AIEmails  *int              `json:"ai_emails"`
 	Features  []string          `json:"features"`
+	PerSeat   bool              `json:"per_seat"`
+	MinSeats  *int              `json:"min_seats"`
 }
 
 type planJSON struct {
@@ -209,6 +245,7 @@ type planJSON struct {
 	Interval         *string         `json:"interval"`
 	Status           *string         `json:"status"`
 	PeriodEnd        *int64          `json:"period_end"`
+	Seats            *int            `json:"seats"`
 	TrialEndsAt      int64           `json:"trial_ends_at"`
 	TrialDaysLeft    *int            `json:"trial_days_left"`
 	EndedAt          *int64          `json:"ended_at"`
@@ -228,12 +265,21 @@ func limitOrNil(n int) *int {
 	return &n
 }
 
-func (s *server) planJSON(p store.PlanState) planJSON {
+// planJSON is the tenant's plan. full adds what only an Owner sees: the note and the plans
+// on sale with their prices; everyone else gets the status alone, so a member still learns
+// the trial is ending or the plan has ended.
+func (s *server) planJSON(p store.PlanState, full bool) planJSON {
 	b := s.billing()
 	out := planJSON{Plan: p.Plan.Plan, TrialEndsAt: p.TrialEnd, EndedAt: unix(p.EndedAt), ReadOnly: p.Ended(),
-		Subscribed: p.Record != "" && !p.Ended(), Note: orNil(b.Note), Plans: []planTermsJSON{}}
+		Subscribed: p.Record != "" && !p.Ended(), Plans: []planTermsJSON{}}
+	if full {
+		out.Note = orNil(b.Note)
+	}
 	if !p.Ended() && p.Plan.Plan != store.PlanTrial {
 		out.Interval, out.Status, out.PeriodEnd = orNil(p.Interval), orNil(p.Status), unix(p.PeriodEnd)
+		if p.Seats > 0 {
+			out.Seats = &p.Seats
+		}
 	}
 	if p.Plan.Plan == store.PlanTrial {
 		left := int(math.Ceil(float64(p.TrialEnd-s.now().Unix()) / (24 * 3600)))
@@ -243,13 +289,22 @@ func (s *server) planJSON(p store.PlanState) planJSON {
 		out.SecretsDeletedAt = unix(p.EndedAt + store.EndedSecretsDays*24*3600)
 		out.RemovedAt = unix(p.EndedAt + store.EndedRemovalDays*24*3600)
 	}
-	for _, id := range soldPlans {
+	if !full {
+		return out
+	}
+	for _, id := range soldPlans(b) {
 		t := b.Plans[id]
-		out.Plans = append(out.Plans, planTermsJSON{ID: id, Name: t.Name, Prices: t.Prices, Includes: append([]string{}, t.Includes...),
-			Mailboxes: limitOrNil(t.Limits.Mailboxes), AIEmails: limitOrNil(t.Limits.AIEmails), Features: append([]string{}, t.Features...)})
-		if out.Plans[len(out.Plans)-1].Prices == nil {
-			out.Plans[len(out.Plans)-1].Prices = map[string]string{}
+		pt := planTermsJSON{ID: id, Name: t.Name, Prices: t.Prices, Includes: append([]string{}, t.Includes...),
+			Mailboxes: limitOrNil(t.Limits.Mailboxes), AIEmails: limitOrNil(t.Limits.AIEmails), Features: append([]string{}, t.Features...),
+			PerSeat: t.PerSeat}
+		if pt.Prices == nil {
+			pt.Prices = map[string]string{}
 		}
+		if t.PerSeat {
+			least := minSeats(t)
+			pt.MinSeats = &least
+		}
+		out.Plans = append(out.Plans, pt)
 	}
 	return out
 }
@@ -277,43 +332,97 @@ func (s *server) currentPlan(w http.ResponseWriter, r *http.Request) (store.Plan
 
 func (s *server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if p, ok := s.currentPlan(w, r); ok {
-		writeJSON(w, http.StatusOK, s.planJSON(p))
+		writeJSON(w, http.StatusOK, s.planJSON(p, allowed(r, store.RoleOwner)))
 	}
 }
 
-// readChoice reads a plan and interval on sale from the request.
-func readChoice(w http.ResponseWriter, r *http.Request) (plan, interval string, ok bool) {
+// minSeats is the fewest seats of a plan sold by the seat that may be bought.
+func minSeats(t ext.PlanTerms) int { return max(t.MinSeats, 1) }
+
+// maxSeats is the most seats one checkout or change may ask for.
+const maxSeats = 1000
+
+// choice is a plan on sale as a request asks for it.
+type choice struct {
+	plan, interval string
+	seats          int // of a plan sold by the seat; 0 for any other
+}
+
+// readChoice reads a plan and interval on sale, and the seats of a plan sold by the seat,
+// from the request.
+func (s *server) readChoice(w http.ResponseWriter, r *http.Request) (choice, bool) {
 	var in struct {
 		Plan     string `json:"plan"`
 		Interval string `json:"interval"`
+		Seats    *int   `json:"seats"`
 	}
 	if !readJSON(w, r, &in) {
-		return "", "", false
+		return choice{}, false
 	}
+	sold := soldPlans(s.billing())
+	t := s.billing().Plans[in.Plan]
 	switch {
-	case !slices.Contains(soldPlans, in.Plan):
-		invalid(w, "plan", "Choose Personal or Pro.")
-		return "", "", false
+	case !slices.Contains(sold, in.Plan):
+		names := make([]string, len(sold))
+		for i, id := range sold {
+			names[i] = s.billing().Plans[id].Name
+		}
+		invalid(w, "plan", "Choose "+strings.Join(names[:len(names)-1], ", ")+" or "+names[len(names)-1]+".")
+		return choice{}, false
 	case in.Interval != store.IntervalMonth && in.Interval != store.IntervalYear:
 		invalid(w, "interval", "Choose monthly or yearly.")
-		return "", "", false
+		return choice{}, false
+	case t.PerSeat && (in.Seats == nil || *in.Seats < minSeats(t) || *in.Seats > maxSeats):
+		invalid(w, "seats", fmt.Sprintf("Choose from %d to %d seats.", minSeats(t), maxSeats))
+		return choice{}, false
+	case !t.PerSeat && in.Seats != nil:
+		invalid(w, "seats", t.Name+" is not sold by the seat.")
+		return choice{}, false
 	}
-	return in.Plan, in.Interval, true
+	c := choice{plan: in.Plan, interval: in.Interval}
+	if t.PerSeat {
+		c.seats = *in.Seats
+	}
+	return c, true
 }
 
 // downgradeRefused answers 409 downgrade_refused and returns true when the tenant has more
-// mailboxes than plan allows, naming them so the person knows which to remove.
-func (s *server) downgradeRefused(w http.ResponseWriter, r *http.Request, plan string) bool {
-	t := s.billing().Plans[plan]
-	if t.Limits.Mailboxes < 0 {
+// mailboxes than c allows, naming them so the person knows which to remove, or more people
+// (members and invitations waiting) than its seats.
+func (s *server) downgradeRefused(w http.ResponseWriter, r *http.Request, c choice) bool {
+	t := s.billing().Plans[c.plan]
+	l := limitsOf(s.billing(), store.PlanState{Plan: store.Plan{Plan: c.plan, Seats: c.seats}})
+	ctx, tenantID := r.Context(), viewer(r).TenantID
+	if l.Seats >= 0 {
+		members, err := s.store.Members(ctx, tenantID)
+		if err != nil {
+			internalError(w, r, err)
+			return true
+		}
+		invited, err := s.store.Invitations(ctx, tenantID, s.now().Unix())
+		if err != nil {
+			internalError(w, r, err)
+			return true
+		}
+		if people := len(members) + len(invited); people > l.Seats {
+			seats := "seats"
+			if l.Seats == 1 {
+				seats = "seat"
+			}
+			writeError(w, http.StatusConflict, "downgrade_refused", fmt.Sprintf("%s with %d %s is fewer than the %d people in your team and invited to it. Remove members or revoke invitations on Members first.",
+				t.Name, l.Seats, seats, people), "")
+			return true
+		}
+	}
+	if l.Mailboxes < 0 {
 		return false
 	}
-	have, err := s.store.TenantAccounts(r.Context(), viewer(r).TenantID)
+	have, err := s.store.TenantAccounts(ctx, tenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return true
 	}
-	over := len(have) - t.Limits.Mailboxes
+	over := len(have) - l.Mailboxes
 	if over <= 0 {
 		return false
 	}
@@ -322,7 +431,7 @@ func (s *server) downgradeRefused(w http.ResponseWriter, r *http.Request, plan s
 		names[i] = a.Label
 	}
 	mailboxes := "mailboxes"
-	if t.Limits.Mailboxes == 1 {
+	if l.Mailboxes == 1 {
 		mailboxes = "mailbox"
 	}
 	what := "one of them"
@@ -330,7 +439,7 @@ func (s *server) downgradeRefused(w http.ResponseWriter, r *http.Request, plan s
 		what = fmt.Sprintf("%d of them", over)
 	}
 	writeError(w, http.StatusConflict, "downgrade_refused", fmt.Sprintf("%s allows %d %s, and %d are connected: %s. Remove %s on Mailboxes first.",
-		t.Name, t.Limits.Mailboxes, mailboxes, len(have), strings.Join(names, ", "), what), "")
+		t.Name, l.Mailboxes, mailboxes, len(have), strings.Join(names, ", "), what), "")
 	return true
 }
 
@@ -341,7 +450,7 @@ func billingFailed(w http.ResponseWriter, r *http.Request, what string, err erro
 }
 
 func (s *server) handlePlanCheckout(w http.ResponseWriter, r *http.Request) {
-	plan, interval, ok := readChoice(w, r)
+	c, ok := s.readChoice(w, r)
 	if !ok {
 		return
 	}
@@ -353,11 +462,11 @@ func (s *server) handlePlanCheckout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "subscribed", "You have a plan already. Switch plans instead.", "")
 		return
 	}
-	if s.downgradeRefused(w, r, plan) {
+	if s.downgradeRefused(w, r, c) {
 		return
 	}
 	who := user(r)
-	checkout, err := s.billing().Checkout(r.Context(), ext.CheckoutRequest{TenantID: who.TenantID, Email: who.Email, Plan: plan, Interval: interval})
+	checkout, err := s.billing().Checkout(r.Context(), ext.CheckoutRequest{TenantID: who.TenantID, Email: who.Email, Plan: c.plan, Interval: c.interval, Seats: c.seats})
 	if err != nil {
 		billingFailed(w, r, "checkout", err)
 		return
@@ -366,7 +475,7 @@ func (s *server) handlePlanCheckout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlePlanChange(w http.ResponseWriter, r *http.Request) {
-	plan, interval, ok := readChoice(w, r)
+	c, ok := s.readChoice(w, r)
 	if !ok {
 		return
 	}
@@ -378,18 +487,19 @@ func (s *server) handlePlanChange(w http.ResponseWriter, r *http.Request) {
 	case p.Record == "" || p.Ended():
 		writeError(w, http.StatusConflict, "not_subscribed", "Choose a plan first.", "")
 		return
-	case p.Plan.Plan == plan && p.Interval == interval:
+	case p.Plan.Plan == c.plan && p.Interval == c.interval && p.Seats == c.seats:
 		writeError(w, http.StatusConflict, "same_plan", "This is your plan already.", "")
 		return
 	}
-	if s.downgradeRefused(w, r, plan) {
+	if s.downgradeRefused(w, r, c) {
 		return
 	}
-	if err := s.billing().ChangePlan(r.Context(), viewer(r).TenantID, p.Record, plan, interval); err != nil {
+	if err := s.billing().ChangePlan(r.Context(), ext.PlanChange{TenantID: viewer(r).TenantID, Record: p.Record, Plan: c.plan,
+		Interval: c.interval, Seats: c.seats}); err != nil {
 		billingFailed(w, r, "change plan", err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, s.planJSON(p))
+	writeJSON(w, http.StatusAccepted, s.planJSON(p, true))
 }
 
 func (s *server) handlePlanPortal(w http.ResponseWriter, r *http.Request) {
@@ -431,13 +541,17 @@ func (s *server) applyPlan(ctx context.Context, tenantID int64, before, after st
 }
 
 // SetPlan records the tenant's plan as the billing module reports it and acts on it (ext.Host).
+// The change is recorded in the audit log under the billing service.
 func (h host) SetPlan(ctx context.Context, tenantID int64, p ext.Plan) error {
 	var end int64
 	if !p.PeriodEnd.IsZero() {
 		end = p.PeriodEnd.Unix()
 	}
+	if _, ok := store.ActorOf(ctx); !ok {
+		ctx = store.WithActor(ctx, store.Actor{Name: "Billing service"})
+	}
 	before, after, err := h.s.store.SetPlan(ctx, tenantID, store.Plan{Plan: p.Plan, Interval: p.Interval, Status: p.Status,
-		PeriodEnd: end, Record: p.Record}, h.s.now().Unix())
+		PeriodEnd: end, Record: p.Record, Seats: p.Seats}, h.s.now().Unix())
 	if errors.Is(err, store.ErrNotFound) {
 		return ext.ErrNoTenant
 	}
@@ -463,14 +577,14 @@ func (h host) Plan(ctx context.Context, tenantID int64) (ext.PlanState, error) {
 		}
 		return time.Unix(sec, 0)
 	}
-	return ext.PlanState{Plan: ext.Plan{Plan: p.Plan.Plan, Interval: p.Interval, Status: p.Status, PeriodEnd: t(p.PeriodEnd), Record: p.Record},
-		TrialEnd: t(p.TrialEnd), EndedAt: t(p.EndedAt)}, nil
+	return ext.PlanState{Plan: ext.Plan{Plan: p.Plan.Plan, Interval: p.Interval, Status: p.Status, PeriodEnd: t(p.PeriodEnd), Record: p.Record,
+		Seats: p.Seats}, TrialEnd: t(p.TrialEnd), EndedAt: t(p.EndedAt)}, nil
 }
 
 // Who is the signed-in person the request is for (ext.Host).
 func (h host) Who(r *http.Request) ext.Who {
 	u := user(r)
-	return ext.Who{UserID: u.ID, TenantID: u.TenantID, Email: u.Email}
+	return ext.Who{UserID: u.ID, TenantID: u.TenantID, Email: u.Email, Role: u.Role}
 }
 
 // origin is a source a checkout script may load from: an https origin, optionally with a
@@ -497,18 +611,25 @@ func contentPolicy(b *ext.Billing) string {
 }
 
 // checkBilling refuses a Billing the daemon cannot serve: a plan the build sells missing or
-// unnamed, a feature that is not one of the build's, no Checkout, ChangePlan or Portal, a
-// Script that is not one of the module's Public GET routes, or a source that is not an https
-// origin.
+// unnamed, a feature that is not one of the build's, a Team plan not sold by the seat or
+// another plan that is, no Checkout, ChangePlan or Portal, a Script that is not one of the
+// module's Public GET routes, or a source that is not an https origin.
 func checkBilling(m ext.Module, publicGet map[string]bool, built map[string]bool) error {
 	b := m.Billing
 	if b.Checkout == nil || b.ChangePlan == nil || b.Portal == nil {
 		return fmt.Errorf("module %s: Billing needs Checkout, ChangePlan and Portal", m.Name)
 	}
-	for _, id := range []string{store.PlanTrial, store.PlanPersonal, store.PlanPro} {
+	known := []string{store.PlanTrial, store.PlanPersonal, store.PlanPro, store.PlanTeam}
+	for _, id := range known {
 		t, ok := b.Plans[id]
+		if !ok && id == store.PlanTeam {
+			continue // Team is on sale only when its terms are there
+		}
 		if !ok || t.Name == "" {
 			return fmt.Errorf("module %s: Billing.Plans needs the %s plan, with a name", m.Name, id)
+		}
+		if t.PerSeat != (id == store.PlanTeam) {
+			return fmt.Errorf("module %s: plan %s: only the team plan is sold by the seat (PerSeat), and it must be", m.Name, id)
 		}
 		for _, f := range t.Features {
 			if !built[f] {
@@ -517,7 +638,7 @@ func checkBilling(m ext.Module, publicGet map[string]bool, built map[string]bool
 		}
 	}
 	for id := range b.Plans {
-		if !slices.Contains([]string{store.PlanTrial, store.PlanPersonal, store.PlanPro}, id) {
+		if !slices.Contains(known, id) {
 			return fmt.Errorf("module %s: Billing.Plans has %q, which is not a plan the daemon knows", m.Name, id)
 		}
 	}

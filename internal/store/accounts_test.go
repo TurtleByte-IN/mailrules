@@ -240,10 +240,7 @@ func TestMigrationModuleMailboxesReconnect(t *testing.T) {
 	ctx := t.Context()
 	db := migratedTo(t, 16)
 	s := keyed(db)
-	u, err := s.CreateFirstUser(ctx, "me@example.test", "hash", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	u := User{ID: legacyUser(t, db)}
 	want := map[int64]string{}
 	for i, c := range []struct {
 		module bool

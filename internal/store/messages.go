@@ -581,18 +581,24 @@ func (s *Store) RecentSenderDecisions(ctx context.Context, v Viewer, address str
 // already has a sender rule there, which is never overwritten. userID is who it is learnt
 // for. It reports whether a rule was created.
 func (s *Store) AddLearnedSenderRule(ctx context.Context, tenantID, userID int64, address string, ruleID, now int64) (bool, error) {
-	ctx = WithTenant(ctx, tenantID)
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, source, hits, created_at)
-		 SELECT CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT), id, CAST(? AS TEXT), 'learned', 0, CAST(? AS BIGINT)
-		 FROM rules WHERE id = ? AND tenant_id = ?
-		 ON CONFLICT (tenant_id, match_type, value) DO NOTHING`,
-		tenantID, userID, rules.MatchAddress, address, rules.VerdictRoute, now, ruleID, tenantID)
-	if err != nil {
-		return false, fmt.Errorf("add learned sender rule: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
+	var added bool
+	err := s.change(ctx, tenantID, "add learned sender rule", func(ctx context.Context, tx *txn) error {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, source, hits, created_at)
+			 SELECT CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT), id, CAST(? AS TEXT), 'learned', 0, CAST(? AS BIGINT)
+			 FROM rules WHERE id = ? AND tenant_id = ?
+			 ON CONFLICT (tenant_id, match_type, value) DO NOTHING`,
+			tenantID, userID, rules.MatchAddress, address, rules.VerdictRoute, now, ruleID, tenantID)
+		if err != nil {
+			return fmt.Errorf("add learned sender rule: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return nil
+		}
+		added = true
+		return record(ctx, tx, tenantID, now, AuditSenderRuleSet, address, rules.VerdictRoute+", learned")
+	})
+	return added, err
 }
 
 // What a correction was: a fix made from the feed, or an answer given in Needs review.
@@ -672,13 +678,15 @@ func (s *Store) AddCorrection(ctx context.Context, tenantID, userID int64, c Cor
 // replacing whatever the tenant had for that address or domain, with its count of emails
 // settled starting again.
 func putUserSenderRule(ctx context.Context, tx *txn, tenantID int64, sr rules.SenderRule, now int64) error {
-	_, err := tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 'user', 0, ?)
 		 ON CONFLICT (tenant_id, match_type, value) DO UPDATE
 		 SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = excluded.folder, source = 'user', hits = 0`,
-		tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, null(sr.Folder), now)
-	return err
+		tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, null(sr.Folder), now); err != nil {
+		return err
+	}
+	return record(ctx, tx, tenantID, now, AuditSenderRuleSet, sr.Value, senderVerdict(sr))
 }
 
 // Corrections lists the newest corrections made to mail in the mailboxes the viewer sees,

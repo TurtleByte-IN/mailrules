@@ -77,7 +77,7 @@ func TestTenantsAreApart(t *testing.T) {
 	s := keyed(db.App)
 	var tenants [2]int64
 	for i, org := range []string{"org_a", "org_b"} {
-		u, err := s.SignInIdentity(ctx, Identity{Provider: "workos", Subject: "user_" + org, Email: org + "@example.test", Tenant: org}, 1)
+		u, err := s.SignInIdentity(ctx, Identity{Provider: "workos", Subject: "user_" + org, Email: org + "@example.test", Tenant: org}, 1, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

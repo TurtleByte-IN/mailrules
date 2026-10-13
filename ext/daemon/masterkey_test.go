@@ -295,7 +295,7 @@ func mergeEnv(a, b map[string]string) map[string]string {
 // one, and the others work. Here a second tenant's key is wrapped under another master key.
 func TestOpenMasterKeySomeUnreadable(t *testing.T) {
 	dir, st := installDir(t, true)
-	u, err := st.SignInIdentity(t.Context(), store.Identity{Provider: "p", Subject: "s", Email: "b@example.test", Tenant: "other"}, 1)
+	u, err := st.SignInIdentity(t.Context(), store.Identity{Provider: "p", Subject: "s", Email: "b@example.test", Tenant: "other"}, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

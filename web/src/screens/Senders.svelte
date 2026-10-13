@@ -3,6 +3,7 @@
   import { day } from '../lib/format';
   import type { Sender, Sort } from '../lib/api/senders';
   import { accounts } from '../lib/state/accounts.svelte';
+  import { canManage, managedNote } from '../lib/state/auth.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import { forget, load, loadFolders, more, moveTo, nameOf, routingOf, senders, setQuery, setRouting, setSort, targetOf, unsubscribe } from '../lib/state/senders.svelte';
   import { settings } from '../lib/state/settings.svelte';
@@ -37,6 +38,8 @@
   <header>
     <h1>Senders</h1>
     <p class="mt-1 text-secondary">Who emails you most. Set a sender once and their mail never needs a model again.</p>
+    <!-- Sender rules are the team's: a Member sees them but the daemon refuses their changes. -->
+    {#if !canManage()}<p class="mt-1 text-[13px] text-secondary">{managedNote}</p>{/if}
   </header>
 
   {#if senders.status === 'error'}
@@ -77,7 +80,7 @@
             {/if}
           </div>
           <label class="sr-only" for="sd-{s.type}-{s.value}">What happens to mail from {nameOf(s)}</label>
-          <select id="sd-{s.type}-{s.value}" class="field flex-[1_1_200px] px-2.5 max-md:min-w-0" value={routingOf(s)} onchange={(e) => route(s, e.currentTarget)}>
+          <select id="sd-{s.type}-{s.value}" class="field flex-[1_1_200px] px-2.5 max-md:min-w-0" disabled={!canManage()} value={routingOf(s)} onchange={(e) => route(s, e.currentTarget)}>
             <option value="auto">Let my rules decide</option>
             <option value="keep">Always keep in Inbox</option>
             {#each rules.list as r (r.id)}
@@ -119,7 +122,9 @@
       {#each senders.learned as r (r.type + r.value)}
         <div class="flex flex-wrap items-center justify-between gap-2 text-[13.5px]">
           <span class="max-md:min-w-0 max-md:break-words"><span class="font-mono">{r.value}</span> → {targetOf(r)}</span>
-          <button type="button" class="btn min-h-9 px-3" aria-label="Forget {r.value}" onclick={() => forget(r)}>Forget</button>
+          {#if canManage()}
+            <button type="button" class="btn min-h-9 px-3" aria-label="Forget {r.value}" onclick={() => forget(r)}>Forget</button>
+          {/if}
         </div>
       {:else}
         <p class="text-[13px] text-muted">Nothing learned yet.</p>

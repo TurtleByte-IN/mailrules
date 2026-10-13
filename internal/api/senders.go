@@ -273,7 +273,8 @@ func (s *server) handleSenderUnsubscribe(w http.ResponseWriter, r *http.Request)
 			"This sender's mail has no one-click unsubscribe link, so MailRules cannot unsubscribe you. Choose Always trash instead.", "")
 		return
 	}
-	if done > 0 && sender.Verdict == nil {
+	// The sender rule after it is the team's: only an admin's unsubscribing adds it.
+	if done > 0 && sender.Verdict == nil && allowed(r, store.RoleAdmin) {
 		srs, err := s.store.SenderRules(ctx, v.TenantID)
 		if err != nil {
 			internalError(w, r, err)

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 )
 
 // ErrNotFound means the row does not exist (or, for a session, has expired).
@@ -30,32 +33,33 @@ type User struct {
 	PasswordHash string
 	CreatedAt    int64
 	TenantID     int64
+	Role         string // RoleOwner, RoleAdmin or RoleMember
 }
 
-const userCols = `id, email, password_hash, created_at, tenant_id`
+const userCols = `id, email, password_hash, created_at, tenant_id, role`
 
 func scanUser(row interface{ Scan(...any) error }) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.TenantID)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.TenantID, &u.Role)
 	return u, err
 }
 
 // CreateFirstUser inserts the admin account, in the self-host tenant, only if no user
-// exists yet.
+// exists yet. The admin is the tenant's owner.
 func (s *Store) CreateFirstUser(ctx context.Context, email, passwordHash string, now int64) (User, error) {
 	ctx = WithTenant(ctx, SelfHostTenant)
 	var id int64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO users (email, password_hash, created_at, tenant_id)
-		 SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS BIGINT) WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`,
-		email, passwordHash, now, SelfHostTenant).Scan(&id)
+		`INSERT INTO users (email, password_hash, created_at, tenant_id, role)
+		 SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS TEXT) WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`,
+		email, passwordHash, now, SelfHostTenant, RoleOwner).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrAlreadySetUp
 	}
 	if err != nil {
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
-	return User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: SelfHostTenant}, nil
+	return User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: SelfHostTenant, Role: RoleOwner}, nil
 }
 
 // HasUsers reports whether first-run setup has been done: whether any tenant has a user.
@@ -105,10 +109,10 @@ func (s *Store) SessionUser(ctx context.Context, tokenHash string, now int64) (U
 	var u User
 	var expiresAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT u.id, u.email, u.password_hash, u.created_at, u.tenant_id, s.expires_at
+		`SELECT u.id, u.email, u.password_hash, u.created_at, u.tenant_id, u.role, s.expires_at
 		 FROM sessions s JOIN users u ON u.id = s.user_id
 		 WHERE s.token_hash = ? AND s.expires_at > ?`, tokenHash, now).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.TenantID, &expiresAt)
+		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.TenantID, &u.Role, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, 0, ErrNotFound
 	}
@@ -178,13 +182,7 @@ func (s *Store) Setting(ctx context.Context, tenantID int64, key string) (string
 
 // SetSetting stores a tenant's JSON value under key, replacing any previous one.
 func (s *Store) SetSetting(ctx context.Context, tenantID int64, key, value string) error {
-	ctx = WithTenant(ctx, tenantID)
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO settings (tenant_id, key, value) VALUES (?, ?, ?) ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value`,
-		tenantID, key, value); err != nil {
-		return fmt.Errorf("set setting: %w", err)
-	}
-	return nil
+	return s.SetSettings(ctx, tenantID, map[string]*string{key: &value})
 }
 
 // AddUsage adds model calls to the tenant's cost-ledger row for that day, provider, model
@@ -254,27 +252,52 @@ func (s *Store) Settings(ctx context.Context, tenantID int64) (map[string]string
 
 // SetSettings stores several of a tenant's settings in one transaction, so a change is
 // never half applied. A nil value removes the key, which puts its default back in force.
+// The keys whose value changed are recorded in the audit log by name, with the value only
+// when it is true, false or a number: never a key, an address or a model's name.
 func (s *Store) SetSettings(ctx context.Context, tenantID int64, values map[string]*string) error {
-	ctx = WithTenant(ctx, tenantID)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("set settings: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	for k, v := range values {
-		if v == nil {
-			_, err = tx.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = ? AND key = ?`, tenantID, k)
-		} else {
-			_, err = tx.ExecContext(ctx,
-				`INSERT INTO settings (tenant_id, key, value) VALUES (?, ?, ?) ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value`,
-				tenantID, k, *v)
+	return s.change(ctx, tenantID, "set settings", func(ctx context.Context, tx *txn) error {
+		var changed []string
+		for k, v := range values {
+			var was sql.NullString
+			if err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE tenant_id = ? AND key = ?`, tenantID, k).Scan(&was); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("set settings: %w", err)
+			}
+			var err error
+			if v == nil {
+				_, err = tx.ExecContext(ctx, `DELETE FROM settings WHERE tenant_id = ? AND key = ?`, tenantID, k)
+			} else {
+				_, err = tx.ExecContext(ctx,
+					`INSERT INTO settings (tenant_id, key, value) VALUES (?, ?, ?) ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value`,
+					tenantID, k, *v)
+			}
+			if err != nil {
+				return fmt.Errorf("set settings: %w", err)
+			}
+			if v == nil && !was.Valid || v != nil && was.Valid && was.String == *v {
+				continue
+			}
+			changed = append(changed, settingLine(k, v))
 		}
-		if err != nil {
-			return fmt.Errorf("set settings: %w", err)
+		if len(changed) == 0 {
+			return nil
 		}
+		slices.Sort(changed)
+		return record(ctx, tx, tenantID, 0, AuditSettingsChanged, "", strings.Join(changed, ", "))
+	})
+}
+
+// settingLine is a changed setting as the audit log has it: "dry_run: false", "summary",
+// "anthropic_api_key removed".
+func settingLine(key string, v *string) string {
+	name := strings.TrimPrefix(key, "key.")
+	switch {
+	case v == nil:
+		return name + " removed"
+	case strings.HasPrefix(key, "key."):
+		return name
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("set settings: %w", err)
+	if _, err := strconv.ParseFloat(*v, 64); err == nil || *v == "true" || *v == "false" {
+		return name + ": " + *v
 	}
-	return nil
+	return name
 }

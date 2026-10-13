@@ -32,7 +32,7 @@ func TestPlanEndedGate(t *testing.T) {
 		t.Fatal("a build that sells no plans has a gate")
 	}
 	const created = 1_800_000_000
-	u, err := st.SignInIdentity(ctx, store.Identity{Provider: "p", Subject: "s", Email: "a@example.test", Tenant: "o"}, created)
+	u, err := st.SignInIdentity(ctx, store.Identity{Provider: "p", Subject: "s", Email: "a@example.test", Tenant: "o"}, created, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestPlansNeedAMailServer(t *testing.T) {
 		Billing: &ext.Billing{
 			Plans:      map[string]ext.PlanTerms{store.PlanTrial: {Name: "Trial"}, store.PlanPersonal: {Name: "Personal"}, store.PlanPro: {Name: "Pro"}},
 			Checkout:   func(context.Context, ext.CheckoutRequest) (json.RawMessage, error) { return nil, nil },
-			ChangePlan: func(context.Context, int64, string, string, string) error { return nil },
+			ChangePlan: func(context.Context, ext.PlanChange) error { return nil },
 			Portal:     func(context.Context, int64, string) (string, error) { return "", nil },
 			Script:     "/api/billing/checkout.js",
 		}}

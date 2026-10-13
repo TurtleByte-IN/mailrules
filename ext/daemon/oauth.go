@@ -80,7 +80,8 @@ func (l *mailLogins) stored(acct store.Account) func(context.Context) (string, e
 			return "", err
 		}
 		if tok.Secret != "" && tok.Secret != secret {
-			if err := l.st.SetAccountSecret(ctx, acct.ID, tok.Secret); err != nil {
+			// The provider rotated it: nobody changed the mailbox, so nothing is recorded.
+			if err := l.st.SetAccountSecret(store.WithoutActor(ctx), acct.ID, tok.Secret); err != nil {
 				return "", fmt.Errorf("store the renewed secret: %w", err)
 			}
 		}

@@ -64,22 +64,25 @@ func (s *Store) CreateTenant(ctx context.Context, provider, externalID string, n
 	return id, nil
 }
 
-// CreateUser adds a user to a tenant. An empty passwordHash makes a user who cannot sign
-// in with a password (one made from a sign-in service's identity).
+// CreateUser adds a user to a tenant: its owner when it has nobody yet, else a member. An
+// empty passwordHash makes a user who cannot sign in with a password (one made from a
+// sign-in service's identity).
 func (s *Store) CreateUser(ctx context.Context, tenantID int64, email, passwordHash string, now int64) (User, error) {
 	ctx = WithTenant(ctx, tenantID)
-	var id int64
+	u := User{Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: tenantID}
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO users (email, password_hash, created_at, tenant_id)
-		 SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), id FROM tenants WHERE id = ? RETURNING id`,
-		email, passwordHash, now, tenantID).Scan(&id)
+		`INSERT INTO users (email, password_hash, created_at, tenant_id, role)
+		 SELECT CAST(?1 AS TEXT), CAST(?2 AS TEXT), CAST(?3 AS BIGINT), id,
+		        CASE WHEN EXISTS (SELECT 1 FROM users WHERE tenant_id = ?4) THEN 'member' ELSE 'owner' END
+		 FROM tenants WHERE id = ?4 RETURNING id, role`,
+		email, passwordHash, now, tenantID).Scan(&u.ID, &u.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, fmt.Errorf("create user: tenant %d: %w", tenantID, ErrNotFound)
 	}
 	if err != nil {
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
-	return User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now, TenantID: tenantID}, nil
+	return u, nil
 }
 
 // TenantMembers counts the users in a tenant.
@@ -180,4 +183,20 @@ func (s *Store) CanSee(ctx context.Context, v Viewer, accountID int64) (bool, er
 		return false, fmt.Errorf("check account visibility: %w", err)
 	}
 	return ok, nil
+}
+
+// TenantOrganisation is the sign-in service that made the tenant and its id of the
+// tenant's organisation there; both empty for the self-host tenant. ErrNotFound for a
+// tenant that does not exist.
+func (s *Store) TenantOrganisation(ctx context.Context, tenantID int64) (provider, organisation string, err error) {
+	ctx = WithTenant(ctx, tenantID)
+	var p, o sql.NullString
+	err = s.db.QueryRowContext(ctx, `SELECT provider, external_id FROM tenants WHERE id = ?`, tenantID).Scan(&p, &o)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("read the tenant's organisation: %w", err)
+	}
+	return p.String, o.String, nil
 }

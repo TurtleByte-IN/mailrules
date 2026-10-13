@@ -24,8 +24,8 @@ const day = 24 * 3600
 // ago that have no action left to undo, that is, none in effect from the last UndoDays
 // (their decisions, actions and corrections go with them). It returns how many rows each
 // part touched. It also deletes the tenant's notices and delivery records older than
-// NoticeDays, and the moves the move watcher found more than MoveDays ago, which it does
-// not count.
+// NoticeDays, the moves the move watcher found more than MoveDays ago, the audit log's rows
+// older than AuditDays and the invitations that expired, which it does not count.
 func (s *Store) Retain(ctx context.Context, tenantID, now int64, retentionDays int) (blanked, deleted int64, err error) {
 	ctx = WithTenant(ctx, tenantID)
 	const ofTenant = `account_id IN (SELECT id FROM accounts WHERE tenant_id = ?)`
@@ -45,5 +45,6 @@ func (s *Store) Retain(ctx context.Context, tenantID, now int64, retentionDays i
 		return blanked, 0, fmt.Errorf("delete old messages: %w", err)
 	}
 	deleted, _ = res.RowsAffected()
-	return blanked, deleted, errors.Join(s.retainNotices(ctx, tenantID, now), s.retainMoves(ctx, tenantID, now))
+	return blanked, deleted, errors.Join(s.retainNotices(ctx, tenantID, now), s.retainMoves(ctx, tenantID, now),
+		s.retainAudit(ctx, tenantID, now), s.retainInvitations(ctx, tenantID, now))
 }

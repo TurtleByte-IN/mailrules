@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { MoveQuestion } from '../../lib/api/questions';
+import { auth } from '../../lib/state/auth.svelte';
 import { load, questions } from '../../lib/state/questions.svelte';
 import { settings } from '../../lib/state/settings.svelte';
 import { toast } from '../../lib/state/toast.svelte';
@@ -88,4 +89,17 @@ it('fetches nothing in a build without the module that learns from moves', async
   const f = serve({});
   await load();
   expect(f).not.toHaveBeenCalled();
+});
+
+it('lets a Member say only No, and says who can say Yes', () => {
+  auth.user = { id: 3, email: 'cy@example.com', role: 'member' };
+  try {
+    render(MoveQuestions);
+    const first = screen.getByRole('group', { name: /to Inbox/ });
+    expect(within(first).queryByRole('button', { name: 'Yes' })).toBeNull();
+    expect(within(first).getByRole('button', { name: 'No' })).toBeTruthy();
+    expect(first.textContent).toContain("Only an Owner or Admin can say Yes: it changes the team's sender rules.");
+  } finally {
+    auth.user = null;
+  }
 });

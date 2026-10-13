@@ -65,7 +65,7 @@ func newRemovedWorld(t *testing.T) removedWorld {
 	ctx := t.Context()
 	w := removedWorld{dir: t.TempDir()}
 	w.st, w.db = storetest.InDir(t, w.dir)
-	u, err := w.st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: "user_jo", Email: "jo@example.test", Tenant: "org_jo"}, 1)
+	u, err := w.st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: "user_jo", Email: "jo@example.test", Tenant: "org_jo"}, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

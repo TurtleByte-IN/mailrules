@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ActivityItem, FixRequest } from '../../lib/api/activity';
+  import { canManage } from '../../lib/state/auth.svelte';
 
   // "Always do this": the sender rule a fix also stores, for the whole domain unless the address is chosen.
   // Used by the decision panel and the review card, which read value() for the request and hand the answer to settle().
@@ -23,6 +24,8 @@
   }
 </script>
 
+<!-- A sender rule is the team's: a Member is not offered one (the daemon refuses `always_for` from them). -->
+{#if canManage()}
 <div class="flex flex-col gap-1">
   <label id="{uid}-for" class="flex min-h-8 items-center gap-2 text-[13px] text-nav max-md:min-h-11">
     <input type="checkbox" bind:checked={ticked} />Always do this for {domain || item.from}
@@ -35,3 +38,4 @@
     </div>
   {/if}
 </div>
+{/if}

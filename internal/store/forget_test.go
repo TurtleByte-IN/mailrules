@@ -50,7 +50,7 @@ func forgetWorld(t *testing.T) fworld {
 		t.Fatal(err)
 	}
 	signIn := func(sub, email, org string, at int64) User {
-		u, err := s.SignInIdentity(ctx, identity(sub, email, org), at)
+		u, err := s.SignInIdentity(ctx, identity(sub, email, org), at, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +207,7 @@ func TestForgetIdentityFreesEmailAndEndsSessions(t *testing.T) {
 		t.Errorf("the email is still held: %v", err)
 	}
 	// The sign-in service's new id for the same person signs up at once, as a new user.
-	fresh, err := s.SignInIdentity(ctx, identity("user_solo_2", "solo@example.com", "org_solo_2"), fNow+1)
+	fresh, err := s.SignInIdentity(ctx, identity("user_solo_2", "solo@example.com", "org_solo_2"), fNow+1, nil)
 	if err != nil {
 		t.Fatalf("a new identity with the freed email: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestForgottenIdentityComesBack(t *testing.T) {
 	if len(f.Accounts) != 1 || !f.Keys {
 		t.Errorf("forget = %+v", f)
 	}
-	back, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue-1)
+	back, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue-1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestDeleteOwnAccountNeverComesBack(t *testing.T) {
 	}
 
 	// The same identity, under the same organisation, within the wait.
-	fresh, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue-1)
+	fresh, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue-1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestDeleteOwnAccountNeverComesBack(t *testing.T) {
 		}
 	}
 	// After the removal the identity is the new user's.
-	later, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue+day)
+	later, err := s.SignInIdentity(ctx, identity("user_solo", "solo@example.com", "org_solo"), fDue+day, nil)
 	if err != nil || later.ID != fresh.ID || later.TenantID != fresh.TenantID {
 		t.Errorf("signing in after the removal = %+v, %v; want the new user %+v", later, err, fresh)
 	}
@@ -415,7 +415,7 @@ func TestDeleteOwnAccountTeamMember(t *testing.T) {
 	if _, err := s.DeleteOwnAccount(ctx, "workos", "user_leaver", fNow); err != nil {
 		t.Fatal(err)
 	}
-	back, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_team"), fNow+1)
+	back, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_team"), fNow+1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestDeleteOwnAccountTeamMember(t *testing.T) {
 			t.Errorf("the new user sees the old private mailbox: %+v", a)
 		}
 	}
-	if mate, err := s.SignInIdentity(ctx, identity("user_mate", "mate@example.com", "org_team"), fNow+2); err != nil || mate.ID != w.mate.ID {
+	if mate, err := s.SignInIdentity(ctx, identity("user_mate", "mate@example.com", "org_team"), fNow+2, nil); err != nil || mate.ID != w.mate.ID {
 		t.Errorf("the teammate = %+v, %v", mate, err)
 	}
 	gone, err := s.RemoveForgotten(ctx, w.leaver.ID, fDue)

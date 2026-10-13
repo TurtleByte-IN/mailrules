@@ -4,6 +4,7 @@
   import { openCheckout } from '../lib/checkout';
   import PlanMeters from '../lib/components/PlanMeters.svelte';
   import { fullDay } from '../lib/format';
+  import { auth } from '../lib/state/auth.svelte';
   import { limits, load as loadLimits } from '../lib/state/limits.svelte';
   import { load, plan } from '../lib/state/plan.svelte';
 
@@ -43,12 +44,14 @@
   async function pick(info: PlanInfo, p: PlanTerms) {
     busy = p.id;
     refused[p.id] = '';
+    // A plan sold by the seat is bought with a seat count; any other must not send one.
+    const choice = { plan: p.id, interval, ...(p.per_seat ? { seats: seatsOf(info, p) } : {}) };
     try {
       if (info.subscribed) {
-        plan.value = await planApi.change({ plan: p.id, interval });
+        plan.value = await planApi.change(choice);
         plan.waiting = true;
       } else {
-        const c = await planApi.checkout({ plan: p.id, interval });
+        const c = await planApi.checkout(choice);
         if ((await openCheckout(c.script, c.checkout)) === 'completed') plan.waiting = true;
       }
     } catch (e) {
@@ -57,6 +60,12 @@
       busy = '';
     }
   }
+
+  // The seats each per-seat card asks for: the person's number once typed; else the seats bought
+  // of that plan; else enough for everyone in the team, and never fewer than the plan's least.
+  let seatsChosen = $state<Record<string, number>>({});
+  const seatsOf = (info: PlanInfo, p: PlanTerms) =>
+    seatsChosen[p.id] ?? (info.plan === p.id && info.seats ? info.seats : Math.max(p.min_seats ?? 1, auth.members));
 
   async function manage() {
     portalError = '';
@@ -99,6 +108,9 @@
           {[line, info.note].filter(Boolean).join(' ')}
         </p>
       {/if}
+      {#if info.seats !== null}
+        <p class="text-[13px] text-secondary">Your plan has {info.seats} {info.seats === 1 ? 'seat' : 'seats'}; your team has {auth.members} {auth.members === 1 ? 'member' : 'members'}.</p>
+      {/if}
       {#if info.subscribed}
         <div class="flex flex-wrap items-center gap-3">
           <button type="button" class="btn self-start font-semibold" disabled={opening} onclick={manage}>{opening ? 'Opening…' : 'Manage billing'}</button>
@@ -120,18 +132,38 @@
 
     <div class="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
       {#each info.plans as p (p.id)}
-        {@const current = info.plan === p.id && info.interval === interval}
-        <article aria-label={p.name} class="flex flex-col gap-2.5 rounded-md bg-surface p-[18px] {current ? 'border-2 border-ink' : 'border border-line-card'}">
+        {@const samePlan = info.plan === p.id && info.interval === interval}
+        {@const seats = p.per_seat ? seatsOf(info, p) : null}
+        {@const current = samePlan && (seats === null || seats === info.seats)}
+        <article aria-label={p.name} class="flex flex-col gap-2.5 rounded-md bg-surface p-[18px] {samePlan ? 'border-2 border-ink' : 'border border-line-card'}">
           <h2 class="text-[15px]">{p.name}</h2>
           <div class="text-[22px] font-semibold">{p.prices[interval] ?? ''}</div>
+          {#if p.per_seat}
+            <div class="-mt-2 text-[12.5px] text-muted">Per seat{p.min_seats ? `, from ${p.min_seats} seats` : ''}</div>
+          {/if}
           <ul class="flex flex-1 list-disc flex-col gap-1 pl-[18px] text-[13px] text-nav">
             {#each p.includes as line (line)}<li>{line}</li>{/each}
           </ul>
+          {#if p.per_seat}
+            <div class="flex items-center gap-2">
+              <label for="seats-{p.id}" class="text-[13px] font-semibold">Seats</label>
+              <input
+                id="seats-{p.id}"
+                type="number"
+                inputmode="numeric"
+                class="field w-24"
+                min={p.min_seats ?? 1}
+                max="1000"
+                value={seats}
+                oninput={(e) => (seatsChosen[p.id] = e.currentTarget.valueAsNumber)}
+              />
+            </div>
+          {/if}
           {#if current}
             <button type="button" class="min-h-10 rounded border border-line-card bg-neutral px-3.5 font-semibold text-muted" disabled>Current plan</button>
           {:else}
-            <button type="button" class="min-h-10 rounded border border-ink bg-surface px-3.5 font-semibold text-ink" disabled={!!busy || !p.prices[interval]} onclick={() => pick(info, p)}>
-              {busy === p.id ? 'Asking…' : (info.subscribed ? 'Switch to ' : 'Choose ') + p.name}
+            <button type="button" class="min-h-10 rounded border border-ink bg-surface px-3.5 font-semibold text-ink" disabled={!!busy || !p.prices[interval] || (seats !== null && !Number.isInteger(seats))} onclick={() => pick(info, p)}>
+              {busy === p.id ? 'Asking…' : samePlan ? 'Change seats' : (info.subscribed ? 'Switch to ' : 'Choose ') + p.name}
             </button>
           {/if}
           {#if refused[p.id]}<p role="alert" class="text-[13px] text-trash">{refused[p.id]}</p>{/if}

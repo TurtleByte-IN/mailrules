@@ -8,6 +8,7 @@
   import NotificationsCard from './settings/NotificationsCard.svelte';
   import SummaryCard from './settings/SummaryCard.svelte';
   import { confidence } from '../lib/format';
+  import { canManage, managedNote } from '../lib/state/auth.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import { findWorkspace, load, patch, settings, toggleDryRun } from '../lib/state/settings.svelte';
   import { choose, stored, type Choice } from '../lib/theme';
@@ -44,6 +45,7 @@
   <header>
     <h1>Settings</h1>
     <p class="mt-1 text-secondary">How MailRules decides, and how careful it is.</p>
+    {#if !canManage()}<p class="mt-1 text-[13px] text-secondary">{managedNote}</p>{/if}
   </header>
 
   {#if settings.error}
@@ -54,6 +56,9 @@
   {/if}
 
   {#if settings.loaded}
+    <!-- The team's settings: a Member sees them, every control off, since the daemon refuses their
+         changes. Appearance and their own account stay theirs. -->
+    <fieldset disabled={!canManage()} class="contents">
     <section class="card flex flex-col gap-[18px] p-5">
       <DeciderFields />
       <div class="flex flex-col gap-1.5">
@@ -135,6 +140,7 @@
     {#if s.features.notifications}
       <NotificationsCard />
     {/if}
+    </fieldset>
 
     {#if s.server.mode === 'selfhost'}
       <section aria-label="Self-hosting" class="card p-5">

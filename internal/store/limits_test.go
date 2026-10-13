@@ -15,7 +15,7 @@ func TestCreateAccountWithin(t *testing.T) {
 	s, _ := open(t)
 	ctx := t.Context()
 	signIn := func(sub, org string) User {
-		u, err := s.SignInIdentity(ctx, Identity{Provider: "workos", Subject: sub, Email: sub + "@example.test", Tenant: org}, 10)
+		u, err := s.SignInIdentity(ctx, Identity{Provider: "workos", Subject: sub, Email: sub + "@example.test", Tenant: org}, 10, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

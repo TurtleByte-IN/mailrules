@@ -29,7 +29,7 @@ func newRemovalWorld(t *testing.T) (removalWorld, *store.Store, *sql.DB) {
 	w := removalWorld{dir: t.TempDir()}
 	st, db := storetest.InDir(t, w.dir)
 	person := func(sub, email, org string) (store.User, store.Account) {
-		u, err := st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: sub, Email: email, Tenant: org}, 1)
+		u, err := st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: sub, Email: email, Tenant: org}, 1, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +134,7 @@ func TestRemovalCalledOffKeepsTheMailboxStopped(t *testing.T) {
 	job := Removal{Store: st,
 		Stop: func(int64) {
 			if _, err := st.SignInIdentity(ctx, store.Identity{Provider: "workos", Subject: "user_gone",
-				Email: "gone@example.com", Tenant: "org_gone"}, now.Unix()); err != nil {
+				Email: "gone@example.com", Tenant: "org_gone"}, now.Unix(), nil); err != nil {
 				t.Fatal(err)
 			}
 		},

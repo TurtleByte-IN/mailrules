@@ -69,8 +69,12 @@ func billingModule(fb *fakeBilling, plans map[string]ext.PlanTerms) ext.Module {
 				fb.checkouts = append(fb.checkouts, c)
 				return json.RawMessage(`{"price":"pri_` + c.Plan + `_` + c.Interval + `"}`), fb.err
 			},
-			ChangePlan: func(_ context.Context, tenantID int64, record, plan, interval string) error {
-				fb.changes = append(fb.changes, strings.Join([]string{strconv.FormatInt(tenantID, 10), record, plan, interval}, " "))
+			ChangePlan: func(_ context.Context, c ext.PlanChange) error {
+				change := []string{strconv.FormatInt(c.TenantID, 10), c.Record, c.Plan, c.Interval}
+				if c.Seats > 0 {
+					change = append(change, strconv.Itoa(c.Seats))
+				}
+				fb.changes = append(fb.changes, strings.Join(change, " "))
 				return fb.err
 			},
 			Portal: func(_ context.Context, _ int64, record string) (string, error) {
@@ -137,7 +141,18 @@ func TestCheckModulesBilling(t *testing.T) {
 	}{
 		{"a sound module", func(*ext.Module) {}, pro, ""},
 		{"a plan missing", func(m *ext.Module) { delete(m.Billing.Plans, store.PlanTrial) }, pro, "needs the trial plan"},
-		{"a plan the daemon does not know", func(m *ext.Module) { m.Billing.Plans["team"] = termsGiving("Team", ext.Limits{}) }, pro, `"team"`},
+		{"a plan the daemon does not know", func(m *ext.Module) { m.Billing.Plans["enterprise"] = termsGiving("Enterprise", ext.Limits{}) }, pro, `"enterprise"`},
+		{"a team plan sold by the seat", func(m *ext.Module) {
+			t := termsGiving("Team", ext.Limits{})
+			t.PerSeat = true
+			m.Billing.Plans[store.PlanTeam] = t
+		}, pro, ""},
+		{"a team plan not sold by the seat", func(m *ext.Module) { m.Billing.Plans[store.PlanTeam] = termsGiving("Team", ext.Limits{}) }, pro, "sold by the seat"},
+		{"another plan sold by the seat", func(m *ext.Module) {
+			t := m.Billing.Plans[store.PlanPro]
+			t.PerSeat = true
+			m.Billing.Plans[store.PlanPro] = t
+		}, pro, "sold by the seat"},
 		{"a feature the build lacks", func(*ext.Module) {}, pro[1:], `feature "suggest"`},
 		{"no checkout", func(m *ext.Module) { m.Billing.Checkout = nil }, pro, "needs Checkout"},
 		{"a script that is not a public route", func(m *ext.Module) { m.Billing.Script = "/api/billing/who" }, pro, "Script"},
@@ -250,6 +265,37 @@ func TestPlanTrialCheckoutAndChange(t *testing.T) {
 	if len(started) != 0 || len(stopped) != 0 {
 		t.Errorf("a plan that kept running started %v and stopped %v", started, stopped)
 	}
+}
+
+// Everyone on a team sees the plan's status, so a member learns why changes are refused once
+// it ends; only an Owner sees the plans on sale and buys, changes or manages one.
+func TestPlanStatusForEveryRole(t *testing.T) {
+	w := newTeamWorld(t)
+	for _, b := range []*env{w.admin, w.member} {
+		p := b.call(http.MethodGet, "/api/plan", "", http.StatusOK)
+		conform(t, b.doc, "PlanInfo", p)
+		if p["plan"] != "team" || p["subscribed"] != true || p["seats"] != float64(3) || p["note"] != nil || len(p["plans"].([]any)) != 0 {
+			t.Errorf("plan a non-owner sees = %v", p)
+		}
+		b.refuse(http.MethodPost, "/api/plan/checkout", `{"plan":"team","interval":"month","seats":3}`, http.StatusForbidden, "role_required", "")
+		b.refuse(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":4}`, http.StatusForbidden, "role_required", "")
+		b.refuse(http.MethodGet, "/api/plan/portal", "", http.StatusForbidden, "role_required", "")
+	}
+	if p := w.owner.call(http.MethodGet, "/api/plan", "", http.StatusOK); p["note"] == nil || len(p["plans"].([]any)) == 0 {
+		t.Errorf("plan the owner sees = %v", p)
+	}
+
+	// The plan ends: the member sees it ended, and when the rest is deleted.
+	e := w.owner
+	if _, _, err := e.st.SetPlan(t.Context(), w.tenant, store.Plan{Plan: store.PlanEnded, Record: "sub_t"}, e.ck.t.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	p := w.member.call(http.MethodGet, "/api/plan", "", http.StatusOK)
+	conform(t, w.member.doc, "PlanInfo", p)
+	if p["plan"] != "ended" || p["read_only"] != true || p["subscribed"] != false || p["removed_at"] == nil || len(p["plans"].([]any)) != 0 {
+		t.Errorf("ended plan a member sees = %v", p)
+	}
+	w.member.refuse(http.MethodPost, "/api/accounts", accountBody, http.StatusForbidden, "plan_ended", "")
 }
 
 // Once the trial ends with no plan bought, the app is read-only and nothing new connects;

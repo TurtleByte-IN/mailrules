@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/sve
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Destination } from '../lib/api/notifications';
 import type { Rule } from '../lib/api/rules';
+import { auth } from '../lib/state/auth.svelte';
 import { notifications } from '../lib/state/notifications.svelte';
 import { load, rules } from '../lib/state/rules.svelte';
 import { settings } from '../lib/state/settings.svelte';
@@ -240,6 +241,25 @@ describe('Notify', () => {
     expect(group()!.textContent).toContain('No destinations yet.');
     expect(within(group()!).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('#/settings');
   });
+});
+
+// A Member sorts by the team's rules but the daemon refuses their changes (403 role_required).
+it('shows a Member the rules without a way to add, reorder, edit, test or delete them', async () => {
+  respond(200, { items: [rule(1, 'Food'), rule(2, 'Travel')] });
+  await load();
+  auth.user = { id: 3, email: 'cy@example.com', role: 'member' };
+  try {
+    render(Rules);
+    expect(screen.getByText('Shared with your team: only an Owner or Admin changes these.')).toBeTruthy();
+    for (const name of ['Add rules', 'New condition rule', 'Edit conditions']) expect(screen.queryByRole('link', { name })).toBeNull();
+    for (const name of ['Import rules', 'Move Food down', 'Rewrite with AI', 'Delete rule', 'Test on last 200 emails']) expect(screen.queryByRole('button', { name })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Export rules' })).toBeTruthy();
+    // Disabled by the fieldset around the editor, which the element's own property does not show.
+    expect(screen.getByLabelText('Name').matches(':disabled')).toBe(true);
+    expect(screen.getAllByRole('checkbox', { name: 'On' }).every((b) => (b as HTMLInputElement).disabled)).toBe(true);
+  } finally {
+    auth.user = null;
+  }
 });
 
 describe('Draft a reply', () => {

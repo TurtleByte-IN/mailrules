@@ -4,6 +4,7 @@ import { dispatch } from '../lib/api/events';
 import type { PlanInfo } from '../lib/api/plan';
 import { fullDay } from '../lib/format';
 import { error, serve } from '../lib/state/activity.fixtures';
+import { auth } from '../lib/state/auth.svelte';
 import { limits } from '../lib/state/limits.svelte';
 import { plan } from '../lib/state/plan.svelte';
 import Plan from './Plan.svelte';
@@ -16,6 +17,7 @@ const info = (over: Partial<PlanInfo> = {}): PlanInfo => ({
   interval: null,
   status: null,
   period_end: null,
+  seats: null,
   trial_ends_at: trialEnd,
   trial_days_left: 5,
   ended_at: null,
@@ -25,12 +27,15 @@ const info = (over: Partial<PlanInfo> = {}): PlanInfo => ({
   subscribed: false,
   note: 'Billed by the billing service, taxes included at checkout.',
   plans: [
-    { id: 'personal', name: 'Personal', prices: { month: '$5 a month', year: '$50 a year' }, includes: ['3 mailboxes', '3,000 AI-sorted emails a month'], mailboxes: 3, ai_emails: 3000, features: [] },
-    { id: 'pro', name: 'Pro', prices: { month: '$10 a month', year: '$100 a year' }, includes: ['10 mailboxes', 'Suggest from my mail'], mailboxes: 10, ai_emails: 10000, features: ['suggest'] },
+    { id: 'personal', name: 'Personal', prices: { month: '$5 a month', year: '$50 a year' }, includes: ['3 mailboxes', '3,000 AI-sorted emails a month'], mailboxes: 3, ai_emails: 3000, features: [], per_seat: false, min_seats: null },
+    { id: 'pro', name: 'Pro', prices: { month: '$10 a month', year: '$100 a year' }, includes: ['10 mailboxes', 'Suggest from my mail'], mailboxes: 10, ai_emails: 10000, features: ['suggest'], per_seat: false, min_seats: null },
   ],
   ...over,
 });
 const pro = (over: Partial<PlanInfo> = {}) => info({ plan: 'pro', interval: 'month', status: 'active', period_end: trialEnd + 30 * day, trial_days_left: null, subscribed: true, ...over });
+const teamTerms: PlanInfo['plans'][number] = {
+  id: 'team', name: 'Team', prices: { month: '$8 a month', year: '$80 a year' }, includes: ['Shared rules', 'Audit log'], mailboxes: 10, ai_emails: 10000, features: ['team'], per_seat: true, min_seats: 2,
+};
 const selfHostLimits = { mailboxes: null, ai_emails: null, first_cleanup: null, upgrade_url: null };
 
 /** The daemon: GET /api/plan answers `current`; any other call `other(call, body)`. */
@@ -170,5 +175,54 @@ describe('a subscribed tenant', () => {
     daemon(() => current);
     render(Plan);
     expect((await screen.findByRole('region', { name: 'Your plan' })).textContent).toContain(line);
+  });
+});
+
+describe('the Team plan, sold by the seat', () => {
+  afterEach(() => {
+    auth.members = 1;
+  });
+
+  it('prices it per seat, asks for enough seats for the team, and sends the count with checkout', async () => {
+    auth.members = 3;
+    const calls = daemon(() => info({ plans: [...info().plans, teamTerms] }), (call) => (call === 'POST /api/plan/checkout' ? [200, { checkout: {}, script: '/api/m/billing/checkout.js' }] : [404]));
+    render(Plan);
+    const team = await card('Team');
+    expect(team.textContent).toContain('Per seat, from 2 seats');
+    const seats = within(team).getByLabelText('Seats') as HTMLInputElement;
+    expect(seats.value).toBe('3');
+
+    await fireEvent.input(seats, { target: { value: '5' } });
+    await fireEvent.click(within(team).getByRole('button', { name: 'Choose Team' }));
+    await waitFor(() => expect(calls.find((c) => c.call === 'POST /api/plan/checkout')?.body).toEqual({ plan: 'team', interval: 'month', seats: 5 }));
+  });
+
+  it('never asks for fewer seats than the plan sells', async () => {
+    daemon(() => info({ plans: [teamTerms] }));
+    render(Plan);
+    expect((within(await card('Team')).getByLabelText('Seats') as HTMLInputElement).value).toBe('2');
+  });
+
+  it('shows the seats a subscribed team has, and changes only the count with a change', async () => {
+    auth.members = 4;
+    const current = pro({ plan: 'team', seats: 5, plans: [...info().plans, teamTerms] });
+    const calls = daemon(() => current, (call) => (call === 'POST /api/plan/change' ? [202, current] : [404]));
+    render(Plan);
+    expect((await screen.findByRole('region', { name: 'Your plan' })).textContent).toContain('Your plan has 5 seats; your team has 4 members.');
+    const team = await card('Team');
+    expect(within(team).getByRole('button', { name: 'Current plan' })).toBeTruthy();
+
+    await fireEvent.input(within(team).getByLabelText('Seats'), { target: { value: '8' } });
+    await fireEvent.click(within(team).getByRole('button', { name: 'Change seats' }));
+    expect(await screen.findByText('Waiting for the billing service to confirm…')).toBeTruthy();
+    expect(calls.find((c) => c.call === 'POST /api/plan/change')?.body).toEqual({ plan: 'team', interval: 'month', seats: 8 });
+  });
+
+  it('sends no seats for a plan not sold by the seat', async () => {
+    const current = pro({ plan: 'team', seats: 5, plans: [...info().plans, teamTerms] });
+    const calls = daemon(() => current, (call) => (call === 'POST /api/plan/change' ? [202, current] : [404]));
+    render(Plan);
+    await fireEvent.click(within(await card('Pro')).getByRole('button', { name: 'Switch to Pro' }));
+    await waitFor(() => expect(calls.find((c) => c.call === 'POST /api/plan/change')?.body).toEqual({ plan: 'pro', interval: 'month' }));
   });
 });
