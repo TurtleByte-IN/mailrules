@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -71,7 +73,7 @@ type AuditEntry struct {
 	Actor   string
 	Action  string // one of the Audit* constants
 	Target  string // what was changed, by name: a rule, a mailbox's address, a member's email
-	Detail  string // how, in a few words
+	Detail  string // how, in a few words; never an address (withoutAddresses)
 }
 
 // record writes, in q (the change's transaction), one audit row of the tenant under ctx's
@@ -84,6 +86,20 @@ func record(ctx context.Context, q querier, tenantID, at int64, action, target, 
 	return recordAs(ctx, q, tenantID, at, a, action, target, detail)
 }
 
+// addressLike is a word holding an @: an email address, or something that may be one.
+var addressLike = regexp.MustCompile(`[^\s,;()<>"']*@[^\s,;()<>"']*`)
+
+// withoutAddresses is detail with every address-like word in it replaced. A detail names
+// people by user id and quotes names people chose (a mailbox's label, a rule's name, a
+// folder), and such a name may be an address; forgetting a person rewrites actor and target
+// only (store.forget), so detail must never hold one.
+func withoutAddresses(detail string) string {
+	if !strings.Contains(detail, "@") {
+		return detail
+	}
+	return addressLike.ReplaceAllString(detail, "an address")
+}
+
 // recordAs is record under a, whatever ctx carries.
 func recordAs(ctx context.Context, q querier, tenantID, at int64, a Actor, action, target, detail string) error {
 	if at == 0 {
@@ -91,7 +107,7 @@ func recordAs(ctx context.Context, q querier, tenantID, at int64, a Actor, actio
 	}
 	if _, err := q.ExecContext(ctx,
 		`INSERT INTO audit_log (tenant_id, at, actor_id, actor, action, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		tenantID, at, null(a.UserID), a.Name, action, target, detail); err != nil {
+		tenantID, at, null(a.UserID), a.Name, action, target, withoutAddresses(detail)); err != nil {
 		return fmt.Errorf("record %s in the audit log: %w", action, err)
 	}
 	return nil

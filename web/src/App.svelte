@@ -4,7 +4,7 @@
   import Nav from './lib/components/Nav.svelte';
   import PlanBanner from './lib/components/PlanBanner.svelte';
   import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
-  import { auth, canManage, isOwner, start } from './lib/state/auth.svelte';
+  import { auth, canManage, start } from './lib/state/auth.svelte';
   import { firstRun, settle } from './lib/state/firstrun.svelte';
   import { setupReturn } from './lib/state/oneclick';
   import { load as loadPlan } from './lib/state/plan.svelte';
@@ -37,9 +37,9 @@
     }
   });
 
-  // Only a build that sells plans has one, and only an Owner may read it; the shell says when it
-  // is about to end or has ended.
-  const billing = $derived(settings.value.features.billing && isOwner());
+  // Only a build that sells plans has one. Everyone reads its status, so the shell tells every
+  // role when it is about to end or has ended; only an Owner sees what is on sale.
+  const billing = $derived(settings.value.features.billing);
   $effect(() => {
     if (auth.status === 'in' && billing) loadPlan();
   });

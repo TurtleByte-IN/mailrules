@@ -34,9 +34,18 @@ CREATE TABLE audit_log (
   detail    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX audit_log_tenant ON audit_log(tenant_id, at);
+-- Rows are never changed, except a forgotten or removed person's address in actor and
+-- target, which becomes 'removed member #<user id>' (store.forget); anything else, by any
+-- role, the table's owner included, is refused.
 -- +goose StatementBegin
 CREATE FUNCTION mailrules_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id AND NEW.at = OLD.at
+    AND NEW.actor_id IS NOT DISTINCT FROM OLD.actor_id AND NEW.action = OLD.action AND NEW.detail = OLD.detail
+    AND (NEW.actor = OLD.actor OR left(NEW.actor, 16) = 'removed member #')
+    AND (NEW.target = OLD.target OR left(NEW.target, 16) = 'removed member #') THEN
+    RETURN NEW;
+  END IF;
   RAISE EXCEPTION 'the audit log is append-only';
 END
 $$;
@@ -52,8 +61,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON invitations TO mailrules_app, mailrules_
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
 CREATE POLICY mailrules_tenant ON audit_log USING (tenant_id = mailrules_tenant()) WITH CHECK (tenant_id = mailrules_tenant());
--- Append-only: no role may change a row; the retention job and a tenant's removal delete.
+-- Append-only: the retention job and a tenant's removal delete; the web app, which forgets
+-- and removes people, may rewrite actor and target only, and the trigger above only to
+-- 'removed member #<user id>'.
 GRANT SELECT, INSERT, DELETE ON audit_log TO mailrules_app, mailrules_worker;
+GRANT UPDATE (actor, target) ON audit_log TO mailrules_app;
 
 ALTER TABLE plans ADD COLUMN seats BIGINT NOT NULL DEFAULT 0;
 

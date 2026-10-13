@@ -105,13 +105,8 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64, seat
 		}
 		role, how := RoleOwner, "made the team"
 		if !newTenant {
-			var invitedBy string
-			if role, invitedBy, err = joinRole(ctx, tx, tenantID, id.Email, now, seats); err != nil {
+			if role, how, err = joinRole(ctx, tx, tenantID, id.Email, now, seats); err != nil {
 				return User{}, fmt.Errorf("sign in identity: %w", err)
-			}
-			how = "as " + RoleName(role) + ", invited by " + invitedBy
-			if invitedBy == "" {
-				how = "as " + RoleName(role) + ", without an invitation"
 			}
 		}
 		var uid int64

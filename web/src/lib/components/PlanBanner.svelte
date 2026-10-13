@@ -1,10 +1,13 @@
 <script lang="ts">
   import { fullDay } from '../format';
+  import { isOwner } from '../state/auth.svelte';
   import { plan } from '../state/plan.svelte';
   import { settings } from '../state/settings.svelte';
 
   // Only a build that sells plans has one; a plan left over from before the settings said so is not shown.
   const info = $derived(settings.value.features.billing ? plan.value : null);
+  // Everyone is told; only an Owner can buy a plan, so everyone else is told who can.
+  const owner = $derived(isOwner());
 </script>
 
 {#if info?.read_only}
@@ -17,10 +20,15 @@
         Mailbox passwords {gone ? 'were' : 'are'} deleted on {fullDay(info.secrets_deleted_at)} and everything else on {fullDay(info.removed_at)}.
       {/if}
     </span>
-    <a href="#/plan" class="inline-flex min-h-9 items-center rounded border border-warn-strong bg-surface px-3 font-semibold text-warn max-md:min-h-11">Subscribe</a>
+    {#if owner}
+      <a href="#/plan" class="inline-flex min-h-9 items-center rounded border border-warn-strong bg-surface px-3 font-semibold text-warn max-md:min-h-11">Subscribe</a>
+    {:else}
+      <span class="font-semibold">Ask the team's owner to subscribe.</span>
+    {/if}
   </div>
 {:else if info?.plan === 'trial' && info.trial_days_left !== null && info.trial_days_left <= 3}
   <p class="text-[13px] text-secondary">
-    Your trial ends in {info.trial_days_left} {info.trial_days_left === 1 ? 'day' : 'days'}. <a href="#/plan" class="font-semibold underline">Choose a plan</a>
+    Your trial ends in {info.trial_days_left} {info.trial_days_left === 1 ? 'day' : 'days'}.
+    {#if owner}<a href="#/plan" class="font-semibold underline">Choose a plan</a>{:else}Ask the team's owner to subscribe.{/if}
   </p>
 {/if}

@@ -265,10 +265,16 @@ func limitOrNil(n int) *int {
 	return &n
 }
 
-func (s *server) planJSON(p store.PlanState) planJSON {
+// planJSON is the tenant's plan. full adds what only an Owner sees: the note and the plans
+// on sale with their prices; everyone else gets the status alone, so a member still learns
+// the trial is ending or the plan has ended.
+func (s *server) planJSON(p store.PlanState, full bool) planJSON {
 	b := s.billing()
 	out := planJSON{Plan: p.Plan.Plan, TrialEndsAt: p.TrialEnd, EndedAt: unix(p.EndedAt), ReadOnly: p.Ended(),
-		Subscribed: p.Record != "" && !p.Ended(), Note: orNil(b.Note), Plans: []planTermsJSON{}}
+		Subscribed: p.Record != "" && !p.Ended(), Plans: []planTermsJSON{}}
+	if full {
+		out.Note = orNil(b.Note)
+	}
 	if !p.Ended() && p.Plan.Plan != store.PlanTrial {
 		out.Interval, out.Status, out.PeriodEnd = orNil(p.Interval), orNil(p.Status), unix(p.PeriodEnd)
 		if p.Seats > 0 {
@@ -282,6 +288,9 @@ func (s *server) planJSON(p store.PlanState) planJSON {
 	if p.Ended() {
 		out.SecretsDeletedAt = unix(p.EndedAt + store.EndedSecretsDays*24*3600)
 		out.RemovedAt = unix(p.EndedAt + store.EndedRemovalDays*24*3600)
+	}
+	if !full {
+		return out
 	}
 	for _, id := range soldPlans(b) {
 		t := b.Plans[id]
@@ -323,7 +332,7 @@ func (s *server) currentPlan(w http.ResponseWriter, r *http.Request) (store.Plan
 
 func (s *server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if p, ok := s.currentPlan(w, r); ok {
-		writeJSON(w, http.StatusOK, s.planJSON(p))
+		writeJSON(w, http.StatusOK, s.planJSON(p, allowed(r, store.RoleOwner)))
 	}
 }
 
@@ -490,7 +499,7 @@ func (s *server) handlePlanChange(w http.ResponseWriter, r *http.Request) {
 		billingFailed(w, r, "change plan", err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, s.planJSON(p))
+	writeJSON(w, http.StatusAccepted, s.planJSON(p, true))
 }
 
 func (s *server) handlePlanPortal(w http.ResponseWriter, r *http.Request) {

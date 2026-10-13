@@ -189,7 +189,8 @@ func (s *server) routes() []route {
 		on(get, "/api/stats/summary", s.handleStatsSummary),
 		on(get, "/api/stats/usage", s.handleStatsUsage),
 		on(get, "/api/limits", s.handleLimits),
-		on(get, "/api/plan", s.billingOnly(s.handlePlan)).need(owner, toManagePlan),
+		// Every role sees the plan's status; the plans on sale and their prices are an Owner's (planJSON).
+		on(get, "/api/plan", s.billingOnly(s.handlePlan)),
 		on(post, "/api/plan/checkout", s.billingOnly(s.handlePlanCheckout)).need(owner, toManagePlan),
 		on(post, "/api/plan/change", s.billingOnly(s.handlePlanChange)).need(owner, toManagePlan),
 		on(get, "/api/plan/portal", s.billingOnly(s.handlePlanPortal)).need(owner, toManagePlan),

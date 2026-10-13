@@ -24,6 +24,12 @@ func forgottenEmail(userID int64) string {
 	return "forgotten-" + strconv.FormatInt(userID, 10) + "@forgotten.invalid"
 }
 
+// removedMember is what stands for a forgotten or removed person in the audit log, in place
+// of their address. The audit log's guard accepts no other rewrite (migration 0029).
+func removedMember(userID int64) string {
+	return "removed member #" + strconv.FormatInt(userID, 10)
+}
+
 // forgottenMessage is the last error a forgotten person's mailboxes show: their secret is
 // gone, and they need a new one if the same person signs in again. A mailbox a module
 // connected (oauth or module: one-click, or through its sign-in form) shows
@@ -162,8 +168,19 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
 	}
 	if !again {
-		if err := record(ctx, tx, out.TenantID, now, AuditMemberRemoved, email, how); err != nil {
+		// The audit log keeps what they did and what was done to them, but not their address:
+		// it becomes removedMember in every row, this removal's own included.
+		gone := removedMember(out.UserID)
+		if err := record(ctx, tx, out.TenantID, now, AuditMemberRemoved, gone, how); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE audit_log SET actor = ? WHERE tenant_id = ? AND actor_id = ?`,
+			gone, out.TenantID, out.UserID); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: audit log actor: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE audit_log SET target = ? WHERE tenant_id = ? AND lower(target) = lower(?)`,
+			gone, out.TenantID, email); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: audit log target: %w", err)
 		}
 	}
 

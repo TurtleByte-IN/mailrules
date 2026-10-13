@@ -31,7 +31,9 @@ CREATE UNIQUE INDEX invitations_email ON invitations(tenant_id, lower(email));
 -- settings and plan, each row written in the transaction of the change it records. It holds
 -- names and addresses, never email content or a secret. actor is who did it as they were
 -- then (an email, or the service that did it), actor_id their user while there is one.
--- Rows are never changed: only the retention job deletes them, after AuditDays.
+-- Rows are never changed, with one exception: when a person is forgotten or removed from
+-- the team, their address in actor and target becomes 'removed member #<user id>'
+-- (store.forget). Only the retention job deletes rows, after AuditDays.
 CREATE TABLE audit_log (
   id        INTEGER PRIMARY KEY,
   tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -45,6 +47,10 @@ CREATE TABLE audit_log (
 CREATE INDEX audit_log_tenant ON audit_log(tenant_id, at);
 -- +goose StatementBegin
 CREATE TRIGGER audit_log_append_only BEFORE UPDATE ON audit_log
+WHEN NOT (NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id AND NEW.at = OLD.at AND NEW.actor_id IS OLD.actor_id
+  AND NEW.action = OLD.action AND NEW.detail = OLD.detail
+  AND (NEW.actor = OLD.actor OR substr(NEW.actor, 1, 16) = 'removed member #')
+  AND (NEW.target = OLD.target OR substr(NEW.target, 1, 16) = 'removed member #'))
 BEGIN
   SELECT RAISE(ABORT, 'the audit log is append-only');
 END;

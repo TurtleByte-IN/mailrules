@@ -267,6 +267,37 @@ func TestPlanTrialCheckoutAndChange(t *testing.T) {
 	}
 }
 
+// Everyone on a team sees the plan's status, so a member learns why changes are refused once
+// it ends; only an Owner sees the plans on sale and buys, changes or manages one.
+func TestPlanStatusForEveryRole(t *testing.T) {
+	w := newTeamWorld(t)
+	for _, b := range []*env{w.admin, w.member} {
+		p := b.call(http.MethodGet, "/api/plan", "", http.StatusOK)
+		conform(t, b.doc, "PlanInfo", p)
+		if p["plan"] != "team" || p["subscribed"] != true || p["seats"] != float64(3) || p["note"] != nil || len(p["plans"].([]any)) != 0 {
+			t.Errorf("plan a non-owner sees = %v", p)
+		}
+		b.refuse(http.MethodPost, "/api/plan/checkout", `{"plan":"team","interval":"month","seats":3}`, http.StatusForbidden, "role_required", "")
+		b.refuse(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":4}`, http.StatusForbidden, "role_required", "")
+		b.refuse(http.MethodGet, "/api/plan/portal", "", http.StatusForbidden, "role_required", "")
+	}
+	if p := w.owner.call(http.MethodGet, "/api/plan", "", http.StatusOK); p["note"] == nil || len(p["plans"].([]any)) == 0 {
+		t.Errorf("plan the owner sees = %v", p)
+	}
+
+	// The plan ends: the member sees it ended, and when the rest is deleted.
+	e := w.owner
+	if _, _, err := e.st.SetPlan(t.Context(), w.tenant, store.Plan{Plan: store.PlanEnded, Record: "sub_t"}, e.ck.t.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	p := w.member.call(http.MethodGet, "/api/plan", "", http.StatusOK)
+	conform(t, w.member.doc, "PlanInfo", p)
+	if p["plan"] != "ended" || p["read_only"] != true || p["subscribed"] != false || p["removed_at"] == nil || len(p["plans"].([]any)) != 0 {
+		t.Errorf("ended plan a member sees = %v", p)
+	}
+	w.member.refuse(http.MethodPost, "/api/accounts", accountBody, http.StatusForbidden, "plan_ended", "")
+}
+
 // Once the trial ends with no plan bought, the app is read-only and nothing new connects;
 // buying a plan lifts it and starts the mailboxes again; a plan that ends stops them.
 func TestPlanEndedIsReadOnly(t *testing.T) {

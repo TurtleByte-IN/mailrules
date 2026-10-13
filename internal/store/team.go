@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -431,16 +432,18 @@ func (s *Store) AcceptInvitation(ctx context.Context, tenantID int64, email stri
 
 // joinRole is, in tx, the role a new user of an existing tenant gets at now: the role of
 // the invitation waiting for their email, which is then used up, else member, for which a
-// seat must be free. The join is recorded under the person.
-func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now int64, seats SeatLimit) (role string, invitedBy string, err error) {
+// seat must be free. how is the audit log's detail of the join: the inviter is named by
+// their user id, never their address (no audit detail holds one).
+func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now int64, seats SeatLimit) (role, how string, err error) {
 	var id int64
-	err = tx.QueryRowContext(ctx, `SELECT i.id, i.role, COALESCE(u.email, '') FROM invitations i LEFT JOIN users u ON u.id = i.invited_by
-		WHERE i.tenant_id = ? AND lower(i.email) = lower(?) AND i.expires_at > ?`, tenantID, email, now).Scan(&id, &role, &invitedBy)
+	var invitedBy sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT id, role, invited_by FROM invitations
+		WHERE tenant_id = ? AND lower(email) = lower(?) AND expires_at > ?`, tenantID, email, now).Scan(&id, &role, &invitedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := takeSeat(ctx, tx, tenantID, now, "", seats); err != nil {
 			return "", "", err
 		}
-		return RoleMember, "", nil
+		return RoleMember, "as " + RoleName(RoleMember) + ", without an invitation", nil
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("find invitation: %w", err)
@@ -448,7 +451,11 @@ func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now in
 	if _, err := tx.ExecContext(ctx, `DELETE FROM invitations WHERE id = ?`, id); err != nil {
 		return "", "", fmt.Errorf("use invitation: %w", err)
 	}
-	return role, invitedBy, nil
+	how = "as " + RoleName(role) + ", invited"
+	if invitedBy.Valid {
+		how += " by member #" + strconv.FormatInt(invitedBy.Int64, 10)
+	}
+	return role, how, nil
 }
 
 // retainInvitations deletes the tenant's invitations that expired.

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
 
 // audited lists the tenant's audit rows as "action target: detail (actor)".
@@ -150,7 +152,7 @@ func TestJoinRoles(t *testing.T) {
 	want := []string{
 		"member.joined owner@team.test: made the team (owner@team.test)",
 		"invitation.created Ada@Team.test: as Admin (owner@team.test)",
-		"member.joined ada@team.test: as Admin, invited by owner@team.test (ada@team.test)",
+		"member.joined ada@team.test: as Admin, invited by member #" + strconv.FormatInt(tm.owner.ID, 10) + " (ada@team.test)",
 		"member.joined bo@team.test: as Member, without an invitation (bo@team.test)",
 	}
 	if got := audited(t, s, tm.tenant); !slices.Equal(got, want) {
@@ -374,15 +376,131 @@ func TestRemovalRecordsAndKeepsAnOwner(t *testing.T) {
 	if _, err := s.ForgetIdentity(WithActor(ctx, Actor{Name: "Sign-in service"}), "workos", "user_owner", 310); err != nil {
 		t.Fatal(err)
 	}
+	// Neither address stays in the log: each becomes the person's placeholder, as actor and
+	// as target, in the rows from before and in the removal's own.
+	gone := func(u User) string { return "removed member #" + strconv.FormatInt(u.ID, 10) }
 	want := []string{
-		"member.removed member@team.test: removed from the team (owner@team.test)",
+		"member.removed " + gone(member) + ": removed from the team (" + gone(tm.owner) + ")",
 		"member.role_changed admin@team.test: Admin to Owner: the team's last owner left (MailRules)",
-		"member.removed owner@team.test: their sign-in was deleted (Sign-in service)",
+		"member.removed " + gone(tm.owner) + ": their sign-in was deleted (Sign-in service)",
 	}
-	if got := audited(t, s, tm.tenant); !slices.Equal(got[len(got)-3:], want) {
+	got := audited(t, s, tm.tenant)
+	if !slices.Equal(got[len(got)-3:], want) {
 		t.Errorf("audit log ends\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	_ = member
+	for _, row := range got {
+		if strings.Contains(row, "member@team.test") || strings.Contains(row, "owner@team.test") {
+			t.Errorf("a removed person's address stays in the audit log: %q", row)
+		}
+	}
+	if !slices.Contains(got, "member.joined "+gone(tm.owner)+": made the team ("+gone(tm.owner)+")") {
+		t.Errorf("the owner's own rows keep their address:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+// A person who deletes their own account leaves no address in the audit log, whatever
+// they did or was done to them; nobody else's rows change, and no detail holds an address.
+func TestForgetRewritesTheAuditLog(t *testing.T) {
+	tm := newTeam(t)
+	s, ctx := tm.s, t.Context()
+	if _, err := s.CreateInvitation(as(ctx, tm.owner), tm.tenant, Invitation{Email: "Cy@Team.test", Role: RoleAdmin, InvitedBy: tm.owner.ID}, seats(5), 110); err != nil {
+		t.Fatal(err)
+	}
+	cy, err := s.SignInIdentity(ctx, identity("user_cy", "cy@team.test", "org_team"), 120, seats(5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	boss, err := s.CreateRule(as(ctx, cy), tm.tenant, rules.Rule{UserID: cy.ID, Name: "From boss@work.test", Actions: []rules.Action{{Type: rules.ActKeep}}}, 130)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRule(as(ctx, tm.owner), tm.tenant, rules.Rule{UserID: tm.owner.ID, Name: "Owner's", Actions: []rules.Action{{Type: rules.ActKeep}}}, 135); err != nil {
+		t.Fatal(err)
+	}
+	boss.Name = "Boss"
+	if err := s.UpdateRule(as(ctx, cy), tm.tenant, boss, 140); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteOwnAccount(as(ctx, cy), "workos", "user_cy", 150); err != nil {
+		t.Fatal(err)
+	}
+	gone := "removed member #" + strconv.FormatInt(cy.ID, 10)
+	es, err := s.AuditLog(ctx, tm.tenant, 0, 1<<40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var theirs int
+	for _, e := range es {
+		row := e.Action + " " + e.Target + ": " + e.Detail + " (" + e.Actor + ")"
+		if strings.Contains(strings.ToLower(row), "cy@team.test") {
+			t.Errorf("their address stays: %q", row)
+		}
+		if strings.Contains(e.Detail, "@") {
+			t.Errorf("a detail holds an address: %q", row)
+		}
+		if e.ActorID == cy.ID {
+			theirs++
+			if e.Actor != gone {
+				t.Errorf("their row's actor = %q, want %q", e.Actor, gone)
+			}
+		}
+		if e.ActorID == tm.owner.ID && e.Actor != "owner@team.test" {
+			t.Errorf("the owner's row changed: %q", row)
+		}
+	}
+	if theirs != 4 { // joined, created and renamed a rule, deleted their account
+		t.Errorf("rows by them = %d, want 4", theirs)
+	}
+	want := []string{
+		"invitation.created " + gone + ": as Admin (owner@team.test)",
+		"member.joined " + gone + ": as Admin, invited by member #" + strconv.FormatInt(tm.owner.ID, 10) + " (" + gone + ")",
+		"rule.created From boss@work.test: off (" + gone + ")",
+		"rule.changed Boss: renamed from From an address (" + gone + ")",
+		"member.removed " + gone + ": deleted their own account (" + gone + ")",
+	}
+	got := audited(t, s, tm.tenant)
+	for _, w := range want {
+		if !slices.Contains(got, w) {
+			t.Errorf("audit log lacks %q:\n%s", w, strings.Join(got, "\n"))
+		}
+	}
+}
+
+// The audit log's rows never change, on either database and for any role, but for the
+// rewrite of an address to a removed member's placeholder in actor or target.
+func TestAuditLogRefusesEveryOtherUpdate(t *testing.T) {
+	s, admin := open(t) // admin: the database's owner role on Postgres
+	u, err := s.SignInIdentity(t.Context(), identity("user_owner", "owner@team.test", "org_team"), 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithTenant(t.Context(), u.TenantID)
+	refused := []string{
+		`UPDATE audit_log SET actor = 'someone else'`,
+		`UPDATE audit_log SET target = 'someone else'`,
+		`UPDATE audit_log SET actor = 'removed member #1', detail = 'changed'`,
+		`UPDATE audit_log SET target = 'removed member #1', action = 'rule.deleted'`,
+		`UPDATE audit_log SET actor = 'removed member #1', at = at + 1`,
+		`UPDATE audit_log SET actor = 'removed member #1', actor_id = NULL`,
+		`UPDATE audit_log SET detail = 'removed member #1'`,
+	}
+	for _, q := range refused {
+		if _, err := s.db.ExecContext(ctx, q); err == nil {
+			t.Errorf("%s: an audit row was changed", q)
+		}
+	}
+	if pgtest.DSN() != "" {
+		// The owner of the table is held by the trigger all the same.
+		if _, err := admin.ExecContext(t.Context(), `UPDATE audit_log SET detail = 'changed'`); err == nil {
+			t.Error("the table's owner changed an audit row")
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE audit_log SET actor = 'removed member #1', target = 'removed member #1'`); err != nil {
+		t.Errorf("the forget rewrite was refused: %v", err)
+	}
+	if got := audited(t, s, u.TenantID); len(got) != 1 || got[0] != "member.joined removed member #1: made the team (removed member #1)" {
+		t.Errorf("audit log = %q", got)
+	}
 }
 
 // Every change to what the audit log covers is recorded under the actor, in its own

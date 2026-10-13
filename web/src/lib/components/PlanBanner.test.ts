@@ -1,7 +1,9 @@
 import { render, screen, within } from '@testing-library/svelte';
 import { beforeEach, expect, it } from 'vitest';
+import type { Role } from '../api/members';
 import type { PlanInfo } from '../api/plan';
 import { fullDay } from '../format';
+import { auth } from '../state/auth.svelte';
 import { plan } from '../state/plan.svelte';
 import { settings } from '../state/settings.svelte';
 import PlanBanner from './PlanBanner.svelte';
@@ -32,8 +34,11 @@ const ended = (over: Partial<PlanInfo> = {}) =>
 
 const billing = (on: boolean) => (settings.value = { ...settings.value, features: { ...settings.value.features, billing: on } });
 
+const as = (role: Role) => (auth.user = { id: 1, email: 'ana@example.com', role });
+
 beforeEach(() => {
   billing(true);
+  as('owner');
   plan.value = null;
 });
 
@@ -78,4 +83,22 @@ it('in the last days of the trial, offers a plan', () => {
   expect(screen.getByText(/Your trial ends in 2 days\./)).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Choose a plan' }).getAttribute('href')).toBe('#/plan');
   expect(screen.queryByRole('status')).toBeNull();
+});
+
+it.each(['admin', 'member'] as const)('tells an %s the plan ended and who can subscribe, with no link to buy', (role) => {
+  as(role);
+  plan.value = ended();
+  render(PlanBanner);
+  const banner = screen.getByRole('status');
+  expect(banner.textContent).toContain('Your trial has ended.');
+  expect(banner.textContent).toContain("Ask the team's owner to subscribe.");
+  expect(within(banner).queryByRole('link')).toBeNull();
+});
+
+it('tells a member the trial is ending and who can subscribe', () => {
+  as('member');
+  plan.value = info({ trial_days_left: 1 });
+  render(PlanBanner);
+  expect(screen.getByText(/Your trial ends in 1 day\. Ask the team's owner to subscribe\./)).toBeTruthy();
+  expect(screen.queryByRole('link')).toBeNull();
 });

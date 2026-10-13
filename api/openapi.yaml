@@ -67,7 +67,11 @@ info:
     - Every change to a team's rules, sender rules, mailboxes, members, invitations, settings
       and plan is recorded, with who made it, in its audit log (`GET /api/audit`), in the same
       transaction as the change. It holds names and addresses, never email content or a
-      secret, and keeps a row for 365 days.
+      secret, and keeps a row for 365 days. Rows never change, but when a person is forgotten
+      (their sign-in deleted, or Delete my account) or removed from the team, their address
+      becomes `removed member #<user id>` wherever it is the actor or the target, their
+      removal's own row included. A detail names people by user id and never holds an
+      address.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -1494,7 +1498,6 @@ paths:
     get:
       tags: [Plan]
       operationId: getPlan
-      x-role: owner
       x-module: billing
       summary: The tenant's plan, and the plans to choose from
       description: |
@@ -1503,6 +1506,10 @@ paths:
         is sorted and the app is read-only; `secrets_deleted_at` and `removed_at` say when its
         mailbox passwords, tokens and model keys, then everything else, are deleted unless a
         plan is bought before. The `plan.changed` event says when it changed.
+
+        Every role may read it, so everyone sees the trial ending or the plan ended. An Admin
+        or Member gets the status alone: `plans` is empty and `note` is null, so no prices; only
+        an Owner buys, changes or manages a plan.
       responses:
         '200':
           description: Plan
@@ -1510,7 +1517,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PlanInfo' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' } # not_available: this build sells no plans
   /api/plan/checkout:
     post:
@@ -3485,11 +3491,11 @@ components:
       properties:
         id: { type: integer, format: int64 }
         at: { type: integer, format: int64 }
-        actor: { type: string, description: 'Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules)' }
+        actor: { type: string, description: 'Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules); `removed member #<user id>` once that person was forgotten or removed' }
         action:
           type: string
           enum: [rule.created, rule.changed, rule.deleted, rules.reordered, sender_rule.set, sender_rule.deleted, mailbox.added, mailbox.changed, mailbox.removed,
             settings.changed, notification.added, notification.removed, plan.changed, member.joined, member.role_changed, member.removed,
             invitation.created, invitation.revoked, invitation.accepted, invitation.withdrawn]
-        target: { type: string, description: 'What was changed, by name: a rule, a sender, a mailbox''s address, a member''s email; empty for settings and reorders' }
-        detail: { type: string, description: 'How, in a few words: what of a rule changed, a role from and to, the settings changed (a value only when it is true, false or a number)' }
+        target: { type: string, description: 'What was changed, by name: a rule, a sender, a mailbox''s address, a member''s email (`removed member #<user id>` once they were forgotten or removed); empty for settings and reorders' }
+        detail: { type: string, description: 'How, in a few words: what of a rule changed, a role from and to, who invited a member (`member #<user id>`), the settings changed (a value only when it is true, false or a number). Never an address: one in a name quoted here reads `an address`' }

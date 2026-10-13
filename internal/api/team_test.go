@@ -254,9 +254,10 @@ func TestTeamMembersInvitationsAndAudit(t *testing.T) {
 		"time,actor,action,target,detail",
 		"owner@team.test,invitation.created,admin@team.test,as Admin",
 		"Sign-in service,invitation.accepted,admin@team.test,joins as Admin at their first sign-in",
-		"admin@team.test,member.joined,admin@team.test,\"as Admin, invited by owner@team.test\"",
-		"member@team.test,mailbox.added,me@example.test",
-		"admin@team.test,member.removed,member@team.test,removed from the team",
+		"admin@team.test,member.joined,admin@team.test,\"as Admin, invited by member #" + owner + "\"",
+		// The removed member's address is gone from every row; a detail never holds one.
+		"removed member #" + member + ",mailbox.added,me@example.test,\"an address, imap.example.test\"",
+		"admin@team.test,member.removed,removed member #" + member + ",removed from the team",
 		"owner@team.test,invitation.withdrawn,later@team.test,it could not be sent",
 		"owner@team.test,invitation.revoked,later@team.test,",
 	} {
@@ -266,6 +267,11 @@ func TestTeamMembersInvitationsAndAudit(t *testing.T) {
 	}
 	entries := a.call(http.MethodGet, "/api/audit?format=json", "", http.StatusOK)["entries"].([]any)
 	conform(t, a.doc, "AuditEntry", entries[0])
+	for _, e := range entries {
+		if e := e.(map[string]any); strings.Contains(e["detail"].(string), "@") || strings.Contains(e["actor"].(string)+e["target"].(string), "member@team.test") {
+			t.Errorf("audit entry = %v; want no address in detail and none of the removed member's", e)
+		}
+	}
 	a.refuse(http.MethodGet, "/api/audit?format=xml", "", http.StatusBadRequest, "invalid_input", "format")
 	if cell("=SUM(A1)") != "'=SUM(A1)" || cell("plain") != "plain" {
 		t.Error("cell does not defuse a formula")
@@ -291,7 +297,6 @@ func TestPlanSeats(t *testing.T) {
 	o.refuse(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":2}`, http.StatusConflict, "downgrade_refused", "")
 	o.refuse(http.MethodPost, "/api/plan/change", `{"plan":"pro","interval":"month"}`, http.StatusConflict, "downgrade_refused", "")
 	o.call(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":5}`, http.StatusAccepted)
-	w.admin.refuse(http.MethodGet, "/api/plan", "", http.StatusForbidden, "role_required", "")
 }
 
 // Self-host's admin is the owner of its tenant, and the team's routes are not there.
