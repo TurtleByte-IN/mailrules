@@ -170,7 +170,8 @@ func (s *server) planFeatureOnly(feature string, h http.HandlerFunc) http.Handle
 }
 
 // tenantFeatures are the features GET /api/settings reports to the tenant: the build's, but
-// a feature a plan gates only while the tenant's plan includes it.
+// a feature a plan gates only while the tenant's plan includes it, and company sign-in only
+// while the tenant may use it (companySignInAllowed).
 func (s *server) tenantFeatures(ctx context.Context, tenantID int64) (map[string]bool, error) {
 	out := s.features()
 	for _, f := range gatedFeatures(s.billing()) {
@@ -183,6 +184,11 @@ func (s *server) tenantFeatures(ctx context.Context, tenantID int64) (map[string
 		}
 		out[f] = ok
 	}
+	ok, err := s.companySignIn(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out[companySignInFeature] = ok
 	return out, nil
 }
 
@@ -229,33 +235,35 @@ func orNil(s string) *string {
 }
 
 type planTermsJSON struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Prices    map[string]string `json:"prices"`
-	Includes  []string          `json:"includes"`
-	Mailboxes *int              `json:"mailboxes"`
-	AIEmails  *int              `json:"ai_emails"`
-	Features  []string          `json:"features"`
-	PerSeat   bool              `json:"per_seat"`
-	MinSeats  *int              `json:"min_seats"`
+	ID            string                  `json:"id"`
+	Name          string                  `json:"name"`
+	Prices        map[string]string       `json:"prices"`
+	Includes      []string                `json:"includes"`
+	Mailboxes     *int                    `json:"mailboxes"`
+	AIEmails      *int                    `json:"ai_emails"`
+	Features      []string                `json:"features"`
+	PerSeat       bool                    `json:"per_seat"`
+	MinSeats      *int                    `json:"min_seats"`
+	CompanySignIn *companySignInTermsJSON `json:"company_sign_in"`
 }
 
 type planJSON struct {
-	Plan             string          `json:"plan"`
-	Interval         *string         `json:"interval"`
-	Status           *string         `json:"status"`
-	PeriodEnd        *int64          `json:"period_end"`
-	Seats            *int            `json:"seats"`
-	SeatsUsed        *int            `json:"seats_used"` // with seats: members and invitations waiting (store.SeatsUsed)
-	TrialEndsAt      int64           `json:"trial_ends_at"`
-	TrialDaysLeft    *int            `json:"trial_days_left"`
-	EndedAt          *int64          `json:"ended_at"`
-	SecretsDeletedAt *int64          `json:"secrets_deleted_at"`
-	RemovedAt        *int64          `json:"removed_at"`
-	ReadOnly         bool            `json:"read_only"`
-	Subscribed       bool            `json:"subscribed"`
-	Note             *string         `json:"note"`
-	Plans            []planTermsJSON `json:"plans"`
+	Plan             string             `json:"plan"`
+	Interval         *string            `json:"interval"`
+	Status           *string            `json:"status"`
+	PeriodEnd        *int64             `json:"period_end"`
+	Seats            *int               `json:"seats"`
+	SeatsUsed        *int               `json:"seats_used"` // with seats: members and invitations waiting (store.SeatsUsed)
+	CompanySignIn    *companySignInJSON `json:"company_sign_in"`
+	TrialEndsAt      int64              `json:"trial_ends_at"`
+	TrialDaysLeft    *int               `json:"trial_days_left"`
+	EndedAt          *int64             `json:"ended_at"`
+	SecretsDeletedAt *int64             `json:"secrets_deleted_at"`
+	RemovedAt        *int64             `json:"removed_at"`
+	ReadOnly         bool               `json:"read_only"`
+	Subscribed       bool               `json:"subscribed"`
+	Note             *string            `json:"note"`
+	Plans            []planTermsJSON    `json:"plans"`
 }
 
 // limitOrNil is a limit as the API writes it: null for no limit.
@@ -282,6 +290,10 @@ func (s *server) planJSON(p store.PlanState, full bool) planJSON {
 			out.Seats = &p.Seats
 		}
 	}
+	sold := companySignInSold(b, s.portalTeam() != nil)
+	if sold != nil {
+		out.CompanySignIn = &companySignInJSON{Allowed: companySignInAllowed(b, p), AddOn: p.CompanySignInAddOn && !p.Ended(), IncludedSeats: includedSeats(sold)}
+	}
 	if p.Plan.Plan == store.PlanTrial {
 		left := int(math.Ceil(float64(p.TrialEnd-s.now().Unix()) / (24 * 3600)))
 		out.TrialDaysLeft = &left
@@ -304,6 +316,9 @@ func (s *server) planJSON(p store.PlanState, full bool) planJSON {
 		if t.PerSeat {
 			least := minSeats(t)
 			pt.MinSeats = &least
+		}
+		if id == store.PlanTeam && sold != nil {
+			pt.CompanySignIn = &companySignInTermsJSON{IncludedSeats: includedSeats(sold), Prices: sold.Prices}
 		}
 		out.Plans = append(out.Plans, pt)
 	}
@@ -505,8 +520,9 @@ func (s *server) handlePlanChange(w http.ResponseWriter, r *http.Request) {
 	if s.downgradeRefused(w, r, c) {
 		return
 	}
+	// The add-on stays on a Team subscription that keeps the Team plan and goes with any other.
 	if err := s.billing().ChangePlan(r.Context(), ext.PlanChange{TenantID: viewer(r).TenantID, Record: p.Record, Plan: c.plan,
-		Interval: c.interval, Seats: c.seats}); err != nil {
+		Interval: c.interval, Seats: c.seats, CompanySignIn: p.CompanySignInAddOn && c.plan == store.PlanTeam}); err != nil {
 		billingFailed(w, r, "change plan", err)
 		return
 	}
@@ -562,7 +578,7 @@ func (h host) SetPlan(ctx context.Context, tenantID int64, p ext.Plan) error {
 		ctx = store.WithActor(ctx, store.Actor{Name: "Billing service"})
 	}
 	before, after, err := h.s.store.SetPlan(ctx, tenantID, store.Plan{Plan: p.Plan, Interval: p.Interval, Status: p.Status,
-		PeriodEnd: end, Record: p.Record, Seats: p.Seats}, h.s.now().Unix())
+		PeriodEnd: end, Record: p.Record, Seats: p.Seats, CompanySignInAddOn: p.CompanySignInAddOn}, h.s.now().Unix())
 	if errors.Is(err, store.ErrNotFound) {
 		return ext.ErrNoTenant
 	}
@@ -573,7 +589,8 @@ func (h host) SetPlan(ctx context.Context, tenantID int64, p ext.Plan) error {
 	return nil
 }
 
-// Plan returns the tenant's plan as the daemon has it now (ext.Host).
+// Plan returns the tenant's plan as the daemon has it now (ext.Host), with whether it may use
+// company sign-in.
 func (h host) Plan(ctx context.Context, tenantID int64) (ext.PlanState, error) {
 	p, err := h.s.store.TenantPlan(ctx, tenantID, h.s.now().Unix())
 	if errors.Is(err, store.ErrNotFound) {
@@ -589,7 +606,8 @@ func (h host) Plan(ctx context.Context, tenantID int64) (ext.PlanState, error) {
 		return time.Unix(sec, 0)
 	}
 	return ext.PlanState{Plan: ext.Plan{Plan: p.Plan.Plan, Interval: p.Interval, Status: p.Status, PeriodEnd: t(p.PeriodEnd), Record: p.Record,
-		Seats: p.Seats}, TrialEnd: t(p.TrialEnd), EndedAt: t(p.EndedAt)}, nil
+		Seats: p.Seats, CompanySignInAddOn: p.CompanySignInAddOn}, TrialEnd: t(p.TrialEnd), EndedAt: t(p.EndedAt),
+		CompanySignIn: h.s.portalTeam() != nil && companySignInAllowed(h.s.billing(), p)}, nil
 }
 
 // Who is the signed-in person the request is for (ext.Host).
@@ -629,11 +647,15 @@ func contentPolicy(b *ext.Billing) string {
 // checkBilling refuses a Billing the daemon cannot serve: a plan the build sells missing or
 // unnamed, a feature that is not one of the build's, a Team plan not sold by the seat or
 // another plan that is, no Checkout, ChangePlan or Portal, a Script that is not one of the
-// module's Public GET routes, or a source that is not an https origin.
+// module's Public GET routes, a source that is not an https origin, or company sign-in
+// terms it cannot serve (checkCompanySignIn).
 func checkBilling(m ext.Module, publicGet map[string]bool, built map[string]bool) error {
 	b := m.Billing
 	if b.Checkout == nil || b.ChangePlan == nil || b.Portal == nil {
 		return fmt.Errorf("module %s: Billing needs Checkout, ChangePlan and Portal", m.Name)
+	}
+	if err := checkCompanySignIn(m, built[companySignInFeature]); err != nil {
+		return err
 	}
 	known := []string{store.PlanTrial, store.PlanPersonal, store.PlanPro, store.PlanTeam}
 	for _, id := range known {

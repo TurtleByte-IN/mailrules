@@ -13,7 +13,8 @@ import (
 const AuditDays = 365
 
 // What the audit log records (AuditEntry.Action): who changed the tenant's rules, sender
-// rules, mailboxes, members, invitations, settings and plan.
+// rules, mailboxes, members, invitations, settings and plan, and who asked for the company
+// sign-in add-on or opened its setup link.
 const (
 	AuditRuleCreated         = "rule.created"
 	AuditRuleChanged         = "rule.changed"
@@ -35,6 +36,11 @@ const (
 	AuditInvitationRevoked   = "invitation.revoked"
 	AuditInvitationAccepted  = "invitation.accepted"
 	AuditInvitationWithdrawn = "invitation.withdrawn"
+	// An Owner asked the billing service to add or remove the company sign-in add-on; the
+	// change itself is the plan.changed row once the service reports it.
+	AuditCompanySignInAddOn = "company_sign_in.add_on"
+	// An Owner or Admin opened a link to set company sign-in up at the sign-in service.
+	AuditCompanySignInPortal = "company_sign_in.portal"
 )
 
 // Actor is who makes the changes of a context (WithActor): a person, by their user and
@@ -129,6 +135,14 @@ func (s *Store) change(ctx context.Context, tenantID int64, what string, fn func
 		return fmt.Errorf("%s: %w", what, err)
 	}
 	return nil
+}
+
+// Audit records one row of the tenant's audit log under ctx's actor, for something done
+// outside the store (a request to a module's service); nothing when ctx has none.
+func (s *Store) Audit(ctx context.Context, tenantID int64, action, target, detail string) error {
+	return s.change(ctx, tenantID, "record "+action, func(ctx context.Context, tx *txn) error {
+		return record(ctx, tx, tenantID, 0, action, target, detail)
+	})
 }
 
 // AuditLog lists the tenant's audit log from since to until (unix seconds, both included;

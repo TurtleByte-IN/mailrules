@@ -1,8 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { Destination } from '../lib/api/notifications';
+import type { PlanInfo } from '../lib/api/plan';
 import type { Settings as Saved } from '../lib/api/settings';
 import { notifications } from '../lib/state/notifications.svelte';
+import { plan } from '../lib/state/plan.svelte';
 import { auth, navigate } from '../lib/state/auth.svelte';
 import { load, settings } from '../lib/state/settings.svelte';
 import Settings from './Settings.svelte';
@@ -16,7 +18,7 @@ const fresh = (over: Partial<Saved> = {}): Saved => ({
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   limits: { test_default: 200, test_max: 2000, check_max: 2000 },
-  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false, delete_account: false, move_questions: false, team: false },
+  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false, delete_account: false, move_questions: false, team: false, company_sign_in: false },
   summary: { enabled: false, frequency: 'daily', weekday: 'monday', time: '08:00', time_zone: 'UTC', to: '', to_default: '', smtp: { configured: false, missing: [] }, last_sent_at: null, next_at: null },
   ...over,
 });
@@ -680,4 +682,71 @@ it("shows a Member the team's settings with every control off, but keeps Appeara
   } finally {
     auth.user = null;
   }
+});
+
+describe('Company sign-in', () => {
+  const on = (features: Partial<Saved['features']> = {}) => fresh({ features: { ...fresh().features, billing: true, team: true, company_sign_in: true, ...features } });
+  const card = () => within(screen.getByRole('region', { name: 'Company sign-in' }));
+  const as = (role: 'owner' | 'admin' | 'member') => (auth.user = { id: 1, email: role + '@team.test', role });
+  const teamPlan = (seats: number, allowed: boolean): PlanInfo => ({
+    plan: 'team', interval: 'month', status: 'active', period_end: null, seats, seats_used: 3, company_sign_in: { allowed, add_on: false, included_seats: 10 },
+    trial_ends_at: 0, trial_days_left: null, ended_at: null, secrets_deleted_at: null, removed_at: null, read_only: false, subscribed: true, note: null,
+    plans: [{ id: 'team', name: 'Team', prices: { month: '$8 a seat a month' }, includes: [], mailboxes: 5, ai_emails: 5000, features: ['team'], per_seat: true, min_seats: 2,
+      company_sign_in: { included_seats: 10, prices: { month: '$180 a month', year: '$1,800 a year' } } }],
+  });
+  afterEach(() => {
+    auth.user = null;
+    plan.value = null;
+  });
+
+  it('shows an Admin how it stands, and opens the one-time setup link it asks for', async () => {
+    as('admin');
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    routes['GET /api/company-sign-in'] = [200, { status: 'domain_pending' }];
+    routes['POST /api/company-sign-in/portal'] = [200, { url: 'https://setup.example/portal?token=once' }];
+    await show(on());
+    expect(await card().findByText('Domain not verified')).toBeTruthy();
+    expect(card().getByRole('button', { name: 'Verify your domain' }).className).toContain('btn-primary');
+    await fireEvent.click(card().getByRole('button', { name: 'Verify your domain' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://setup.example/portal?token=once'));
+    const post = fetchMock.mock.calls.find((c) => c[0] === '/api/company-sign-in/portal')!;
+    expect(JSON.parse(post[1].body as string)).toEqual({ intent: 'domain_verification' });
+  });
+
+  it('says why the link could not be had', async () => {
+    routes['GET /api/company-sign-in'] = [200, { status: 'not_set_up' }];
+    routes['POST /api/company-sign-in/portal'] = [502, { error: { code: 'sign_in_error', message: 'The sign-in service could not be reached. Try again in a minute.' } }];
+    await show(on());
+    await fireEvent.click(await card().findByRole('button', { name: 'Set up company sign-in' }));
+    expect((await card().findByRole('alert')).textContent).toBe('The sign-in service could not be reached. Try again in a minute.');
+  });
+
+  it('is not shown to a Member, who is not asked anything', async () => {
+    as('member');
+    await show(on());
+    expect(screen.queryByRole('region', { name: 'Company sign-in' })).toBeNull();
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/company-sign-in')).toBe(false);
+  });
+
+  it('offers an Owner of a team that may not use it the way to get it', async () => {
+    as('owner');
+    plan.value = teamPlan(3, false);
+    await show(on({ company_sign_in: false }));
+    expect(card().getByText(/comes with the Team plan from 10 seats, and your plan has 3\. Add it on Plan and billing for \$180 a month/)).toBeTruthy();
+    expect(card().getByRole('link', { name: 'Open Plan and billing' }).getAttribute('href')).toBe('#/plan');
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/company-sign-in')).toBe(false);
+  });
+
+  it('is not offered to an Admin of a team that may not use it, nor in a build that does not sell it', async () => {
+    as('admin');
+    plan.value = teamPlan(3, false);
+    await show(on({ company_sign_in: false }));
+    expect(screen.queryByRole('region', { name: 'Company sign-in' })).toBeNull();
+    cleanup();
+    as('owner');
+    plan.value = { ...teamPlan(3, false), company_sign_in: null };
+    await show(on({ company_sign_in: false }));
+    expect(screen.queryByRole('region', { name: 'Company sign-in' })).toBeNull();
+  });
 });

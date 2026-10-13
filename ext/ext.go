@@ -12,7 +12,8 @@
 // for (Module.Drafts), what the module is told when the person moves an email MailRules
 // filed, with a question it may ask in Activity (Module.Moves),
 // the plans the build sells: what each tenant may use and pays for (Module.Billing), the
-// invitations and member removals of a team at the sign-in service (Module.Team), the key
+// invitations and member removals of a team at the sign-in service and its company sign-in
+// setup (Module.Team), the key
 // service that holds the key every tenant's data key is wrapped under (Module.Keys), and
 // every error the daemon logs, for an error tracker (Module.Errors).
 // ext/daemon runs the daemon with the modules a build compiles in.
@@ -146,7 +147,8 @@ type Module struct {
 	// that has a MailRules account of its own, and records every change in the tenant's
 	// audit log; the module sends and revokes the invitations at the sign-in service and
 	// removes people from the tenant's organisation there (see Team). It needs a module with
-	// SignIn. At most one module of a build sets it.
+	// SignIn. At most one module of a build sets it. With Team.AdminPortal it also offers
+	// company sign-in (see Team).
 	Team *Team
 	// Keys, when set, holds the key-encryption key in place of the master key (see
 	// KeyProvider): every tenant's data key, which seals its mailbox passwords, tokens,
@@ -380,6 +382,15 @@ type Billing struct {
 	// subscription has already, for one not yet reported with Host.SetPlan: that must
 	// succeed and change nothing.
 	ChangePlan func(ctx context.Context, c PlanChange) error
+	// CompanySignIn adds the company sign-in add-on to a subscribed Team tenant's
+	// subscription, or removes it, at once, as a second item billed at c.Interval (the
+	// plan's): an Owner's choice on Plan and billing (MAI-246). The daemon calls it only for a
+	// tenant on the Team plan that subscribed, never to add the add-on while the tenant's
+	// seats include company sign-in already (CompanySignInTerms.IncludedSeats). Whether the
+	// add-on is on the subscription is what the module then reports with Host.SetPlan
+	// (Plan.CompanySignInAddOn); this call's success alone changes nothing. Needed when
+	// Plans[PlanTeam] sells it (PlanTerms.CompanySignIn), and only then.
+	CompanySignIn func(ctx context.Context, c CompanySignInChange) error
 	// Portal returns the address of the billing service's customer portal for a tenant that
 	// subscribed, where its people cancel, change the payment method and get invoices
 	// (Manage billing).
@@ -435,6 +446,32 @@ type PlanTerms struct {
 	// MinSeats is the fewest seats of a plan sold by the seat that may be bought; 0 is read
 	// as 1.
 	MinSeats int
+	// CompanySignIn, on the Team plan's terms only, sells company sign-in (Team.AdminPortal)
+	// to its tenants: included from IncludedSeats paid seats, or bought as an add-on below
+	// that (Billing.CompanySignIn). Nil: the plan offers no company sign-in, and in a build
+	// that sells plans no tenant may use it.
+	CompanySignIn *CompanySignInTerms
+}
+
+// CompanySignInTerms are how the Team plan sells company sign-in (PlanTerms.CompanySignIn).
+// A Team tenant may use it while its plan runs and it has IncludedSeats paid seats or more
+// (Plan.Seats), or has the add-on (Plan.CompanySignInAddOn); any other tenant may not.
+type CompanySignInTerms struct {
+	// IncludedSeats is how many paid seats include company sign-in with no add-on: 10 on the
+	// hosted Team plan. 0: never included, only bought.
+	IncludedSeats int
+	// Prices are what the add-on costs a team, as shown, by interval: {"month": "$180 a
+	// month", "year": "$1,800 a year"}. Both intervals are needed.
+	Prices map[string]string
+}
+
+// CompanySignInChange is an Owner adding the company sign-in add-on to their Team
+// subscription or removing it (Billing.CompanySignIn).
+type CompanySignInChange struct {
+	TenantID int64
+	Record   string // the tenant's Plan.Record
+	Add      bool   // true: add the add-on; false: remove it
+	Interval string // the plan's interval, which the add-on is billed at: IntervalMonth or IntervalYear
 }
 
 // CheckoutRequest is who is buying what (Billing.Checkout).
@@ -454,6 +491,10 @@ type PlanChange struct {
 	Plan     string // PlanPersonal, PlanPro or PlanTeam
 	Interval string // IntervalMonth or IntervalYear
 	Seats    int    // for a plan sold by the seat, how many; 0 for any other
+	// CompanySignIn is whether the subscription keeps the company sign-in add-on, billed at
+	// Interval: true only for the Team plan of a tenant that has it (Plan.CompanySignInAddOn).
+	// False on a move to another plan, which drops it.
+	CompanySignIn bool
 }
 
 // Plan is a tenant's plan as the module reports it (Host.SetPlan).
@@ -471,6 +512,9 @@ type Plan struct {
 	// Seats is how many seats the tenant bought of a plan sold by the seat (PlanTeam), at
 	// least 1; 0 for any other plan.
 	Seats int
+	// CompanySignInAddOn is whether the company sign-in add-on is on the tenant's Team
+	// subscription (Billing.CompanySignIn); false for any other plan.
+	CompanySignInAddOn bool
 }
 
 // PlanState is a tenant's plan as the daemon has it (Host.Plan).
@@ -480,6 +524,15 @@ type PlanState struct {
 	TrialEnd time.Time
 	// EndedAt is when the plan ended (Plan.Plan is PlanEnded); zero while one runs.
 	EndedAt time.Time
+	// CompanySignIn is whether the tenant may use company sign-in now (Team.AdminPortal),
+	// as the daemon computes it: in a build that sells plans, a Team plan that runs with
+	// CompanySignInTerms.IncludedSeats paid seats or more, or with the add-on; in one that
+	// does not, every tenant; false in a build that does not offer company sign-in. It turns
+	// false as soon as a plan without it is reported (fewer seats and no add-on, another
+	// plan, the plan ended): the daemon then offers the setup link no more and changes
+	// nothing at the sign-in service, where a connection already made stays as it is. What
+	// becomes of it is the sign-in module's to decide.
+	CompanySignIn bool
 }
 
 // Who is the signed-in person a request is for (Host.Who).
@@ -514,7 +567,50 @@ type Team struct {
 	// sign_in_error). On success the daemon removes them as Host.ForgetIdentity does: their
 	// sessions end, their mailboxes go with them, the team keeps the rest.
 	RemoveMember func(ctx context.Context, tenantID int64, id Identity) error
+	// AdminPortal, when set, offers company sign-in (SAML or OIDC) to the tenants that may
+	// use it (PlanState.CompanySignIn; GET /api/settings reports features.company_sign_in to
+	// them): Settings shows its Owners and Admins a Company sign-in section, whose buttons
+	// ask for a one-time link to the sign-in service's admin portal, where the team's IT
+	// admin sets the connection up (PortalSSO) or proves the company owns its email domain
+	// (PortalDomain), and open it in the browser. It returns that link, which must be
+	// short-lived: the daemon hands it to the browser at once and keeps it nowhere. Anyone
+	// who has it can change the organisation's sign-in until it expires. An error is logged
+	// and answered 502 sign_in_error. It needs Connection.
+	AdminPortal func(ctx context.Context, p PortalRequest) (url string, err error)
+	// Connection reports the state of the tenant's company sign-in at the service, which
+	// the Company sign-in section shows: ConnectionNone, ConnectionDomainPending or
+	// ConnectionActive. organisation is the service's id of the tenant's organisation. An
+	// error is logged and answered 502 sign_in_error. It needs AdminPortal.
+	Connection func(ctx context.Context, tenantID int64, organisation string) (state string, err error)
 }
+
+// PortalRequest is a request for a link to the sign-in service's admin portal
+// (Team.AdminPortal).
+type PortalRequest struct {
+	TenantID int64
+	// Organisation is the sign-in service's id of the tenant's organisation.
+	Organisation string
+	Intent       string // PortalSSO or PortalDomain
+}
+
+// What an admin portal link is for (PortalRequest.Intent).
+const (
+	// PortalSSO: set up or change the company sign-in connection (SAML or OIDC).
+	PortalSSO = "sso"
+	// PortalDomain: prove the company owns its email domain.
+	PortalDomain = "domain_verification"
+)
+
+// The states of a tenant's company sign-in (Team.Connection).
+const (
+	// ConnectionNone: no connection is set up yet.
+	ConnectionNone = "not_set_up"
+	// ConnectionDomainPending: a connection is set up, but the company's domain is not
+	// verified yet, so it does not sign anyone in.
+	ConnectionDomainPending = "domain_pending"
+	// ConnectionActive: people of the company sign in through it.
+	ConnectionActive = "active"
+)
 
 // Invitation is one invitation to a tenant (Team.Invite, Team.Revoke).
 type Invitation struct {

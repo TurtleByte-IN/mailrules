@@ -194,6 +194,7 @@ func (s *server) routes() []route {
 		on(post, "/api/plan/checkout", s.billingOnly(s.handlePlanCheckout)).need(owner, toManagePlan),
 		on(post, "/api/plan/change", s.billingOnly(s.handlePlanChange)).need(owner, toManagePlan),
 		on(get, "/api/plan/portal", s.billingOnly(s.handlePlanPortal)).need(owner, toManagePlan),
+		on(post, "/api/plan/company-sign-in", s.billingOnly(s.handlePlanCompanySignIn)).need(owner, toManagePlan),
 
 		on(get, "/api/settings", s.handleSettings),
 		on(patch, "/api/settings", s.handleSettingsPatch).need(admin, toEditSettings),
@@ -216,6 +217,11 @@ func (s *server) routes() []route {
 		on(post, "/api/invitations", s.teamOnly(s.handleInvitationCreate)).need(admin, toManageMembers),
 		on(del, "/api/invitations/{id}", s.teamOnly(s.handleInvitationDelete)).need(admin, toManageMembers),
 		on(get, "/api/audit", s.teamOnly(s.handleAudit)).need(admin, toSeeAudit),
+
+		// Company sign-in: an owner or admin sees how it stands and opens the sign-in service's
+		// admin portal to set it up, while the team may use it.
+		on(get, "/api/company-sign-in", s.companySignInOnly(s.handleCompanySignIn)).need(admin, toSetUpSignIn),
+		on(post, "/api/company-sign-in/portal", s.companySignInOnly(s.handleCompanySignInPortal)).need(admin, toSetUpSignIn),
 	}
 	return append(builtIn, s.moduleRoutes()...)
 }

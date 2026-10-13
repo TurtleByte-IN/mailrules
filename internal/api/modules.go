@@ -46,6 +46,9 @@ var gatedRoutes = []struct{ method, path, module string }{
 	{http.MethodPost, "/api/invitations", "team"},
 	{http.MethodDelete, "/api/invitations/{id}", "team"},
 	{http.MethodGet, "/api/audit", "team"},
+	{http.MethodPost, "/api/plan/company-sign-in", "billing"},
+	{http.MethodGet, "/api/company-sign-in", "company_sign_in"},
+	{http.MethodPost, "/api/company-sign-in/portal", "company_sign_in"},
 }
 
 // moduleRoutes are the routes the modules serve, then a refusal for each optional route of
@@ -91,7 +94,8 @@ func (s *server) moduleRoutes() []route {
 // providers), notifications while a module delivers rule notifications, draft_replies while a
 // module writes draft replies, delete_account while a module signs people in (the hosted
 // build), whether or not it can delete them at its sign-in service, billing while a module
-// sells plans, and team while a module invites people to a tenant.
+// sells plans, team while a module invites people to a tenant, and company_sign_in while that
+// module also offers company sign-in.
 func (s *server) features() map[string]bool { return buildFeatures(s.Modules) }
 
 // buildFeatures are the features of a build with these modules (server.features).
@@ -119,6 +123,7 @@ func buildFeatures(modules []ext.Module) map[string]bool {
 		}
 		if m.Team != nil {
 			out["team"] = true
+			out[companySignInFeature] = out[companySignInFeature] || m.Team.AdminPortal != nil
 		}
 	}
 	return out
@@ -413,6 +418,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 		if t := m.Team; t != nil {
 			if t.Invite == nil || t.Revoke == nil || t.RemoveMember == nil {
 				return fmt.Errorf("module %s: Team needs Invite, Revoke and RemoveMember", m.Name)
+			}
+			if (t.AdminPortal == nil) != (t.Connection == nil) {
+				return fmt.Errorf("module %s: Team needs AdminPortal and Connection together, or neither", m.Name)
 			}
 			teams = append(teams, m.Name)
 		}

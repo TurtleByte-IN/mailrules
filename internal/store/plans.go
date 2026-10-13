@@ -58,6 +58,9 @@ type Plan struct {
 	// Seats is how many seats the tenant bought of a plan sold by the seat (PlanTeam), at
 	// least 1; 0 for any other plan.
 	Seats int
+	// CompanySignInAddOn is whether the company sign-in add-on is on the tenant's Team
+	// subscription (MAI-246); false for any other plan.
+	CompanySignInAddOn bool
 }
 
 // PlanState is a tenant's plan as it stands at a moment (TenantPlan).
@@ -95,9 +98,9 @@ func tenantPlan(ctx context.Context, q querier, tenantID, now int64) (PlanState,
 	)
 	err := q.QueryRowContext(ctx,
 		`SELECT t.created_at, p.plan, COALESCE(p.interval, ''), COALESCE(p.status, ''), p.period_end, COALESCE(p.record, ''),
-		        p.ended_at, COALESCE(p.warned, 0), COALESCE(p.secrets_deleted, FALSE), COALESCE(p.seats, 0)
+		        p.ended_at, COALESCE(p.warned, 0), COALESCE(p.secrets_deleted, FALSE), COALESCE(p.seats, 0), COALESCE(p.company_sign_in, FALSE)
 		 FROM tenants t LEFT JOIN plans p ON p.tenant_id = t.id WHERE t.id = ?`, tenantID).
-		Scan(&created, &plan, &st.Interval, &st.Status, &periodEnd, &st.Record, &endedAt, &st.Warned, &st.SecretsDeleted, &st.Seats)
+		Scan(&created, &plan, &st.Interval, &st.Status, &periodEnd, &st.Record, &endedAt, &st.Warned, &st.SecretsDeleted, &st.Seats, &st.CompanySignInAddOn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PlanState{}, ErrNotFound
 	}
@@ -130,16 +133,17 @@ func tenantPlan(ctx context.Context, q querier, tenantID, now int64) (PlanState,
 // earlier one left: when it ended, the warnings sent, the secrets deleted. One that ends, or
 // a report that leaves it ended (a cancelled plan whose period is over, reported again),
 // keeps the time it really ended (the trial's end, or the paid period's) when that is
-// earlier than now, and the end-of-plan job's progress. A change of plan, interval, status
-// or seats is recorded in the audit log. ErrBadPlan for a plan, interval or status it does
-// not know, a team plan with no seat or another plan with seats; ErrNotFound for a tenant
-// that does not exist.
+// earlier than now, and the end-of-plan job's progress. A change of plan, interval, status,
+// seats or the company sign-in add-on is recorded in the audit log. ErrBadPlan for a plan,
+// interval or status it does not know, a team plan with no seat or another plan with seats
+// or the add-on; ErrNotFound for a tenant that does not exist.
 func (s *Store) SetPlan(ctx context.Context, tenantID int64, p Plan, now int64) (before, after PlanState, err error) {
 	if !slices.Contains([]string{PlanPersonal, PlanPro, PlanTeam, PlanEnded}, p.Plan) ||
 		!slices.Contains([]string{"", IntervalMonth, IntervalYear}, p.Interval) ||
 		!slices.Contains([]string{"", StatusActive, StatusPastDue, StatusCancelsAtPeriodEnd}, p.Status) ||
-		(p.Plan == PlanTeam) != (p.Seats > 0) || p.Seats < 0 {
-		return PlanState{}, PlanState{}, fmt.Errorf("set plan %q, interval %q, status %q, seats %d: %w", p.Plan, p.Interval, p.Status, p.Seats, ErrBadPlan)
+		(p.Plan == PlanTeam) != (p.Seats > 0) || p.Seats < 0 || p.CompanySignInAddOn && p.Plan != PlanTeam {
+		return PlanState{}, PlanState{}, fmt.Errorf("set plan %q, interval %q, status %q, seats %d, company sign-in add-on %t: %w",
+			p.Plan, p.Interval, p.Status, p.Seats, p.CompanySignInAddOn, ErrBadPlan)
 	}
 	ctx = WithTenant(ctx, tenantID)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -164,13 +168,14 @@ func (s *Store) SetPlan(ctx context.Context, tenantID int64, p Plan, now int64) 
 		warned, deleted = before.Warned, before.SecretsDeleted
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO plans (tenant_id, plan, interval, status, period_end, record, ended_at, warned, secrets_deleted, updated_at, seats)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO plans (tenant_id, plan, interval, status, period_end, record, ended_at, warned, secrets_deleted, updated_at, seats, company_sign_in)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (tenant_id) DO UPDATE SET plan = excluded.plan, interval = excluded.interval, status = excluded.status,
 		   period_end = excluded.period_end, record = excluded.record, ended_at = excluded.ended_at, warned = excluded.warned,
 		   warned_at = CASE WHEN ? THEN plans.warned_at ELSE NULL END,
-		   secrets_deleted = excluded.secrets_deleted, updated_at = excluded.updated_at, seats = excluded.seats`,
-		tenantID, p.Plan, p.Interval, p.Status, null(p.PeriodEnd), p.Record, endedAt, warned, deleted, now, p.Seats, keep); err != nil {
+		   secrets_deleted = excluded.secrets_deleted, updated_at = excluded.updated_at, seats = excluded.seats,
+		   company_sign_in = excluded.company_sign_in`,
+		tenantID, p.Plan, p.Interval, p.Status, null(p.PeriodEnd), p.Record, endedAt, warned, deleted, now, p.Seats, p.CompanySignInAddOn, keep); err != nil {
 		return PlanState{}, PlanState{}, fmt.Errorf("set plan: %w", err)
 	}
 	if after, err = tenantPlan(ctx, tx, tenantID, now); err != nil {
@@ -187,7 +192,8 @@ func (s *Store) SetPlan(ctx context.Context, tenantID int64, p Plan, now int64) 
 	return before, after, nil
 }
 
-// planLine is a plan as an audit row tells it: "team, month, active, 5 seats".
+// planLine is a plan as an audit row tells it: "team, month, active, 5 seats, company
+// sign-in add-on".
 func planLine(p PlanState) string {
 	parts := []string{p.Plan.Plan}
 	if !p.Ended() && p.Plan.Plan != PlanTrial {
@@ -198,6 +204,9 @@ func planLine(p PlanState) string {
 		}
 		if p.Seats > 0 {
 			parts = append(parts, fmt.Sprintf("%d seats", p.Seats))
+		}
+		if p.CompanySignInAddOn {
+			parts = append(parts, "company sign-in add-on")
 		}
 	}
 	return strings.Join(parts, ", ")
