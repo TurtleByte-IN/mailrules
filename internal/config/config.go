@@ -84,6 +84,15 @@ type Config struct {
 	// PublicURL is where the web app is reached from the user's mail program: links in the
 	// summary email start with it.
 	PublicURL string
+
+	// OpenTelemetry export of the metrics and the log (MAI-239): off while OTLPEndpoint is
+	// empty. OTLPHeaders holds the receiver's key: never logged, never quoted in an error.
+	OTLPEndpoint string
+	OTLPHeaders  string
+	OTLPProtocol string
+	ServiceName  string
+	// Environment names the deployment (staging, production): deployment.environment.name.
+	Environment string
 }
 
 // flagName turns MAILRULES_DATA_DIR into data-dir and OPENROUTER_API_KEY into openrouter-api-key.
@@ -188,6 +197,13 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 	str(&c.SMTPPasswordFile, "MAILRULES_SMTP_PASSWORD_FILE", "", "A file holding that password, instead of `MAILRULES_SMTP_PASSWORD`.")
 	str(&c.SMTPFrom, "MAILRULES_SMTP_FROM", "", "The summary's From address, such as `MailRules <me@example.com>`. Most servers want one of your own addresses.")
 	str(&c.SMTPTLS, "MAILRULES_SMTP_TLS", "starttls", "`starttls` (the server must offer it), `implicit` (TLS from the start), or `none`, which is allowed only for a mail server on this machine.")
+
+	group = "OpenTelemetry export"
+	str(&c.OTLPEndpoint, "OTEL_EXPORTER_OTLP_ENDPOINT", "", "Base URL of an OpenTelemetry (OTLP/HTTP) receiver, such as `https://otel.example.com` or `http://localhost:4318`. Set, MailRules sends it the metrics `/metrics` serves, Go runtime included, to `/v1/metrics` every minute (`OTEL_METRIC_EXPORT_INTERVAL`, in milliseconds, changes that), and every line of its log, redacted as the log is, to `/v1/logs`. Empty sends nothing and starts nothing. A receiver that is slow or down never holds up MailRules: log lines that cannot be sent are dropped and counted in `mailrules_otel_log_records_dropped_total`.")
+	str(&c.OTLPHeaders, "OTEL_EXPORTER_OTLP_HEADERS", "", "Headers sent with every export, as `key=value` pairs separated by commas, such as `X-Obs-Key=<token>`; values may be percent-encoded. Never logged.")
+	str(&c.OTLPProtocol, "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf", "How to send: only `http/protobuf` is supported.")
+	str(&c.ServiceName, "OTEL_SERVICE_NAME", "mailrules", "The `service.name` the metrics and log lines are sent under.")
+	str(&c.Environment, "MAILRULES_ENVIRONMENT", "", "The deployment's name, such as `staging` or `production`, sent as `deployment.environment.name` with the metrics and log lines. Empty sends none.")
 	return list
 }
 
@@ -278,6 +294,7 @@ func (c *Config) Validate() error {
 	default:
 		bad("LOG_REDACT_ADDRESSES=%q must be auto, true or false", c.LogRedactAddresses)
 	}
+	errs = append(errs, c.validateOTLP()...)
 	errs = append(errs, c.validateSMTP()...)
 	errs = append(errs, c.ValidateDatabase())
 	return errors.Join(errs...)
@@ -348,6 +365,64 @@ func (c *Config) validateSMTP() []error {
 		bad("MAILRULES_PUBLIC_URL=%q must be an http or https URL with no query or #, such as https://mail.example.com", c.PublicURL)
 	}
 	return errs
+}
+
+// validateOTLP checks the OpenTelemetry export's settings, when it is on. The endpoint and
+// the headers are never quoted: a URL may hold a password, and the headers hold a key.
+func (c *Config) validateOTLP() []error {
+	if c.OTLPEndpoint == "" {
+		return nil
+	}
+	var errs []error
+	if u, err := url.Parse(c.OTLPEndpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT must be an http:// or https:// URL with a host, and no query or fragment"))
+	}
+	if _, err := c.OTLPHeaderMap(); err != nil {
+		errs = append(errs, err)
+	}
+	if c.OTLPProtocol != "http/protobuf" {
+		errs = append(errs, fmt.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL=%q: only http/protobuf is supported", c.OTLPProtocol))
+	}
+	if c.ServiceName == "" {
+		errs = append(errs, errors.New("OTEL_SERVICE_NAME is empty"))
+	}
+	return errs
+}
+
+// OTLPHeaderMap reads OTEL_EXPORTER_OTLP_HEADERS as the OpenTelemetry specification writes
+// it: key=value pairs separated by commas, each value percent-decoded, spaces around keys
+// and values ignored. Its error says which pair is wrong by position, never by content.
+func (c *Config) OTLPHeaderMap() (map[string]string, error) {
+	out := map[string]string{}
+	if strings.TrimSpace(c.OTLPHeaders) == "" {
+		return out, nil
+	}
+	for i, pair := range strings.Split(c.OTLPHeaders, ",") {
+		k, v, found := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		v, err := url.PathUnescape(v)
+		v = strings.TrimSpace(v)
+		if !found || !validHeaderName(k) || err != nil || !validHeaderValue(v) {
+			return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_HEADERS: pair %d is not key=value with a valid header name and value", i+1)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// validHeaderName reports whether s is an HTTP header name: a non-empty token (RFC 9110).
+func validHeaderName(s string) bool {
+	const symbols = "!#$%&'*+-.^_`|~"
+	return s != "" && !strings.ContainsFunc(s, func(r rune) bool {
+		letterOrDigit := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+		return !letterOrDigit && !strings.ContainsRune(symbols, r)
+	})
+}
+
+// validHeaderValue reports whether s can be an HTTP header value: no control character
+// but tab.
+func validHeaderValue(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool { return (r < ' ' && r != '\t') || r == 0x7f })
 }
 
 // isLocalHost reports whether host names this machine.
