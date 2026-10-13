@@ -33,6 +33,10 @@
   let inviteRole = $state<Role>('member');
   let inviting = $state(false);
   let inviteError = $state('');
+  // On a plan sold by the seat (the daemon gives its price), an invitation while every seat is
+  // taken buys one more at once; removing someone or revoking an invitation gives one back.
+  const perSeat = $derived(team?.seats.price ?? null);
+  const addsSeat = $derived(!!team && perSeat !== null && team.seats.limit !== null && team.seats.used >= team.seats.limit);
 
   async function load() {
     loadError = '';
@@ -85,10 +89,11 @@
     inviteError = '';
     inviting = true;
     try {
+      const added = addsSeat;
       const { invitation } = await membersApi.invite(email.trim(), inviteRole);
       invitations.push(invitation);
       email = '';
-      flash('Invitation sent to ' + invitation.email);
+      flash('Invitation sent to ' + invitation.email + (added ? '; a seat was added to your plan' : ''));
       await refreshSeats();
     } catch (err) {
       inviteError = message(err);
@@ -125,8 +130,10 @@
     <Waiting text="Loading your team" />
   {:else}
     {@const seats = team.seats}
+    <!-- A seat an invitation just bought counts before the billing service reports it. -->
+    {@const limit = seats.limit !== null && seats.price !== null ? Math.max(seats.limit, seats.used) : seats.limit}
     <p class="text-[13px] text-secondary">
-      {seats.limit === null ? `${seats.used} ${seats.used === 1 ? 'seat' : 'seats'} used` : `${seats.used} of ${seats.limit} seats used`}{manage ? ', invitations waiting included.' : '.'}
+      {limit === null ? `${seats.used} ${seats.used === 1 ? 'seat' : 'seats'} used` : `${seats.used} of ${limit} seats used`}{manage ? ', invitations waiting included.' : '.'}
       {#if owner && seats.limit !== null}<a href="#/plan" class="underline">Change seats in Plan and billing</a>{/if}
     </p>
 
@@ -158,7 +165,7 @@
           {#if asking === m.id}
             <ConfirmBox
               question="Remove {m.email} from the team?"
-              note="They are signed out at once. The mailboxes they connected stop now and are deleted after 30 days; the team keeps its rules."
+              note={'They are signed out at once. The mailboxes they connected stop now and are deleted after 30 days; the team keeps its rules.' + (perSeat ? " Your plan's seats then come down to those in use, credited on your next bill." : '')}
               confirm="Yes, remove them"
               onconfirm={() => remove(m)}
               oncancel={() => (asking = 0)}
@@ -202,9 +209,12 @@
                 {#each offered as r (r)}<option value={r}>{roleNames[r]}</option>{/each}
               </select>
             </div>
-            <button type="submit" class="btn-primary min-h-11 px-4" disabled={inviting || !email.trim()}>{inviting ? 'Sending…' : 'Send invitation'}</button>
+            <button type="submit" class="btn-primary min-h-11 px-4" disabled={inviting || !email.trim()}>{inviting ? 'Sending…' : addsSeat ? 'Add a seat and send' : 'Send invitation'}</button>
           </div>
-          <p class="text-[12.5px] text-secondary">The invitation takes a seat and expires after 7 days. An Admin manages the shared rules, settings and members; a Member's own mailboxes are sorted by them.</p>
+          <p class="text-[12.5px] text-secondary">
+            {#if addsSeat}Every seat is taken, so this invitation adds one to your plan at once: {perSeat}, charged now for the rest of the billing period. Revoking it, or removing a member, brings your seats back down to those in use, credited on your next bill.{:else}The invitation takes a seat.{/if}
+            It expires after 7 days. An Admin manages the shared rules, settings and members; a Member's own mailboxes are sorted by them.
+          </p>
           {#if inviteError}<p role="alert" class="text-[13px] text-trash">{inviteError}</p>{/if}
         </form>
       </section>

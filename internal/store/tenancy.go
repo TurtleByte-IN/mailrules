@@ -85,11 +85,12 @@ func (s *Store) CreateUser(ctx context.Context, tenantID int64, email, passwordH
 	return u, nil
 }
 
-// TenantMembers counts the users in a tenant.
+// TenantMembers counts a tenant's members, as Members lists them: a removed or forgotten
+// person, whose removal waits, is not one (MAI-249).
 func (s *Store) TenantMembers(ctx context.Context, tenantID int64) (int, error) {
 	ctx = WithTenant(ctx, tenantID)
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = ?`, tenantID).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = ? AND `+activeUsers, tenantID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count tenant members: %w", err)
 	}
 	return n, nil

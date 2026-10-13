@@ -62,10 +62,11 @@
   }
 
   // The seats each per-seat card asks for: the person's number once typed; else the seats bought
-  // of that plan; else enough for everyone in the team, and never fewer than the plan's least.
+  // of that plan; else enough for everyone in the team (with the invitations waiting, counted as
+  // Members counts them), and never fewer than the plan's least.
   let seatsChosen = $state<Record<string, number>>({});
   const seatsOf = (info: PlanInfo, p: PlanTerms) =>
-    seatsChosen[p.id] ?? (info.plan === p.id && info.seats ? info.seats : Math.max(p.min_seats ?? 1, auth.members));
+    seatsChosen[p.id] ?? (info.plan === p.id && info.seats ? info.seats : Math.max(p.min_seats ?? 1, info.seats_used ?? auth.members));
 
   async function manage() {
     portalError = '';
@@ -109,7 +110,8 @@
         </p>
       {/if}
       {#if info.seats !== null}
-        <p class="text-[13px] text-secondary">Your plan has {info.seats} {info.seats === 1 ? 'seat' : 'seats'}; your team has {auth.members} {auth.members === 1 ? 'member' : 'members'}.</p>
+        {@const used = info.seats_used ?? 0}
+        <p class="text-[13px] text-secondary">Your plan has {info.seats} {info.seats === 1 ? 'seat' : 'seats'}; {used} {used === 1 ? 'is' : 'are'} taken by members and invitations waiting.</p>
       {/if}
       {#if info.subscribed}
         <div class="flex flex-wrap items-center gap-3">

@@ -139,10 +139,14 @@ type Module struct {
 	// its members on the Members screen (GET /api/settings reports features.team; a plan
 	// that lists "team" in its Features offers it to its tenants only). The daemon keeps the
 	// members, their roles (RoleOwner, RoleAdmin, RoleMember: enforced on every route, in
-	// every build) and the invitations, refuses any beyond the plan's seats (Limits.Seats),
-	// and records every change in the tenant's audit log; the module sends and revokes the
-	// invitations at the sign-in service and removes people from the tenant's organisation
-	// there (see Team). It needs a module with SignIn. At most one module of a build sets it.
+	// every build) and the invitations, counts the seats (a member still in the team or an
+	// invitation waiting), has the billing module add one for an invitation past the paid
+	// seats of a plan sold by the seat and give back those freed (Billing.ChangePlan),
+	// refuses an invitation past any other plan's seats (Limits.Seats) and one to an address
+	// that has a MailRules account of its own, and records every change in the tenant's
+	// audit log; the module sends and revokes the invitations at the sign-in service and
+	// removes people from the tenant's organisation there (see Team). It needs a module with
+	// SignIn. At most one module of a build sets it.
 	Team *Team
 	// Keys, when set, holds the key-encryption key in place of the master key (see
 	// KeyProvider): every tenant's data key, which seals its mailbox passwords, tokens,
@@ -282,7 +286,9 @@ type Limits struct {
 	// sign-in under the team's organisation without an invitation with ErrSeatLimit). The
 	// members a tenant has are left alone when the number goes down, but it cannot move to
 	// a plan with fewer seats than it has members (409 downgrade_refused). A plan sold by the
-	// seat ignores it: the tenant has the seats it bought (Plan.Seats).
+	// seat ignores it: the tenant has the seats it bought (Plan.Seats), which an invitation
+	// past them raises at once and a seat freed lowers (Billing.ChangePlan); a sign-in
+	// without an invitation past them is still refused with ErrSeatLimit.
 	Seats int
 }
 
@@ -365,6 +371,14 @@ type Billing struct {
 	// the next bill. The daemon refuses a move to a plan that allows fewer mailboxes, or
 	// fewer seats, than the tenant has before it calls this. The new plan is what the module
 	// then reports with Host.SetPlan; ChangePlan's success alone changes nothing.
+	//
+	// For a plan sold by the seat the daemon also calls it on its own, with the tenant's
+	// plan and interval and only c.Seats changed (MAI-247): before it keeps an invitation
+	// past the paid seats, for the seats the team then needs (an error refuses the
+	// invitation), and after a seat is freed, for the seats the team uses, never below
+	// MinSeats, again until it succeeds. It may ask for the number of seats the
+	// subscription has already, for one not yet reported with Host.SetPlan: that must
+	// succeed and change nothing.
 	ChangePlan func(ctx context.Context, c PlanChange) error
 	// Portal returns the address of the billing service's customer portal for a tenant that
 	// subscribed, where its people cancel, change the payment method and get invoices
@@ -477,7 +491,10 @@ type Who struct {
 
 // Team is how a module invites people to a tenant and removes them from it at the sign-in
 // service (Module.Team). Owners and admins invite on the Members screen; the daemon stores
-// each invitation, holding a seat, before it calls Invite. Once the person accepts at the
+// each invitation, holding a seat (bought first, past the paid seats of a plan sold by the
+// seat: Billing.ChangePlan), before it calls Invite. It never calls Invite for an address
+// that has a MailRules account of its own, in any tenant (409 has_account): the person
+// would belong to two organisations. Once the person accepts at the
 // service, which adds them to the tenant's organisation, the module tells the daemon
 // (Host.AcceptInvitation); their first sign-in under that organisation (Host.SignIn) joins
 // them to the tenant with the invitation's role. Someone the service lets into the

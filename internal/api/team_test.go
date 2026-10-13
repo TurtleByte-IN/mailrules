@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
@@ -27,12 +28,13 @@ const (
 	teamAccept = "/api/testteam/accept" // a webhook: ?tenant=&email= accepted
 )
 
-// teamModules are a sign-in module that invites people (ft) and a billing module whose Team
-// plan, sold by the seat, includes the team.
-func teamModules(ft *fakeTeam) []ext.Module {
+// teamModules are a sign-in module that invites people (ft) and a billing module (fb) whose
+// Team plan, sold by the seat from 2 seats at "$8 a seat a month", includes the team.
+func teamModules(ft *fakeTeam, fb *fakeBilling) []ext.Module {
 	one := ext.Limits{Mailboxes: 3, AIEmails: 100, Seats: 1}
 	team := termsGiving("Team", ext.Limits{Mailboxes: 2, AIEmails: 5000}, "team")
 	team.PerSeat, team.MinSeats = true, 2
+	team.Prices = map[string]string{"month": "$8 a seat a month", "year": "$80 a seat a year"}
 	plans := map[string]ext.PlanTerms{store.PlanTrial: termsGiving("Trial", one), store.PlanPersonal: termsGiving("Personal", one),
 		store.PlanPro: termsGiving("Pro", one), store.PlanTeam: team}
 	sso := ext.Module{
@@ -76,7 +78,7 @@ func teamModules(ft *fakeTeam) []ext.Module {
 			},
 		},
 	}
-	return []ext.Module{sso, billingModule(&fakeBilling{}, plans)}
+	return []ext.Module{sso, billingModule(fb, plans)}
 }
 
 // teamSignIn signs this browser in through the team module and returns where it was sent.
@@ -94,6 +96,8 @@ func (e *env) teamSignIn(sub, email string) string {
 // member, each in a browser of their own, the admin and member invited and accepted.
 type teamWorld struct {
 	ft                   *fakeTeam
+	fb                   *fakeBilling
+	modules              []ext.Module
 	owner, admin, member *env
 	tenant               int64
 	ids                  map[string]int64 // user ids by role
@@ -101,8 +105,9 @@ type teamWorld struct {
 
 func newTeamWorld(t *testing.T) teamWorld {
 	t.Helper()
-	w := teamWorld{ft: &fakeTeam{}, ids: map[string]int64{}}
-	e := newEnv(t, teamModules(w.ft)...)
+	w := teamWorld{ft: &fakeTeam{}, fb: &fakeBilling{}, ids: map[string]int64{}}
+	w.modules = teamModules(w.ft, w.fb)
+	e := newEnv(t, w.modules...)
 	w.owner = e.browser()
 	w.owner.teamSignIn("user_o", "owner@team.test")
 	me := w.owner.me()["user"].(map[string]any)
@@ -200,9 +205,8 @@ func TestTeamMembersInvitationsAndAudit(t *testing.T) {
 		t.Errorf("features.team = %v", f["team"])
 	}
 
-	// Seats: every one is taken, so another invitation is refused with a sentence.
-	o.refuse(http.MethodPost, "/api/invitations", `{"email":"fourth@team.test","role":"member"}`, http.StatusConflict, "seat_limit", "")
-	// Someone the service lets in without an invitation is refused too.
+	// Seats: every one is taken, so someone the service lets in without an invitation is
+	// refused (an invitation adds a seat instead: TestInvitationAddsSeat).
 	if loc := o.browser().teamSignIn("user_x", "x@team.test"); loc != "/?signin_error=seats_full" {
 		t.Errorf("sign-in over the seats went to %q", loc)
 	}
@@ -297,6 +301,173 @@ func TestPlanSeats(t *testing.T) {
 	o.refuse(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":2}`, http.StatusConflict, "downgrade_refused", "")
 	o.refuse(http.MethodPost, "/api/plan/change", `{"plan":"pro","interval":"month"}`, http.StatusConflict, "downgrade_refused", "")
 	o.call(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":5}`, http.StatusAccepted)
+}
+
+// One count of seats on every screen (MAI-249): the members still in the team and the
+// invitations waiting. A removed member, whose data waits ForgetDays for its removal, holds
+// none on Members, on Plan and billing, in the session's member count or in the downgrade
+// check.
+func TestSeatsCountedOnce(t *testing.T) {
+	w := newTeamWorld(t)
+	o := w.owner
+	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(w.ids["member"], 10), "", http.StatusNoContent)
+	inv := o.call(http.MethodPost, "/api/invitations", `{"email":"new@team.test","role":"member"}`, http.StatusCreated)["invitation"].(map[string]any)
+	counts := func(people, used float64) {
+		t.Helper()
+		for _, b := range []*env{o, w.admin} {
+			if s := b.call(http.MethodGet, "/api/members", "", http.StatusOK)["seats"].(map[string]any); s["used"] != used {
+				t.Errorf("Members: seats = %v, want %v used", s, used)
+			}
+			p := b.call(http.MethodGet, "/api/plan", "", http.StatusOK)
+			conform(t, b.doc, "PlanInfo", p)
+			if p["seats_used"] != used {
+				t.Errorf("Plan and billing: seats_used = %v, want %v", p["seats_used"], used)
+			}
+			if n := b.me()["members"]; n != people {
+				t.Errorf("session: members = %v, want %v", n, people)
+			}
+		}
+	}
+	counts(2, 3)
+	o.refuse(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":2}`, http.StatusConflict, "downgrade_refused", "")
+	o.call(http.MethodDelete, "/api/invitations/"+strconv.FormatInt(id(inv["id"]), 10), "", http.StatusNoContent)
+	counts(2, 2)
+	o.call(http.MethodPost, "/api/plan/change", `{"plan":"team","interval":"month","seats":2}`, http.StatusAccepted)
+}
+
+// An invitation past the paid seats adds one at once (MAI-247): the billing module is asked
+// for the seats the team then needs, and only once it agrees is the invitation kept and
+// sent. When it refuses nobody is invited. Joining without an invitation is still refused.
+func TestInvitationAddsSeat(t *testing.T) {
+	w := newTeamWorld(t)
+	a := w.admin
+	tenant := strconv.FormatInt(w.tenant, 10)
+	if s := a.call(http.MethodGet, "/api/members", "", http.StatusOK)["seats"].(map[string]any); s["used"] != float64(3) || s["limit"] != float64(3) || s["price"] != "$8 a seat a month" {
+		t.Fatalf("seats = %v", s)
+	}
+	a.call(http.MethodPost, "/api/invitations", `{"email":"fourth@team.test","role":"member"}`, http.StatusCreated)
+	if want := []string{tenant + " sub_t team month 4"}; !slices.Equal(w.fb.changes, want) || len(w.ft.invited) != 3 {
+		t.Fatalf("changes = %q, invited = %d; want %q and the invitation sent", w.fb.changes, len(w.ft.invited), want)
+	}
+	// Before the billing service reports the fourth seat, the next invitation asks for five.
+	a.call(http.MethodPost, "/api/invitations", `{"email":"fifth@team.test","role":"member"}`, http.StatusCreated)
+	if want := []string{tenant + " sub_t team month 4", tenant + " sub_t team month 5"}; !slices.Equal(w.fb.changes, want) {
+		t.Fatalf("changes = %q, want %q", w.fb.changes, want)
+	}
+	w.fb.err = errors.New("card declined")
+	r := a.do(http.MethodPost, "/api/invitations", `{"email":"sixth@team.test","role":"member"}`)
+	if r.status != http.StatusBadGateway || r.body.Error.Code != "billing_error" || !strings.Contains(r.body.Error.Message, "nobody was invited") {
+		t.Fatalf("invitation the billing service refused a seat for = %d %s", r.status, r.raw)
+	}
+	w.fb.err = nil
+	if l := a.call(http.MethodGet, "/api/invitations", "", http.StatusOK)["invitations"].([]any); len(l) != 2 || len(w.ft.invited) != 4 {
+		t.Errorf("invitations = %v, sent = %d; want fourth and fifth only", l, len(w.ft.invited))
+	}
+	if loc := a.browser().teamSignIn("user_x", "x@team.test"); loc != "/?signin_error=seats_full" {
+		t.Errorf("sign-in without an invitation went to %q", loc)
+	}
+}
+
+// An address with a MailRules account of its own, in any tenant, cannot be invited
+// (MAI-248): it would belong to two organisations at the sign-in service and reach neither.
+// A removed member's address is free again at once.
+func TestInvitationRefusesAccount(t *testing.T) {
+	w := newTeamWorld(t)
+	o := w.owner
+	q := url.Values{"sub": {"user_s"}, "email": {"solo@else.test"}, "org": {"org_solo"}}
+	if r := o.browser().do(http.MethodGet, teamStart+"?"+q.Encode(), ""); r.status != http.StatusSeeOther || r.header.Get("Location") != "/" {
+		t.Fatalf("sign-up elsewhere = %d %v", r.status, r.header)
+	}
+	r := o.do(http.MethodPost, "/api/invitations", `{"email":"Solo@Else.test","role":"member"}`)
+	if r.status != http.StatusConflict || r.body.Error.Code != "has_account" || r.body.Error.Path != "email" ||
+		!strings.Contains(r.body.Error.Message, "delete their own MailRules account") {
+		t.Fatalf("invitation of an address with an account = %d %s", r.status, r.raw)
+	}
+	if len(w.fb.changes) != 0 || len(w.ft.invited) != 2 {
+		t.Errorf("changes = %q, invited = %d; want neither", w.fb.changes, len(w.ft.invited))
+	}
+	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(w.ids["member"], 10), "", http.StatusNoContent)
+	o.call(http.MethodPost, "/api/invitations", `{"email":"member@team.test","role":"member"}`, http.StatusCreated)
+}
+
+// A seat freed is given back (MAI-247): removing a member, revoking an invitation, one
+// withdrawn because it could not be sent and one expiring each queue a seat check, and the
+// seat worker's LowerSeats asks the billing module for the seats then used, never below the
+// plan's least (2), even when the daemon has not heard of seats bought meanwhile.
+func TestFreedSeatsGoBack(t *testing.T) {
+	w := newTeamWorld(t)
+	o, ctx := w.owner, t.Context()
+	lower := LowerSeats(o.st, w.modules)
+	tenant := strconv.FormatInt(w.tenant, 10)
+	paid := func(n int) {
+		t.Helper()
+		if _, _, err := o.st.SetPlan(ctx, w.tenant, store.Plan{Plan: store.PlanTeam, Interval: store.IntervalMonth,
+			Status: store.StatusActive, Record: "sub_t", Seats: n}, o.ck.t.Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// settle runs the seat worker's checks due at now, as it would, and returns the seat
+	// changes the billing module was asked for meanwhile.
+	settle := func(now time.Time) []string {
+		t.Helper()
+		checks, err := o.st.WaitingSeatChecks(ctx, now.Unix(), 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(w.fb.changes)
+		for _, c := range checks {
+			if err := lower(ctx, c.TenantID, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := o.st.SeatCheckDone(ctx, c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return slices.Clone(w.fb.changes[before:])
+	}
+	two, three := []string{tenant + " sub_t team month 2"}, []string{tenant + " sub_t team month 3"}
+	if got := settle(o.ck.t); len(got) != 0 {
+		t.Fatalf("seat changes before anything was freed = %q", got)
+	}
+
+	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(w.ids["member"], 10), "", http.StatusNoContent)
+	if got := settle(o.ck.t); !slices.Equal(got, two) {
+		t.Errorf("after a member was removed: %q, want %q", got, two)
+	}
+	paid(2)
+	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(w.ids["admin"], 10), "", http.StatusNoContent)
+	if got := settle(o.ck.t); !slices.Equal(got, two) {
+		t.Errorf("down to one person, on the least: %q, want %q (which changes nothing)", got, two)
+	}
+
+	o.call(http.MethodPost, "/api/invitations", `{"email":"a@team.test","role":"member"}`, http.StatusCreated)
+	b := o.call(http.MethodPost, "/api/invitations", `{"email":"b@team.test","role":"member"}`, http.StatusCreated)["invitation"].(map[string]any)
+	if got := w.fb.changes[len(w.fb.changes)-1]; got != three[0] {
+		t.Fatalf("the invitation past 2 seats asked for %q, want %q", got, three[0])
+	}
+	paid(3)
+	o.call(http.MethodDelete, "/api/invitations/"+strconv.FormatInt(id(b["id"]), 10), "", http.StatusNoContent)
+	if got := settle(o.ck.t); !slices.Equal(got, two) {
+		t.Errorf("after an invitation was revoked: %q, want %q", got, two)
+	}
+	paid(2)
+
+	w.ft.inviteErr = errors.New("service down")
+	o.refuse(http.MethodPost, "/api/invitations", `{"email":"b@team.test","role":"member"}`, http.StatusBadGateway, "invite_failed", "")
+	w.ft.inviteErr = nil
+	if got := settle(o.ck.t); !slices.Equal(got, two) {
+		t.Errorf("after a seat bought for an invitation that could not be sent: %q, want %q", got, two)
+	}
+
+	o.call(http.MethodPost, "/api/invitations", `{"email":"b@team.test","role":"member"}`, http.StatusCreated)
+	paid(3)
+	later := o.ck.t.Add((store.InvitationDays*24 + 1) * time.Hour)
+	if _, _, err := o.st.Retain(ctx, w.tenant, later.Unix(), 30); err != nil {
+		t.Fatal(err)
+	}
+	if got := settle(later); !slices.Equal(got, two) {
+		t.Errorf("after the invitations expired: %q, want %q", got, two)
+	}
 }
 
 // Self-host's admin is the owner of its tenant, and the team's routes are not there.

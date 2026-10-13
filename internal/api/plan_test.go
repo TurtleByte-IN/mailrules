@@ -44,11 +44,12 @@ func billingModule(fb *fakeBilling, plans map[string]ext.PlanTerms) ext.Module {
 						Plan, Interval, Status string
 						Record                 string
 						PeriodEnd              int64
+						Seats                  int
 					}
 					if !h.ReadJSON(w, r, &in) {
 						return
 					}
-					p := ext.Plan{Plan: in.Plan, Interval: in.Interval, Status: in.Status, Record: in.Record}
+					p := ext.Plan{Plan: in.Plan, Interval: in.Interval, Status: in.Status, Record: in.Record, Seats: in.Seats}
 					if in.PeriodEnd != 0 {
 						p.PeriodEnd = time.Unix(in.PeriodEnd, 0)
 					}

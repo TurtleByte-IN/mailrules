@@ -246,6 +246,7 @@ type planJSON struct {
 	Status           *string         `json:"status"`
 	PeriodEnd        *int64          `json:"period_end"`
 	Seats            *int            `json:"seats"`
+	SeatsUsed        *int            `json:"seats_used"` // with seats: members and invitations waiting (store.SeatsUsed)
 	TrialEndsAt      int64           `json:"trial_ends_at"`
 	TrialDaysLeft    *int            `json:"trial_days_left"`
 	EndedAt          *int64          `json:"ended_at"`
@@ -332,8 +333,23 @@ func (s *server) currentPlan(w http.ResponseWriter, r *http.Request) (store.Plan
 
 func (s *server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if p, ok := s.currentPlan(w, r); ok {
-		writeJSON(w, http.StatusOK, s.planJSON(p, allowed(r, store.RoleOwner)))
+		s.writePlan(w, r, http.StatusOK, p, allowed(r, store.RoleOwner))
 	}
+}
+
+// writePlan answers with the tenant's plan (planJSON) and, for a plan with seats, how many of
+// them it uses, counted as Members counts them.
+func (s *server) writePlan(w http.ResponseWriter, r *http.Request, status int, p store.PlanState, full bool) {
+	out := s.planJSON(p, full)
+	if out.Seats != nil {
+		used, err := s.store.SeatsUsed(r.Context(), viewer(r).TenantID, s.now().Unix())
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		out.SeatsUsed = &used
+	}
+	writeJSON(w, status, out)
 }
 
 // minSeats is the fewest seats of a plan sold by the seat that may be bought.
@@ -394,17 +410,12 @@ func (s *server) downgradeRefused(w http.ResponseWriter, r *http.Request, c choi
 	l := limitsOf(s.billing(), store.PlanState{Plan: store.Plan{Plan: c.plan, Seats: c.seats}})
 	ctx, tenantID := r.Context(), viewer(r).TenantID
 	if l.Seats >= 0 {
-		members, err := s.store.Members(ctx, tenantID)
+		people, err := s.store.SeatsUsed(ctx, tenantID, s.now().Unix())
 		if err != nil {
 			internalError(w, r, err)
 			return true
 		}
-		invited, err := s.store.Invitations(ctx, tenantID, s.now().Unix())
-		if err != nil {
-			internalError(w, r, err)
-			return true
-		}
-		if people := len(members) + len(invited); people > l.Seats {
+		if people > l.Seats {
 			seats := "seats"
 			if l.Seats == 1 {
 				seats = "seat"
@@ -499,7 +510,7 @@ func (s *server) handlePlanChange(w http.ResponseWriter, r *http.Request) {
 		billingFailed(w, r, "change plan", err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, s.planJSON(p, true))
+	s.writePlan(w, r, http.StatusAccepted, p, true)
 }
 
 func (s *server) handlePlanPortal(w http.ResponseWriter, r *http.Request) {

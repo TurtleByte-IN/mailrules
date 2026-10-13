@@ -104,8 +104,9 @@ type memberJSON struct {
 }
 
 type seatsJSON struct {
-	Used  int  `json:"used"`
-	Limit *int `json:"limit"` // null: any number
+	Used  int     `json:"used"`
+	Limit *int    `json:"limit"` // null: any number
+	Price *string `json:"price"` // what one more costs, when an invitation past limit buys it
 }
 
 type invitationJSON struct {
@@ -123,15 +124,16 @@ func toInvitationJSON(v store.Invitation) invitationJSON {
 		ExpiresAt: v.ExpiresAt, AcceptedAt: ts(v.AcceptedAt)}
 }
 
-// handleMembers lists the team, with how many of its plan's seats are taken.
+// handleMembers lists the team, with how many of its plan's seats are taken (store.SeatsUsed,
+// the one count of them) and what one more costs when an invitation buys it.
 func (s *server) handleMembers(w http.ResponseWriter, r *http.Request) {
-	ctx, me := r.Context(), user(r)
+	ctx, me, now := r.Context(), user(r), s.now().Unix()
 	members, err := s.store.Members(ctx, me.TenantID)
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
-	invited, err := s.store.Invitations(ctx, me.TenantID, s.now().Unix())
+	used, err := s.store.SeatsUsed(ctx, me.TenantID, now)
 	if err != nil {
 		internalError(w, r, err)
 		return
@@ -141,10 +143,21 @@ func (s *server) handleMembers(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
+	seats := seatsJSON{Used: used, Limit: limitOrNil(l.Seats)}
+	if b := s.billing(); b != nil {
+		p, err := s.store.TenantPlan(ctx, me.TenantID, now)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		if t, ok := perSeat(b, p); ok {
+			seats.Price = orNil(t.Prices[p.Interval])
+		}
+	}
 	out := struct {
 		Members []memberJSON `json:"members"`
 		Seats   seatsJSON    `json:"seats"`
-	}{Members: []memberJSON{}, Seats: seatsJSON{Used: len(members) + len(invited), Limit: limitOrNil(l.Seats)}}
+	}{Members: []memberJSON{}, Seats: seats}
 	for _, m := range members {
 		out.Members = append(out.Members, memberJSON{ID: m.UserID, Email: m.Email, Role: m.Role, JoinedAt: m.JoinedAt, You: m.UserID == me.ID})
 	}
@@ -272,7 +285,9 @@ func (s *server) handleInvitations(w http.ResponseWriter, r *http.Request) {
 
 // handleInvitationCreate invites a person by email: the daemon keeps the invitation, which
 // takes a seat, and the module has the sign-in service send it. Only an owner invites an
-// owner.
+// owner. Past the paid seats of a plan sold by the seat, the billing module is asked for the
+// seats the team then needs first, and the invitation is kept only once it agrees; a seat
+// bought for an invitation that is then not kept is given back (store.QueueSeatCheck).
 func (s *server) handleInvitationCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email string `json:"email"`
@@ -299,14 +314,27 @@ func (s *server) handleInvitationCreate(w http.ResponseWriter, r *http.Request) 
 		internalError(w, r, err)
 		return
 	}
-	inv, err := s.store.CreateInvitation(ctx, me.TenantID, store.Invitation{Email: in.Email, Role: in.Role, InvitedBy: me.ID}, s.seatLimit(), now)
+	inv, bought, err := s.invite(ctx, me.TenantID, store.Invitation{Email: in.Email, Role: in.Role, InvitedBy: me.ID}, now)
+	if bought > 0 && err != nil {
+		if qerr := s.store.QueueSeatCheck(context.WithoutCancel(ctx), me.TenantID, now); qerr != nil {
+			slog.ErrorContext(ctx, "could not queue giving back a seat bought for an invitation not kept", "error", qerr.Error())
+		}
+	}
 	var full *store.SeatLimitError
+	var refused seatRefused
 	switch {
+	case errors.As(err, &refused):
+		slog.ErrorContext(ctx, "the billing service did not add a seat for an invitation; nobody was invited", "seats", refused.seats, "error", refused.err.Error())
+		writeError(w, http.StatusBadGateway, "billing_error", "The billing service could not add a seat for this invitation, so nobody was invited. Try again in a few minutes.", "")
+		return
 	case errors.As(err, &full):
 		writeError(w, http.StatusConflict, "seat_limit", full.Error(), "")
 		return
 	case errors.Is(err, store.ErrAlreadyMember):
 		writeError(w, http.StatusConflict, "already_member", in.Email+" is in your team already.", "email")
+		return
+	case errors.Is(err, store.ErrHasAccount):
+		writeError(w, http.StatusConflict, "has_account", in.Email+" already has a MailRules account. They must delete their own MailRules account (Settings, Delete my account) before you can invite them.", "email")
 		return
 	case errors.Is(err, store.ErrAlreadyInvited):
 		writeError(w, http.StatusConflict, "already_invited", in.Email+" has an invitation waiting. Revoke it to send a new one.", "email")
@@ -336,6 +364,43 @@ func (s *server) handleInvitationCreate(w http.ResponseWriter, r *http.Request) 
 		inv.Record = rec
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"invitation": toInvitationJSON(inv)})
+}
+
+// seatRefused is the billing module refusing the seats an invitation needed.
+type seatRefused struct {
+	seats int
+	err   error
+}
+
+func (e seatRefused) Error() string { return "add seats: " + e.err.Error() }
+
+// invite stores the invitation (store.CreateInvitation). Past the paid seats of a plan sold
+// by the seat it asks the billing module for the seats the team then needs and stores it
+// once the module agrees, up to three times should others take those seats meanwhile;
+// bought is the seats last asked for, 0 for none. A refusal is a seatRefused, storing
+// nothing.
+func (s *server) invite(ctx context.Context, tenantID int64, inv store.Invitation, now int64) (stored store.Invitation, bought int, err error) {
+	for raised := 0; ; raised++ {
+		stored, err = s.store.CreateInvitation(ctx, tenantID, inv, s.seatsAtLeast(bought), now)
+		var full *store.SeatLimitError
+		if !errors.As(err, &full) || raised == 3 {
+			return stored, bought, err
+		}
+		p, perr := s.store.TenantPlan(ctx, tenantID, now)
+		if perr != nil {
+			return stored, bought, perr
+		}
+		need := seatsNeeded(s.billing(), p, full)
+		if need == 0 {
+			return stored, bought, err
+		}
+		// Not cut short by the browser leaving: a seat bought must be known to be bought.
+		if cerr := s.billing().ChangePlan(context.WithoutCancel(ctx), ext.PlanChange{TenantID: tenantID, Record: p.Record, Plan: p.Plan.Plan,
+			Interval: p.Interval, Seats: need}); cerr != nil {
+			return stored, bought, seatRefused{seats: need, err: cerr}
+		}
+		bought = need
+	}
 }
 
 // handleInvitationDelete revokes an invitation: it is deleted, freeing its seat, then the
