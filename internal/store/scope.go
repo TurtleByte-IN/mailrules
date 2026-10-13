@@ -140,6 +140,7 @@ const (
 	tenantsMoves     = "moves"
 	tenantsRemoved   = "removed"
 	tenantsForgotten = "forgotten"
+	tenantsDrafts    = "drafts"
 )
 
 // eachTenant calls fn once for every tenant with work of kind, with ctx scoped to it,

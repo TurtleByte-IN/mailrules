@@ -88,10 +88,10 @@ func (s *server) moduleRoutes() []route {
 // features are the flags GET /api/settings reports, before a plan has a say
 // (tenantFeatures): the later-phase ones, then each module's name, on, oauth_providers while
 // a module connects mailboxes with one-click sign-in (GET /api/presets says for which
-// providers), notifications while a module delivers rule notifications, delete_account while
-// a module signs people in (the hosted build), whether or not it can delete them at its
-// sign-in service, billing while a module sells plans, and team while a module invites
-// people to a tenant.
+// providers), notifications while a module delivers rule notifications, draft_replies while a
+// module writes draft replies, delete_account while a module signs people in (the hosted
+// build), whether or not it can delete them at its sign-in service, billing while a module
+// sells plans, and team while a module invites people to a tenant.
 func (s *server) features() map[string]bool { return buildFeatures(s.Modules) }
 
 // buildFeatures are the features of a build with these modules (server.features).
@@ -104,6 +104,9 @@ func buildFeatures(modules []ext.Module) map[string]bool {
 		}
 		if m.Notifications != nil {
 			out["notifications"] = true
+		}
+		if m.Drafts != nil {
+			out["draft_replies"] = true
 		}
 		if m.Moves != nil {
 			out["move_questions"] = true
@@ -304,12 +307,13 @@ func (s *server) signIn() *ext.Module {
 // MailboxForm for a provider other than proton, or whose Path is not one of its module's
 // signed-in POST routes under /api/, and two forms for one provider; a MailboxRemoved with
 // neither Mailboxes nor MailboxForms; a Notifications with no Notify or no kind, or a kind
-// other than webhook or slack, and more than one module with Notifications; a Moves with no
-// Moved or a negative Every, and more than one module with Moves; a Billing the daemon
+// other than webhook or slack, and more than one module with Notifications; a Drafts with no
+// Write, and more than one module with Drafts; a Moves with no Moved or a negative Every,
+// and more than one module with Moves; a Billing the daemon
 // cannot serve (checkBilling), and more than one module with Billing; and a Keys the daemon
 // cannot use (KeyModule). The daemon calls it before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn, mailboxes, notifiers, movers, billers, teams []string
+	var signIn, mailboxes, notifiers, drafters, movers, billers, teams []string
 	built := buildFeatures(modules)
 	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
@@ -374,6 +378,12 @@ func CheckModules(mode string, modules []ext.Module) error {
 			}
 			notifiers = append(notifiers, m.Name)
 		}
+		if d := m.Drafts; d != nil {
+			if d.Write == nil {
+				return fmt.Errorf("module %s: Drafts needs Write", m.Name)
+			}
+			drafters = append(drafters, m.Name)
+		}
 		if mv := m.Moves; mv != nil {
 			if mv.Moved == nil || mv.Every < 0 {
 				return fmt.Errorf("module %s: Moves needs Moved and an Every that is not negative", m.Name)
@@ -415,6 +425,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 	}
 	if len(notifiers) > 1 {
 		return fmt.Errorf("more than one module delivers rule notifications: %s", strings.Join(notifiers, ", "))
+	}
+	if len(drafters) > 1 {
+		return fmt.Errorf("more than one module writes draft replies: %s", strings.Join(drafters, ", "))
 	}
 	if len(movers) > 1 {
 		return fmt.Errorf("more than one module learns from the person's moves: %s", strings.Join(movers, ", "))

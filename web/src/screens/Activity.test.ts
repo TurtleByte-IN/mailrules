@@ -5,6 +5,7 @@ import { decision, detail, error, inReview, item, serve, stats } from '../lib/st
 import { activity } from '../lib/state/activity.svelte';
 import { review } from '../lib/state/review.svelte';
 import { accounts } from '../lib/state/accounts.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import type { Account } from '../lib/api/accounts';
 import Activity from './Activity.svelte';
 
@@ -158,6 +159,22 @@ it('the Action filter sends the action chosen, together with the other filters',
   await fireEvent.change(screen.getByLabelText('Outcome'), { target: { value: 'sorted' } });
   expect(feedCalls(calls)).toEqual(['GET /api/activity', 'GET /api/activity?action=flag', 'GET /api/activity?action=flag&outcome=sorted']);
   expect(screen.queryByText('Nothing sorted yet. New mail shows up here as it arrives.')).toBeNull();
+});
+
+it.each([
+  [false, false],
+  [true, true],
+])('with features.draft_replies %s, the Action filter offers Drafted a reply: %s', (on, offered) => {
+  settings.value.features.draft_replies = on;
+  try {
+    daemon();
+    render(Activity);
+    const names = [...(screen.getByLabelText('Action') as HTMLSelectElement).options].map((o) => o.text);
+    expect(names.includes('Drafted a reply')).toBe(offered);
+    expect(names.at(-1)).toBe(offered ? 'Drafted a reply' : 'Kept in Inbox');
+  } finally {
+    settings.value.features.draft_replies = false;
+  }
 });
 
 it.each(['sorted', 'trashed', 'inbox', 'review'])('#/activity?outcome=%s opens the feed with that filter chosen and applied', async (outcome) => {

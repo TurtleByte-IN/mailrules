@@ -8,8 +8,9 @@
 // connected with one-click sign-in (Module.Mailboxes), sign-in forms for mailboxes of
 // providers the module connects itself (Module.MailboxForms), what the module is told when a
 // mailbox it connected is removed or forgotten (Module.MailboxRemoved), the delivery of
-// rule notifications (Module.Notifications), what the module is told when the person
-// moves an email MailRules filed, with a question it may ask in Activity (Module.Moves),
+// rule notifications (Module.Notifications), the writing of the draft replies a rule asks
+// for (Module.Drafts), what the module is told when the person moves an email MailRules
+// filed, with a question it may ask in Activity (Module.Moves),
 // the plans the build sells: what each tenant may use and pays for (Module.Billing), the
 // invitations and member removals of a team at the sign-in service (Module.Team), the key
 // service that holds the key every tenant's data key is wrapped under (Module.Keys), and
@@ -18,8 +19,9 @@
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
 // mail it may read (read-only, with BODY.PEEK), the models it may call, the rules and
-// folders it may read, the notices of what rules did, and the helpers that answer HTTP
-// requests the way the built-in routes do. A change to it means the modules follow.
+// folders it may read, the notices of what rules did, the emails a rule wants answered, and
+// the helpers that answer HTTP requests the way the built-in routes do. A change to it means
+// the modules follow.
 package ext
 
 import (
@@ -113,6 +115,12 @@ type Module struct {
 	// destinations acts on live it writes one notice per destination and hands each to
 	// Notify. At most one module of a build sets it.
 	Notifications *Notifications
+	// Drafts, when set, writes draft replies. The daemon then offers "Draft a reply" on a
+	// rule (GET /api/settings reports features.draft_replies, in a build that sells plans
+	// only to tenants whose plan lists "draft_replies"), and for every email such a rule acts
+	// on live it hands the email to Write and saves the reply in the mailbox's Drafts folder,
+	// never sending it. At most one module of a build sets it.
+	Drafts *Drafts
 	// Moves, when set, tells the module when the person moves an email MailRules filed out
 	// of the folder MailRules put it in, in another mail app, and lets it ask in Activity
 	// whether to learn the sender. The daemon then watches the mailboxes for such moves
@@ -813,6 +821,74 @@ type Delivery struct {
 
 // ErrNoNotice is what Deliveries.Record returns for a notice the daemon no longer keeps.
 var ErrNoNotice = errors.New("no such notice is kept")
+
+// Drafts is how a module writes draft replies (Module.Drafts). The daemon decides when: a
+// job for every email a rule that drafts replies acts on live, written in the transaction
+// that records the rule's actions, so a restart loses none. Nothing is drafted in dry-run,
+// for a cleanup, an undo or a correction, for an email a sender rule settled, or once the
+// rule's actions on the email were undone. The daemon reads the email (BODY.PEEK), pays for
+// the model like sorting, saves the reply and records it in Activity, where it can be
+// undone; the module only writes the text.
+type Drafts struct {
+	// Write writes the reply to one email, as plain text: the body only, no greeting line
+	// it was not asked for, no quoted original, no headers. One worker calls it, one email
+	// at a time, within a few seconds of the rule acting, with a ctx that ends after 60
+	// seconds, and calls it again for the same email (the same DraftRequest.ID) until it
+	// returns text or DraftWait has passed since the rule acted: a module that keeps state
+	// tells repeats apart by ID. An empty text, or an error that wraps a *DraftRefused,
+	// writes no reply, for good, and Activity says why. Errors must not contain the email's
+	// text, sender or subject. It must ask for the reply only through r.Model.
+	Write func(ctx context.Context, r DraftRequest) (string, error)
+}
+
+// DraftWait is how long after a rule acted its reply is still tried for: one Write has not
+// written by then is given up, and Activity says so.
+const DraftWait = store.DraftWait * time.Second
+
+// DraftRequest is one email a rule wants answered.
+type DraftRequest struct {
+	// ID is the request's own: the same on every hand-over of it.
+	ID       int64
+	TenantID int64
+	RuleID   int64 // 0 once the rule was deleted
+	RuleName string
+	// Instruction is how the person wants the reply to sound or what it should say, as the
+	// rule had it when it acted ("polite no, not looking right now"); empty = none given.
+	Instruction string
+	// Mailbox is the address the reply is from: the mailbox's own.
+	Mailbox string
+	// Email is the email to answer.
+	Email DraftEmail
+	// Previous is the thread's previous message, the one Email replies to, when the rule
+	// allows it to be read and the mailbox still has it; nil otherwise.
+	Previous *DraftEmail
+	// Model is the tenant's generative model (its rule composer model in Settings), on the
+	// tenant's own key or else the operator's. The daemon books every call on the tenant's
+	// usage ledger under the purpose "draft" and, when the calls go out on a key the
+	// operator holds, counts the reply as one AI-sorted email against the tenant's monthly
+	// allowance; it does not call Write at all once that allowance is used up.
+	Model Generator
+}
+
+// DraftEmail is one email as the drafting model may read it: what the decision model is
+// shown, no more.
+type DraftEmail struct {
+	From     string // the sender's address
+	FromName string // the sender's display name; empty when the email gave none
+	To       []string
+	Subject  string
+	Date     time.Time // when the server received it
+	// Text is the email's plain text, HTML converted and control characters stripped, cut
+	// to MAILRULES_BODY_CHARS characters: the trimmed excerpt the decision model gets.
+	Text string
+}
+
+// DraftRefused is a reply a module will not write, for good: Reason is the short sentence
+// Activity shows ("The email asks for nothing a reply could answer."). Never the email's
+// text, sender or subject.
+type DraftRefused struct{ Reason string }
+
+func (e *DraftRefused) Error() string { return "no draft: " + e.Reason }
 
 // Moves is how a module learns of the emails the person moves out of the folders MailRules
 // filed them in (Module.Moves). The daemon does the watching: every Every it looks, on

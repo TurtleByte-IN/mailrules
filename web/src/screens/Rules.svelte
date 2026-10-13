@@ -33,7 +33,7 @@
   let result = $state<{ text: string; ok: boolean } | null>(null);
   // The field the daemon refused in the last edit, and why; shown beside that field.
   let refused = $state<{ path: string; message: string } | null>(null);
-  const editorFields = ['name', 'intent', 'account_id', 'stack', 'notify', 'model', 'min_confidence'];
+  const editorFields = ['name', 'intent', 'account_id', 'stack', 'notify', 'draft', 'model', 'min_confidence'];
   let picker: HTMLInputElement;
   let imported = $state<{ ok: boolean; text: string } | null>(null);
   // What the daemon is being waited on for, one thing at a time per control.

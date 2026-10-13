@@ -1202,7 +1202,7 @@ export interface paths {
         /**
          * Model calls and cost by day, rule and model for the Usage screen
          * @description `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
-         *     every model call under its purpose (decide, escalate, compose, test, cleanup, suggest). `by_rule` comes
+         *     every model call under its purpose (decide, escalate, compose, test, cleanup, suggest, draft). `by_rule` comes
          *     from the decisions, which know which rule a call was for, so it leaves out composing
          *     and testing and its costs add up to less than `cost_usd`.
          */
@@ -2076,6 +2076,8 @@ export interface components {
             readonly mailbox_removed: boolean;
             /** @description The notification destinations (`/api/notifications`) told each time the rule acts on an email live; empty = none */
             notify: number[];
+            /** @description When set, each time the rule acts on an email live (never in dry-run, a cleanup, an undo or a correction, nor for an email a sender rule settled) the drafting module writes a reply and the daemon saves it in the mailbox's Drafts folder, never sending it; Activity lists it as an action of kind `draft`. null = no reply is drafted. Kept, and exported, in a build without the module, where it does nothing */
+            draft: components["schemas"]["DraftReply"] | null;
             /** @description Goes up by one with every edit */
             version: number;
             /** Format: int64 */
@@ -2086,6 +2088,13 @@ export interface components {
             hits_week: number;
             /** Format: int64 */
             last_match_at: number | null;
+        };
+        /** @description How a rule drafts a reply (`features.draft_replies`). The drafting model reads the email's trimmed plain text, as the decision model does, and the instruction */
+        DraftReply: {
+            /** @description How the reply should sound or what it should say ("polite no, not looking right now"); empty = the model's own judgement. At most 300 characters */
+            instruction: string;
+            /** @description Also hand the model the thread's previous message (the one the email replies to), when it is found in the mailbox: its trimmed plain text, as the email's */
+            read_previous: boolean;
         };
         RuleEnvelope: {
             rule: components["schemas"]["Rule"];
@@ -2118,6 +2127,8 @@ export interface components {
             enabled?: boolean;
             /** @description Notification destinations of the tenant, each at most once; an empty list = none. An id that is not one is refused with `invalid_input` at `notify` */
             notify?: number[];
+            /** @description Draft a reply when the rule acts live; null = stop. Setting one in a build without the drafting module is refused with `invalid_input` at `draft`, and for a tenant whose plan does not include draft replies with 403 `plan_required` */
+            draft?: components["schemas"]["DraftReply"] | null;
         };
         /** @description A rule as the client sends it when creating or testing one. The same validation as RulePatch. */
         RuleInput: {
@@ -2141,6 +2152,8 @@ export interface components {
             new_folders?: string[];
             /** @description Notification destinations to tell when the rule acts, as in RulePatch; left out = none */
             notify?: number[];
+            /** @description Draft a reply when the rule acts live, as in RulePatch; left out or null = none */
+            draft?: components["schemas"]["DraftReply"] | null;
             /** @description Where in the priority order to insert it (0 = first); left out = at the end */
             position?: number;
         };
@@ -2153,7 +2166,7 @@ export interface components {
              */
             account_id?: number | null;
         };
-        /** @description A draft carries every field of RuleInput but `notify`, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything */
+        /** @description A draft carries every field of RuleInput but `notify` and `draft`, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything */
         RuleDraft: {
             name: string;
             /** @description The user's exact words this rule came from, cut from the text by the server (separate parts joined with ' … '). A re-optimized rule keeps its wording, with the new words on a line under it */
@@ -2396,8 +2409,11 @@ export interface components {
          * @enum {string}
          */
         MessageState: "new" | "decided" | "acted" | "review" | "skipped" | "error";
-        /** @enum {string} */
-        ActionKind: "move" | "archive" | "trash" | "junk" | "flag" | "unflag" | "read" | "unread" | "keep";
+        /**
+         * @description `draft`: a reply a rule's drafting module wrote, saved in the Drafts folder (`folder`); the email itself is not changed. It fails, with the reason in `error`, when the mailbox has no Drafts folder, the month's AI-sorted emails are used up, the email is gone or the module could not write one; undoing it deletes exactly the draft MailRules saved, unless it was edited or moved since
+         * @enum {string}
+         */
+        ActionKind: "move" | "archive" | "trash" | "junk" | "flag" | "unflag" | "read" | "unread" | "keep" | "draft";
         /** @enum {string} */
         ActionStatus: "done" | "dry_run" | "failed" | "undone";
         Decision: {
@@ -2443,11 +2459,11 @@ export interface components {
             /** Format: int64 */
             batch_id: number | null;
             kind: components["schemas"]["ActionKind"];
-            /** @description The destination a move names, or "MailRules Trash" for a trash that went to MailRules' own folder (`trash_to_folder` on when it was recorded); empty otherwise, so an empty trash went to the server's Trash */
+            /** @description The destination a move names, or "MailRules Trash" for a trash that went to MailRules' own folder (`trash_to_folder` on when it was recorded), or the Drafts folder a `draft` was saved in; empty otherwise, so an empty trash went to the server's Trash */
             folder: string;
             /** @description Where the email was just before this action */
             from_folder: string;
-            /** @description Where it was afterwards; empty unless the action was done */
+            /** @description Where it was afterwards; empty unless the action was done. A `draft` leaves the email where it was: here it is the Drafts folder the reply went to */
             to_folder: string;
             status: components["schemas"]["ActionStatus"];
             /** @description Why it failed; empty otherwise */
@@ -2822,7 +2838,7 @@ export interface components {
             provider: string;
             model: string;
             /** @enum {string} */
-            purpose: "decide" | "escalate" | "compose" | "test" | "cleanup" | "suggest";
+            purpose: "decide" | "escalate" | "compose" | "test" | "cleanup" | "suggest" | "draft";
             calls: number;
             tokens_in: number;
             tokens_out: number;
@@ -2904,7 +2920,7 @@ export interface components {
                     provider: string;
                     model: string;
                     /** @enum {string} */
-                    purpose: "decide" | "escalate" | "compose" | "test" | "cleanup" | "suggest";
+                    purpose: "decide" | "escalate" | "compose" | "test" | "cleanup" | "suggest" | "draft";
                     calls: number;
                     cost_usd: number;
                 }[];
@@ -3227,6 +3243,7 @@ export interface components {
                 /** @description A module of this build delivers rule notifications, so `/api/notifications` works and rules may name destinations in `notify` */
                 notifications: boolean;
                 timed_actions: boolean;
+                /** @description A module of this build drafts replies (and, in a build that sells plans, the tenant's plan includes them), so a rule may set `draft` */
                 draft_replies: boolean;
                 billing: boolean;
                 /** @description One-click unsubscribe on Senders (POST /api/senders/{type}/{value}/unsubscribe); on in every build */

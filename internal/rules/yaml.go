@@ -62,6 +62,9 @@ type yamlRule struct {
 	// MailboxRemoved marks a rule whose mailbox was removed: it is off, and stays off
 	// until it is given a mailbox or a new condition (Rule.MailboxRemoved).
 	MailboxRemoved bool `yaml:"mailbox_removed,omitempty"`
+	// Draft has a reply drafted when the rule acts (Rule.Draft); omitted = none. It is kept
+	// in a build that cannot draft, where it does nothing.
+	Draft *Draft `yaml:"draft,omitempty"`
 }
 
 // RuleError is a problem with one rule of a rules file: which rule, and what is wrong.
@@ -126,7 +129,7 @@ func ParseYAML(data []byte) (File, error) {
 func (yr yamlRule) rule() (Rule, *ValidationError) {
 	r := Rule{Name: yr.ID, Said: yr.Said, Template: yr.Template, Intent: yr.When, MinConfidence: yr.MinConfidence,
 		Model: yr.Model, Stack: yr.Stack, Enabled: (yr.Enabled == nil || *yr.Enabled) && !yr.MailboxRemoved,
-		MailboxRemoved: yr.MailboxRemoved}
+		MailboxRemoved: yr.MailboxRemoved, Draft: yr.Draft}
 	var err error
 	if r.Conditions, err = condFromYAML(yr.Match); err != nil {
 		return r, &ValidationError{"conditions", "The conditions cannot be read: " + err.Error() + "."}
@@ -241,7 +244,7 @@ func MarshalYAML(f File) ([]byte, error) {
 	yf := yamlFile{Defaults: f.Defaults, Rules: make([]yamlRule, 0, len(rs))}
 	for _, r := range rs {
 		yr := yamlRule{ID: r.Name, Said: r.Said, Template: r.Template, When: r.Intent, MinConfidence: r.MinConfidence, Model: r.Model, Stack: r.Stack,
-			AppliesTo: f.Mailboxes[r.Name]}
+			AppliesTo: f.Mailboxes[r.Name], Draft: r.Draft}
 		if yr.AppliesTo == "" && r.AccountID != 0 {
 			// Dropping it would write a file that widens the rule to every mailbox.
 			return nil, fmt.Errorf("rule %q applies to mailbox %d, which the file has no address for", r.Name, r.AccountID)

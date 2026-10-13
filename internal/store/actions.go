@@ -19,6 +19,42 @@ const (
 	ActionUndone = "undone"
 )
 
+// ActionDraft is the kind of the action that saves a reply a rule's drafting module wrote in
+// the mailbox's Drafts folder. It changes nothing of the email it answers: its Before and
+// After are where that email was, and Draft is where the reply went.
+const ActionDraft = "draft"
+
+// ActionInterrupted is the error a row is written with before its change is made, which
+// stays only when the daemon stopped before it recorded how the change ended.
+const ActionInterrupted = "interrupted before it finished"
+
+// DraftRef is where a draft action saved its reply: params.draft.
+type DraftRef struct {
+	UIDValidity uint32 `json:"uidvalidity"`
+	UID         uint32 `json:"uid"`
+	// MessageID is the reply's own Message-ID, without angle brackets: how it is found
+	// again when its folder's UIDVALIDITY changed, and checked before it is deleted.
+	MessageID string `json:"message_id"`
+}
+
+// actionParams is the JSON in actions.params.
+type actionParams struct {
+	Folder string    `json:"folder,omitempty"`
+	Draft  *DraftRef `json:"draft,omitempty"`
+}
+
+// params encodes what a's params column holds, nil (NULL) when nothing.
+func (a Action) params() (any, error) {
+	if a.Folder == "" && a.Draft == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(actionParams{Folder: a.Folder, Draft: a.Draft})
+	if err != nil {
+		return nil, fmt.Errorf("encode params: %w", err)
+	}
+	return string(b), nil
+}
+
 // Batch kinds and statuses, as stored in batches.
 const (
 	BatchLive       = "live"
@@ -53,14 +89,17 @@ type Action struct {
 	BatchID    int64 // 0 = none
 	MessageID  int64
 	AccountID  int64
-	Kind       string // move | trash | archive | junk | flag | unflag | read | unread | keep | review
-	Folder     string // params.folder: the destination of a move, or of a trash sent to MailRules' own folder (trash_to_folder)
-	Before     Snapshot
-	After      *Snapshot // nil unless the action is done (or was, before an undo)
-	Status     string
-	Error      string
-	CreatedAt  int64
-	UndoneAt   int64
+	Kind       string // move | trash | archive | junk | flag | unflag | read | unread | keep | review | draft
+	Folder     string // params.folder: the destination of a move, of a trash sent to MailRules' own folder (trash_to_folder), or the Drafts folder of a draft
+	// Draft is where a draft action saved its reply, once it did (params.draft); nil for
+	// every other kind.
+	Draft     *DraftRef
+	Before    Snapshot
+	After     *Snapshot // nil unless the action is done (or was, before an undo)
+	Status    string
+	Error     string
+	CreatedAt int64
+	UndoneAt  int64
 }
 
 // InsertAction writes an action row and returns its id.
@@ -70,13 +109,9 @@ func (s *Store) InsertAction(ctx context.Context, a Action) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("encode snapshot: %w", err)
 	}
-	var params any
-	if a.Folder != "" {
-		b, err := json.Marshal(map[string]string{"folder": a.Folder})
-		if err != nil {
-			return 0, fmt.Errorf("encode params: %w", err)
-		}
-		params = string(b)
+	params, err := a.params()
+	if err != nil {
+		return 0, err
 	}
 	var id int64
 	if err := s.db.QueryRowContext(ctx,
@@ -96,12 +131,18 @@ func setLocation(ctx context.Context, tx *txn, messageID int64, ref mail.MsgRef)
 	return err
 }
 
+// FollowUps are what a rule's run on one email starts once the action that ends it is
+// recorded, in the same transaction, so they exist exactly when the actions they follow do.
+type FollowUps struct {
+	Notices bool // the rule's notifications (queueNotices)
+	Draft   bool // the rule's draft reply (queueDraft)
+}
+
 // FinishAction stores how an action ended. For a done action, after is the message's
 // state afterwards, and the message's location is updated with it in the same transaction.
-// last says a is the last action of its rule's run on the message (done, or the failure
-// that stopped the run): the run's notices are then queued in the same transaction
-// (queueNotices), so they exist exactly when the actions they tell of do.
-func (s *Store) FinishAction(ctx context.Context, a Action, last bool) error {
+// then says what a, the last action of its rule's run on the message (done, or the failure
+// that stopped the run), starts: notices (queueNotices) and a draft reply (queueDraft).
+func (s *Store) FinishAction(ctx context.Context, a Action, then FollowUps) error {
 	ctx = s.tenantFor(ctx, ofAccount, a.AccountID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -119,11 +160,21 @@ func (s *Store) FinishAction(ctx context.Context, a Action, last bool) error {
 			return fmt.Errorf("finish action: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE actions SET status = ?, error = ?, after = ? WHERE id = ?`, a.Status, null(a.Error), after, a.ID); err != nil {
+	params, err := a.params()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE actions SET status = ?, error = ?, after = ?, params = ? WHERE id = ?`,
+		a.Status, null(a.Error), after, params, a.ID); err != nil {
 		return fmt.Errorf("finish action: %w", err)
 	}
-	if last {
+	if then.Notices {
 		if err := queueNotices(ctx, tx, a); err != nil {
+			return fmt.Errorf("finish action: %w", err)
+		}
+	}
+	if then.Draft {
+		if err := queueDraft(ctx, tx, a); err != nil {
 			return fmt.Errorf("finish action: %w", err)
 		}
 	}
@@ -156,16 +207,23 @@ func (s *Store) MarkActionUndone(ctx context.Context, a Action, restored mail.Ms
 // actionCols are the columns scanAction reads, from actions (unaliased).
 func (s *Store) actionCols() string {
 	return `id, COALESCE(decision_id, 0), COALESCE(batch_id, 0), message_id, account_id, kind,
-	COALESCE(` + s.db.d.jsonText("params", "folder") + `, ''), before, COALESCE(after, ''), status, COALESCE(error, ''),
+	COALESCE(params, ''), before, COALESCE(after, ''), status, COALESCE(error, ''),
 	created_at, COALESCE(undone_at, 0)`
 }
 
 func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 	var a Action
-	var before, after string
-	if err := row.Scan(&a.ID, &a.DecisionID, &a.BatchID, &a.MessageID, &a.AccountID, &a.Kind, &a.Folder, &before, &after,
+	var params, before, after string
+	if err := row.Scan(&a.ID, &a.DecisionID, &a.BatchID, &a.MessageID, &a.AccountID, &a.Kind, &params, &before, &after,
 		&a.Status, &a.Error, &a.CreatedAt, &a.UndoneAt); err != nil {
 		return Action{}, err
+	}
+	if params != "" {
+		var p actionParams
+		if err := json.Unmarshal([]byte(params), &p); err != nil {
+			return Action{}, fmt.Errorf("decode action %d: %w", a.ID, err)
+		}
+		a.Folder, a.Draft = p.Folder, p.Draft
 	}
 	if err := json.Unmarshal([]byte(before), &a.Before); err != nil {
 		return Action{}, fmt.Errorf("decode action %d: %w", a.ID, err)

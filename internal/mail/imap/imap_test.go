@@ -279,6 +279,67 @@ func TestMove(t *testing.T) {
 	}
 }
 
+// Append saves a whole message with its flags and date and says where it went; Delete
+// removes that one UID and nothing else, even mail another client marked deleted, and is
+// refused, changing nothing, by a server without UIDPLUS.
+func TestAppendAndDelete(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		caps      imap.CapSet
+		deleteErr error
+	}{
+		{"UIDPLUS", capsUIDPlus, nil},
+		{"no UIDPLUS: never deleted", capsBare, mail.ErrUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			s := imaptest.Start(t, tc.caps)
+			if err := s.User.Create("Drafts", nil); err != nil {
+				t.Fatal(err)
+			}
+			s.Append(t, "Drafts", eml(1), imap.FlagDraft)
+			s.Append(t, "Drafts", eml(2), imap.FlagDeleted) // another client's, waiting for its own expunge
+			m := open(t, config(s))
+			at := time.Date(2026, 10, 13, 9, 30, 0, 0, time.UTC)
+			ref, err := m.Append(ctx, "Drafts", []byte(eml(3)), []string{`\Draft`, `\Seen`}, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := mustStatus(t, m, "Drafts")
+			if ref != (mail.MsgRef{AccountID: 7, Folder: "Drafts", UIDValidity: st.UIDValidity, UID: 3}) {
+				t.Fatalf("appended ref = %+v", ref)
+			}
+			raw, err := m.Fetch(ctx, ref, 0)
+			if err != nil || !strings.Contains(string(raw.Header), "Subject: message 3") || !raw.InternalDate.Equal(at) {
+				t.Fatalf("appended message = %+v, %v", raw, err)
+			}
+			if flags, _ := m.Flags(ctx, ref); !slices.Equal(flags, []string{`\Draft`, `\Seen`}) {
+				t.Errorf("flags = %v", flags)
+			}
+			if _, err := m.Append(ctx, "Nowhere", []byte(eml(4)), nil, at); !errors.Is(err, mail.ErrNoFolder) {
+				t.Errorf("append to a missing folder: %v", err)
+			}
+
+			err = m.Delete(ctx, ref)
+			if !errors.Is(err, tc.deleteErr) {
+				t.Fatalf("delete = %v, want %v", err, tc.deleteErr)
+			}
+			want := []uint32{1, 2}
+			if tc.deleteErr != nil {
+				want = []uint32{1, 2, 3}
+			}
+			if got := uids(t, m, "Drafts"); !slices.Equal(got, want) {
+				t.Fatalf("Drafts after delete = %v, want %v: only the one UID may go", got, want)
+			}
+			if tc.deleteErr == nil {
+				if err := m.Delete(ctx, ref); !errors.Is(err, mail.ErrNotFound) {
+					t.Errorf("deleting it again: %v, want ErrNotFound", err)
+				}
+			}
+		})
+	}
+}
+
 func TestFetchLeavesMailUnread(t *testing.T) {
 	ctx := t.Context()
 	s := imaptest.Start(t, capsMove)

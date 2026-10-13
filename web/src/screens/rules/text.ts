@@ -3,7 +3,7 @@ import { leaves, type Action, type Condition, type Rule } from '../../lib/api/ru
 import { notifications } from '../../lib/state/notifications.svelte';
 
 /** The "more options" of a rule. `mailbox_removed` is set on a saved rule whose mailbox was removed. */
-export type Extras = Pick<Rule, 'account_id' | 'stack' | 'notify'> & { mailbox_removed?: boolean };
+export type Extras = Pick<Rule, 'account_id' | 'stack' | 'notify' | 'draft'> & { mailbox_removed?: boolean };
 
 /** Why a rule whose mailbox was removed cannot be switched on: the daemon's own words for it. */
 export const MAILBOX_REMOVED = 'Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on.';
@@ -72,7 +72,7 @@ export const actionsText = (actions: Action[], trashTo?: string) =>
  */
 export function extrasText(x: Extras, only?: string) {
   const told = notifications.destinations.filter((d) => x.notify.includes(d.id)).map((d) => d.name);
-  return (x.stack ? ' · stacks' : '') + (only ? ' · only ' + only : '') + (told.length ? ' · notifies ' + told.join(', ') : '');
+  return (x.stack ? ' · stacks' : '') + (only ? ' · only ' + only : '') + (told.length ? ' · notifies ' + told.join(', ') : '') + (x.draft ? ' · draft a reply' : '');
 }
 
 /** One line for the rule list: conditions, then intent, then the exception. */

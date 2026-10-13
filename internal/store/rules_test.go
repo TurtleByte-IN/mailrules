@@ -22,7 +22,7 @@ func TestRules(t *testing.T) {
 		t.Fatalf("create: %+v %v", food, err)
 	}
 	scams, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: "scams", Template: "Cold sales", Intent: "Fake bank alerts", Priority: 10, Enabled: true,
-		Model: "clef", MinConfidence: &threshold, Actions: []rules.Action{{Type: rules.ActTrash}}}, 100)
+		Model: "clef", MinConfidence: &threshold, Actions: []rules.Action{{Type: rules.ActTrash}}, Draft: &rules.Draft{Instruction: "polite no", ReadPrevious: true}}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestRules(t *testing.T) {
 	// Unset optional columns are NULL, as the schema documents, not empty strings.
 	var nulls int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rules WHERE id = ? AND account_id IS NULL AND intent IS NULL
-		AND model IS NULL AND min_confidence IS NULL AND template IS NULL AND exceptions != '{}'`, food.ID).Scan(&nulls); err != nil || nulls != 1 {
+		AND model IS NULL AND min_confidence IS NULL AND template IS NULL AND draft IS NULL AND exceptions != '{}'`, food.ID).Scan(&nulls); err != nil || nulls != 1 {
 		t.Errorf("optional columns not NULL: %d %v", nulls, err)
 	}
 

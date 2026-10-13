@@ -63,6 +63,11 @@ type Exec struct {
 	// Notices, when set, says whether a tenant may have rule notifications (its plan includes
 	// them): when not, no notice is written for its mail. nil = every tenant may.
 	Notices func(ctx context.Context, tenantID int64) bool
+	// Drafts, when set, says whether a tenant's rules may draft replies (the build has a
+	// module that writes them and the tenant's plan includes them): when it says yes, a live
+	// run of a rule with Draft set queues a draft job (store.FollowUps.Draft). nil = no
+	// tenant may: the build drafts nothing.
+	Drafts func(ctx context.Context, tenantID int64) bool
 }
 
 var _ Executor = (*Exec)(nil)
@@ -96,7 +101,7 @@ func isMove(kind string) bool { return kind == rules.ActMove || moveRole[kind] !
 // about a retry. With trash_to_folder on, a trash row names TrashFolder as its folder,
 // in dry-run too, so what it says it did (or would do) is where the mail went. The row
 // that ends a live run also queues the notifications of the rule that decided it, when it
-// names destinations (store.FinishAction).
+// names destinations, and, when the run finished, its draft reply (store.FinishAction).
 func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action, batchID int64) ([]ActionRecord, error) {
 	tenant, err := x.Store.AccountTenant(ctx, d.Ref.AccountID)
 	if err != nil {
@@ -135,10 +140,11 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 	// What follows a mailbox change must be recorded even if the daemon is stopping.
 	recCtx := context.WithoutCancel(ctx)
 	notify := x.Notices == nil || x.Notices(ctx, tenant)
+	draft := x.Drafts != nil && x.Drafts(ctx, tenant)
 	for i, a := range acts {
 		last := i == len(acts)-1
 		rec := row(a, store.ActionFailed)
-		rec.Error = "interrupted before it finished"
+		rec.Error = store.ActionInterrupted
 		if snapErr != nil {
 			rec.Error = snapErr.Error() // no snapshot, so no change: the attempt is still on record
 		}
@@ -151,10 +157,10 @@ func (x *Exec) Apply(ctx context.Context, d DecisionRecord, acts []rules.Action,
 		after, err := x.do(ctx, mb, d.Ref.AccountID, a, cur)
 		if err != nil {
 			rec.Error = err.Error()
-			return append(recs, rec), errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec, notify))
+			return append(recs, rec), errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec, store.FollowUps{Notices: notify}))
 		}
 		rec.Status, rec.Error, rec.After = store.ActionDone, "", &after
-		if err := x.Store.FinishAction(recCtx, rec, last && notify); err != nil {
+		if err := x.Store.FinishAction(recCtx, rec, store.FollowUps{Notices: last && notify, Draft: last && draft}); err != nil {
 			return append(recs, rec), err
 		}
 		recs = append(recs, rec)
@@ -295,10 +301,12 @@ func (x *Exec) ensureFolder(ctx context.Context, mb mail.Mailbox, accountID int6
 }
 
 // Undo reverses one action: a move goes back to the folder it came from, a flag change
-// goes back to what the before snapshot says. Undoing an action that is already undone,
-// or that never changed the mailbox (dry-run, failed), does nothing. An action made more
-// than store.UndoDays ago is refused with ErrTooOld. When the message is
-// not where the action left it, the error is ErrGone and the action stays as it was.
+// goes back to what the before snapshot says, and a draft reply MailRules saved is deleted:
+// that one message, the only thing MailRules ever deletes for good (undoDraft). Undoing an
+// action that is already undone, or that never changed the mailbox (dry-run, failed), does
+// nothing. An action made more than store.UndoDays ago is refused with ErrTooOld. When the
+// message (for a draft, the reply) is not where the action left it, the error is ErrGone
+// and the action stays as it was.
 // Undo does not look at dry-run: it only restores what MailRules itself changed, and
 // only when asked.
 func (x *Exec) Undo(ctx context.Context, actionID int64) error {
@@ -324,8 +332,13 @@ func (x *Exec) undo(ctx context.Context, actionID int64) error {
 		return err
 	}
 	restored := msg.Location()
+	if a.Kind == store.ActionDraft {
+		if err := x.undoDraft(ctx, a); err != nil {
+			return err
+		}
+	}
 	f, isFlag := flagOf[a.Kind]
-	if moved := a.After.Folder != a.Before.Folder; moved || isFlag {
+	if moved := a.Kind != store.ActionDraft && a.After.Folder != a.Before.Folder; moved || isFlag {
 		mb, err := x.Accounts.Mailbox(a.AccountID)
 		if err != nil {
 			return err

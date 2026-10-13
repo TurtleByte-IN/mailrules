@@ -22,21 +22,29 @@ func null[T comparable](v T) any {
 	return v
 }
 
-// ruleJSON encodes the four JSON columns of a rule.
-func ruleJSON(r rules.Rule) (conditions, exceptions, actions, notify []byte, err error) {
+// ruleJSON encodes the JSON columns of a rule; draft is nil (NULL) for a rule that drafts
+// no reply.
+func ruleJSON(r rules.Rule) (conditions, exceptions, actions, notify []byte, draft any, err error) {
 	if conditions, err = json.Marshal(r.Conditions); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("encode conditions: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("encode conditions: %w", err)
 	}
 	if exceptions, err = json.Marshal(r.Exceptions); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("encode exceptions: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("encode exceptions: %w", err)
 	}
 	if actions, err = json.Marshal(r.Actions); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("encode actions: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("encode actions: %w", err)
 	}
 	if notify, err = json.Marshal(append([]int64{}, r.Notify...)); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("encode notify: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("encode notify: %w", err)
 	}
-	return conditions, exceptions, actions, notify, nil
+	if r.Draft != nil {
+		b, err := json.Marshal(r.Draft)
+		if err != nil {
+			return nil, nil, nil, nil, nil, fmt.Errorf("encode draft: %w", err)
+		}
+		draft = string(b)
+	}
+	return conditions, exceptions, actions, notify, draft, nil
 }
 
 // CreateRule inserts a rule of the tenant at version 1 and returns it with its id.
@@ -55,16 +63,16 @@ func (s *Store) CreateRule(ctx context.Context, tenantID int64, r rules.Rule, no
 
 // createRule inserts the rule in q, a transaction, and records it in the audit log.
 func createRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
-	conditions, exceptions, actions, notify, err := ruleJSON(r)
+	conditions, exceptions, actions, notify, draft, err := ruleJSON(r)
 	if err != nil {
 		return rules.Rule{}, err
 	}
 	if err := q.QueryRowContext(ctx,
 		`INSERT INTO rules (tenant_id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
-		                    priority, stack, model, min_confidence, enabled, mailbox_removed, notify, version, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING id`,
+		                    priority, stack, model, min_confidence, enabled, mailbox_removed, notify, draft, version, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING id`,
 		tenantID, r.UserID, null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), now, now).Scan(&r.ID); err != nil {
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), draft, now, now).Scan(&r.ID); err != nil {
 		return rules.Rule{}, fmt.Errorf("create rule: %w", err)
 	}
 	r.Version, r.CreatedAt, r.UpdatedAt = 1, now, now
@@ -90,7 +98,7 @@ func (s *Store) UpdateRule(ctx context.Context, tenantID int64, r rules.Rule, no
 // updateRule rewrites the rule in q, a transaction, and records in the audit log what of it
 // changed.
 func updateRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, now int64) error {
-	conditions, exceptions, actions, notify, err := ruleJSON(r)
+	conditions, exceptions, actions, notify, draft, err := ruleJSON(r)
 	if err != nil {
 		return err
 	}
@@ -106,11 +114,11 @@ func updateRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, no
 	}
 	res, err := q.ExecContext(ctx,
 		`UPDATE rules SET account_id = ?, name = ?, said = ?, template = ?, intent = ?, conditions = ?, exceptions = ?, actions = ?,
-		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?, mailbox_removed = ?, notify = ?,
+		                  priority = ?, stack = ?, model = ?, min_confidence = ?, enabled = ?, mailbox_removed = ?, notify = ?, draft = ?,
 		                  version = version + 1, updated_at = ?
 		 WHERE id = ? AND tenant_id = ?`,
 		null(r.AccountID), r.Name, null(r.Said), null(r.Template), null(r.Intent), string(conditions), string(exceptions), string(actions),
-		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), now, r.ID, tenantID)
+		r.Priority, r.Stack, null(r.Model), r.MinConfidence, r.Enabled, r.MailboxRemoved, string(notify), draft, now, r.ID, tenantID)
 	if err != nil {
 		return fmt.Errorf("update rule: %w", err)
 	}
@@ -162,28 +170,32 @@ func ruleChanges(old, r rules.Rule) string {
 }
 
 const ruleColumns = `id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
-	priority, stack, model, min_confidence, enabled, mailbox_removed, notify, version, created_at, updated_at`
+	priority, stack, model, min_confidence, enabled, mailbox_removed, notify, draft, version, created_at, updated_at`
 
 // scanRule reads ruleColumns, then into more whatever the query selects after them.
 func scanRule(row interface{ Scan(...any) error }, more ...any) (rules.Rule, error) {
 	var r rules.Rule
 	var accountID sql.NullInt64
-	var said, template, intent, model sql.NullString
+	var said, template, intent, model, draft sql.NullString
 	var minConfidence sql.NullFloat64
 	var conditions, exceptions, actions, notify string
 	if err := row.Scan(append([]any{&r.ID, &r.UserID, &accountID, &r.Name, &said, &template, &intent, &conditions, &exceptions, &actions,
-		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.MailboxRemoved, &notify, &r.Version, &r.CreatedAt, &r.UpdatedAt}, more...)...); err != nil {
+		&r.Priority, &r.Stack, &model, &minConfidence, &r.Enabled, &r.MailboxRemoved, &notify, &draft, &r.Version, &r.CreatedAt, &r.UpdatedAt}, more...)...); err != nil {
 		return rules.Rule{}, err
 	}
 	r.AccountID, r.Said, r.Template, r.Intent, r.Model = accountID.Int64, said.String, template.String, intent.String, model.String
 	if minConfidence.Valid {
 		r.MinConfidence = &minConfidence.Float64
 	}
+	if draft.Valid {
+		r.Draft = &rules.Draft{}
+	}
 	if err := errors.Join(
 		json.Unmarshal([]byte(conditions), &r.Conditions),
 		json.Unmarshal([]byte(exceptions), &r.Exceptions),
 		json.Unmarshal([]byte(actions), &r.Actions),
 		json.Unmarshal([]byte(notify), &r.Notify),
+		unmarshalIf(draft, r.Draft),
 	); err != nil {
 		return rules.Rule{}, fmt.Errorf("decode rule %d: %w", r.ID, err)
 	}
@@ -191,6 +203,14 @@ func scanRule(row interface{ Scan(...any) error }, more ...any) (rules.Rule, err
 		r.Notify = nil
 	}
 	return r, nil
+}
+
+// unmarshalIf decodes a nullable JSON column into v, leaving v alone when it is NULL.
+func unmarshalIf(col sql.NullString, v any) error {
+	if !col.Valid {
+		return nil
+	}
+	return json.Unmarshal([]byte(col.String), v)
 }
 
 // Rule returns one of the tenant's rules, or ErrNotFound.

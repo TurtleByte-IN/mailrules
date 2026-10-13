@@ -93,7 +93,7 @@ func (w *world) file(sender string) (mail.MsgRef, store.Message) {
 		w.t.Fatal(err)
 	}
 	a.Status, a.After = store.ActionDone, &store.Snapshot{Folder: to.Folder, UIDValidity: to.UIDValidity, UID: to.UID}
-	if err := w.st.FinishAction(w.ctx, a, true); err != nil {
+	if err := w.st.FinishAction(w.ctx, a, store.FollowUps{Notices: true}); err != nil {
 		w.t.Fatal(err)
 	}
 	return to, m
@@ -201,7 +201,7 @@ func TestSweepLeavesMailRulesOwnMovesAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Status, a.After = store.ActionDone, &store.Snapshot{Folder: to.Folder, UIDValidity: to.UIDValidity, UID: to.UID}
-	if err := w.st.FinishAction(w.ctx, a, true); err != nil {
+	if err := w.st.FinishAction(w.ctx, a, store.FollowUps{Notices: true}); err != nil {
 		t.Fatal(err)
 	}
 	w.sweep()

@@ -732,6 +732,23 @@ func (s *Settings) Composer(ctx context.Context, tenantID int64) (models.Generat
 	return gen, nil
 }
 
+// Drafter returns the generative model a tenant's draft replies are written with: its rule
+// composer model (Composer), on the tenant's own key or else the operator's, as sorting is
+// paid. ledger books its calls; metered says they go out on a key the operator holds, so each
+// reply written with it counts against the tenant's monthly allowance of AI-sorted emails.
+func (s *Settings) Drafter(ctx context.Context, tenantID int64) (gen models.Generator, ledger store.Ledger, metered bool, err error) {
+	if gen, err = s.Composer(ctx, tenantID); err != nil {
+		return nil, store.Ledger{}, false, err
+	}
+	cfg, err := s.Effective(ctx, tenantID)
+	if err != nil {
+		return nil, store.Ledger{}, false, err
+	}
+	provider, _, _ := config.SplitComposerModel(cfg.ComposerModel) // Composer checked it
+	ledger = s.Ledger(ctx, tenantID)
+	return gen, ledger, ledger.Operator != nil && ledger.Operator(provider), nil
+}
+
 // RetentionDays returns the tenant's retention_days setting in force: how long message
 // snippets are kept. When the settings cannot be read it is the default.
 func (s *Settings) RetentionDays(ctx context.Context, tenantID int64) int {

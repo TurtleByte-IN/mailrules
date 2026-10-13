@@ -192,7 +192,7 @@ type UsageRow struct {
 	Day       string // YYYY-MM-DD, UTC
 	Provider  string
 	Model     string
-	Purpose   string // decide | escalate | compose | test | cleanup | suggest
+	Purpose   string // decide | escalate | compose | test | cleanup | suggest | draft
 	Operator  bool   // made with a key the operator holds (MAILRULES_MODE=cloud)
 	Calls     int
 	TokensIn  int

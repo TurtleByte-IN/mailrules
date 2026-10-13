@@ -311,3 +311,36 @@ func TestYAMLMailboxRemoved(t *testing.T) {
 		t.Errorf("enabled: true with mailbox_removed: %+v, %v", f.Rules, err)
 	}
 }
+
+// A rule's draft setting goes out and comes back as it was: on with no instruction, on with
+// one and the previous message, or off.
+func TestYAMLDraft(t *testing.T) {
+	keep := []Action{{Type: ActKeep}}
+	in := []Rule{
+		{Name: "a", Priority: 1, Enabled: true, Intent: "x", Actions: keep, Draft: &Draft{}},
+		{Name: "b", Priority: 2, Enabled: true, Intent: "y", Actions: keep, Draft: &Draft{Instruction: "polite no", ReadPrevious: true}},
+		{Name: "c", Priority: 3, Enabled: true, Intent: "z", Actions: keep},
+	}
+	out, err := MarshalYAML(File{Rules: in})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out); strings.Count(got, "draft:") != 2 || !strings.Contains(got, "instruction: polite no") || !strings.Contains(got, "read_previous: true") {
+		t.Errorf("export:\n%s", got)
+	}
+	f, err := ParseYAML(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range f.Rules {
+		if (r.Draft == nil) != (in[i].Draft == nil) || r.Draft != nil && *r.Draft != *in[i].Draft {
+			t.Errorf("rule %s read back with draft %+v, want %+v", r.Name, r.Draft, in[i].Draft)
+		}
+	}
+	if _, err := ParseYAML([]byte("rules:\n  - {id: a, when: x, actions: [keep], draft: {instruction: " + strings.Repeat("a", MaxDraftInstruction+1) + "}}\n")); err == nil {
+		t.Error("a too long instruction was imported")
+	}
+	if _, err := ParseYAML([]byte("rules:\n  - {id: a, when: x, actions: [keep], draft: {tone: friendly}}\n")); err == nil {
+		t.Error("an unknown draft field was imported")
+	}
+}

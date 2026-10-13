@@ -86,6 +86,7 @@ var outcomeWords = map[string][2]string{
 	rules.ActMove: {"moved to ", "move to "}, rules.ActArchive: {"archived", "archive"}, rules.ActTrash: {"moved to ", "move to "},
 	rules.ActJunk: {"moved to Junk", "move to Junk"}, rules.ActFlag: {"flagged", "flag"}, rules.ActUnflag: {"unflagged", "unflag"},
 	rules.ActRead: {"read", "mark read"}, rules.ActUnread: {"unread", "mark unread"}, rules.ActKeep: {"kept in Inbox", "keep in Inbox"},
+	store.ActionDraft: {"reply drafted", "draft a reply"},
 }
 
 // trashFolder is the folder a trash action names in words: the one it recorded, or Trash.
@@ -99,7 +100,9 @@ func trashFolder(a store.Action) string {
 // outcome says in one sentence what became of an email: "Moved to Food · read", "Kept in
 // Inbox", "Would move to Food" (recorded in dry-run), "Undone · back in Inbox", "Failed:
 // no Archive folder". It reads the actions of the latest decision or correction; earlier
-// ones were undone by it or, in dry-run, never happened.
+// ones were undone by it or, in dry-run, never happened. A draft reply that failed does not
+// make the email's outcome a failure: what the rule did to it stands, and the outcome says
+// "no reply drafted" after it.
 func outcome(row store.ActivityRow) string {
 	var current []store.Action
 	for _, a := range row.Actions {
@@ -119,15 +122,21 @@ func outcome(row store.ActivityRow) string {
 	}
 	var parts []string
 	for _, a := range current {
-		switch a.Status {
-		case store.ActionFailed:
+		switch {
+		case a.Kind == store.ActionDraft && a.Status == store.ActionFailed:
+			parts = append(parts, "no reply drafted")
+			continue
+		case a.Status == store.ActionFailed:
 			return "Failed: " + a.Error
-		case store.ActionUndone:
+		case a.Status == store.ActionUndone:
 			continue
 		}
-		folder := a.Folder // only a move, or a trash, has a folder
-		if a.Kind == rules.ActTrash {
+		folder := a.Folder // only a move, or a trash, has a folder in the sentence
+		switch a.Kind {
+		case rules.ActTrash:
 			folder = trashFolder(a)
+		case store.ActionDraft:
+			folder = ""
 		}
 		parts = append(parts, outcomeWords[a.Kind][dry]+folder)
 	}
@@ -160,6 +169,9 @@ func toActionJSON(a store.Action) actionJSON {
 		CreatedAt: a.CreatedAt, UndoneAt: ts(a.UndoneAt)}
 	if a.After != nil {
 		out.ToFolder = a.After.Folder
+		if a.Kind == store.ActionDraft {
+			out.ToFolder = a.Folder // the email stays put; the reply went to Drafts
+		}
 	}
 	return out
 }
@@ -195,7 +207,7 @@ var (
 	stages = []string{"sender", "condition", "decider", "fallback", "none"}
 	states = []string{store.StateNew, store.StateDecided, store.StateActed, store.StateReview, store.StateSkipped, store.StateError}
 	kinds  = []string{rules.ActMove, rules.ActArchive, rules.ActTrash, rules.ActJunk, rules.ActFlag, rules.ActUnflag,
-		rules.ActRead, rules.ActUnread, rules.ActKeep}
+		rules.ActRead, rules.ActUnread, rules.ActKeep, store.ActionDraft}
 )
 
 // activityFilter reads the list parameters shared by the feed and Needs review:
@@ -392,6 +404,11 @@ func actionDetail(a store.Action) string {
 		text = "Moved to " + a.Folder
 	case rules.ActTrash:
 		text = "Moved to " + trashFolder(a)
+	case store.ActionDraft:
+		text = "Drafted a reply"
+		if a.Folder != "" {
+			text += " in " + a.Folder
+		}
 	}
 	switch a.Status {
 	case store.ActionDryRun:

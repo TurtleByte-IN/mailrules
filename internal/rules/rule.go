@@ -70,10 +70,26 @@ type Rule struct {
 	// Notify are the tenant's notification destinations told each time the rule acts on an
 	// email live (store notify_destinations ids); nil = none. A rules file does not carry
 	// them: they name this install's destinations.
-	Notify    []int64
+	Notify []int64
+	// Draft, when set, has a reply drafted each time the rule acts on an email live (a
+	// module writes it; the daemon saves it in the mailbox's Drafts folder and never sends
+	// it); nil = none.
+	Draft     *Draft
 	Version   int
 	CreatedAt int64
 	UpdatedAt int64
+}
+
+// MaxDraftInstruction caps a rule's draft instruction, in characters.
+const MaxDraftInstruction = 300
+
+// Draft is how a rule drafts a reply.
+type Draft struct {
+	// Instruction is how the reply should sound or what it should say ("polite no"); empty =
+	// the model's own judgement.
+	Instruction string `json:"instruction" yaml:"instruction,omitempty"`
+	// ReadPrevious also hands the model the thread's previous message, when it is found.
+	ReadPrevious bool `json:"read_previous" yaml:"read_previous,omitempty"`
 }
 
 // ValidationError is a rule problem. Path is the offending key as the API reports it,
@@ -128,6 +144,9 @@ func (r Rule) validate(file bool) error {
 	}
 	if r.Stack && hasIntent {
 		return &ValidationError{"stack", "A stacking rule is condition-only: it cannot have an intent."}
+	}
+	if r.Draft != nil && utf8.RuneCountInString(r.Draft.Instruction) > MaxDraftInstruction {
+		return &ValidationError{"draft.instruction", fmt.Sprintf("The reply instruction can be at most %d characters.", MaxDraftInstruction)}
 	}
 	return nil
 }

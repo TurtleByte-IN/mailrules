@@ -288,7 +288,7 @@ func TestMoveWorkerHandsOverAtLeastOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Status, a.After = store.ActionDone, &store.Snapshot{Folder: "Receipts", UIDValidity: 2, UID: 1}
-	if err := st.FinishAction(ctx, a, true); err != nil {
+	if err := st.FinishAction(ctx, a, store.FollowUps{Notices: true}); err != nil {
 		t.Fatal(err)
 	}
 	id, err := st.RecordMove(ctx, store.Move{TenantID: u.TenantID, AccountID: acct.ID, MessageID: msg.ID, ActionID: a.ID,
