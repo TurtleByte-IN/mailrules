@@ -1756,7 +1756,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '409': { $ref: '#/components/responses/Conflict' } # smtp_not_configured (path summary.enabled)
-        '502': { $ref: '#/components/responses/Upstream' } # send_failed: the mail server could not be reached or refused it; the message says why
+        '502': { $ref: '#/components/responses/Upstream' } # send_failed: the mail server could not be reached or refused it; self-host's message quotes the server's reason, the hosted build's says only that it could not be sent (the reason goes to the operator's log)
   /api/notifications:
     get:
       tags: [Settings]

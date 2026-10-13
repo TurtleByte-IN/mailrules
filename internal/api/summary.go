@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -89,7 +90,14 @@ func (s *server) handleSummaryTest(w http.ResponseWriter, r *http.Request) {
 		if clientGone(w, r) {
 			return
 		}
-		// What the mail server said is for the admin who set it up; it holds no secret.
+		// Self-host: what the mail server said is for the admin who set it up; it holds no
+		// secret. Hosted: the server is the operator's, so the person gets a plain sentence and
+		// the server's answer goes to the operator's log only.
+		if s.Settings.Env.Mode == "cloud" {
+			slog.ErrorContext(r.Context(), "test summary not sent", "error", notSent.Err.Error())
+			writeError(w, http.StatusBadGateway, "send_failed", "The test summary could not be sent. Try again later.", "")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "send_failed", "The summary email could not be sent: "+notSent.Err.Error()+".", "")
 	case err != nil:
 		internalError(w, r, err)
