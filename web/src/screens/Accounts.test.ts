@@ -5,6 +5,7 @@ import type { Account } from '../lib/api/accounts';
 import { accounts, load } from '../lib/state/accounts.svelte';
 import { auth } from '../lib/state/auth.svelte';
 import { plan } from '../lib/state/plan.svelte';
+import { settings } from '../lib/state/settings.svelte';
 import { toast } from '../lib/state/toast.svelte';
 import Accounts from './Accounts.svelte';
 
@@ -344,6 +345,26 @@ it('adds a Proton Mail mailbox through Bridge: the server is filled in, and its 
   const tests = fetchMock.mock.calls.filter((c) => c[0] === '/api/accounts/test').map((c) => JSON.parse(c[1].body as string));
   expect(tests.map((b) => b.cert_fingerprint)).toEqual([undefined, FP]);
   expect(tests[1]).toMatchObject({ preset: 'proton', host: '127.0.0.1', port: 1143, tls_mode: 'starttls' });
+});
+
+// The hosted service has no Docker install or binary for the person to choose between.
+it.each([['selfhost', true], ['cloud', false]] as const)("in %s mode, the Bridge guide's Docker note shows: %s", async (mode, docker) => {
+  routes['GET /api/presets'] = [200, { items: [
+    { name: 'proton', label: 'Proton Mail', host: '127.0.0.1', port: 1143, tls_mode: 'starttls', help_url: 'https://proton.me/support/protonmail-bridge-install', local_part_login: false, secret_label: 'Bridge password', password: true, one_click_url: null },
+  ] }];
+  accounts.presets = [];
+  const was = settings.value;
+  settings.value = { ...was, server: { ...was.server, mode } };
+  try {
+    await show();
+    await fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' }));
+    await fireEvent.click(await screen.findByRole('button', { name: /Proton Mail/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByRole('link', { name: 'How to set up Proton Mail Bridge' })).toBeTruthy();
+    expect(!!screen.queryByText(/Docker/)).toBe(docker);
+  } finally {
+    settings.value = was;
+  }
 });
 
 it("adds a Proton Mail mailbox through the module's sign-in form: password, code, an error retried, then Rules", async () => {

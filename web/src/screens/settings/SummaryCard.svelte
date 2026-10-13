@@ -1,7 +1,7 @@
 <script lang="ts">
   import { previewSummary, sendTestSummary, type SummaryPatch, type SummaryPreview } from '../../lib/api/settings';
   import { clock, weekday } from '../../lib/format';
-  import { patch, settings } from '../../lib/state/settings.svelte';
+  import { hosted, patch, settings } from '../../lib/state/settings.svelte';
 
   const sum = $derived(settings.value.summary);
   // Without a mail server the switch can only be turned off.
@@ -68,9 +68,17 @@
     <input type="checkbox" checked={sum.enabled} disabled={locked} onchange={saveEnabled} />
     <span><span class="font-semibold">Send me a summary</span><span class="text-secondary">{' · '}what was sorted, trashed and needs review, with links to fix each</span></span>
   </label>
-  <div class="text-[12.5px] text-secondary">Free. Sent through your own mail server (the MAILRULES_SMTP_* settings).</div>
-  {#if !sum.smtp.configured}
-    <div class="text-[13px] text-review">To send it, set {missing || 'the MAILRULES_SMTP_* settings'}, then restart MailRules.</div>
+  {#if hosted()}
+    <!-- The operator's mail server sends it: the person has none, and no settings to set. -->
+    <div class="text-[12.5px] text-secondary">Free. Sent by MailRules.</div>
+    {#if !sum.smtp.configured}
+      <div class="text-[13px] text-review">MailRules cannot send summary emails yet.</div>
+    {/if}
+  {:else}
+    <div class="text-[12.5px] text-secondary">Free. Sent through your own mail server (the MAILRULES_SMTP_* settings).</div>
+    {#if !sum.smtp.configured}
+      <div class="text-[13px] text-review">To send it, set {missing || 'the MAILRULES_SMTP_* settings'}, then restart MailRules.</div>
+    {/if}
   {/if}
 
   <div class="flex flex-wrap gap-3">

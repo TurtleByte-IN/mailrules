@@ -87,6 +87,30 @@ func TestSummaryNeedsAMailServer(t *testing.T) {
 	}
 }
 
+// On the hosted service the operator's mail server sends summaries: a refusal names no
+// environment variable and asks for no restart, which the person cannot do.
+func TestSummaryRefusalWordingByMode(t *testing.T) {
+	for _, tc := range []struct{ mode, want string }{
+		{"selfhost", "The summary email needs an outgoing mail server. Set MAILRULES_SMTP_HOST and MAILRULES_SMTP_FROM in MailRules' environment, then restart it."},
+		{"cloud", "MailRules cannot send summary emails yet."},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			e := newEnvWith(t, func(o *Options) { o.Settings.Env.Mode = tc.mode })
+			e.signIn()
+			e.summary.Sender, e.summary.Missing = nil, []string{"MAILRULES_SMTP_HOST", "MAILRULES_SMTP_FROM"}
+			for _, req := range []struct{ method, path, body string }{
+				{http.MethodPatch, "/api/settings", `{"summary":{"enabled":true,"time_zone":"UTC"}}`},
+				{http.MethodPost, "/api/summary/test", ""},
+			} {
+				r := e.do(req.method, req.path, req.body)
+				if r.status != http.StatusConflict || r.body.Error.Code != "smtp_not_configured" || r.body.Error.Message != tc.want {
+					t.Errorf("%s %s = %d %s, want the message %q", req.method, req.path, r.status, r.raw, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestSummaryTestAndPreview(t *testing.T) {
 	e := newEnv(t)
 	e.signIn()
