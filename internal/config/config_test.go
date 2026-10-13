@@ -355,6 +355,37 @@ func TestSecureCookies(t *testing.T) {
 	}
 }
 
+// Addresses are redacted by default in cloud mode only; an explicit value always wins.
+func TestRedactAddresses(t *testing.T) {
+	tests := []struct {
+		mode, setting string
+		want          bool
+	}{
+		{"", "", false}, // the defaults: selfhost, auto
+		{"cloud", "", true},
+		{"selfhost", "true", true},
+		{"cloud", "false", false},
+		{"cloud", "true", true},
+		{"selfhost", "false", false},
+	}
+	for _, tt := range tests {
+		c, err := Load(nil, env(map[string]string{"MAILRULES_MODE": tt.mode, "LOG_REDACT_ADDRESSES": tt.setting}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.RedactAddresses(); got != tt.want {
+			t.Errorf("mode %q, setting %q: got %v want %v", tt.mode, tt.setting, got, tt.want)
+		}
+	}
+	c, err := Load(nil, env(map[string]string{"LOG_REDACT_ADDRESSES": "yes"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "LOG_REDACT_ADDRESSES") {
+		t.Errorf("bad value accepted: %v", err)
+	}
+}
+
 func TestListensLocally(t *testing.T) {
 	for addr, want := range map[string]bool{"127.0.0.1:8080": true, "localhost:8080": true, "[::1]:8080": true, "0.0.0.0:8080": false, ":8080": false, "192.168.1.4:80": false} {
 		if got := (&Config{Listen: addr}).ListensLocally(); got != want {

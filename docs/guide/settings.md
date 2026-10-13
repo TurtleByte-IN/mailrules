@@ -23,6 +23,7 @@ Where to put the variables depends on how you run MailRules; see [Install](./ins
 | `MAILRULES_TENANT_KEY_CACHE` | `--tenant-key-cache` | `1h0m0s` | How long a team's data key, which opens its stored passwords and keys, stays in memory once unwrapped, such as `1h` or `15m`; then it is unwrapped again. It matters in a build whose module keeps the keys in a key service (the hosted service): while that service cannot be reached, a team whose key has run out of time can use none of its stored passwords and keys, and its mailboxes wait in Key service unreachable until it answers. |
 | `MAILRULES_DRY_RUN` | `--dry-run` | `true` | Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on\|off`, that choice wins. |
 | `LOG_LEVEL` | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email. |
+| `LOG_REDACT_ADDRESSES` | `--log-redact-addresses` | `auto` | Replace every email address in the log, and in the errors handed to a module, with a tag such as `<email:3f9a2c1b>`: `auto` (yes when `MAILRULES_MODE` is `cloud`, no when it is `selfhost`), `true` or `false`. The same address always gets the same tag, keyed by `log.key` in the data directory (generated on first use; it opens nothing else). `mailrules log-tag <address>` prints an address's tag, to find its lines. |
 
 ## Database (hosted build)
 

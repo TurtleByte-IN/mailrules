@@ -333,7 +333,7 @@ func (l *logs) find(t *testing.T, msg string) map[string]any {
 func captureLogs(t *testing.T, level slog.Level) *logs {
 	t.Helper()
 	l, old := &logs{}, slog.Default()
-	slog.SetDefault(telemetry.NewLogger(l, level.String()))
+	slog.SetDefault(telemetry.NewLogger(l, level.String(), nil))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	return l
 }

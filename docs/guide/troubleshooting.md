@@ -106,6 +106,8 @@ MailRules writes its log to standard error, one JSON object per line.
 
 Set `LOG_LEVEL=debug` for more detail, including one line per model call with its duration and outcome. Logs never contain passwords, keys or email text at any level. A line about a request has its `route` (such as `GET /api/rules`) and, once you are signed in, `tenant_id`; a line about a mailbox has its number as `account`.
 
+With `LOG_REDACT_ADDRESSES=true` (the default in the hosted version), email addresses appear as tags such as `<email:3f9a2c1b>`. To search for one address, get its tag with `mailrules log-tag me@example.com` and search for that. See [Security](./security.md#secrets-and-logs).
+
 Lines worth searching for:
 
 | Message | Meaning |

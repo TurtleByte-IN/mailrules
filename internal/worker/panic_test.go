@@ -45,7 +45,7 @@ func (l *errorLines) get() []map[string]any {
 func captureErrors(t *testing.T) *errorLines {
 	t.Helper()
 	errs, old := &errorLines{}, slog.Default()
-	slog.SetDefault(telemetry.NewLogger(io.Discard, "info", errs))
+	slog.SetDefault(telemetry.NewLogger(io.Discard, "info", nil, errs))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	return errs
 }

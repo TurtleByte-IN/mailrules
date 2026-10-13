@@ -45,7 +45,7 @@ func startSink(t *testing.T, metrics *telemetry.Metrics, modules ...ext.Module) 
 		sinks[0].Run(ctx)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	return telemetry.NewLogger(io.Discard, "debug", sinks[0]), cancel, done
+	return telemetry.NewLogger(io.Discard, "debug", nil, sinks[0]), cancel, done
 }
 
 // The module is handed each error as the log line reads, redacted, with the build's version
@@ -76,6 +76,29 @@ func TestErrorsHandsTheLoggedLine(t *testing.T) {
 	case e := <-got:
 		t.Errorf("handed more: %+v", e)
 	default:
+	}
+}
+
+// With LOG_REDACT_ADDRESSES on, the module is handed tags, never the addresses the log
+// line had, in its message, attributes or stack.
+func TestErrorsRedactAddresses(t *testing.T) {
+	got := make(chan ext.ErrorEvent, 1)
+	sinks := errorSinks([]ext.Module{{Name: "tracker", Errors: func(_ context.Context, e ext.ErrorEvent) { got <- e }}}, "v1.2.3", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); sinks[0].Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	key := []byte("0123456789abcdef0123456789abcdef")
+	telemetry.NewLogger(io.Discard, "info", key, sinks[0]).Error("cannot sign in as me@icloud.com",
+		slog.Group("account", "user", "me@icloud.com"), "error", `NO "me@icloud.com" refused`, "stack", "at me@icloud.com")
+	e := receive(t, got)
+	tag := telemetry.AddressTag(key, "me@icloud.com")
+	if b := mustJSON(t, e); strings.Contains(b, "icloud") || e.Message != "cannot sign in as "+tag || e.Stack != "at "+tag {
+		t.Errorf("event = %s", b)
+	}
+	want := map[string]any{"account": map[string]any{"user": tag}, "error": `NO "` + tag + `" refused`}
+	if b, w := mustJSON(t, e.Attrs), mustJSON(t, want); b != w {
+		t.Errorf("attrs = %s, want %s", b, w)
 	}
 }
 

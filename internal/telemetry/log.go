@@ -25,19 +25,27 @@ func redact(_ []string, a slog.Attr) slog.Attr {
 }
 
 // NewLogger returns a JSON logger that writes every record at level and above to w, and
-// drops credentials and email bodies. Each of errs gets, as well, every record at error
-// level and above, as the one JSON line w gets for it (whatever level is): the same
-// redaction, so it never holds more than the log does. A writer in errs must not block:
-// the code that logged waits for it.
+// drops credentials and email bodies. With addressKey, every email address in a line, in
+// its message as in its attributes, is written as its AddressTag under that key instead;
+// nil keeps addresses. Each of errs gets, as well, every record at error level and above,
+// as the one JSON line w gets for it (whatever level is): the same redaction, so it never
+// holds more than the log does. A writer in errs must not block: the code that logged
+// waits for it.
 //
 // A record logged with a context that carries attributes (WithAttrs, AddAttrs) has them
 // too, except those whose key the record has already.
-func NewLogger(w io.Writer, level string, errs ...io.Writer) *slog.Logger {
+func NewLogger(w io.Writer, level string, addressKey []byte, errs ...io.Writer) *slog.Logger {
 	var lv slog.Level
 	_ = lv.UnmarshalText([]byte(level)) // config.Validate already checked it; zero value is info
-	h := handler{log: slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lv, ReplaceAttr: redact})}
+	out := func(w io.Writer) io.Writer {
+		if addressKey == nil {
+			return w
+		}
+		return addressWriter{w: w, key: addressKey}
+	}
+	h := handler{log: slog.NewJSONHandler(out(w), &slog.HandlerOptions{Level: lv, ReplaceAttr: redact})}
 	for _, e := range errs {
-		h.errs = append(h.errs, slog.NewJSONHandler(e, &slog.HandlerOptions{Level: slog.LevelError, ReplaceAttr: redact}))
+		h.errs = append(h.errs, slog.NewJSONHandler(out(e), &slog.HandlerOptions{Level: slog.LevelError, ReplaceAttr: redact}))
 	}
 	return slog.New(h)
 }

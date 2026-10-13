@@ -68,6 +68,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-}
+      # "true" writes email addresses into the log as tags; see docs/guide/security.md.
+      LOG_REDACT_ADDRESSES: ${LOG_REDACT_ADDRESSES:-}
       # The summary email's outgoing mail server; see docs/guide/summary-email.md.
       MAILRULES_SMTP_HOST: ${MAILRULES_SMTP_HOST:-}
       MAILRULES_SMTP_PORT: ${MAILRULES_SMTP_PORT:-}

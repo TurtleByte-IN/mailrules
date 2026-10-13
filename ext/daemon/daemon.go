@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -54,6 +55,8 @@ const usage = `usage: mailrules <command> [flags]
             test it over .eml files
   dry-run   on | off: switch the global dry-run; with no argument, show it.
             While it is on, decisions are logged and no mailbox is changed.
+  log-tag   print the tag that stands for an email address in a log that
+            redacts them (LOG_REDACT_ADDRESSES): log-tag me@example.com
   version   print the version
 `
 
@@ -88,6 +91,8 @@ func Run(args []string, version string, modules ...ext.Module) error {
 		return rulesCmd(ctx, args[1:], os.Getenv, os.Stdout)
 	case "dry-run":
 		return dryRunCmd(ctx, args[1:], os.Getenv, os.Stdout)
+	case "log-tag":
+		return logTag(args[1:], os.Getenv, os.Stdout)
 	case "serve":
 		cfg, err := config.Load(args[1:], os.Getenv)
 		if err != nil {
@@ -118,7 +123,15 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	for i, s := range sinks {
 		errs[i] = s
 	}
-	slog.SetDefault(telemetry.NewLogger(os.Stderr, cfg.LogLevel, errs...))
+	var addressKey []byte
+	if cfg.RedactAddresses() {
+		key, err := telemetry.LogKey(cfg.DataDir)
+		if err != nil {
+			return fmt.Errorf("LOG_REDACT_ADDRESSES: %w", err)
+		}
+		addressKey = key
+	}
+	slog.SetDefault(telemetry.NewLogger(os.Stderr, cfg.LogLevel, addressKey, errs...))
 	if len(sinks) > 0 {
 		sinkCtx, stopSinks := context.WithCancel(context.WithoutCancel(ctx))
 		var handing sync.WaitGroup
@@ -462,6 +475,32 @@ func dryRunCmd(ctx context.Context, args []string, getenv func(string) string, o
 	}
 	_, err = fmt.Fprintf(out, "dry-run is %s\n", map[bool]string{true: "on: decisions are logged, no mailbox is changed", false: "off: rules change mailboxes"}[on])
 	return err
+}
+
+// logTag prints the tag each address in args is logged as when LOG_REDACT_ADDRESSES is
+// on, so an operator can find an address's lines without the log holding it. It reads
+// the key from the data directory and never makes one.
+func logTag(args []string, getenv func(string) string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: mailrules log-tag <address> [<address> ...]")
+	}
+	cfg, err := config.Load(nil, getenv)
+	if err != nil {
+		return err
+	}
+	key, err := telemetry.ReadLogKey(cfg.DataDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("no %s: this data directory's log has never redacted addresses (LOG_REDACT_ADDRESSES)", telemetry.LogKeyFile(cfg.DataDir))
+	}
+	if err != nil {
+		return err
+	}
+	for _, a := range args {
+		if _, err := fmt.Fprintf(out, "%s %s\n", telemetry.AddressTag(key, a), a); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // openAccount returns how a supervisor connects to an account. The password is decrypted
