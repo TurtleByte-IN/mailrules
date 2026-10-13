@@ -35,8 +35,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON draft_jobs TO mailrules_app, mailrules_w
 CREATE POLICY mailrules_definer ON draft_jobs FOR SELECT TO mailrules_definer USING (true);
 GRANT SELECT ON draft_jobs TO mailrules_definer;
 
--- mailrules_tenants learns the kind 'drafts'. The function stays the definer's: replacing it
--- keeps its owner and grants.
+-- mailrules_tenants learns the kind 'drafts'; replacing it keeps its owner and grants.
+-- The function is the definer's, so it is replaced as the definer, which needs CREATE on the
+-- schema for that moment only (as 0023 made it).
+GRANT CREATE ON SCHEMA public TO mailrules_definer;
+SET ROLE mailrules_definer;
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION mailrules_tenants(kind text) RETURNS SETOF bigint
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
@@ -53,8 +56,14 @@ BEGIN
 END
 $$;
 -- +goose StatementEnd
+RESET ROLE;
+REVOKE CREATE ON SCHEMA public FROM mailrules_definer;
 
 -- +goose Down
+-- The function is the definer's, so it is replaced as the definer, which needs CREATE on the
+-- schema for that moment only (as 0023 made it).
+GRANT CREATE ON SCHEMA public TO mailrules_definer;
+SET ROLE mailrules_definer;
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION mailrules_tenants(kind text) RETURNS SETOF bigint
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
@@ -70,5 +79,7 @@ BEGIN
 END
 $$;
 -- +goose StatementEnd
+RESET ROLE;
+REVOKE CREATE ON SCHEMA public FROM mailrules_definer;
 DROP TABLE draft_jobs;
 ALTER TABLE rules DROP COLUMN draft;
