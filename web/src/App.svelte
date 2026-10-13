@@ -12,8 +12,11 @@
   import { load as loadRules } from './lib/state/rules.svelte';
   import { load as loadSettings, settings, toggleDryRun } from './lib/state/settings.svelte';
   import { toast } from './lib/state/toast.svelte';
-  import { routes } from './routes';
+  import { followPathRoute, routes } from './routes';
   import Login from './screens/Login.svelte';
+
+  // An address without the hash (/rules) opens its screen, not Overview.
+  followPathRoute();
 
   // A one-click sign-in started from first-run setup comes back to Mailboxes like any other:
   // the guide takes it up again at its mailbox step, before the screens are drawn.

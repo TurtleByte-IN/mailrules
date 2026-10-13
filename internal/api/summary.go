@@ -25,15 +25,20 @@ func (s *server) summaryJSON(ctx context.Context, u store.User) (map[string]any,
 }
 
 // summaryRefused answers for a summary change or send that cannot be made, and reports
-// whether err was one.
-func summaryRefused(w http.ResponseWriter, err error) bool {
+// whether err was one. On the hosted service the operator's mail server sends summaries, so
+// a missing one is not the person's to set up: the message names no setting.
+func (s *server) summaryRefused(w http.ResponseWriter, err error) bool {
 	var bad *settings.Invalid
 	var noSMTP *summary.NoSMTP
 	switch {
 	case errors.As(err, &bad):
 		invalid(w, bad.Path, bad.Message)
 	case errors.As(err, &noSMTP):
-		writeError(w, http.StatusConflict, "smtp_not_configured", noSMTP.Message(), "summary.enabled")
+		msg := noSMTP.Message()
+		if s.Settings.Env.Mode == "cloud" {
+			msg = "MailRules cannot send summary emails yet."
+		}
+		writeError(w, http.StatusConflict, "smtp_not_configured", msg, "summary.enabled")
 	default:
 		return false
 	}
@@ -79,7 +84,7 @@ func (s *server) handleSummaryTest(w http.ResponseWriter, r *http.Request) {
 	email, to, err := s.Summary.SendTest(r.Context(), user(r))
 	var notSent *summary.SendError
 	switch {
-	case summaryRefused(w, err):
+	case s.summaryRefused(w, err):
 	case errors.As(err, &notSent):
 		if clientGone(w, r) {
 			return
