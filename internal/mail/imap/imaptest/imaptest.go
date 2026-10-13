@@ -55,7 +55,8 @@ type Server struct {
 	cert    atomic.Pointer[tls.Certificate] // what the server presents; see Rotate
 	// password is the one LOGIN accepts once ChangePassword set it; nil = Password.
 	password atomic.Pointer[string]
-	delayNew atomic.Bool // see DelayNewMail
+	delayNew atomic.Bool            // see DelayNewMail
+	onIdle   atomic.Pointer[func()] // see OnIdle
 }
 
 // DelayNewMail makes the server behave as Dovecot does: a session that has a folder
@@ -65,6 +66,11 @@ type Server struct {
 // §6.4.9 allows this of a UID that does not exist), and UID SEARCH leaves it out. The
 // in-memory server otherwise shows every message at once.
 func (s *Server) DelayNewMail(delay bool) { s.delayNew.Store(delay) }
+
+// OnIdle has f run each time a session begins IDLE, before anything is announced to it,
+// so mail a test delivers from f lands between the client's last command and its IDLE.
+// nil removes it.
+func (s *Server) OnIdle(f func()) { s.onIdle.Store(&f) }
 
 // view is what one session has been told about its selected folder.
 type view struct {
@@ -107,6 +113,32 @@ func (x session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	x.v.mu.Unlock()
 	x.announce(folder)
 	return err
+}
+
+// idleTick is how often an idling session is told what changed since it was last told.
+const idleTick = 5 * time.Millisecond
+
+// Idle announces what changed since the last command completed as soon as IDLE begins,
+// then whatever changes while the session idles, as Dovecot does. go-imap's own Idle only
+// announces what changes after it began listening: mail delivered between a client's
+// last command and its IDLE went unannounced until the client next left IDLE, so a
+// watcher that had just searched idled past it (MAI-241, MAI-245).
+func (x session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+	if f := x.s.onIdle.Load(); f != nil && *f != nil {
+		(*f)()
+	}
+	tick := time.NewTicker(idleTick)
+	defer tick.Stop()
+	for {
+		if err := x.SessionIMAP4rev2.Poll(w, true); err != nil {
+			return err
+		}
+		select {
+		case <-stop:
+			return nil
+		case <-tick.C:
+		}
+	}
 }
 
 // announced narrows a UID set to the UIDs announced to the session when DelayNewMail is
