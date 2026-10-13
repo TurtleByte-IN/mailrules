@@ -111,6 +111,34 @@ func TestSummaryRefusalWordingByMode(t *testing.T) {
 	}
 }
 
+// A test summary the mail server refused: self-host shows the server's answer to the admin
+// who runs it; on the hosted service that server is the operator's, so its answer stays in
+// the operator's log.
+func TestSummarySendFailureWordingByMode(t *testing.T) {
+	const said = "550 5.1.1 relay.internal.example rate limit"
+	for _, tc := range []struct {
+		mode  string
+		want  string
+		shows bool
+	}{
+		{"selfhost", "The summary email could not be sent: ", true},
+		{"cloud", "The test summary could not be sent. Try again later.", false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			e := newEnvWith(t, func(o *Options) { o.Settings.Env.Mode = tc.mode })
+			e.signIn()
+			e.mail.SetErr(errors.Join(mailer.ErrRefused, errors.New(said)))
+			r := e.do(http.MethodPost, "/api/summary/test", "")
+			if r.status != http.StatusBadGateway || r.body.Error.Code != "send_failed" || !strings.HasPrefix(r.body.Error.Message, tc.want) {
+				t.Fatalf("refused test = %d %s, want a message starting %q", r.status, r.raw, tc.want)
+			}
+			if got := strings.Contains(string(r.raw), said); got != tc.shows {
+				t.Errorf("answer shows the server's words = %v, want %v: %s", got, tc.shows, r.raw)
+			}
+		})
+	}
+}
+
 func TestSummaryTestAndPreview(t *testing.T) {
 	e := newEnv(t)
 	e.signIn()
