@@ -10,7 +10,7 @@
   import { confidence } from '../lib/format';
   import { canManage, managedNote } from '../lib/state/auth.svelte';
   import { rules } from '../lib/state/rules.svelte';
-  import { findWorkspace, load, patch, settings, toggleDryRun } from '../lib/state/settings.svelte';
+  import { findWorkspace, hosted, load, patch, settings, toggleDryRun } from '../lib/state/settings.svelte';
   import { choose, stored, type Choice } from '../lib/theme';
 
   const s = $derived(settings.value);
@@ -133,7 +133,7 @@
 
     <section aria-label="Model API keys" class="card flex flex-col gap-3.5 p-5">
       <h2>Model API keys</h2>
-      <p class="text-[13.5px] text-secondary">Keys are encrypted with your master key and never logged.</p>
+      <p class="text-[13.5px] text-secondary">{hosted() ? 'Keys are encrypted and never logged.' : 'Keys are encrypted with your master key and never logged.'}</p>
       <KeyFields shown={keyOrder.filter((k) => inUse.has(k))} other={keyOrder.filter((k) => !inUse.has(k))} />
     </section>
 

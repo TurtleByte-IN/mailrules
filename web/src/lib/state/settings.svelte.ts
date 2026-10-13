@@ -40,6 +40,12 @@ const message = (e: unknown) => (e instanceof Error && e.message) || 'The daemon
 /** The id of the warning that names this setting (as SettingsPatch spells it), when there is one. */
 export const warningId = (path: string) => (settings.value.warnings.some((w) => w.path === path) ? 'warn-' + path : undefined);
 
+/**
+ * Whether the daemon runs as the hosted service (MAILRULES_MODE=cloud). Its people have no host of their own: no
+ * environment variables, data folder, master key or Docker, so the screens leave those out of what they say.
+ */
+export const hosted = () => settings.value.server.mode === 'cloud';
+
 // The Claude workspace. Only a Claude key that covers a whole organisation needs one; `lookup`
 // is the daemon's answer for the key in force, or null while there is none.
 export const workspaces = $state<{ lookup: settingsApi.AnthropicWorkspaces | null }>({ lookup: null });

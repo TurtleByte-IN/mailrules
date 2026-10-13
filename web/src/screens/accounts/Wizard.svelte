@@ -2,6 +2,7 @@
   import type { Account } from '../../lib/api/accounts';
   import Waiting from '../../lib/components/Waiting.svelte';
   import { accounts, loadPresets, testSummary } from '../../lib/state/accounts.svelte';
+  import { hosted } from '../../lib/state/settings.svelte';
   import CertCheck from './CertCheck.svelte';
   import GoogleNotice from './GoogleNotice.svelte';
   import { secretLabel, stepNames, Wizard, zohoRegions, type SignInVia } from './connect.svelte';
@@ -205,7 +206,9 @@
             <li>Bridge makes its own certificate. After Test connection, MailRules shows its fingerprint for you to accept.</li>
           </ol>
           <a href={w.preset?.help_url} target="_blank" rel="noreferrer" class="text-[13.5px] font-semibold">How to set up Proton Mail Bridge</a>
-          <div class="text-[12.5px] text-secondary">MailRules in Docker cannot reach a Bridge running on this machine. Use the binary or the Homebrew install.</div>
+          {#if !hosted()}
+            <div class="text-[12.5px] text-secondary">MailRules in Docker cannot reach a Bridge running on this machine. Use the binary or the Homebrew install.</div>
+          {/if}
         </div>
       {/if}
       <form
