@@ -4,7 +4,7 @@
   import type { Decider } from '../lib/api/settings';
   import { close, firstRun, next, skip, stepNames } from '../lib/state/firstrun.svelte';
   import { mailboxReturn } from '../lib/state/oneclick';
-  import { findWorkspace, load, settings } from '../lib/state/settings.svelte';
+  import { findWorkspace, hosted, load, settings } from '../lib/state/settings.svelte';
   import Wizard from './accounts/Wizard.svelte';
   import DeciderFields from './settings/DeciderFields.svelte';
   import KeyFields from './settings/KeyFields.svelte';
@@ -76,7 +76,7 @@
         {#if settings.loaded}
           <DeciderFields bind:chosen={decider} />
           <KeyFields shown={keys} />
-          <p class="text-[12.5px] text-secondary">Keys are encrypted with your master key and never logged. You can change all of this later in Settings.</p>
+          <p class="text-[12.5px] text-secondary">{hosted() ? 'Keys are encrypted and never logged.' : 'Keys are encrypted with your master key and never logged.'} You can change all of this later in Settings.</p>
         {/if}
         <div class="flex flex-wrap justify-between gap-2 border-t border-line-divider pt-3.5">
           <button type="button" class="btn min-h-11" onclick={skip}>Skip for now</button>

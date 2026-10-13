@@ -73,6 +73,37 @@ it('renders the settings in force', async () => {
   expect(screen.getByText('Version dev · data in ./data · listening on 127.0.0.1:8080')).toBeTruthy();
 });
 
+// The hosted service's people have no mail server, environment, master key or data folder of their own:
+// Settings says what the daemon's mode makes true, and names none of the self-host settings there.
+describe.each<[Saved['server']['mode'], { summary: string; unsent: string; keys: string; selfHosting: boolean }]>([
+  ['selfhost', {
+    summary: 'Free. Sent through your own mail server (the MAILRULES_SMTP_* settings).',
+    unsent: 'To send it, set MAILRULES_SMTP_HOST, then restart MailRules.',
+    keys: 'Keys are encrypted with your master key and never logged.',
+    selfHosting: true,
+  }],
+  ['cloud', { summary: 'Free. Sent by MailRules.', unsent: 'MailRules cannot send summary emails yet.', keys: 'Keys are encrypted and never logged.', selfHosting: false }],
+])('in %s mode', (mode, want) => {
+  const server = { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode };
+  const summary = { ...fresh().summary, smtp: { configured: false, missing: ['MAILRULES_SMTP_HOST'] } };
+
+  it('says how the summary is sent and how keys are kept', async () => {
+    await show(fresh({ server, summary }));
+    const card = within(screen.getByRole('region', { name: 'Summary email' }));
+    expect(card.getByText(want.summary)).toBeTruthy();
+    expect(card.getByText(want.unsent)).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: 'Model API keys' })).getByText(want.keys)).toBeTruthy();
+    expect(!!screen.queryByRole('region', { name: 'Self-hosting' })).toBe(want.selfHosting);
+  });
+
+  if (mode === 'cloud') {
+    it('names no self-host setting anywhere on the screen', async () => {
+      await show(fresh({ server, summary }));
+      expect(document.body.textContent).not.toMatch(/MAILRULES_|master key|restart|own mail server|\.\/data|Docker/);
+    });
+  }
+});
+
 it.each<[Saved['decider'], string | undefined, string | undefined]>([
   ['jev', undefined, undefined],
   ['openai', 'https://llm.example.test/v1', undefined],

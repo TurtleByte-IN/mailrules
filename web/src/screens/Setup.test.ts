@@ -138,6 +138,14 @@ it('takes an OpenAI-compatible endpoint: its URL shows as soon as it is picked, 
   expect(patches()).toEqual([]); // no default model, so nothing is saved until one is named
 });
 
+it.each<[Saved['server']['mode'], string]>([
+  ['selfhost', 'Keys are encrypted with your master key and never logged. You can change all of this later in Settings.'],
+  ['cloud', 'Keys are encrypted and never logged. You can change all of this later in Settings.'],
+])('in %s mode, says how keys are kept without naming a master key the person does not have', async (mode, want) => {
+  await show('ai', fresh({ warnings: [noOpenRouter, noClaude], server: { ...fresh().server, mode } }));
+  expect(screen.getByText(want)).toBeTruthy();
+});
+
 it('skips the AI to the mailbox, and the mailbox to Overview', async () => {
   await show('ai');
   await fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }));

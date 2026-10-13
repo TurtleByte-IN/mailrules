@@ -101,7 +101,7 @@ func (s *server) handleSettingsPatch(w http.ResponseWriter, r *http.Request) {
 	if sum != nil {
 		var err error
 		commitSummary, err = s.Summary.Prepare(r.Context(), viewer(r).TenantID, *sum)
-		if summaryRefused(w, err) {
+		if s.summaryRefused(w, err) {
 			return
 		}
 		if err != nil {
