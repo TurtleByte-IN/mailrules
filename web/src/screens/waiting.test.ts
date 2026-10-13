@@ -39,6 +39,7 @@ const food: Rule = {
   hits_week: 3,
   mailbox_removed: false,
   notify: [],
+  draft: null,
   last_match_at: null,
 };
 const mailbox = { id: 3, label: 'me@icloud.com' } as (typeof accounts.list)[number];

@@ -78,7 +78,7 @@
       const at = e instanceof ApiError && e.path ? refusedPart(b, e.path) : undefined;
       if (!at) return flash((e as Error).message);
       refused = { ...at, message: (e as Error).message, was: snapshot(at.part) };
-      if (['account_id', 'stack', 'notify', 'min_confidence'].includes(at.part)) more = true;
+      if (['account_id', 'stack', 'notify', 'draft', 'min_confidence'].includes(at.part)) more = true;
     } finally {
       saving = false;
     }
@@ -174,9 +174,9 @@
     </div>
 
     <details class="border-t border-line-divider pt-3.5" bind:open={more}>
-      <summary class="min-h-8 cursor-pointer font-semibold max-md:min-h-11">More options: mailbox, stacking{settings.value.features.notifications ? ', notify' : ''}{b.intent.trim() ? ', threshold' : ''}</summary>
+      <summary class="min-h-8 cursor-pointer font-semibold max-md:min-h-11">More options: mailbox, stacking{settings.value.features.notifications ? ', notify' : ''}{settings.value.features.draft_replies ? ', draft a reply' : ''}{b.intent.trim() ? ', threshold' : ''}</summary>
       <div class="flex flex-col gap-3.5 pt-3">
-        <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" {problem} />
+        <MoreOptions id="b" value={b} onchange={(p) => Object.assign(b, p)} stackLabel="Also apply when another rule already matched (stacks)" draftLabel="Draft a reply in my Drafts folder (never sent automatically)" {problem} />
         {#if b.intent.trim()}
           <div class="flex max-w-[420px] flex-col gap-1.5">
             <Threshold id="b-thr" value={b.min_confidence} onchange={(v) => (b.min_confidence = v)} invalid={bad('min_confidence')} />

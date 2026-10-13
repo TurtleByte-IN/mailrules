@@ -233,8 +233,13 @@ func TestMigrationSenderSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := s.FirstUser(ctx)
-	rule, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: "Food", Intent: "food", Actions: []rules.Action{{Type: rules.ActKeep}}, Enabled: true}, 1)
+	res, err = db.ExecContext(ctx, `INSERT INTO rules (tenant_id, user_id, name, intent, conditions, exceptions, actions, priority, enabled, version, created_at, updated_at)
+		VALUES (?, ?, 'Food', 'food', '{}', '{}', '[{"type":"keep"}]', 1, 1, 1, 1, 1)`, u.TenantID, u.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	var rule rules.Rule
+	if rule.ID, err = res.LastInsertId(); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {

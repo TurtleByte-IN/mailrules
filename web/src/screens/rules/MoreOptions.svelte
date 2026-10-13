@@ -5,8 +5,8 @@
   import type { Extras } from './text';
 
   // Shared by the rule editor and the condition builder; `id` keeps their control ids apart.
-  // `problem` is a refused save to show on one of these controls ("account_id", "stack" or "notify").
-  let { id, value, onchange, stackLabel, problem }: { id: string; value: Extras; onchange: (patch: Partial<Extras>) => void; stackLabel: string; problem?: { part: string; message: string } | null } = $props();
+  // `problem` is a refused save to show on one of these controls ("account_id", "stack", "notify" or "draft").
+  let { id, value, onchange, stackLabel, draftLabel = 'Draft a reply (never sent automatically)', problem }: { id: string; value: Extras; onchange: (patch: Partial<Extras>) => void; stackLabel: string; draftLabel?: string; problem?: { part: string; message: string } | null } = $props();
   const bad = (part: string) => (problem?.part === part ? { 'aria-invalid': true, 'aria-describedby': id + '-problem' } : {});
 
   // Notifications exist only in a build with their module; the destinations are fetched once
@@ -15,6 +15,8 @@
   $effect(() => {
     if (notifying && !notifications.loaded) loadNotifications();
   });
+  // Draft replies exist only in a build (and plan) with their module.
+  const drafting = $derived(settings.value.features.draft_replies);
 
   /** The rule's destinations with `dest` ticked or unticked, in the order Settings lists them. */
   function toggle(dest: number) {
@@ -57,6 +59,18 @@
     </div>
   </div>
 {/if}
-{#if problem?.part === 'account_id' || problem?.part === 'stack' || problem?.part === 'notify'}
+{#if drafting}
+  <label class="flex items-center gap-2.5 text-[13.5px]">
+    <input type="checkbox" checked={!!value.draft} {...bad('draft')} onchange={() => onchange({ draft: value.draft ? null : { instruction: '', read_previous: false } })} />{draftLabel}
+  </label>
+  {#if value.draft}
+    {@const d = value.draft}
+    <input class="field" aria-label="How should the reply sound?" placeholder="For example: polite no, not looking right now" maxlength="300" value={d.instruction} {...bad('draft')} onchange={(e) => onchange({ draft: { ...d, instruction: e.currentTarget.value } })} />
+    <label class="flex items-center gap-2.5 text-[13.5px]">
+      <input type="checkbox" checked={d.read_previous} {...bad('draft')} onchange={() => onchange({ draft: { ...d, read_previous: !d.read_previous } })} />Also read the previous message in the thread
+    </label>
+  {/if}
+{/if}
+{#if problem?.part === 'account_id' || problem?.part === 'stack' || problem?.part === 'notify' || problem?.part === 'draft'}
   <p id="{id}-problem" role="alert" class="text-[12.5px] text-trash">{problem.message}</p>
 {/if}

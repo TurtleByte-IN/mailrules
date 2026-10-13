@@ -229,6 +229,12 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	if ended != nil {
 		exec.Notices = api.PlanFeature(st, modules, "notifications")
 	}
+	// A build with a module that writes draft replies queues one for every email a rule that
+	// drafts acts on live; one that sells plans only for tenants whose plan includes them.
+	drafts := draftsModule(modules)
+	if drafts != nil {
+		exec.Drafts = api.PlanFeature(st, modules, "draft_replies")
+	}
 	// The mailbox workers act and read plans through the worker pool: the same executor, on
 	// the worker role's connections.
 	wexec := *exec
@@ -236,6 +242,9 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 	wended := planEnded(wst, modules)
 	if ended != nil {
 		wexec.Notices = api.PlanFeature(wst, modules, "notifications")
+	}
+	if drafts != nil {
+		wexec.Drafts = api.PlanFeature(wst, modules, "draft_replies")
 	}
 	// One-click mailboxes sign in through the module that connects them.
 	logins := newMailLogins(wst, modules)
@@ -322,6 +331,19 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 				n.Start(ctx, notices.deliveries)
 			}()
 		}
+	}
+	// Replies rules asked for are written by the module that drafts them, when the build has
+	// one, and saved through the executor: those still waiting now, then each within seconds
+	// of the rule acting, off the mailboxes' own work, so a slow model holds up no sorting.
+	if drafts != nil {
+		w := &draftWorker{store: wst, exec: &wexec, drafts: drafts, model: sett.Drafter, allowance: allowance,
+			hub: hub, bodyChars: cfg.BodyChars}
+		drafting := make(chan struct{})
+		defer func() { stopAll(); <-drafting }()
+		go func() {
+			defer close(drafting)
+			w.Run(ctx)
+		}()
 	}
 	// Mailboxes a module connected and that were removed, or whose owner was forgotten, go
 	// to that module: those still waiting now, then each within seconds. It runs in every

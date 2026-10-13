@@ -376,6 +376,7 @@ func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 	for _, q := range []struct{ what, query string }{
 		{"mailboxes", `DELETE FROM accounts WHERE tenant_id = ?`},
 		{"notices", `DELETE FROM notices WHERE tenant_id = ?`},
+		{"draft jobs", `DELETE FROM draft_jobs WHERE tenant_id = ?`},
 		{"notification destinations", `DELETE FROM notify_destinations WHERE tenant_id = ?`},
 		{"sender rules", `DELETE FROM sender_rules WHERE tenant_id = ?`},
 		{"rules", `DELETE FROM rules WHERE tenant_id = ?`},

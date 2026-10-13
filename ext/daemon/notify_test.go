@@ -126,7 +126,7 @@ func (w noticeWorld) queue(t *testing.T, uid uint32, now int64) {
 		t.Fatal(err)
 	}
 	a.Status, a.After = store.ActionDone, &store.Snapshot{Folder: "Receipts", UIDValidity: 1, UID: uid}
-	if err := w.st.FinishAction(ctx, a, true); err != nil {
+	if err := w.st.FinishAction(ctx, a, store.FollowUps{Notices: true}); err != nil {
 		t.Fatal(err)
 	}
 }

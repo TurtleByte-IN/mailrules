@@ -1431,7 +1431,7 @@ paths:
       summary: Model calls and cost by day, rule and model for the Usage screen
       description: |
         `days`, `by_model`, `calls` and `cost_usd` come from the cost ledger, which records
-        every model call under its purpose (decide, escalate, compose, test, cleanup, suggest). `by_rule` comes
+        every model call under its purpose (decide, escalate, compose, test, cleanup, suggest, draft). `by_rule` comes
         from the decisions, which know which rule a call was for, so it leaves out composing
         and testing and its costs add up to less than `cost_usd`.
       parameters:
@@ -2175,7 +2175,7 @@ components:
         folder: { type: string, description: 'For move only: 1 to 200 characters, no wildcards' }
     Rule:
       type: object
-      required: [id, account_id, name, said, template, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, mailbox_removed, notify, version, created_at, updated_at, hits_week, last_match_at]
+      required: [id, account_id, name, said, template, intent, conditions, exceptions, actions, priority, stack, model, min_confidence, enabled, mailbox_removed, notify, draft, version, created_at, updated_at, hits_week, last_match_at]
       properties:
         id: { type: integer, format: int64 }
         account_id: { type: [integer, 'null'], format: int64, description: null = every account }
@@ -2193,11 +2193,24 @@ components:
         enabled: { type: boolean }
         mailbox_removed: { type: boolean, readOnly: true, description: 'The rule''s mailbox was removed: it is off and cannot be switched on until it is given a mailbox (account_id, or null for every mailbox) or new conditions or exceptions, which clears this' }
         notify: { type: array, items: { type: integer, format: int64 }, description: 'The notification destinations (`/api/notifications`) told each time the rule acts on an email live; empty = none' }
+        draft:
+          oneOf:
+            - { $ref: '#/components/schemas/DraftReply' }
+            - { type: 'null' }
+          description: 'When set, each time the rule acts on an email live (never in dry-run, a cleanup, an undo or a correction, nor for an email a sender rule settled) the drafting module writes a reply and the daemon saves it in the mailbox''s Drafts folder, never sending it; Activity lists it as an action of kind `draft`. null = no reply is drafted. Kept, and exported, in a build without the module, where it does nothing'
         version: { type: integer, description: Goes up by one with every edit }
         created_at: { type: integer, format: int64 }
         updated_at: { type: integer, format: int64 }
         hits_week: { type: integer, description: Emails this rule was applied to in the last 7 days }
         last_match_at: { type: [integer, 'null'], format: int64 }
+    DraftReply:
+      type: object
+      required: [instruction, read_previous]
+      additionalProperties: false
+      description: 'How a rule drafts a reply (`features.draft_replies`). The drafting model reads the email''s trimmed plain text, as the decision model does, and the instruction'
+      properties:
+        instruction: { type: string, maxLength: 300, description: 'How the reply should sound or what it should say ("polite no, not looking right now"); empty = the model''s own judgement. At most 300 characters' }
+        read_previous: { type: boolean, description: 'Also hand the model the thread''s previous message (the one the email replies to), when it is found in the mailbox: its trimmed plain text, as the email''s' }
     RuleEnvelope:
       type: object
       required: [rule]
@@ -2235,6 +2248,11 @@ components:
         min_confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
         enabled: { type: boolean }
         notify: { type: array, items: { type: integer, format: int64 }, description: 'Notification destinations of the tenant, each at most once; an empty list = none. An id that is not one is refused with `invalid_input` at `notify`' }
+        draft:
+          oneOf:
+            - { $ref: '#/components/schemas/DraftReply' }
+            - { type: 'null' }
+          description: 'Draft a reply when the rule acts live; null = stop. Setting one in a build without the drafting module is refused with `invalid_input` at `draft`, and for a tenant whose plan does not include draft replies with 403 `plan_required`'
     RuleInput:
       type: object
       required: [name, actions]
@@ -2255,6 +2273,11 @@ components:
         enabled: { type: boolean, description: 'Left out = true. A tested rule is always switched on' }
         new_folders: { type: array, items: { type: string }, description: Folders to create on the server when the rule is saved }
         notify: { type: array, items: { type: integer, format: int64 }, description: 'Notification destinations to tell when the rule acts, as in RulePatch; left out = none' }
+        draft:
+          oneOf:
+            - { $ref: '#/components/schemas/DraftReply' }
+            - { type: 'null' }
+          description: 'Draft a reply when the rule acts live, as in RulePatch; left out or null = none'
         position: { type: integer, minimum: 0, description: Where in the priority order to insert it (0 = first); left out = at the end }
     ComposeRequest:
       type: object
@@ -2266,7 +2289,7 @@ components:
     RuleDraft:
       type: object
       required: [name, said, intent, conditions, exceptions, actions, account_id, stack, model, min_confidence, new_folders, question, conflicts, errors, match_count, tested, samples]
-      description: 'A draft carries every field of RuleInput but `notify`, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything'
+      description: 'A draft carries every field of RuleInput but `notify` and `draft`, so the approved card can be sent to `/api/rules/batch` (or, for a re-optimized rule, to PATCH) without losing anything'
       properties:
         name: { type: string }
         said: { type: string, description: "The user's exact words this rule came from, cut from the text by the server (separate parts joined with ' … '). A re-optimized rule keeps its wording, with the new words on a line under it" }
@@ -2452,7 +2475,8 @@ components:
       description: '`acted`: a rule was applied (or recorded, in dry-run). `review`: waiting in Needs review, untouched in the mailbox. `skipped`: no rule matched, or the email was gone. `error`: failed; it is retried. `new` and `decided` are in progress'
     ActionKind:
       type: string
-      enum: [move, archive, trash, junk, flag, unflag, read, unread, keep]
+      enum: [move, archive, trash, junk, flag, unflag, read, unread, keep, draft]
+      description: '`draft`: a reply a rule''s drafting module wrote, saved in the Drafts folder (`folder`); the email itself is not changed. It fails, with the reason in `error`, when the mailbox has no Drafts folder, the month''s AI-sorted emails are used up, the email is gone or the module could not write one; undoing it deletes exactly the draft MailRules saved, unless it was edited or moved since'
     ActionStatus:
       type: string
       enum: [done, dry_run, failed, undone]
@@ -2483,9 +2507,9 @@ components:
         decision_id: { type: [integer, 'null'], format: int64, description: null for a correction }
         batch_id: { type: [integer, 'null'], format: int64 }
         kind: { $ref: '#/components/schemas/ActionKind' }
-        folder: { type: string, description: 'The destination a move names, or "MailRules Trash" for a trash that went to MailRules'' own folder (`trash_to_folder` on when it was recorded); empty otherwise, so an empty trash went to the server''s Trash' }
+        folder: { type: string, description: 'The destination a move names, or "MailRules Trash" for a trash that went to MailRules'' own folder (`trash_to_folder` on when it was recorded), or the Drafts folder a `draft` was saved in; empty otherwise, so an empty trash went to the server''s Trash' }
         from_folder: { type: string, description: Where the email was just before this action }
-        to_folder: { type: string, description: Where it was afterwards; empty unless the action was done }
+        to_folder: { type: string, description: 'Where it was afterwards; empty unless the action was done. A `draft` leaves the email where it was: here it is the Drafts folder the reply went to' }
         status: { $ref: '#/components/schemas/ActionStatus' }
         error: { type: string, description: Why it failed; empty otherwise }
         created_at: { type: integer, format: int64 }
@@ -2754,7 +2778,7 @@ components:
       properties:
         provider: { type: string }
         model: { type: string }
-        purpose: { type: string, enum: [decide, escalate, compose, test, cleanup, suggest] }
+        purpose: { type: string, enum: [decide, escalate, compose, test, cleanup, suggest, draft] }
         calls: { type: integer }
         tokens_in: { type: integer }
         tokens_out: { type: integer }
@@ -2837,7 +2861,7 @@ components:
                   properties:
                     provider: { type: string }
                     model: { type: string }
-                    purpose: { type: string, enum: [decide, escalate, compose, test, cleanup, suggest] }
+                    purpose: { type: string, enum: [decide, escalate, compose, test, cleanup, suggest, draft] }
                     calls: { type: integer }
                     cost_usd: { type: number }
         by_rule:
@@ -3067,7 +3091,7 @@ components:
           properties:
             notifications: { type: boolean, description: 'A module of this build delivers rule notifications, so `/api/notifications` works and rules may name destinations in `notify`' }
             timed_actions: { type: boolean }
-            draft_replies: { type: boolean }
+            draft_replies: { type: boolean, description: 'A module of this build drafts replies (and, in a build that sells plans, the tenant''s plan includes them), so a rule may set `draft`' }
             billing: { type: boolean }
             unsubscribe: { type: boolean, description: 'One-click unsubscribe on Senders (POST /api/senders/{type}/{value}/unsubscribe); on in every build' }
             oauth_providers: { type: boolean, description: 'A module of this build connects mailboxes with one-click sign-in; GET /api/presets gives `one_click_url` for the providers it signs in to' }
