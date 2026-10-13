@@ -592,17 +592,22 @@ func (h host) Who(r *http.Request) ext.Who {
 var origin = regexp.MustCompile(`^https://(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:[0-9]{1,5})?$`)
 
 // contentPolicy is the Content-Security-Policy of the build: its own origin only, and, for a
-// build that sells plans, the origins its checkout script needs.
+// build that sells plans, the origins its checkout script needs, plus inline styles when the
+// checkout asks for them (Sources.InlineStyles). Scripts never run inline or through eval.
 func contentPolicy(b *ext.Billing) string {
 	if b == nil {
 		return "default-src 'self'"
 	}
 	src := b.Sources
+	styles := src.Styles
+	if src.InlineStyles {
+		styles = append([]string{"'unsafe-inline'"}, styles...)
+	}
 	policy := []string{"default-src 'self'"}
 	for _, d := range []struct {
 		name    string
 		origins []string
-	}{{"script-src", src.Scripts}, {"frame-src", src.Frames}, {"connect-src", src.Connect}, {"style-src", src.Styles}, {"img-src", src.Images}} {
+	}{{"script-src", src.Scripts}, {"frame-src", src.Frames}, {"connect-src", src.Connect}, {"style-src", styles}, {"img-src", src.Images}} {
 		if len(d.origins) > 0 {
 			policy = append(policy, d.name+" 'self' "+strings.Join(d.origins, " "))
 		}
