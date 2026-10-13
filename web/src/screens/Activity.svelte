@@ -17,7 +17,7 @@
   // The four groups of Overview's "Where today's mail went", under its labels.
   const outcomes: [Outcome, string][] = [['sorted', 'Sorted'], ['inbox', 'Left in Inbox'], ['review', 'Needs review'], ['trashed', 'Trashed']];
   // What MailRules did, one entry per action kind the daemon filters by.
-  const actions: [ActionKind, string][] = [
+  const kinds: [ActionKind, string][] = [
     ['move', 'Moved to a folder'],
     ['archive', 'Archived'],
     ['trash', 'Trashed'],
@@ -28,6 +28,8 @@
     ['unread', 'Marked unread'],
     ['keep', 'Kept in Inbox'],
   ];
+  // Drafted replies exist only in a build with the drafting module.
+  const actions = $derived(settings.value.features.draft_replies ? [...kinds, ['draft', 'Drafted a reply'] as [ActionKind, string]] : kinds);
 
   // Other screens link to one group: #/activity?outcome=sorted. An unknown value is ignored.
   const asked = new URLSearchParams(router.querystring);

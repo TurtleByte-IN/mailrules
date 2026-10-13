@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -76,10 +77,26 @@ func (s *spy) SetFlags(ctx context.Context, ref mail.MsgRef, add, remove []strin
 	return s.Mailbox.SetFlags(ctx, ref, add, remove)
 }
 
+func (s *spy) Append(ctx context.Context, folder string, raw []byte, flags []string, date time.Time) (mail.MsgRef, error) {
+	ref, err := s.Mailbox.Append(ctx, folder, raw, flags, date)
+	if err == nil {
+		s.calls = append(s.calls, "append "+folder)
+	}
+	return ref, err
+}
+
+func (s *spy) Delete(ctx context.Context, ref mail.MsgRef) error {
+	err := s.Mailbox.Delete(ctx, ref)
+	if err == nil {
+		s.calls = append(s.calls, fmt.Sprintf("delete %s/%d", ref.Folder, ref.UID))
+	}
+	return err
+}
+
 // changes lists the calls that changed the mailbox.
 func (s *spy) changes() []string {
 	return slices.DeleteFunc(slices.Clone(s.calls), func(c string) bool {
-		return !strings.HasPrefix(c, "move ") && !strings.HasPrefix(c, "store ")
+		return !strings.HasPrefix(c, "move ") && !strings.HasPrefix(c, "store ") && !strings.HasPrefix(c, "append ") && !strings.HasPrefix(c, "delete ")
 	})
 }
 
@@ -430,11 +447,12 @@ func TestDryRun(t *testing.T) {
 	}
 }
 
-// The Mailbox interface gives the executor no way to delete or expunge: the only
-// mailbox-changing methods are the three the invariants are checked against.
+// The Mailbox interface gives the executor one way to delete: Delete, which only the undo of
+// a draft reply MailRules saved calls, on exactly that reply (TestDraftUndo). Applying a
+// rule never appends or deletes (checkInvariants counts both as changes).
 func TestMailboxOffersNoDelete(t *testing.T) {
 	readOnly := []string{"Capabilities", "Close", "Fetch", "FetchMany", "FetchSince", "FindByMessageID", "Flags", "Folders", "Present", "SentRecipients", "Status", "Watch"}
-	changing := []string{"EnsureFolder", "Move", "SetFlags"}
+	changing := []string{"EnsureFolder", "Move", "SetFlags", "Append", "Delete"}
 	typ := reflect.TypeFor[mail.Mailbox]()
 	for i := range typ.NumMethod() {
 		if name := typ.Method(i).Name; !slices.Contains(readOnly, name) && !slices.Contains(changing, name) {

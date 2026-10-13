@@ -133,5 +133,15 @@ type Mailbox interface {
 	// SentRecipients reads the To and Cc addresses of the newest limit messages in folder
 	// (headers only), one entry per address with the latest time it was written to.
 	SentRecipients(ctx context.Context, folder string, limit int) ([]Recipient, error)
+	// Append adds raw, a whole RFC 5322 message, to folder with flags and date as its
+	// internal date, and returns where it now is: from the server's APPENDUID (UIDPLUS), or
+	// else by a search for raw's Message-ID, which it must then have. It is how MailRules
+	// saves a draft reply; nothing else is ever added to a mailbox.
+	Append(ctx context.Context, folder string, raw []byte, flags []string, date time.Time) (MsgRef, error)
+	// Delete removes the one message at ref for good: UID STORE +FLAGS (\Deleted), then UID
+	// EXPUNGE of that UID alone, never a bare EXPUNGE, which would also remove mail other
+	// clients had marked deleted. A server without UIDPLUS gets ErrUnsupported and nothing
+	// is changed. Only the undo of a draft MailRules appended calls it, on exactly that UID.
+	Delete(ctx context.Context, ref MsgRef) error
 	Close() error
 }

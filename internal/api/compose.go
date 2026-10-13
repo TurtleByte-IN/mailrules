@@ -239,6 +239,7 @@ type ruleInput struct {
 	Enabled       *bool          `json:"enabled"`
 	NewFolders    []string       `json:"new_folders"`
 	Notify        []int64        `json:"notify"`
+	Draft         *rules.Draft   `json:"draft"`
 	Position      *int           `json:"position"`
 }
 
@@ -257,8 +258,8 @@ func (s *server) readRules(w http.ResponseWriter, r *http.Request, raws []json.R
 		in := ins[i]
 		rule := rules.Rule{UserID: user(r).ID, Name: strings.TrimSpace(in.Name), Said: in.Said, Template: strings.TrimSpace(in.Template), Conditions: in.Conditions,
 			Exceptions: in.Exceptions, Actions: in.Actions, Stack: in.Stack, Model: strings.TrimSpace(in.Model),
-			MinConfidence: in.MinConfidence, Enabled: in.Enabled == nil || *in.Enabled, Notify: in.Notify}
-		if !s.notifyProblem(w, r, at+".notify", in.Notify) {
+			MinConfidence: in.MinConfidence, Enabled: in.Enabled == nil || *in.Enabled, Notify: in.Notify, Draft: cleanDraft(in.Draft)}
+		if !s.notifyProblem(w, r, at+".notify", in.Notify) || !s.draftProblem(w, r, at+".draft", nil, rule.Draft) {
 			return nil, nil, false
 		}
 		if in.Intent != nil {

@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -230,6 +231,78 @@ func TestNoExpungeBeyondTheMovedMessage(t *testing.T) {
 	}
 	if rows := bare.actions(d.MessageID); len(rows) != 1 || rows[0].Status != store.ActionFailed {
 		t.Errorf("rows = %+v", rows)
+	}
+}
+
+// Over the real connector: a reply is appended to Drafts as a draft, read, and its undo
+// expunges that one UID, never mail another client marked deleted there. A server without
+// UIDPLUS gets the reply, but its undo is refused and the reply stays.
+func TestDraftRoundTripOverIMAP(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		caps    []goimap.Cap
+		undoErr error
+	}{{"UIDPLUS", []goimap.Cap{goimap.CapMove, goimap.CapUIDPlus}, nil}, {"MOVE without UIDPLUS", []goimap.Cap{goimap.CapMove}, mail.ErrUnsupported}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, srv := imapEnv(t, tc.caps...)
+			ctx := t.Context()
+			for _, name := range []string{"Food", "Drafts"} {
+				if err := srv.User.Create(name, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.st.SaveFolders(ctx, e.acct.ID, append(slices.Clone(roleFolders), store.Folder{Name: "Drafts", SpecialUse: mail.RoleDrafts})); err != nil {
+				t.Fatal(err)
+			}
+			e.x.Drafts = func(context.Context, int64) bool { return true }
+			marked := srv.Append(t, "Drafts", eml("someone-elses"), goimap.FlagDeleted)
+			rule, err := e.st.CreateRule(ctx, 1, rules.Rule{UserID: e.user.ID, Name: "Shops", Intent: "shops", Actions: act("move:Food"), Enabled: true,
+				Draft: &rules.Draft{}}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := e.arrive(srv, "1")
+			d.DecisionID, _ = e.st.AddDecision(ctx, store.Decision{MessageID: d.MessageID, Stage: "condition", RuleID: rule.ID, RuleName: rule.Name, CreatedAt: 1}, store.StateDecided)
+			batch, _ := e.st.LiveBatch(ctx, 1, time.Unix(1_800_000_000, 0))
+			if _, err := e.x.Apply(ctx, d, rule.Actions, batch); err != nil {
+				t.Fatal(err)
+			}
+			jobs, err := e.st.WaitingDrafts(ctx, 2_000_000_000, 10)
+			if err != nil || len(jobs) != 1 {
+				t.Fatalf("jobs = %+v, %v", jobs, err)
+			}
+			calls := 0
+			rec, err := e.x.Draft(ctx, jobs[0], writer(&calls))
+			if err != nil || rec.Status != store.ActionDone {
+				t.Fatalf("Draft = %+v, %v", rec, err)
+			}
+			saved := mail.MsgRef{AccountID: e.acct.ID, Folder: "Drafts", UIDValidity: rec.Draft.UIDValidity, UID: rec.Draft.UID}
+			if flags, err := e.raw.Flags(ctx, saved); err != nil || !slices.Equal(flags, []string{`\Draft`, `\Seen`}) {
+				t.Fatalf("saved reply flags = %v, %v", flags, err)
+			}
+			raw, err := e.raw.Fetch(ctx, saved, 0)
+			if err != nil || !strings.Contains(string(raw.Header), "In-Reply-To: <1@shop.example>") {
+				t.Fatalf("saved reply = %s, %v", raw.Header, err)
+			}
+			err = e.x.Undo(ctx, rec.ID)
+			if !errors.Is(err, tc.undoErr) {
+				t.Fatalf("undo = %v, want %v", err, tc.undoErr)
+			}
+			want := 1
+			if tc.undoErr != nil {
+				want = 2
+			}
+			if e.count("Drafts") != want {
+				t.Errorf("Drafts holds %d, want %d", e.count("Drafts"), want)
+			}
+			st, _ := e.raw.Status(ctx, "Drafts")
+			if flags, err := e.raw.Flags(ctx, mail.MsgRef{AccountID: e.acct.ID, Folder: "Drafts", UIDValidity: st.UIDValidity, UID: marked}); err != nil || !slices.Equal(flags, []string{`\Deleted`}) {
+				t.Errorf("the other client's message: %v, %v", flags, err)
+			}
+			if ref, _ := e.where(d.MessageID); ref.Folder != "Food" {
+				t.Errorf("the email is in %s", ref.Folder)
+			}
+		})
 	}
 }
 

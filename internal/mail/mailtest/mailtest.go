@@ -271,6 +271,55 @@ func (m *Mailbox) Move(ctx context.Context, ref mail.MsgRef, dest string) (mail.
 	return m.add(dest, d, raw), ctx.Err()
 }
 
+// Append adds a message to a folder, as APPEND does, and returns its place as APPENDUID
+// would, without waking watchers of new mail (a draft is not an arrival).
+func (m *Mailbox) Append(ctx context.Context, name string, raw []byte, flags []string, date time.Time) (mail.MsgRef, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f, err := m.folder(name)
+	if err != nil {
+		return mail.MsgRef{}, err
+	}
+	eml := string(raw)
+	header, text := eml, ""
+	for _, sep := range []string{"\r\n\r\n", "\n\n"} {
+		if i := strings.Index(eml, sep); i >= 0 {
+			header, text = eml[:i+len(sep)], eml[i+len(sep):]
+			break
+		}
+	}
+	return m.add(name, f, message.Raw{Header: []byte(header), Text: []byte(text), Flags: slices.Clone(flags), InternalDate: date,
+		Size: int64(len(raw))}), ctx.Err()
+}
+
+// Delete removes one message for good; without UIDPLUS it refuses, as the IMAP connector does.
+func (m *Mailbox) Delete(ctx context.Context, ref mail.MsgRef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.Caps.UIDPlus {
+		return fmt.Errorf("delete: %w", mail.ErrUnsupported)
+	}
+	f, i, err := m.find(ref)
+	if err != nil {
+		return err
+	}
+	f.msgs = slices.Delete(f.msgs, i, i+1)
+	return ctx.Err()
+}
+
+// Message returns the whole stored message at ref, header and text, and its flags: for
+// tests that check what was appended.
+func (m *Mailbox) Message(ref mail.MsgRef) (raw string, flags []string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f, i, err := m.find(ref)
+	if err != nil {
+		return "", nil, err
+	}
+	r := f.msgs[i].raw
+	return string(r.Header) + string(r.Text), slices.Clone(r.Flags), nil
+}
+
 // SetFlags adds and removes flags.
 func (m *Mailbox) SetFlags(ctx context.Context, ref mail.MsgRef, add, remove []string) error {
 	m.mu.Lock()

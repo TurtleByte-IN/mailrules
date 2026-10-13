@@ -385,5 +385,30 @@ it('a condition rule tells no one in a build without the notifications module', 
   await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
   await vi.waitFor(() => expect(f).toHaveBeenCalledOnce());
   expect(JSON.parse(f.mock.calls[0][1].body as string).rules[0].notify).toEqual([]);
+  expect(JSON.parse(f.mock.calls[0][1].body as string).rules[0].draft).toBeNull();
   expect(f.mock.calls.some((c) => c[0] === '/api/notifications')).toBe(false);
+  expect(screen.queryByRole('checkbox', { name: /Draft a reply/ })).toBeNull();
+});
+
+it('a condition rule drafts a reply, as asked under More options, once the daemon has the drafting module', async () => {
+  settings.value.features.draft_replies = true;
+  try {
+    const f = serve({ 'POST /api/rules/batch': [200, { rules: [{ ...drafted('Invoices'), id: 3 }] }] });
+    render(Compose);
+    await fireEvent.click(screen.getByRole('tab', { name: 'Build with conditions' }));
+    expect(screen.getByText('More options: mailbox, stacking, draft a reply')).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText(/And the email is about/), { target: { value: 'an invoice' } });
+    await fireEvent.change(screen.getByLabelText('Action'), { target: { value: 'archive' } });
+    expect(screen.queryByLabelText('How should the reply sound?')).toBeNull();
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Draft a reply in my Drafts folder (never sent automatically)' }));
+    const how = screen.getByLabelText('How should the reply sound?');
+    expect(how.getAttribute('maxlength')).toBe('300');
+    await fireEvent.change(how, { target: { value: 'polite no' } });
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Also read the previous message in the thread' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
+    await vi.waitFor(() => expect(f).toHaveBeenCalledOnce());
+    expect(JSON.parse(f.mock.calls[0][1].body as string).rules[0].draft).toEqual({ instruction: 'polite no', read_previous: true });
+  } finally {
+    settings.value.features.draft_replies = false;
+  }
 });

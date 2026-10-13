@@ -29,6 +29,7 @@ const rule = (id: number, name: string): Rule => ({
   hits_week: 3,
   mailbox_removed: false,
   notify: [],
+  draft: null,
   last_match_at: null,
 });
 
@@ -238,5 +239,73 @@ describe('Notify', () => {
     render(Rules);
     expect(group()!.textContent).toContain('No destinations yet.');
     expect(within(group()!).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('#/settings');
+  });
+});
+
+describe('Draft a reply', () => {
+  const box = () => screen.queryByRole('checkbox', { name: 'Draft a reply (never sent automatically)' }) as HTMLInputElement | null;
+
+  beforeEach(() => {
+    settings.value.features.draft_replies = true;
+  });
+  afterEach(() => {
+    settings.value.features.draft_replies = false;
+  });
+
+  it('is not offered in a build without the drafting module', () => {
+    settings.value.features.draft_replies = false;
+    Object.assign(rules, { list: [{ ...rule(1, 'Food'), draft: { instruction: 'polite no', read_previous: false } }], loaded: true, error: '' });
+    render(Rules);
+    expect(box()).toBeNull();
+    expect(screen.queryByLabelText('How should the reply sound?')).toBeNull();
+  });
+
+  it('turns drafting on with an empty instruction, and says so in the list', async () => {
+    Object.assign(rules, { list: [rule(1, 'Food')], loaded: true, error: '' });
+    render(Rules);
+    expect(box()!.checked).toBe(false);
+    expect(screen.queryByLabelText('How should the reply sound?')).toBeNull();
+    const on = { instruction: '', read_previous: false };
+    const f = respond(200, { rule: { ...rule(1, 'Food'), draft: on } });
+    await fireEvent.click(box()!);
+    expect(f.mock.calls[0][1].method).toBe('PATCH');
+    expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ draft: on });
+    await vi.waitFor(() => expect(rules.list[0].draft).toEqual(on));
+    expect(screen.getByRole('region', { name: 'Rule list' }).querySelector('li')!.textContent).toContain('Then: Move to Food · draft a reply · 3 this week');
+  });
+
+  it('saves the instruction and the read-previous box, and turns drafting off', async () => {
+    const d = { instruction: 'polite no', read_previous: false };
+    Object.assign(rules, { list: [{ ...rule(1, 'Food'), draft: d }], loaded: true, error: '' });
+    render(Rules);
+    const how = screen.getByLabelText('How should the reply sound?') as HTMLInputElement;
+    expect(how.value).toBe('polite no');
+    expect(how.getAttribute('placeholder')).toBe('For example: polite no, not looking right now');
+
+    let f = respond(200, { rule: { ...rule(1, 'Food'), draft: { ...d, instruction: 'warm yes' } } });
+    await fireEvent.change(how, { target: { value: 'warm yes' } });
+    expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ draft: { instruction: 'warm yes', read_previous: false } });
+    await vi.waitFor(() => expect(rules.list[0].draft?.instruction).toBe('warm yes'));
+
+    f = respond(200, { rule: { ...rule(1, 'Food'), draft: { instruction: 'warm yes', read_previous: true } } });
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Also read the previous message in the thread' }));
+    expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ draft: { instruction: 'warm yes', read_previous: true } });
+    await vi.waitFor(() => expect(rules.list[0].draft?.read_previous).toBe(true));
+
+    f = respond(200, { rule: rule(1, 'Food') });
+    await fireEvent.click(box()!);
+    expect(JSON.parse(String(f.mock.calls[0][1].body))).toEqual({ draft: null });
+    await vi.waitFor(() => expect(screen.queryByLabelText('How should the reply sound?')).toBeNull());
+  });
+
+  it('shows a refused draft beside it', async () => {
+    Object.assign(rules, { list: [rule(1, 'Food')], loaded: true, error: '' });
+    render(Rules);
+    const message = 'This build cannot draft replies.';
+    respond(400, { error: { code: 'invalid_input', message, path: 'draft' } });
+    await fireEvent.click(box()!);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(message);
+    expect(box()!.getAttribute('aria-describedby')).toBe(alert.id);
   });
 });

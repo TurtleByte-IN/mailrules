@@ -28,6 +28,8 @@ func TestValidate(t *testing.T) {
 		{"stacking condition-only", Rule{Name: "flag boss", Conditions: food, Actions: []Action{{Type: ActFlag}}, Stack: true}, ""},
 		{"exists without a value", Rule{Name: "lists", Conditions: leaf("list_id", OpExists, nil), Actions: move}, ""},
 		{"account in", Rule{Name: "work", Conditions: leaf("account", OpIn, []any{1.0, 2.0}), Actions: move}, ""},
+		{"drafts a reply", Rule{Name: "recruiters", Intent: "Recruiter outreach", Actions: move,
+			Draft: &Draft{Instruction: strings.Repeat("é", MaxDraftInstruction), ReadPrevious: true}}, ""},
 
 		{"no name", Rule{Conditions: food, Actions: move}, "name"},
 		{"no conditions and no intent", Rule{Name: "x", Actions: move}, "conditions"},
@@ -46,6 +48,8 @@ func TestValidate(t *testing.T) {
 		{"intent trash without threshold", Rule{Name: "x", Intent: "Scams", Actions: []Action{{Type: ActTrash}}}, "min_confidence"},
 		{"threshold out of range", Rule{Name: "x", Conditions: food, Actions: move, MinConfidence: conf(1.5)}, "min_confidence"},
 		{"stacking with intent", Rule{Name: "x", Intent: "Newsletters", Actions: move, Stack: true}, "stack"},
+		{"reply instruction too long", Rule{Name: "x", Conditions: food, Actions: move,
+			Draft: &Draft{Instruction: strings.Repeat("a", MaxDraftInstruction+1)}}, "draft.instruction"},
 		{"unknown field", Rule{Name: "x", Conditions: Cond{All: []Cond{leaf("sender", OpEq, "a")}}, Actions: move}, "conditions.all[0].field"},
 		{"unknown op", Rule{Name: "x", Conditions: Cond{All: []Cond{leaf("subject", "startswith", "a")}}, Actions: move}, "conditions.all[0].op"},
 		{"op of another kind", Rule{Name: "x", Conditions: leaf("subject", OpGt, 3.0), Actions: move}, "conditions.op"},

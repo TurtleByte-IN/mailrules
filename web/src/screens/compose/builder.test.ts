@@ -72,6 +72,7 @@ describe('builder', () => {
     ['conditions only', { intent: '', unless: false, match: 'all' }],
     ['AI only, no conditions', { rows: [], match: 'all', unless: false }],
     ['a threshold of its own', { min_confidence: 0.9 }],
+    ['a drafted reply', { draft: { instruction: 'polite no', read_previous: true } }],
   ])('loads a saved rule back into the same form: %s', (_, change) => {
     const b = { ...full, ...change };
     // The daemon's reply to saving this form, shaped as the contract's Rule.
@@ -81,9 +82,15 @@ describe('builder', () => {
 
   it('is a RuleInput once it has its wording, with the destinations it tells', () => {
     const input: RuleInput = { ...toRule(full), said: 'Built with conditions', enabled: true };
-    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'enabled', 'exceptions', 'intent', 'min_confidence', 'name', 'notify', 'said', 'stack']);
+    expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'draft', 'enabled', 'exceptions', 'intent', 'min_confidence', 'name', 'notify', 'said', 'stack']);
     expect(input.notify).toEqual([3, 5]);
     expect(toRule(emptyBuilder()).notify).toEqual([]);
+    expect(toRule(emptyBuilder()).draft).toBeNull();
+    expect(toRule({ ...full, draft: { instruction: 'polite no', read_previous: false } }).draft).toEqual({ instruction: 'polite no', read_previous: false });
+  });
+
+  it('says it drafts a reply', () => {
+    expect(english({ ...full, draft: { instruction: '', read_previous: false } })).toMatch(/ · draft a reply\.$/);
   });
 
   it('names the destinations it tells, leaving out any no longer known', () => {
@@ -141,6 +148,8 @@ describe('refusedPart', () => {
     ['rules[0].account_id', { part: 'account_id' }],
     ['rules[0].notify', { part: 'notify' }],
     ['notify', { part: 'notify' }],
+    ['rules[0].draft', { part: 'draft' }],
+    ['draft', { part: 'draft' }],
     ['intent', { part: 'intent' }],
     ['rules[0].model', undefined],
     ['rules[0].conditions', undefined],

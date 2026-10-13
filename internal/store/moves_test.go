@@ -64,7 +64,7 @@ func (w *movesWorld) file(t *testing.T, sender string, now int64) (Message, Acti
 		t.Fatal(err)
 	}
 	a.Status, a.After = ActionDone, &Snapshot{Folder: "Receipts", UIDValidity: 9, UID: 100 + w.nextID}
-	if err := w.s.FinishAction(w.ctx, a, true); err != nil {
+	if err := w.s.FinishAction(w.ctx, a, FollowUps{Notices: true}); err != nil {
 		t.Fatal(err)
 	}
 	return m, a
@@ -94,7 +94,7 @@ func TestFiledSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	later.Status, later.After = ActionDone, &Snapshot{Folder: "Archive", UIDValidity: 3, UID: 7}
-	if err := w.s.FinishAction(w.ctx, later, true); err != nil {
+	if err := w.s.FinishAction(w.ctx, later, FollowUps{Notices: true}); err != nil {
 		t.Fatal(err)
 	}
 

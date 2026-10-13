@@ -805,6 +805,60 @@ func fetchMessageID(c *imapclient.Client, uid imap.UIDSet) (string, error) {
 	return id, nil
 }
 
+// Append sends APPEND with the flags and internal date. The UID comes from APPENDUID; a
+// server without UIDPLUS is searched for the message's Message-ID instead.
+func (m *Mailbox) Append(ctx context.Context, folder string, raw []byte, flags []string, date time.Time) (mail.MsgRef, error) {
+	out := mail.MsgRef{AccountID: m.cfg.AccountID, Folder: folder}
+	err := m.do(ctx, fmt.Sprintf("append to %q", folder), func(c *imapclient.Client) error {
+		cmd := c.Append(folder, int64(len(raw)), &imap.AppendOptions{Flags: toFlags(flags), Time: date})
+		if _, err := cmd.Write(raw); err != nil {
+			_ = cmd.Close()
+			return err
+		}
+		if err := cmd.Close(); err != nil {
+			return err
+		}
+		data, err := cmd.Wait()
+		if err != nil {
+			return err
+		}
+		out.UIDValidity, out.UID = data.UIDValidity, uint32(data.UID)
+		return nil
+	})
+	if err != nil {
+		return mail.MsgRef{}, err
+	}
+	if out.UID != 0 && out.UIDValidity != 0 {
+		return out, nil
+	}
+	msg, err := netmail.ReadMessage(bytes.NewReader(raw))
+	id := ""
+	if err == nil {
+		id = strings.Trim(strings.TrimSpace(msg.Header.Get("Message-Id")), "<>")
+	}
+	if id == "" {
+		return mail.MsgRef{}, fmt.Errorf("append to %q: %w: the server reports no UID for an appended message and it has no Message-ID to find it by", folder, mail.ErrUnsupported)
+	}
+	return m.FindByMessageID(ctx, folder, id)
+}
+
+// Delete marks the one message deleted and expunges that UID alone (UID EXPUNGE, UIDPLUS).
+func (m *Mailbox) Delete(ctx context.Context, ref mail.MsgRef) error {
+	return m.onMessage(ctx, "delete", ref, m.selectFolder, func(c *imapclient.Client, uid imap.UIDSet) error {
+		if !m.caps.UIDPlus {
+			return fmt.Errorf("%w: the server has no UIDPLUS, so one message cannot be deleted without risking others", mail.ErrUnsupported)
+		}
+		if _, err := fetchOne(c, uid, &imap.FetchOptions{UID: true}); err != nil {
+			return err
+		}
+		store := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
+		if err := c.Store(uid, store, nil).Close(); err != nil {
+			return fmt.Errorf("mark deleted: %w", err)
+		}
+		return c.UIDExpunge(uid).Close()
+	})
+}
+
 // SetFlags adds and removes flags without reading the message.
 func (m *Mailbox) SetFlags(ctx context.Context, ref mail.MsgRef, add, remove []string) error {
 	return m.onMessage(ctx, "set flags", ref, m.syncFolder, func(c *imapclient.Client, uid imap.UIDSet) error {

@@ -108,6 +108,9 @@ func newEnvWith(t *testing.T, tweak func(*Options), modules ...ext.Module) *env 
 	}
 	e.sett = &settings.Settings{Store: e.st, Env: cfg, Deps: models.Deps{Caller: models.NewCaller(1), Prices: models.DefaultPrices()}}
 	exec := &actions.Exec{Store: e.st, Accounts: e.mgr, Hub: e.hub, DryRunDefault: cfg.DryRun, Now: e.ck.now}
+	if buildFeatures(modules)["draft_replies"] { // as the daemon wires it
+		exec.Drafts = PlanFeature(e.st, modules, "draft_replies")
+	}
 	e.mail = &mailertest.Sender{}
 	e.summary = &summary.Service{Store: e.st, Sender: e.mail, PublicURL: cfg.PublicURL, DryRunDefault: cfg.DryRun, Now: e.ck.now}
 
