@@ -86,6 +86,13 @@ services:
       # Behind a reverse proxy: its address, so sign-in limits count each visitor rather
       # than the proxy. See docs/guide/security.md.
       MAILRULES_TRUSTED_PROXIES: ${MAILRULES_TRUSTED_PROXIES:-}
+      # Send the metrics and the log to an OpenTelemetry receiver; empty sends nothing.
+      # See docs/guide/settings.md.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
+      MAILRULES_ENVIRONMENT: ${MAILRULES_ENVIRONMENT:-}
 
     # Example: keep the master key in a file outside the data volume. Create the file, then
     # uncomment this, the top-level `secrets:` below, and set

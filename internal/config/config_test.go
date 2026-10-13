@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -135,6 +136,13 @@ func TestValidate(t *testing.T) {
 		{"public URL behind a proxy", map[string]string{"MAILRULES_PUBLIC_URL": "https://mail.example.com/mailrules/"}, nil},
 		{"public URL without a scheme", map[string]string{"MAILRULES_PUBLIC_URL": "mail.example.com"}, []string{"MAILRULES_PUBLIC_URL"}},
 		{"public URL with a hash", map[string]string{"MAILRULES_PUBLIC_URL": "https://mail.example.com/#/"}, []string{"MAILRULES_PUBLIC_URL"}},
+		{"OpenTelemetry export", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com", "OTEL_EXPORTER_OTLP_HEADERS": "X-Obs-Key=abc%20def, X-Other = 1",
+			"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf", "OTEL_SERVICE_NAME": "mailrules-cloud", "MAILRULES_ENVIRONMENT": "staging"}, nil},
+		{"OpenTelemetry settings unused without an endpoint", map[string]string{"OTEL_EXPORTER_OTLP_HEADERS": "nonsense", "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, nil},
+		{"OpenTelemetry endpoint without a scheme", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "otel.example.com:4318"}, []string{"OTEL_EXPORTER_OTLP_ENDPOINT must be an http:// or https:// URL"}},
+		{"OpenTelemetry endpoint with a query", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com/?key=1"}, []string{"OTEL_EXPORTER_OTLP_ENDPOINT"}},
+		{"OpenTelemetry over gRPC", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318", "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, []string{`OTEL_EXPORTER_OTLP_PROTOCOL="grpc": only http/protobuf`}},
+		{"OpenTelemetry headers without a value", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318", "OTEL_EXPORTER_OTLP_HEADERS": "X-Obs-Key=a,sekrit"}, []string{"OTEL_EXPORTER_OTLP_HEADERS: pair 2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -451,6 +459,40 @@ func TestValidateDatabase(t *testing.T) {
 			}
 			if c.Postgres() != (tt.app != "") {
 				t.Errorf("Postgres() = %v", c.Postgres())
+			}
+		})
+	}
+}
+
+// OTEL_EXPORTER_OTLP_HEADERS holds the receiver's key: it is read as the specification
+// writes it, and an error says which pair is wrong without quoting any of it.
+func TestOTLPHeaderMap(t *testing.T) {
+	tests := []struct {
+		name, headers string
+		want          map[string]string
+		wantErr       string
+	}{
+		{"none", "", map[string]string{}, ""},
+		{"one", "X-Obs-Key=tok3n", map[string]string{"X-Obs-Key": "tok3n"}, ""},
+		{"several, spaced and encoded", " a = 1 ,b=x%2Cy%3Dz", map[string]string{"a": "1", "b": "x,y=z"}, ""},
+		{"value with =", "k=a=b", map[string]string{"k": "a=b"}, ""},
+		{"no =", "X-Obs-Key=a,s3cret", nil, "pair 2"},
+		{"empty name", "=s3cret", nil, "pair 1"},
+		{"name with a space", "X Obs=s3cret", nil, "pair 1"},
+		{"bad escape", "k=s3cret%zz", nil, "pair 1"},
+		{"line break", "k=s3cret%0Aevil: 1", nil, "pair 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := (&Config{OTLPHeaders: tt.headers}).OTLPHeaderMap()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) || strings.Contains(err.Error(), "s3cret") {
+					t.Fatalf("err = %v, want one naming %q and not quoting the value", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || !maps.Equal(got, tt.want) {
+				t.Fatalf("got %v, %v; want %v", got, err, tt.want)
 			}
 		})
 	}
