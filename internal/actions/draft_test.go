@@ -321,8 +321,8 @@ func TestDraftOutcomes(t *testing.T) {
 			calls := 0
 			rec, err := e.x.Draft(t.Context(), j, write(&calls))
 			switch {
-			case tt.wantErr == errAny && (err == nil || errors.Is(err, ErrDraftSettled)),
-				tt.wantErr != errAny && !errors.Is(err, tt.wantErr):
+			case errors.Is(tt.wantErr, errAny) && (err == nil || errors.Is(err, ErrDraftSettled)),
+				!errors.Is(tt.wantErr, errAny) && !errors.Is(err, tt.wantErr):
 				t.Fatalf("Draft = %+v, %v; want %v", rec, err, tt.wantErr)
 			}
 			if calls != tt.wantCalls {
