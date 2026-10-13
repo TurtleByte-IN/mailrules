@@ -1833,8 +1833,9 @@ paths:
       description: |
         Works with a module that invites people (`x-module`: the hosted build), for a tenant
         whose plan includes the team (`features.team`; 403 `plan_required` otherwise). Every
-        member sees who is in the team. `seats` counts the members and the invitations waiting
-        against what the plan allows.
+        member sees who is in the team. `seats` counts the members still in the team and the
+        invitations waiting (a removed member counts on no screen) against what the plan
+        allows: the same count as `seats_used` on GET /api/plan and the downgrade check.
       responses:
         '200':
           description: The team
@@ -1901,7 +1902,9 @@ paths:
         rules and the rest. Only an owner removes an owner (403 `role_required`); nobody
         removes themselves here (409 `remove_self`: they delete their account in Settings).
         A person the sign-in service did not make cannot be removed (409 `not_removable`).
-        Recorded in the audit log.
+        Their seat is free at once; on a plan sold by the seat the daemon then has the billing
+        service lower the paid seats to those used (never below `min_seats`), credited on the
+        next bill, retrying until it agrees. Recorded in the audit log.
       responses:
         '204': { description: Removed }
         '401': { $ref: '#/components/responses/Unauthenticated' }
@@ -1941,9 +1944,15 @@ paths:
         service send it; when that fails the invitation is withdrawn (502 `invite_failed`).
         Once the person accepts and signs in under the team's organisation, they join with
         `role`. It expires after 7 days. Only an owner invites an owner (403
-        `role_required`). Refused while every seat of the plan is taken (409 `seat_limit`, the
-        message says what to do), for a member (409 `already_member`) and for an address
-        with an invitation waiting (409 `already_invited`). Recorded in the audit log.
+        `role_required`). When every seat is taken on a plan sold by the seat (`seats.price`
+        is set on GET /api/members), the daemon first has the billing service add the seat at
+        once, charged for the rest of the period, and keeps the invitation only once it
+        agrees (502 `billing_error`, nobody invited, when it does not); on any other plan it
+        is refused (409 `seat_limit`, the message says what to do). Refused for a member (409
+        `already_member`), for an address with a MailRules account of its own in any team
+        (409 `has_account`, at `email`: that person must delete their own account first) and
+        for an address with an invitation waiting (409 `already_invited`). Recorded in the
+        audit log.
       requestBody:
         required: true
         content:
@@ -1969,8 +1978,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
-        '409': { $ref: '#/components/responses/Conflict' } # seat_limit, already_member, already_invited
-        '502': { $ref: '#/components/responses/Upstream' } # invite_failed
+        '409': { $ref: '#/components/responses/Conflict' } # seat_limit, already_member, has_account (path: email), already_invited
+        '502': { $ref: '#/components/responses/Upstream' } # billing_error: no seat was added; invite_failed
   /api/invitations/{id}:
     parameters:
       - { $ref: '#/components/parameters/Id' }
@@ -1980,7 +1989,7 @@ paths:
       x-role: admin
       x-module: team
       summary: Revoke an invitation
-      description: It is deleted, freeing its seat, and taken back at the sign-in service. Recorded in the audit log.
+      description: It is deleted, freeing its seat, and taken back at the sign-in service. On a plan sold by the seat the daemon then has the billing service lower the paid seats to those used (never below `min_seats`), credited on the next bill; so does an invitation that expires. Recorded in the audit log.
       responses:
         '204': { description: Revoked }
         '401': { $ref: '#/components/responses/Unauthenticated' }
@@ -2248,7 +2257,7 @@ components:
       required: [user, members]
       properties:
         user: { $ref: '#/components/schemas/User' }
-        members: { type: integer, description: How many users the signed-in user's team has; the web app offers sharing a mailbox only when there is more than one }
+        members: { type: integer, description: 'How many members the signed-in user''s team has, as Members lists them (a removed member is not one); the web app offers sharing a mailbox only when there is more than one' }
         sign_out: { type: string, description: 'Set when a sign-in module is present: the path the browser goes to after `POST /api/auth/logout`, so the sign-in service ends its own session' }
     ErrorBody:
       type: object
@@ -3182,13 +3191,14 @@ components:
         min_seats: { type: [integer, 'null'], description: 'The fewest seats that may be bought of a plan sold by the seat; null for any other' }
     PlanInfo:
       type: object
-      required: [plan, interval, status, period_end, seats, trial_ends_at, trial_days_left, ended_at, secrets_deleted_at, removed_at, read_only, subscribed, note, plans]
+      required: [plan, interval, status, period_end, seats, seats_used, trial_ends_at, trial_days_left, ended_at, secrets_deleted_at, removed_at, read_only, subscribed, note, plans]
       properties:
         plan: { type: string, enum: [trial, personal, pro, team, ended] }
         interval: { type: [string, 'null'], enum: [month, year, null] }
         status: { type: [string, 'null'], enum: [active, past_due, cancels_at_period_end, null], description: '`past_due`: a renewal is unpaid and the billing service retries it, the plan runs; `cancels_at_period_end`: it ends at `period_end`' }
         period_end: { type: [integer, 'null'], format: int64, description: 'When the paid period ends (renews, or ends when cancelled)' }
         seats: { type: [integer, 'null'], description: 'The seats bought of a plan sold by the seat (Team), while it runs; null otherwise' }
+        seats_used: { type: [integer, 'null'], description: 'With `seats`: the members still in the team and the invitations waiting, counted as GET /api/members counts them; null otherwise' }
         trial_ends_at: { type: integer, format: int64, description: '14 days after the tenant was made' }
         trial_days_left: { type: [integer, 'null'], description: 'Whole days left, rounded up, while in the trial; null otherwise' }
         ended_at: { type: [integer, 'null'], format: int64, description: 'When the trial or plan ended; null while one runs' }
@@ -3470,10 +3480,11 @@ components:
         you: { type: boolean, description: 'The signed-in person' }
     Seats:
       type: object
-      required: [used, limit]
+      required: [used, limit, price]
       properties:
-        used: { type: integer, description: 'Members and invitations waiting' }
+        used: { type: integer, description: 'Members still in the team and invitations waiting; a removed member holds none' }
         limit: { type: [integer, 'null'], description: 'The seats the plan has; null = any number (a build that sells no plans)' }
+        price: { type: [string, 'null'], description: 'On a plan sold by the seat that was bought: what one more seat costs, as the plan''s terms show it ("$8 a seat a month"). An invitation past `limit` then adds a seat at once. Null otherwise: an invitation past `limit` is refused' }
     Invitation:
       type: object
       required: [id, email, role, invited_by, created_at, expires_at, accepted_at]

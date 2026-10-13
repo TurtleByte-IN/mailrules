@@ -365,6 +365,15 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		defer close(telling)
 		(&removedWorker{store: wst, modules: modules}).Run(ctx)
 	}()
+	// Seats a team freed are given back at the billing module (MAI-247): those waiting now,
+	// then each within seconds. It runs in every build, so a check no module can handle is
+	// dropped.
+	seating := make(chan struct{})
+	defer func() { stopAll(); <-seating }()
+	go func() {
+		defer close(seating)
+		(&seatWorker{store: wst, lower: api.LowerSeats(wst, modules)}).Run(ctx)
+	}()
 	dryRun, err := st.DryRun(ctx, store.SelfHostTenant, cfg.DryRun)
 	if err != nil {
 		return err

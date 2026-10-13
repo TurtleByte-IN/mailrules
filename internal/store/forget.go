@@ -189,6 +189,12 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		out.UserID, now, now+ForgetDays*day); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: schedule removal: %w", err)
 	}
+	// A member who leaves a team that stays frees their seat.
+	if !again && !alone {
+		if err := queueSeatCheck(ctx, tx, out.TenantID, now); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: %w", err)
+		}
+	}
 	if own {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM identities WHERE user_id = ?`, out.UserID); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: let go of the identity: %w", err)
@@ -427,6 +433,7 @@ func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 		{"usage", `DELETE FROM usage_daily WHERE tenant_id = ?`},
 		{"AI-sorted email counts", `DELETE FROM ai_emails WHERE tenant_id = ?`},
 		{"first-cleanup grant", `DELETE FROM first_cleanup WHERE tenant_id = ?`},
+		{"seat checks", `DELETE FROM seat_checks WHERE tenant_id = ?`},
 		{"plan", `DELETE FROM plans WHERE tenant_id = ?`}, // no foreign key, and tenant ids can be reused
 		{"users", `DELETE FROM users WHERE tenant_id = ?`},
 		{"tenant", `DELETE FROM tenants WHERE id = ?`},

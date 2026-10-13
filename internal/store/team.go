@@ -54,6 +54,9 @@ var (
 	ErrAlreadyMember = errors.New("already a member of the team")
 	// ErrAlreadyInvited is an invitation for an address that has one waiting.
 	ErrAlreadyInvited = errors.New("already invited")
+	// ErrHasAccount is an invitation for an address that has a MailRules account of its own,
+	// in any tenant: one person is one user in one tenant.
+	ErrHasAccount = errors.New("the address has a MailRules account")
 	// ErrSeatLimit is what a *SeatLimitError matches with errors.Is.
 	ErrSeatLimit = errors.New("seat limit reached")
 )
@@ -209,22 +212,29 @@ func promoteHeir(ctx context.Context, tx *txn, tenantID, userID, now int64) erro
 		RoleName(was)+" to Owner: the team's last owner left")
 }
 
-// seatsUsed counts, read in tx, the tenant's members and the invitations waiting (but one
-// for except, an address), at now.
-func seatsUsed(ctx context.Context, tx *txn, tenantID, now int64, except string) (int, error) {
+// SeatsUsed counts the seats the tenant has taken at now: its members (a removed or
+// forgotten person, whose removal waits, is not one) and the invitations waiting. It is the
+// one count of seats: the Members screen, Plan and billing, the downgrade check and the
+// checks that refuse a person over the seats (takeSeat) all use it.
+func (s *Store) SeatsUsed(ctx context.Context, tenantID, now int64) (int, error) {
+	return seatsUsed(WithTenant(ctx, tenantID), s.db, tenantID, now)
+}
+
+// seatsUsed is SeatsUsed, read with q.
+func seatsUsed(ctx context.Context, q querier, tenantID, now int64) (int, error) {
 	var members, invited int
-	if err := tx.QueryRowContext(ctx, `SELECT
+	if err := q.QueryRowContext(ctx, `SELECT
 		  (SELECT COUNT(*) FROM users WHERE tenant_id = ?1 AND `+activeUsers+`),
-		  (SELECT COUNT(*) FROM invitations WHERE tenant_id = ?1 AND expires_at > ?2 AND lower(email) != lower(?3))`,
-		tenantID, now, except).Scan(&members, &invited); err != nil {
+		  (SELECT COUNT(*) FROM invitations WHERE tenant_id = ?1 AND expires_at > ?2)`,
+		tenantID, now).Scan(&members, &invited); err != nil {
 		return 0, fmt.Errorf("count seats: %w", err)
 	}
 	return members + invited, nil
 }
 
 // takeSeat answers a *SeatLimitError, read in tx, when the tenant has no seat left for one
-// more person (except: an address whose invitation is not counted).
-func takeSeat(ctx context.Context, tx *txn, tenantID, now int64, except string, seats SeatLimit) error {
+// more person.
+func takeSeat(ctx context.Context, tx *txn, tenantID, now int64, seats SeatLimit) error {
 	if seats == nil {
 		return nil
 	}
@@ -236,7 +246,7 @@ func takeSeat(ctx context.Context, tx *txn, tenantID, now int64, except string, 
 	if limit < 0 {
 		return nil
 	}
-	used, err := seatsUsed(ctx, tx, tenantID, now, except)
+	used, err := seatsUsed(ctx, tx, tenantID, now)
 	if err != nil {
 		return err
 	}
@@ -274,9 +284,10 @@ func scanInvitation(row interface{ Scan(...any) error }) (Invitation, error) {
 // CreateInvitation stores an invitation of the tenant for inv.Email with inv.Role, sent by
 // inv.InvitedBy, expiring InvitationDays from now, and returns it. One that expired for the
 // same address is replaced. It fails, storing nothing, with ErrBadRole, ErrAlreadyMember
-// when a member has the address, ErrAlreadyInvited when an invitation for it waits, and a
-// *SeatLimitError when the tenant's plan has no seat left (the count and the insert are one
-// write transaction, so two invitations sent at once cannot both take the last seat).
+// when a member has the address, ErrHasAccount when a user of any other tenant has it (the
+// person must delete that account first), ErrAlreadyInvited when an invitation for it waits,
+// and a *SeatLimitError when the tenant's plan has no seat left (the count and the insert are
+// one write transaction, so two invitations sent at once cannot both take the last seat).
 func (s *Store) CreateInvitation(ctx context.Context, tenantID int64, inv Invitation, seats SeatLimit, now int64) (Invitation, error) {
 	if RoleRank(inv.Role) == 0 {
 		return Invitation{}, ErrBadRole
@@ -290,6 +301,15 @@ func (s *Store) CreateInvitation(ctx context.Context, tenantID int64, inv Invita
 		if member {
 			return ErrAlreadyMember
 		}
+		// Across tenants, on Postgres through the definer function: a forgotten person's
+		// address is free already (forgottenEmail).
+		inUse, err := s.emailInUse(ctx, tx, inv.Email, 0)
+		if err != nil {
+			return fmt.Errorf("invite: %w", err)
+		}
+		if inUse {
+			return ErrHasAccount
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM invitations WHERE tenant_id = ? AND lower(email) = lower(?) AND expires_at <= ?`,
 			tenantID, inv.Email, now); err != nil {
 			return fmt.Errorf("invite: %w", err)
@@ -302,7 +322,7 @@ func (s *Store) CreateInvitation(ctx context.Context, tenantID int64, inv Invita
 		if waiting {
 			return ErrAlreadyInvited
 		}
-		if err := takeSeat(ctx, tx, tenantID, now, "", seats); err != nil {
+		if err := takeSeat(ctx, tx, tenantID, now, seats); err != nil {
 			return err
 		}
 		inv.TenantID, inv.CreatedAt, inv.ExpiresAt = tenantID, now, now+InvitationDays*day
@@ -357,7 +377,8 @@ func (s *Store) Invitations(ctx context.Context, tenantID, now int64) ([]Invitat
 
 // RevokeInvitation deletes one of the tenant's invitations and returns it, recorded as
 // revoked, or as withdrawn with why when the daemon takes it back itself (it could not be
-// sent). ErrNotFound for one it does not have.
+// sent). The seat it held is checked for (queueSeatCheck). ErrNotFound for one it does not
+// have.
 func (s *Store) RevokeInvitation(ctx context.Context, tenantID, id int64, why string, now int64) (Invitation, error) {
 	var v Invitation
 	err := s.change(ctx, tenantID, "revoke invitation", func(ctx context.Context, tx *txn) error {
@@ -372,6 +393,9 @@ func (s *Store) RevokeInvitation(ctx context.Context, tenantID, id int64, why st
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM invitations WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("revoke invitation: %w", err)
+		}
+		if err := queueSeatCheck(ctx, tx, tenantID, now); err != nil {
+			return err
 		}
 		if why != "" {
 			return record(ctx, tx, tenantID, now, AuditInvitationWithdrawn, v.Email, why)
@@ -440,7 +464,7 @@ func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now in
 	err = tx.QueryRowContext(ctx, `SELECT id, role, invited_by FROM invitations
 		WHERE tenant_id = ? AND lower(email) = lower(?) AND expires_at > ?`, tenantID, email, now).Scan(&id, &role, &invitedBy)
 	if errors.Is(err, sql.ErrNoRows) {
-		if err := takeSeat(ctx, tx, tenantID, now, "", seats); err != nil {
+		if err := takeSeat(ctx, tx, tenantID, now, seats); err != nil {
 			return "", "", err
 		}
 		return RoleMember, "as " + RoleName(RoleMember) + ", without an invitation", nil
@@ -458,10 +482,17 @@ func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now in
 	return role, how, nil
 }
 
-// retainInvitations deletes the tenant's invitations that expired.
+// retainInvitations deletes the tenant's invitations that expired; the seats they held are
+// checked for (queueSeatCheck).
 func (s *Store) retainInvitations(ctx context.Context, tenantID, now int64) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM invitations WHERE tenant_id = ? AND expires_at <= ?`, tenantID, now); err != nil {
-		return fmt.Errorf("delete expired invitations: %w", err)
-	}
-	return nil
+	return s.change(ctx, tenantID, "delete expired invitations", func(ctx context.Context, tx *txn) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM invitations WHERE tenant_id = ? AND expires_at <= ?`, tenantID, now)
+		if err != nil {
+			return fmt.Errorf("delete expired invitations: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		return queueSeatCheck(ctx, tx, tenantID, now)
+	})
 }

@@ -18,6 +18,7 @@ const info = (over: Partial<PlanInfo> = {}): PlanInfo => ({
   status: null,
   period_end: null,
   seats: null,
+  seats_used: null,
   trial_ends_at: trialEnd,
   trial_days_left: 5,
   ended_at: null,
@@ -204,11 +205,11 @@ describe('the Team plan, sold by the seat', () => {
   });
 
   it('shows the seats a subscribed team has, and changes only the count with a change', async () => {
-    auth.members = 4;
-    const current = pro({ plan: 'team', seats: 5, plans: [...info().plans, teamTerms] });
+    auth.members = 2;
+    const current = pro({ plan: 'team', seats: 5, seats_used: 4, plans: [...info().plans, teamTerms] });
     const calls = daemon(() => current, (call) => (call === 'POST /api/plan/change' ? [202, current] : [404]));
     render(Plan);
-    expect((await screen.findByRole('region', { name: 'Your plan' })).textContent).toContain('Your plan has 5 seats; your team has 4 members.');
+    expect((await screen.findByRole('region', { name: 'Your plan' })).textContent).toContain('Your plan has 5 seats; 4 are taken by members and invitations waiting.');
     const team = await card('Team');
     expect(within(team).getByRole('button', { name: 'Current plan' })).toBeTruthy();
 

@@ -223,6 +223,10 @@ func TestInvitations(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].Record != "inv_123" || list[0].InvitedByEmail != "owner@team.test" {
 		t.Fatalf("Invitations = %+v, %v", list, err)
 	}
+	// A person with an account of their own, in another tenant (MAI-248).
+	if _, err := s.SignInIdentity(t.Context(), identity("user_solo", "solo@else.test", "org_solo"), 900, nil); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name  string
 		inv   Invitation
@@ -233,6 +237,7 @@ func TestInvitations(t *testing.T) {
 		{"an unknown role", Invitation{Email: "x@team.test", Role: "boss"}, nil, 1001, ErrBadRole},
 		{"a member", Invitation{Email: "OWNER@team.test", Role: RoleMember}, nil, 1001, ErrAlreadyMember},
 		{"an address invited already", Invitation{Email: "new@team.test", Role: RoleAdmin}, nil, 1001, ErrAlreadyInvited},
+		{"an address with an account in another tenant", Invitation{Email: "Solo@ELSE.test", Role: RoleMember}, seats(NoLimit), 1001, ErrHasAccount},
 		{"no seat left", Invitation{Email: "third@team.test", Role: RoleMember}, seats(2), 1001, ErrSeatLimit},
 		{"no limit", Invitation{Email: "third@team.test", Role: RoleMember}, seats(NoLimit), 1001, nil},
 		{"the first one expired", Invitation{Email: "new@team.test", Role: RoleAdmin}, nil, 1000 + InvitationDays*day, nil},
@@ -271,6 +276,119 @@ func TestInvitations(t *testing.T) {
 	}
 	if got := audited(t, s, tm.tenant)[1:]; !slices.Equal(got, want) {
 		t.Errorf("audit log =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// One count of seats (MAI-249): members still in the team and invitations waiting, a
+// removed member not one. A seat freed on a plan with seats queues a check (MAI-247) that
+// the worker lists when due, retries, and deletes unless it was queued again meanwhile.
+func TestSeatsUsedAndChecks(t *testing.T) {
+	tm := newTeam(t)
+	s, bare, ctx := tm.s, t.Context(), as(t.Context(), tm.owner)
+	if _, err := s.SignInIdentity(bare, identity("user_mate", "mate@team.test", "org_team"), 110, nil); err != nil {
+		t.Fatal(err)
+	}
+	used := func(at int64) int {
+		t.Helper()
+		n, err := s.SeatsUsed(bare, tm.tenant, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	waiting := func(at int64) []SeatCheck {
+		t.Helper()
+		cs, err := s.WaitingSeatChecks(bare, at, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cs
+	}
+	inv, err := s.CreateInvitation(ctx, tm.tenant, Invitation{Email: "new@team.test", Role: RoleMember}, nil, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := used(130); n != 3 {
+		t.Errorf("seats used = %d, want the owner, the mate and the invitation", n)
+	}
+	if n := used(120 + InvitationDays*day); n != 2 {
+		t.Errorf("seats used once the invitation expired = %d, want 2", n)
+	}
+	// A plan without seats queues no check.
+	if _, err := s.RevokeInvitation(ctx, tm.tenant, inv.ID, "", 130); err != nil {
+		t.Fatal(err)
+	}
+	if cs := waiting(1 << 40); len(cs) != 0 {
+		t.Fatalf("checks without seats = %+v", cs)
+	}
+
+	if _, _, err := s.SetPlan(bare, tm.tenant, Plan{Plan: PlanTeam, Interval: IntervalMonth, Status: StatusActive, Record: "sub", Seats: 3}, 140); err != nil {
+		t.Fatal(err)
+	}
+	inv, err = s.CreateInvitation(ctx, tm.tenant, Invitation{Email: "new@team.test", Role: RoleMember}, nil, 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeInvitation(ctx, tm.tenant, inv.ID, "", 160); err != nil {
+		t.Fatal(err)
+	}
+	if cs := waiting(159); len(cs) != 0 {
+		t.Errorf("checks before due = %+v", cs)
+	}
+	first := waiting(160)
+	if len(first) != 1 || first[0].TenantID != tm.tenant || first[0].CreatedAt != 160 {
+		t.Fatalf("checks after a revocation = %+v", first)
+	}
+	// The mate is removed while the worker handles the check: it is queued again, so the
+	// worker's done leaves it.
+	if _, err := s.RemoveMember(ctx, "workos", "user_mate", 170); err != nil {
+		t.Fatal(err)
+	}
+	if n := used(170); n != 1 {
+		t.Errorf("seats used after the mate was removed = %d, want 1", n)
+	}
+	if ms, _ := s.TenantMembers(bare, tm.tenant); ms != 1 {
+		t.Errorf("TenantMembers after the mate was removed = %d, want 1", ms)
+	}
+	if err := s.SeatCheckDone(bare, first[0]); err != nil {
+		t.Fatal(err)
+	}
+	again := waiting(170)
+	if len(again) != 1 || again[0].Version <= first[0].Version || again[0].CreatedAt != 160 {
+		t.Fatalf("checks after a done of one queued again = %+v", again)
+	}
+	if err := s.SeatCheckRetry(bare, again[0], 500); err != nil {
+		t.Fatal(err)
+	}
+	if cs := waiting(499); len(cs) != 0 {
+		t.Errorf("checks before the retry = %+v", cs)
+	}
+	retried := waiting(500)
+	if len(retried) != 1 || retried[0].Attempts != 1 {
+		t.Fatalf("checks at the retry = %+v", retried)
+	}
+	if err := s.SeatCheckDone(bare, retried[0]); err != nil {
+		t.Fatal(err)
+	}
+	if cs := waiting(1 << 40); len(cs) != 0 {
+		t.Fatalf("checks after done = %+v", cs)
+	}
+
+	// An invitation expiring at retention frees its seat too.
+	if _, err := s.CreateInvitation(ctx, tm.tenant, Invitation{Email: "late@team.test", Role: RoleMember}, nil, 600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Retain(bare, tm.tenant, 600+InvitationDays*day, 30); err != nil {
+		t.Fatal(err)
+	}
+	if cs := waiting(1 << 40); len(cs) != 1 {
+		t.Errorf("checks after an invitation expired = %+v", cs)
+	}
+	if err := s.QueueSeatCheck(bare, tm.tenant, 700); err != nil {
+		t.Fatal(err)
+	}
+	if cs := waiting(700); len(cs) != 1 || cs[0].Version != 1 {
+		t.Errorf("checks after queueing one again = %+v", cs)
 	}
 }
 

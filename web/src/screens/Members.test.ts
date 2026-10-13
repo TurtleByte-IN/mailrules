@@ -12,9 +12,9 @@ const invitation = (id: number, email: string, role: Role = 'member'): Invitatio
 
 const people = [member(1, 'ana@example.com', 'owner'), member(2, 'ben@example.com', 'admin'), member(3, 'cy@example.com', 'member')];
 
-/** A daemon with this team; `other` answers every call besides the two lists. */
-function daemon(you: number, other: (call: string, body: unknown) => [number, unknown?] = () => [404]) {
-  const team = { members: people.map((m) => ({ ...m, you: m.id === you })), seats: { used: 4, limit: 5 } };
+/** A daemon with this team and these seats; `other` answers every call besides the two lists. */
+function daemon(you: number, other: (call: string, body: unknown) => [number, unknown?] = () => [404], seats: { used: number; limit: number | null; price: string | null } = { used: 4, limit: 5, price: null }) {
+  const team = { members: people.map((m) => ({ ...m, you: m.id === you })), seats };
   auth.user = { id: you, email: people[you - 1].email, role: people[you - 1].role };
   return serve((call, body) => {
     if (call === 'GET /api/members') return [200, team];
@@ -90,6 +90,28 @@ describe('an Admin', () => {
     expect(calls.some((c) => c.call === 'DELETE /api/invitations/9')).toBe(true);
     expect(screen.getByRole('link', { name: 'Download CSV' }).getAttribute('href')).toBe('/api/audit?format=csv');
     expect(screen.getByRole('link', { name: 'Download JSON' }).getAttribute('href')).toBe('/api/audit?format=json');
+  });
+
+  it('says an invitation past the paid seats adds one, at its price, and that removing gives it back', async () => {
+    const calls = daemon(2, (call) => (call === 'POST /api/invitations' ? [201, { invitation: invitation(10, 'eve@example.com') }] : [404]), { used: 5, limit: 5, price: '$8 a seat a month' });
+    render(Members);
+    await list();
+    const form = screen.getByRole('button', { name: 'Add a seat and send' }).closest('form')!;
+    expect(form.textContent).toContain('this invitation adds one to your plan at once: $8 a seat a month, charged now for the rest of the billing period');
+    expect(form.textContent).toContain('credited on your next bill');
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove cy@example.com' }));
+    expect(screen.getByRole('alertdialog').textContent).toContain("Your plan's seats then come down to those in use, credited on your next bill.");
+
+    await fireEvent.input(screen.getByLabelText('Email'), { target: { value: 'eve@example.com' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Add a seat and send' }));
+    await waitFor(() => expect(calls.some((c) => c.call === 'POST /api/invitations')).toBe(true));
+  });
+
+  it('says nothing of adding a seat while one is free', async () => {
+    daemon(2, undefined, { used: 4, limit: 5, price: '$8 a seat a month' });
+    render(Members);
+    await list();
+    expect(screen.getByRole('button', { name: 'Send invitation' }).closest('form')!.textContent).toContain('The invitation takes a seat.');
   });
 });
 

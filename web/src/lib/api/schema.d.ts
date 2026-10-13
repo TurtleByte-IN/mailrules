@@ -1580,8 +1580,9 @@ export interface paths {
          * The people in the team, and its seats
          * @description Works with a module that invites people (`x-module`: the hosted build), for a tenant
          *     whose plan includes the team (`features.team`; 403 `plan_required` otherwise). Every
-         *     member sees who is in the team. `seats` counts the members and the invitations waiting
-         *     against what the plan allows.
+         *     member sees who is in the team. `seats` counts the members still in the team and the
+         *     invitations waiting (a removed member counts on no screen) against what the plan
+         *     allows: the same count as `seats_used` on GET /api/plan and the downgrade check.
          */
         get: operations["listMembers"];
         put?: never;
@@ -1613,7 +1614,9 @@ export interface paths {
          *     rules and the rest. Only an owner removes an owner (403 `role_required`); nobody
          *     removes themselves here (409 `remove_self`: they delete their account in Settings).
          *     A person the sign-in service did not make cannot be removed (409 `not_removable`).
-         *     Recorded in the audit log.
+         *     Their seat is free at once; on a plan sold by the seat the daemon then has the billing
+         *     service lower the paid seats to those used (never below `min_seats`), credited on the
+         *     next bill, retrying until it agrees. Recorded in the audit log.
          */
         delete: operations["removeMember"];
         options?: never;
@@ -1646,9 +1649,15 @@ export interface paths {
          *     service send it; when that fails the invitation is withdrawn (502 `invite_failed`).
          *     Once the person accepts and signs in under the team's organisation, they join with
          *     `role`. It expires after 7 days. Only an owner invites an owner (403
-         *     `role_required`). Refused while every seat of the plan is taken (409 `seat_limit`, the
-         *     message says what to do), for a member (409 `already_member`) and for an address
-         *     with an invitation waiting (409 `already_invited`). Recorded in the audit log.
+         *     `role_required`). When every seat is taken on a plan sold by the seat (`seats.price`
+         *     is set on GET /api/members), the daemon first has the billing service add the seat at
+         *     once, charged for the rest of the period, and keeps the invitation only once it
+         *     agrees (502 `billing_error`, nobody invited, when it does not); on any other plan it
+         *     is refused (409 `seat_limit`, the message says what to do). Refused for a member (409
+         *     `already_member`), for an address with a MailRules account of its own in any team
+         *     (409 `has_account`, at `email`: that person must delete their own account first) and
+         *     for an address with an invitation waiting (409 `already_invited`). Recorded in the
+         *     audit log.
          */
         post: operations["createInvitation"];
         delete?: never;
@@ -1671,7 +1680,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke an invitation
-         * @description It is deleted, freeing its seat, and taken back at the sign-in service. Recorded in the audit log.
+         * @description It is deleted, freeing its seat, and taken back at the sign-in service. On a plan sold by the seat the daemon then has the billing service lower the paid seats to those used (never below `min_seats`), credited on the next bill; so does an invitation that expires. Recorded in the audit log.
          */
         delete: operations["revokeInvitation"];
         options?: never;
@@ -1830,7 +1839,7 @@ export interface components {
         Role: "owner" | "admin" | "member";
         Session: {
             user: components["schemas"]["User"];
-            /** @description How many users the signed-in user's team has; the web app offers sharing a mailbox only when there is more than one */
+            /** @description How many members the signed-in user's team has, as Members lists them (a removed member is not one); the web app offers sharing a mailbox only when there is more than one */
             members: number;
             /** @description Set when a sign-in module is present: the path the browser goes to after `POST /api/auth/logout`, so the sign-in service ends its own session */
             sign_out?: string;
@@ -3032,6 +3041,8 @@ export interface components {
             period_end: number | null;
             /** @description The seats bought of a plan sold by the seat (Team), while it runs; null otherwise */
             seats: number | null;
+            /** @description With `seats`: the members still in the team and the invitations waiting, counted as GET /api/members counts them; null otherwise */
+            seats_used: number | null;
             /**
              * Format: int64
              * @description 14 days after the tenant was made
@@ -3391,10 +3402,12 @@ export interface components {
             you: boolean;
         };
         Seats: {
-            /** @description Members and invitations waiting */
+            /** @description Members still in the team and invitations waiting; a removed member holds none */
             used: number;
             /** @description The seats the plan has; null = any number (a build that sells no plans) */
             limit: number | null;
+            /** @description On a plan sold by the seat that was bought: what one more seat costs, as the plan's terms show it ("$8 a seat a month"). An invitation past `limit` then adds a seat at once. Null otherwise: an invitation past `limit` is refused */
+            price: string | null;
         };
         Invitation: {
             /** Format: int64 */
