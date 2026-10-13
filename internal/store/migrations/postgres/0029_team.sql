@@ -1,5 +1,5 @@
 -- +goose Up
--- The Team plan (MAI-234), as sqlite/0028_team.sql describes it, kept to its tenant like
+-- The Team plan (MAI-234), as sqlite/0029_team.sql describes it, kept to its tenant like
 -- every table (0023).
 --
 -- Everyone who exists now becomes an owner: the column is added with that default, which
