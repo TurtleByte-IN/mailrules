@@ -10,6 +10,7 @@ Everything MailRules keeps is in its data directory: `/data` in the Docker image
 
 - `mailrules.db`, with `mailrules.db-wal` and `mailrules.db-shm` next to it while MailRules runs: the SQLite database. It holds your rules, sender rules, settings, decisions, the action log used for undo, the contacts learned from your Sent folder, short email snippets, and your mailbox passwords and model keys (and, in the hosted version, the addresses of notification destinations) in encrypted form.
 - `master.key`: the key that protects those passwords and keys. Each account on the install (each team, in the hosted version) has its own data key that seals its secrets, and the database keeps those data keys only wrapped by the master key. The master key is generated on first run, readable only by the user MailRules runs as, and never stored in the database. It is still the one thing to back up next to the database: without it no data key, and so no secret, can be opened.
+- `log.key`, only once `LOG_REDACT_ADDRESSES` has been on: the key the log's address tags are made with. It opens nothing; losing it only gives every address a new tag. See [Secrets and logs](./security.md#secrets-and-logs).
 
 The database never holds full email bodies. Your email itself stays on your mail server.
 

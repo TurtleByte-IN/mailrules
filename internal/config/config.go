@@ -60,6 +60,8 @@ type Config struct {
 
 	PricesFile string
 	LogLevel   string
+	// LogRedactAddresses is auto, true or false; see RedactAddresses.
+	LogRedactAddresses string
 
 	// CookieSecure is auto, true or false; see SecureCookies.
 	CookieSecure string
@@ -145,6 +147,7 @@ func define(c *Config, fs *flag.FlagSet) []Setting {
 	duration(&c.TenantKeyCache, "MAILRULES_TENANT_KEY_CACHE", time.Hour, "How long a team's data key, which opens its stored passwords and keys, stays in memory once unwrapped, such as `1h` or `15m`; then it is unwrapped again. It matters in a build whose module keeps the keys in a key service (the hosted service): while that service cannot be reached, a team whose key has run out of time can use none of its stored passwords and keys, and its mailboxes wait in Key service unreachable until it answers.")
 	boolean(&c.DryRun, "MAILRULES_DRY_RUN", true, "Dry-run until it is first switched: decisions are recorded and no mailbox is changed. Once dry-run has been switched in the browser or with `mailrules dry-run on|off`, that choice wins.")
 	str(&c.LogLevel, "LOG_LEVEL", "info", "`debug`, `info`, `warn` or `error`. Logs are JSON lines on standard error and never hold passwords, keys or the text of an email.")
+	str(&c.LogRedactAddresses, "LOG_REDACT_ADDRESSES", "auto", "Replace every email address in the log, and in the errors handed to a module, with a tag such as `<email:3f9a2c1b>`: `auto` (yes when `MAILRULES_MODE` is `cloud`, no when it is `selfhost`), `true` or `false`. The same address always gets the same tag, keyed by `log.key` in the data directory (generated on first use; it opens nothing else). `mailrules log-tag <address>` prints an address's tag, to find its lines.")
 
 	group = "Database (hosted build)"
 	str(&c.DatabaseURL, "MAILRULES_DATABASE_URL", "", "For the hosted service only; self-hosting leaves it empty and keeps the database in the data directory. A Postgres URL (`postgres://user:password@host:5432/mailrules?sslmode=require`, Postgres 16 or later) for the web app and the daemon, signed in as a member of the `mailrules_app` role, which owns no table: row-level security keeps each team's rows to that team. MailRules never migrates through it: run `mailrules migrate` first (see `MAILRULES_MIGRATE_DATABASE_URL`), and it does not start while the database's schema is not the one it was built for.")
@@ -269,6 +272,11 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		bad("LOG_LEVEL=%q must be debug, info, warn or error", c.LogLevel)
+	}
+	switch c.LogRedactAddresses {
+	case "auto", "true", "false":
+	default:
+		bad("LOG_REDACT_ADDRESSES=%q must be auto, true or false", c.LogRedactAddresses)
 	}
 	errs = append(errs, c.validateSMTP()...)
 	errs = append(errs, c.ValidateDatabase())
@@ -505,6 +513,19 @@ func (c *Config) SecureCookies() bool {
 		return false
 	}
 	return !c.ListensLocally()
+}
+
+// RedactAddresses reports whether email addresses are replaced by tags in the log.
+// "auto" means yes in cloud mode, where the log and the error tracker hold other
+// people's addresses, and no when self-hosting, where they help the operator.
+func (c *Config) RedactAddresses() bool {
+	switch c.LogRedactAddresses {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return c.Mode == "cloud"
 }
 
 // TrustedProxyPrefixes parses MAILRULES_TRUSTED_PROXIES: IP addresses and CIDR ranges

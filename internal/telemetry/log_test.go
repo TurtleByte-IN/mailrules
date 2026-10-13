@@ -12,7 +12,7 @@ import (
 
 func TestLoggerRedacts(t *testing.T) {
 	var buf bytes.Buffer
-	log := NewLogger(&buf, "debug")
+	log := NewLogger(&buf, "debug", nil)
 	log.Debug("login", "user", "me@icloud.com", "password", "hunter2", "Token", "abc", "body", "Dear me",
 		slog.Group("imap", "secret", "s3cr3t", "host", "imap.mail.me.com"))
 	out := buf.String()
@@ -30,7 +30,7 @@ func TestLoggerRedacts(t *testing.T) {
 
 func TestLoggerLevel(t *testing.T) {
 	var buf bytes.Buffer
-	NewLogger(&buf, "warn").Info("quiet")
+	NewLogger(&buf, "warn", nil).Info("quiet")
 	if buf.Len() != 0 {
 		t.Errorf("info logged at warn level: %s", buf.String())
 	}
@@ -40,7 +40,7 @@ func TestLoggerLevel(t *testing.T) {
 // records below error level never do, whatever the log's level.
 func TestLoggerErrorWriters(t *testing.T) {
 	var logged, errs bytes.Buffer
-	log := NewLogger(&logged, "debug", &errs)
+	log := NewLogger(&logged, "debug", nil, &errs)
 	log.Debug("quiet")
 	log.Info("quiet")
 	log.Warn("quiet")
@@ -68,7 +68,7 @@ func TestLoggerErrorWriters(t *testing.T) {
 	for _, level := range []string{"error", "error+4"} {
 		logged.Reset()
 		errs.Reset()
-		NewLogger(&logged, level, &errs).Error("failed")
+		NewLogger(&logged, level, nil, &errs).Error("failed")
 		if !strings.Contains(errs.String(), `"msg":"failed"`) {
 			t.Errorf("level %s: error writer got %q", level, errs.String())
 		}
@@ -80,7 +80,7 @@ func TestLoggerErrorWriters(t *testing.T) {
 // with the outer context.
 func TestLoggerContextAttrs(t *testing.T) {
 	var buf bytes.Buffer
-	log := NewLogger(&buf, "info")
+	log := NewLogger(&buf, "info", nil)
 	line := func(ctx context.Context, args ...any) map[string]any {
 		t.Helper()
 		buf.Reset()
@@ -119,7 +119,7 @@ func panics() { panic("boom") }
 func TestLogPanic(t *testing.T) {
 	var logged, errs bytes.Buffer
 	old := slog.Default()
-	slog.SetDefault(NewLogger(&logged, "info", &errs))
+	slog.SetDefault(NewLogger(&logged, "info", nil, &errs))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	func() {
 		defer func() { LogPanic(t.Context(), "it panicked", recover(), "account", 4) }()
