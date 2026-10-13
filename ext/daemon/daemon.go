@@ -131,7 +131,18 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		}
 		addressKey = key
 	}
-	slog.SetDefault(telemetry.NewLogger(os.Stderr, cfg.LogLevel, addressKey, errs...))
+	// With OTEL_EXPORTER_OTLP_ENDPOINT, the metrics and every line the log writes are sent to
+	// an OpenTelemetry receiver as well, until serve returns: the export stops after the
+	// sinks. Without it, nothing of it starts.
+	logOut, stopExport, err := startExport(ctx, cfg, version, metrics)
+	if err != nil {
+		return err
+	}
+	defer stopExport()
+	slog.SetDefault(telemetry.NewLogger(logOut, cfg.LogLevel, addressKey, errs...))
+	if cfg.OTLPEndpoint != "" {
+		slog.Info("sending the metrics and the log to OpenTelemetry", "service_name", cfg.ServiceName, "environment", cfg.Environment)
+	}
 	if len(sinks) > 0 {
 		sinkCtx, stopSinks := context.WithCancel(context.WithoutCancel(ctx))
 		var handing sync.WaitGroup
