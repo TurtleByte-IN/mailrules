@@ -97,7 +97,13 @@ func identityUser(ctx context.Context, tx *txn, provider, subject string) (userI
 // error, and forgetting one again changes nothing, the removal time included. Only users
 // made from an identity are reached, so the self-host admin never is.
 func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, now int64) (Forget, error) {
-	return s.forget(ctx, provider, subject, now, false)
+	return s.forget(ctx, provider, subject, now, false, "their sign-in was deleted")
+}
+
+// RemoveMember is a member an owner or admin removed from their team: ForgetIdentity,
+// recorded in the audit log as a removal.
+func (s *Store) RemoveMember(ctx context.Context, provider, subject string, now int64) (Forget, error) {
+	return s.forget(ctx, provider, subject, now, false, "removed from the team")
 }
 
 // DeleteOwnAccount is a person who deleted their own account: ForgetIdentity, and in the
@@ -108,11 +114,11 @@ func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, no
 // data's. The old data is removed after ForgetDays all the same, and the service's own
 // deletion notice for the identity afterwards reaches nobody.
 func (s *Store) DeleteOwnAccount(ctx context.Context, provider, subject string, now int64) (Forget, error) {
-	return s.forget(ctx, provider, subject, now, true)
+	return s.forget(ctx, provider, subject, now, true, "deleted their own account")
 }
 
-// forget is ForgetIdentity, and DeleteOwnAccount when own.
-func (s *Store) forget(ctx context.Context, provider, subject string, now int64, own bool) (Forget, error) {
+// forget is ForgetIdentity, and DeleteOwnAccount when own; how is the audit log's detail.
+func (s *Store) forget(ctx context.Context, provider, subject string, now int64, own bool, how string) (Forget, error) {
 	ctx = s.tenantFor(ctx, ofIdentity, provider, subject)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -132,6 +138,18 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 	if err != nil {
 		return Forget{}, fmt.Errorf("forget identity: find user: %w", err)
 	}
+	var email string
+	var again bool // forgotten before: nothing more to record
+	if err := tx.QueryRowContext(ctx, `SELECT email, id IN (SELECT user_id FROM forgotten) FROM users WHERE id = ?`, out.UserID).
+		Scan(&email, &again); err != nil {
+		return Forget{}, fmt.Errorf("forget identity: find user: %w", err)
+	}
+	// A team losing its last owner gets the next one as they go (promoteHeir).
+	if !again {
+		if err := promoteHeir(ctx, tx, out.TenantID, out.UserID, now); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET email = ? WHERE id = ?`, forgottenEmail(out.UserID), out.UserID); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: free email: %w", err)
 	}
@@ -142,6 +160,11 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 	out.Keys = alone
 	if err := s.deleteSecrets(ctx, tx, out.TenantID, out.Accounts, out.Keys, forgottenMessage, forgottenOAuthMessage, now); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: %w", err)
+	}
+	if !again {
+		if err := record(ctx, tx, out.TenantID, now, AuditMemberRemoved, email, how); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: %w", err)
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -377,6 +400,8 @@ func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 		{"mailboxes", `DELETE FROM accounts WHERE tenant_id = ?`},
 		{"notices", `DELETE FROM notices WHERE tenant_id = ?`},
 		{"notification destinations", `DELETE FROM notify_destinations WHERE tenant_id = ?`},
+		{"invitations", `DELETE FROM invitations WHERE tenant_id = ?`},
+		{"audit log", `DELETE FROM audit_log WHERE tenant_id = ?`},
 		{"sender rules", `DELETE FROM sender_rules WHERE tenant_id = ?`},
 		{"rules", `DELETE FROM rules WHERE tenant_id = ?`},
 		{"batches", `DELETE FROM batches WHERE tenant_id = ?`},

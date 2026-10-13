@@ -21,6 +21,17 @@ export const auth = $state<{
   signOut: null,
 });
 
+/**
+ * The signed-in person may change what the team shares: its rules and sender rules, settings,
+ * notification destinations and members. Only a member (`role: member`) may not; the daemon
+ * refuses them with 403 `role_required`.
+ */
+export const canManage = () => auth.user?.role !== 'member';
+/** The signed-in person is an Owner: the only role that sees Plan and billing. */
+export const isOwner = () => auth.user?.role === 'owner';
+/** Said where a member is shown what they may not change. */
+export const managedNote = 'Shared with your team: only an Owner or Admin changes these.';
+
 function signedIn(s: authApi.Session) {
   auth.user = s.user;
   auth.members = s.members;

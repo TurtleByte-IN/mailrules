@@ -4,7 +4,7 @@
   import Nav from './lib/components/Nav.svelte';
   import PlanBanner from './lib/components/PlanBanner.svelte';
   import { accounts, load as loadAccounts } from './lib/state/accounts.svelte';
-  import { auth, start } from './lib/state/auth.svelte';
+  import { auth, canManage, isOwner, start } from './lib/state/auth.svelte';
   import { firstRun, settle } from './lib/state/firstrun.svelte';
   import { setupReturn } from './lib/state/oneclick';
   import { load as loadPlan } from './lib/state/plan.svelte';
@@ -37,8 +37,9 @@
     }
   });
 
-  // Only a build that sells plans has one; the shell says when it is about to end or has ended.
-  const billing = $derived(settings.value.features.billing);
+  // Only a build that sells plans has one, and only an Owner may read it; the shell says when it
+  // is about to end or has ended.
+  const billing = $derived(settings.value.features.billing && isOwner());
   $effect(() => {
     if (auth.status === 'in' && billing) loadPlan();
   });
@@ -61,7 +62,9 @@
         {#if settings.value.dry_run}
           <div role="status" class="flex flex-wrap items-center justify-between gap-2.5 rounded-md border border-warn-line bg-warn-bg px-4 py-3 text-warn">
             <span><strong>Dry-run is on.</strong> MailRules logs what it would do but doesn't touch your mailbox.</span>
-            <button type="button" class="min-h-9 rounded border border-warn-strong bg-surface px-3 font-semibold text-warn max-md:min-h-11" onclick={toggleDryRun}>Go live</button>
+            {#if canManage()}
+              <button type="button" class="min-h-9 rounded border border-warn-strong bg-surface px-3 font-semibold text-warn max-md:min-h-11" onclick={toggleDryRun}>Go live</button>
+            {/if}
           </div>
         {/if}
         <PlanBanner />

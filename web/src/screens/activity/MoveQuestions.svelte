@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MoveQuestion } from '../../lib/api/questions';
+  import { canManage } from '../../lib/state/auth.svelte';
   import { answer, questions } from '../../lib/state/questions.svelte';
 
   // The questions about emails the person moved in another mail app, asked once per sender
@@ -28,10 +29,16 @@
             {q.inbox ? 'Always keep them in Inbox?' : `Always move them to ${where}?`}
           </span>
           <span class="truncate text-xs text-muted">{q.from} · on {q.mailbox}</span>
+          {#if !canManage()}
+            <!-- Yes stores a sender rule for the team, which only an Owner or Admin may. -->
+            <span class="text-xs text-secondary">Only an Owner or Admin can say Yes: it changes the team's sender rules.</span>
+          {/if}
         </div>
         <span class="flex gap-2">
           <button type="button" class="btn" disabled={busy === q.id} onclick={() => reply(q, 'no')}>No</button>
-          <button type="button" class="btn-primary" disabled={busy === q.id} onclick={() => reply(q, 'yes')}>Yes</button>
+          {#if canManage()}
+            <button type="button" class="btn-primary" disabled={busy === q.id} onclick={() => reply(q, 'yes')}>Yes</button>
+          {/if}
         </span>
       </div>
     {/each}

@@ -1,4 +1,5 @@
 import type { Component } from 'svelte';
+import type { Role } from './lib/api/members';
 import type { Settings as DaemonSettings } from './lib/api/settings';
 import Accounts from './screens/Accounts.svelte';
 import Activity from './screens/Activity.svelte';
@@ -10,6 +11,7 @@ import Senders from './screens/Senders.svelte';
 import Settings from './screens/Settings.svelte';
 import Usage from './screens/Usage.svelte';
 import Overview from './screens/Overview.svelte';
+import Members from './screens/Members.svelte';
 import Plan from './screens/Plan.svelte';
 import Pending from './screens/Pending.svelte';
 import Setup from './screens/Setup.svelte';
@@ -25,9 +27,13 @@ export interface Screen {
   component: Component<any>;
   /** Shown only while the daemon says this feature is on (GET /api/settings `features`). */
   feature?: keyof Features;
+  /** Not offered to these roles: the daemon refuses them what the screen is for (403 role_required). */
+  notFor?: Role[];
 }
 
-// Order and labels follow the prototype nav. Plan and billing shows only in a build that sells plans.
+// Order and labels follow the prototype nav. Plan and billing shows only in a build that sells plans,
+// and only to an Owner; Add rules not to a Member. Members, not in the prototype, shows only while
+// the plan includes the team.
 const all: Screen[] = [
   { path: '/', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z', component: Overview },
   { path: '/activity', label: 'Activity', icon: 'M3 12h4l3 8 4-16 3 8h4', component: Activity },
@@ -35,15 +41,17 @@ const all: Screen[] = [
   { path: '/rules', label: 'Rules', icon: 'M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01', component: Rules },
   { path: '/senders', label: 'Senders', icon: 'M8 12a4 4 0 1 0 8 0 4 4 0 1 0-8 0M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8', component: Senders },
   { path: '/cleanup', label: 'Cleanup', icon: 'M3 4h18v4H3zM5 8v12h14V8M10 12h4', component: Cleanup },
-  { path: '/compose', label: 'Add rules', icon: 'M12 5v14M5 12h14', component: Compose },
+  { path: '/compose', label: 'Add rules', icon: 'M12 5v14M5 12h14', component: Compose, notFor: ['member'] },
   { path: '/accounts', label: 'Mailboxes', icon: 'M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM3 7l9 6 9-6', component: Accounts },
   { path: '/usage', label: 'Usage', icon: 'M5 20V11M11 20V5M17 20v-7M3 20h18', component: Usage },
-  { path: '/plan', label: 'Plan and billing', icon: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM2 10h20', component: Plan, feature: 'billing' },
+  { path: '/members', label: 'Members', icon: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1M16 3.1a4 4 0 0 1 0 7.8M22 21v-1a6 6 0 0 0-4-5.7', component: Members, feature: 'team' },
+  { path: '/plan', label: 'Plan and billing', icon: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM2 10h20', component: Plan, feature: 'billing', notFor: ['admin', 'member'] },
   { path: '/settings', label: 'Settings', icon: 'M4 7h9M17 7h3M4 17h3M11 17h9M13 7a2 2 0 1 0 4 0 2 2 0 1 0-4 0M7 17a2 2 0 1 0 4 0 2 2 0 1 0-4 0', component: Settings },
 ];
 
-/** The screens the nav offers, given the features the daemon reports in its settings. */
-export const screensFor = (features: Features) => all.filter((s) => !s.feature || features[s.feature]);
+/** The screens the nav offers, given the features the daemon reports in its settings and the person's role. */
+export const screensFor = (features: Features, role: Role | undefined) =>
+  all.filter((s) => (!s.feature || features[s.feature]) && !(role && s.notFor?.includes(role)));
 
 // A flagged-off screen's path is routed too; it can only be reached by typing it.
 export const routes: Record<string, Component<any>> = {

@@ -69,8 +69,12 @@ func billingModule(fb *fakeBilling, plans map[string]ext.PlanTerms) ext.Module {
 				fb.checkouts = append(fb.checkouts, c)
 				return json.RawMessage(`{"price":"pri_` + c.Plan + `_` + c.Interval + `"}`), fb.err
 			},
-			ChangePlan: func(_ context.Context, tenantID int64, record, plan, interval string) error {
-				fb.changes = append(fb.changes, strings.Join([]string{strconv.FormatInt(tenantID, 10), record, plan, interval}, " "))
+			ChangePlan: func(_ context.Context, c ext.PlanChange) error {
+				change := []string{strconv.FormatInt(c.TenantID, 10), c.Record, c.Plan, c.Interval}
+				if c.Seats > 0 {
+					change = append(change, strconv.Itoa(c.Seats))
+				}
+				fb.changes = append(fb.changes, strings.Join(change, " "))
 				return fb.err
 			},
 			Portal: func(_ context.Context, _ int64, record string) (string, error) {
@@ -137,7 +141,18 @@ func TestCheckModulesBilling(t *testing.T) {
 	}{
 		{"a sound module", func(*ext.Module) {}, pro, ""},
 		{"a plan missing", func(m *ext.Module) { delete(m.Billing.Plans, store.PlanTrial) }, pro, "needs the trial plan"},
-		{"a plan the daemon does not know", func(m *ext.Module) { m.Billing.Plans["team"] = termsGiving("Team", ext.Limits{}) }, pro, `"team"`},
+		{"a plan the daemon does not know", func(m *ext.Module) { m.Billing.Plans["enterprise"] = termsGiving("Enterprise", ext.Limits{}) }, pro, `"enterprise"`},
+		{"a team plan sold by the seat", func(m *ext.Module) {
+			t := termsGiving("Team", ext.Limits{})
+			t.PerSeat = true
+			m.Billing.Plans[store.PlanTeam] = t
+		}, pro, ""},
+		{"a team plan not sold by the seat", func(m *ext.Module) { m.Billing.Plans[store.PlanTeam] = termsGiving("Team", ext.Limits{}) }, pro, "sold by the seat"},
+		{"another plan sold by the seat", func(m *ext.Module) {
+			t := m.Billing.Plans[store.PlanPro]
+			t.PerSeat = true
+			m.Billing.Plans[store.PlanPro] = t
+		}, pro, "sold by the seat"},
 		{"a feature the build lacks", func(*ext.Module) {}, pro[1:], `feature "suggest"`},
 		{"no checkout", func(m *ext.Module) { m.Billing.Checkout = nil }, pro, "needs Checkout"},
 		{"a script that is not a public route", func(m *ext.Module) { m.Billing.Script = "/api/billing/who" }, pro, "Script"},

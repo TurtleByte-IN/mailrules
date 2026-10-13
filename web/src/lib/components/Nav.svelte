@@ -2,7 +2,7 @@
   import { link, router } from 'svelte-spa-router';
   import { screensFor } from '../../routes';
   import { accounts, statuses } from '../state/accounts.svelte';
-  import { auth, logout } from '../state/auth.svelte';
+  import { auth, canManage, logout } from '../state/auth.svelte';
   import { badges } from '../state/badges.svelte';
   import { rules } from '../state/rules.svelte';
   import { settings, toggleDryRun } from '../state/settings.svelte';
@@ -10,7 +10,7 @@
 
   // Below md the nav is a bar with a Menu button that opens the rest; from md up it is the sidebar.
   let open = $state(false);
-  const screens = $derived(screensFor(settings.value.features));
+  const screens = $derived(screensFor(settings.value.features, auth.user?.role));
   const count = (path: string) => (path === '/rules' ? rules.list.length : badges[path]);
 </script>
 
@@ -67,7 +67,7 @@
       <div class="border-t border-line-divider"></div>
       <div class="flex items-center justify-between">
         <span>Dry-run</span>
-        <Toggle on={settings.value.dry_run} label="Dry-run" onchange={toggleDryRun} />
+        <Toggle on={settings.value.dry_run} label="Dry-run" disabled={!canManage()} onchange={toggleDryRun} />
       </div>
       <div class="flex items-center justify-between gap-2">
         <span class="min-w-0 truncate text-xs text-muted">{auth.user?.email}</span>

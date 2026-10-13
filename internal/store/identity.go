@@ -32,9 +32,15 @@ type Identity struct {
 // wrapped by the store's key provider (when it has one): a provider that cannot answer
 // fails the sign-in with crypto.ErrKeyUnavailable, and no tenant is made.
 //
+// The person who makes a tenant is its owner. A new identity joining a tenant that exists
+// (the sign-in service let them into its organisation) gets the role of the invitation
+// waiting for their email, which is then used up; without one they join as a member, and
+// only while the tenant's plan has a seat free (seats; nil limits nothing), else the sign-in
+// fails with a *SeatLimitError. Either join is recorded in the tenant's audit log.
+//
 // It runs before anyone is signed in, so on Postgres it finds the tenants through the
 // definer functions (scope.go) and scopes its transaction once it knows the tenant.
-func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (User, error) {
+func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64, seats SeatLimit) (User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return User{}, fmt.Errorf("sign in identity: %w", err)
@@ -58,7 +64,7 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 		if err := tx.scope(ctx, tenantID, true); err != nil {
 			return User{}, fmt.Errorf("sign in identity: %w", err)
 		}
-		if u, err = scanUser(tx.QueryRowContext(ctx, `SELECT u.id, u.email, u.password_hash, u.created_at, u.tenant_id
+		if u, err = scanUser(tx.QueryRowContext(ctx, `SELECT u.id, u.email, u.password_hash, u.created_at, u.tenant_id, u.role
 			FROM identities i JOIN users u ON u.id = i.user_id
 			WHERE i.provider = ? AND i.subject = ?`, id.Provider, id.Subject)); err != nil {
 			return User{}, fmt.Errorf("sign in identity: find user: %w", err)
@@ -97,15 +103,29 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64) (Use
 				return User{}, fmt.Errorf("sign in identity: %w", err)
 			}
 		}
+		role, how := RoleOwner, "made the team"
+		if !newTenant {
+			var invitedBy string
+			if role, invitedBy, err = joinRole(ctx, tx, tenantID, id.Email, now, seats); err != nil {
+				return User{}, fmt.Errorf("sign in identity: %w", err)
+			}
+			how = "as " + RoleName(role) + ", invited by " + invitedBy
+			if invitedBy == "" {
+				how = "as " + RoleName(role) + ", without an invitation"
+			}
+		}
 		var uid int64
-		if err := tx.QueryRowContext(ctx, `INSERT INTO users (email, password_hash, created_at, tenant_id) VALUES (?, '', ?, ?) RETURNING id`,
-			id.Email, now, tenantID).Scan(&uid); err != nil {
+		if err := tx.QueryRowContext(ctx, `INSERT INTO users (email, password_hash, created_at, tenant_id, role) VALUES (?, '', ?, ?, ?) RETURNING id`,
+			id.Email, now, tenantID, role).Scan(&uid); err != nil {
 			return User{}, fmt.Errorf("sign in identity: create user: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO identities (provider, subject, user_id) VALUES (?, ?, ?)`, id.Provider, id.Subject, uid); err != nil {
 			return User{}, fmt.Errorf("sign in identity: create identity: %w", err)
 		}
-		u = User{ID: uid, Email: id.Email, CreatedAt: now, TenantID: tenantID}
+		if err := recordAs(ctx, tx, tenantID, now, Actor{UserID: uid, Name: id.Email}, AuditMemberJoined, id.Email, how); err != nil {
+			return User{}, fmt.Errorf("sign in identity: %w", err)
+		}
+		u = User{ID: uid, Email: id.Email, CreatedAt: now, TenantID: tenantID, Role: role}
 	}
 	if err := tx.Commit(); err != nil {
 		return User{}, fmt.Errorf("sign in identity: %w", err)

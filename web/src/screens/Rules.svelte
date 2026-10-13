@@ -9,6 +9,7 @@
   import Waiting from '../lib/components/Waiting.svelte';
   import { day } from '../lib/format';
   import { accounts } from '../lib/state/accounts.svelte';
+  import { canManage, managedNote } from '../lib/state/auth.svelte';
   import { edit, importFile, load, move, remove, rules, undoToday } from '../lib/state/rules.svelte';
   import { settings } from '../lib/state/settings.svelte';
   import { flash } from '../lib/state/toast.svelte';
@@ -18,6 +19,9 @@
   import Rewrite from './rules/Rewrite.svelte';
   import Threshold from './rules/Threshold.svelte';
   import { MAILBOX_REMOVED, actionsText, condText, extrasText, kind, summary, treeWords } from './rules/text';
+
+  // A Member sees the team's rules but cannot change, add, reorder, import or test them.
+  const manage = $derived(canManage());
 
   // Add rules sends people back here with the rule they just saved selected.
   let selectedId = $state(Number(new URLSearchParams(router.querystring).get('id')));
@@ -182,16 +186,21 @@
         <a href="https://github.com/TurtleByte-IN/mailrules/blob/main/docs/guide/rules.md#how-an-email-is-decided" target="_blank" rel="noopener noreferrer">How rules are checked</a>
       </p>
     </div>
-    <a href="#/compose" class="btn-primary">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-      Add rules
-    </a>
+    {#if manage}
+      <a href="#/compose" class="btn-primary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        Add rules
+      </a>
+    {/if}
   </header>
-  <div class="-mt-1.5 flex flex-wrap gap-2">
-    <a href="#/compose?mode=build" class="btn font-semibold">New condition rule</a>
-    <button type="button" class="btn font-semibold" disabled={importing} onclick={() => picker.click()}>{importing ? 'Importing…' : 'Import rules'}</button>
+  <div class="-mt-1.5 flex flex-wrap items-center gap-2">
+    {#if manage}
+      <a href="#/compose?mode=build" class="btn font-semibold">New condition rule</a>
+      <button type="button" class="btn font-semibold" disabled={importing} onclick={() => picker.click()}>{importing ? 'Importing…' : 'Import rules'}</button>
+    {/if}
     <button type="button" class="btn font-semibold" disabled={exporting} onclick={exportRules}>{exporting ? 'Exporting…' : 'Export rules'}</button>
     <input bind:this={picker} type="file" accept=".yaml,.yml" hidden onchange={importRules} />
+    {#if !manage}<span class="text-[13px] text-secondary">{managedNote}</span>{/if}
   </div>
   {#if importing}
     <Waiting text="Checking and saving your rules file" />
@@ -209,10 +218,12 @@
   {#if rules.loaded && !rules.list.length}
     <section class="card flex flex-col items-start gap-3 p-[18px]">
       <p>No rules yet.</p>
-      <div class="flex flex-wrap gap-2">
-        <a href="#/compose" class="btn-primary">Add rules</a>
-        <button type="button" class="btn font-semibold" onclick={() => picker.click()}>Import rules</button>
-      </div>
+      {#if manage}
+        <div class="flex flex-wrap gap-2">
+          <a href="#/compose" class="btn-primary">Add rules</a>
+          <button type="button" class="btn font-semibold" onclick={() => picker.click()}>Import rules</button>
+        </div>
+      {/if}
     </section>
   {:else if rules.list.length}
   <div class="flex flex-wrap items-start gap-[18px]">
@@ -221,21 +232,23 @@
         {#each rules.list as r, i (r.id)}
           {@const k = kind(r)}
           <li
-            draggable="true"
+            draggable={manage}
             ondragstart={() => (dragId = r.id)}
             ondragover={(e) => e.preventDefault()}
-            ondrop={() => move(dragId, i)}
+            ondrop={() => manage && move(dragId, i)}
             ondragend={() => (dragId = 0)}
             class="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 border-t border-l-[3px] border-line-divider px-4 py-3.5 {r.id === sel.id ? 'border-l-signal bg-selected-row' : 'border-l-transparent'} {r.enabled ? '' : 'opacity-55'}"
           >
-            <div class="flex flex-col gap-0.5 max-md:flex-row max-md:gap-2">
-              <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary max-md:size-11" disabled={i === 0} aria-label="Move {r.name} up" onclick={() => move(r.id, i - 1)}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg>
-              </button>
-              <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary max-md:size-11" disabled={i === rules.list.length - 1} aria-label="Move {r.name} down" onclick={() => move(r.id, i + 1)}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
-              </button>
-            </div>
+            {#if manage}
+              <div class="flex flex-col gap-0.5 max-md:flex-row max-md:gap-2">
+                <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary max-md:size-11" disabled={i === 0} aria-label="Move {r.name} up" onclick={() => move(r.id, i - 1)}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg>
+                </button>
+                <button type="button" class="grid h-[22px] w-7 place-items-center rounded-sm border border-line-card bg-surface p-0 text-secondary max-md:size-11" disabled={i === rules.list.length - 1} aria-label="Move {r.name} down" onclick={() => move(r.id, i + 1)}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                </button>
+              </div>
+            {/if}
             <span class="w-[18px] font-mono text-[12.5px] text-muted">{i + 1}</span>
             <button type="button" class="flex min-w-0 flex-[1_1_260px] flex-col gap-0.5 border-0 bg-transparent p-0 text-left" aria-pressed={r.id === sel.id} onclick={() => select(r.id)}>
               <span class="flex flex-wrap items-center gap-2"><span class="font-semibold">{r.name}</span><span class={k.chip}>{k.label}</span></span>
@@ -246,7 +259,7 @@
               {/if}
             </button>
             <label class="flex items-center gap-2 text-[12.5px] text-secondary max-md:min-h-11" title={r.mailbox_removed ? MAILBOX_REMOVED : undefined}>
-              <input type="checkbox" checked={r.enabled} disabled={r.mailbox_removed} aria-describedby={r.mailbox_removed ? `removed-${r.id} removed-why` : undefined} onchange={(e) => toggle(r, e.currentTarget)} />On
+              <input type="checkbox" checked={r.enabled} disabled={r.mailbox_removed || !manage} aria-describedby={r.mailbox_removed ? `removed-${r.id} removed-why` : undefined} onchange={(e) => toggle(r, e.currentTarget)} />On
             </label>
           </li>
         {/each}
@@ -256,10 +269,12 @@
 
     {#if sel}
       <aside bind:this={editor} aria-label="Edit rule" class="card flex min-w-0 flex-[2_1_360px] flex-col gap-3.5 p-[18px] max-md:scroll-mt-20">
-        <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">Edit rule</div>
+        <div class="text-xs font-medium tracking-[0.06em] text-muted uppercase">{manage ? 'Edit rule' : 'Rule'}</div>
         {#if sel.mailbox_removed}
           <div role="note" class="rounded border border-warn-line bg-warn-bg px-3 py-2.5 text-[13px] text-warn">{MAILBOX_REMOVED}</div>
         {/if}
+        <!-- A member sees every field, none of them changeable: the daemon refuses their edits. -->
+        <fieldset disabled={!manage} class="contents">
         <div class="flex flex-col gap-1.5">
           <label for="rule-name" class="text-[13px] font-semibold">Name</label>
           <input id="rule-name" class="field" value={sel.name} onchange={rename} />
@@ -310,12 +325,17 @@
             {@render problem('min_confidence')}
           </div>
         </div>
+        </fieldset>
         <div class="flex flex-wrap items-center gap-2">
-          <a href="#/compose?edit={sel.id}" class="btn-primary">Edit conditions</a>
-          <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
-          <TestRunner run={test} />
+          {#if manage}
+            <a href="#/compose?edit={sel.id}" class="btn-primary">Edit conditions</a>
+            <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
+            <TestRunner run={test} />
+          {/if}
           <button type="button" class="btn" disabled={undoing} aria-expanded={askingUndo === sel.id} onclick={() => (askingUndo = sel.id)}>{undoing ? 'Undoing…' : 'Undo what it did today'}</button>
-          <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash max-md:min-h-11" onclick={del}>Delete rule</button>
+          {#if manage}
+            <button type="button" class="min-h-10 rounded border-0 bg-transparent px-3.5 text-trash max-md:min-h-11" onclick={del}>Delete rule</button>
+          {/if}
         </div>
         {#if askingUndo === sel.id}
           <ConfirmBox

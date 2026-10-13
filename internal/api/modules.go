@@ -39,11 +39,19 @@ var gatedRoutes = []struct{ method, path, module string }{
 	{http.MethodPost, "/api/plan/checkout", "billing"},
 	{http.MethodPost, "/api/plan/change", "billing"},
 	{http.MethodGet, "/api/plan/portal", "billing"},
+	{http.MethodGet, "/api/members", "team"},
+	{http.MethodPatch, "/api/members/{id}", "team"},
+	{http.MethodDelete, "/api/members/{id}", "team"},
+	{http.MethodGet, "/api/invitations", "team"},
+	{http.MethodPost, "/api/invitations", "team"},
+	{http.MethodDelete, "/api/invitations/{id}", "team"},
+	{http.MethodGet, "/api/audit", "team"},
 }
 
 // moduleRoutes are the routes the modules serve, then a refusal for each optional route of
 // the contract none of them serves. The signed-in routes of a module whose feature a plan
-// gates answer 403 plan_required to a tenant whose plan does not include it.
+// gates answer 403 plan_required to a tenant whose plan does not include it, and one that
+// names a Role 403 role_required to anyone with less.
 func (s *server) moduleRoutes() []route {
 	var out []route
 	served := map[string]bool{}
@@ -57,7 +65,11 @@ func (s *server) moduleRoutes() []route {
 			if !r.Public && slices.Contains(gated, m.Name) {
 				h = s.planFeatureOnly(m.Name, h)
 			}
-			out = append(out, route{method: r.Method, path: r.Path, handler: h, public: r.Public, webhook: r.Webhook})
+			rt := route{method: r.Method, path: r.Path, handler: h, public: r.Public, webhook: r.Webhook}
+			if !r.Public && r.Role != "" {
+				rt = rt.need(r.Role, toUseModule)
+			}
+			out = append(out, rt)
 			served[r.Method+" "+r.Path] = true
 		}
 	}
@@ -78,7 +90,8 @@ func (s *server) moduleRoutes() []route {
 // a module connects mailboxes with one-click sign-in (GET /api/presets says for which
 // providers), notifications while a module delivers rule notifications, delete_account while
 // a module signs people in (the hosted build), whether or not it can delete them at its
-// sign-in service, and billing while a module sells plans.
+// sign-in service, billing while a module sells plans, and team while a module invites
+// people to a tenant.
 func (s *server) features() map[string]bool { return buildFeatures(s.Modules) }
 
 // buildFeatures are the features of a build with these modules (server.features).
@@ -100,6 +113,9 @@ func buildFeatures(modules []ext.Module) map[string]bool {
 		}
 		if m.Billing != nil {
 			out["billing"] = true
+		}
+		if m.Team != nil {
+			out["team"] = true
 		}
 	}
 	return out
@@ -207,7 +223,7 @@ func (h host) SignIn(w http.ResponseWriter, r *http.Request, id ext.Identity) (i
 	if in.Provider == "" || in.Subject == "" || in.Email == "" || in.Tenant == "" {
 		return 0, errIdentity
 	}
-	u, err := h.s.store.SignInIdentity(r.Context(), in, h.s.now().Unix())
+	u, err := h.s.store.SignInIdentity(r.Context(), in, h.s.now().Unix(), h.s.seatLimit())
 	if err != nil {
 		return 0, err
 	}
@@ -223,8 +239,12 @@ func (h host) EndSessions(ctx context.Context, provider, subject string) error {
 }
 
 // ForgetIdentity ends the identity's sessions, frees its email, deletes its secrets and
-// schedules the removal of the rest of its data (ext.Host).
+// schedules the removal of the rest of its data (ext.Host). It is recorded in the tenant's
+// audit log under the sign-in service.
 func (h host) ForgetIdentity(ctx context.Context, provider, subject string) error {
+	if _, ok := store.ActorOf(ctx); !ok {
+		ctx = store.WithActor(ctx, store.Actor{Name: "Sign-in service"})
+	}
 	return h.s.forgetIdentity(ctx, provider, subject, h.s.store.ForgetIdentity)
 }
 
@@ -289,7 +309,7 @@ func (s *server) signIn() *ext.Module {
 // cannot serve (checkBilling), and more than one module with Billing; and a Keys the daemon
 // cannot use (KeyModule). The daemon calls it before it serves anything.
 func CheckModules(mode string, modules []ext.Module) error {
-	var signIn, mailboxes, notifiers, movers, billers []string
+	var signIn, mailboxes, notifiers, movers, billers, teams []string
 	built := buildFeatures(modules)
 	forms := map[string]string{} // provider: the module whose form connects it
 	for _, m := range modules {
@@ -298,6 +318,9 @@ func CheckModules(mode string, modules []ext.Module) error {
 			for _, r := range m.Routes(host{&server{}}) {
 				if r.Webhook && !r.Public {
 					return fmt.Errorf("module %s: route %s %s is a Webhook but not Public", m.Name, r.Method, r.Path)
+				}
+				if r.Role != "" && (store.RoleRank(r.Role) == 0 || r.Public) {
+					return fmt.Errorf("module %s: route %s %s has Role %q: it must be one of the Role constants, on a route that is not Public", m.Name, r.Method, r.Path, r.Role)
 				}
 				if r.Method == http.MethodGet {
 					publicGet[r.Path] = publicGet[r.Path] || r.Public
@@ -377,6 +400,12 @@ func CheckModules(mode string, modules []ext.Module) error {
 			}
 			billers = append(billers, m.Name)
 		}
+		if t := m.Team; t != nil {
+			if t.Invite == nil || t.Revoke == nil || t.RemoveMember == nil {
+				return fmt.Errorf("module %s: Team needs Invite, Revoke and RemoveMember", m.Name)
+			}
+			teams = append(teams, m.Name)
+		}
 	}
 	if len(signIn) > 1 {
 		return fmt.Errorf("more than one module signs people in: %s", strings.Join(signIn, ", "))
@@ -392,6 +421,12 @@ func CheckModules(mode string, modules []ext.Module) error {
 	}
 	if len(billers) > 1 {
 		return fmt.Errorf("more than one module sells plans: %s", strings.Join(billers, ", "))
+	}
+	if len(teams) > 1 {
+		return fmt.Errorf("more than one module invites people to a team: %s", strings.Join(teams, ", "))
+	}
+	if len(teams) == 1 && len(signIn) == 0 {
+		return fmt.Errorf("module %s: Team needs a module that signs people in, and this build has none", teams[0])
 	}
 	if mode == "cloud" && len(signIn) == 0 {
 		return errors.New("MAILRULES_MODE=cloud needs a module that signs people in, and this build has none")

@@ -15,6 +15,7 @@ const info = (over: Partial<PlanInfo> = {}): PlanInfo => ({
   interval: null,
   status: null,
   period_end: null,
+  seats: null,
   trial_ends_at: trialEnd,
   trial_days_left: 5,
   ended_at: null,

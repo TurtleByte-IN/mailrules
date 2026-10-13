@@ -57,6 +57,17 @@ info:
       (`GET /api/plan`), nothing is sorted and the app is read-only: every request other than
       GET or HEAD answers 403 `plan_ended`, except signing out, the password, deleting the
       account and the `/api/plan` routes that buy a plan.
+    - Every person has a role in their team (`user.role` in `GET /api/auth/me`): `owner` (the
+      plan and billing, members, and everything an admin does), `admin` (the shared rules and
+      sender rules, settings, notification destinations, members and invitations, the audit
+      log) or `member` (their own mailboxes, sorted by the shared rules). A route marked
+      `x-role` needs at least that role; anyone with less is answered 403 `role_required`,
+      whose message names who may. Everyone else may call every route, on the mailboxes and
+      mail they see. Self-host's admin, and everyone who existed before roles, is an owner.
+    - Every change to a team's rules, sender rules, mailboxes, members, invitations, settings
+      and plan is recorded, with who made it, in its audit log (`GET /api/audit`), in the same
+      transaction as the change. It holds names and addresses, never email content or a
+      secret, and keeps a row for 365 days.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -76,6 +87,7 @@ tags:
   - { name: Settings }
   - { name: Live }
   - { name: Ops }
+  - { name: Team }
 paths:
   /api/auth/setup:
     post:
@@ -208,6 +220,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/CsrfFailed' }
         '404': { $ref: '#/components/responses/NotAvailable' } # not_available: this build cannot delete accounts, or the user was not made by the sign-in service
+        '409': { $ref: '#/components/responses/Conflict' } # last_owner: the person is the only Owner of a team with other members; they make someone else an Owner first
         '502': { $ref: '#/components/responses/Upstream' } # sign_in_error: the sign-in service could not delete the person; nothing was deleted
   /api/auth/me:
     get:
@@ -432,6 +445,7 @@ paths:
     post:
       tags: [Rules]
       operationId: composeRules
+      x-role: admin
       summary: Turn free text into validated draft rules
       description: |
         Nothing is saved. Each draft comes back validated: what is wrong with one is in its
@@ -459,13 +473,14 @@ paths:
               schema: { $ref: '#/components/schemas/ComposeResult' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: text | account_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' } # no_composer_model, anthropic_workspace_needed
         '502': { $ref: '#/components/responses/Upstream' } # model_error
   /api/rules/batch:
     post:
       tags: [Rules]
       operationId: createRules
+      x-role: admin
       summary: Save rules, in one transaction
       description: |
         How every rule is created besides import: approved composer drafts, a rule built by
@@ -494,12 +509,13 @@ paths:
                   items: { type: array, items: { $ref: '#/components/schemas/Rule' } }
         '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path: rules[0].conditions.all[0].op | rules[0].model | rules[0].new_folders[0] | rules[1].name for a name used twice or already saved), invalid_input (path: rules | rules[0] for a field of the wrong type or an unknown one | rules[0].account_id), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '502': { $ref: '#/components/responses/Upstream' } # mailbox_error: a folder could not be created; nothing was saved
   /api/rules/reorder:
     post:
       tags: [Rules]
       operationId: reorderRules
+      x-role: admin
       summary: Set the priority order of all rules
       requestBody:
         required: true
@@ -522,11 +538,12 @@ paths:
               schema: { $ref: '#/components/schemas/RuleList' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: ids), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/rules/test:
     post:
       tags: [Rules]
       operationId: testRules
+      x-role: admin
       summary: Run saved or draft rules over recent mail without acting
       description: |
         Never touches the mailbox: mail is read with BODY.PEEK and stays unread and where it
@@ -565,7 +582,7 @@ paths:
               schema: { type: string, description: '`progress` events (TestProgress), then `done` (TestResult) or `error` (ErrorBody)' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_ids | account_id | folder | limit | rules[0]), rule_invalid (path: rules[0]...), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' } # account_offline, no_composer_model, anthropic_workspace_needed
         '502': { $ref: '#/components/responses/Upstream' } # model_error, mailbox_error
   /api/rules/suggest:
@@ -651,6 +668,7 @@ paths:
     post:
       tags: [Rules]
       operationId: importRules
+      x-role: admin
       summary: Upload a rules YAML file
       description: |
         The request body is the file itself (at most 1 MB). Nothing is stored unless every
@@ -686,7 +704,7 @@ paths:
               schema: { $ref: '#/components/schemas/ImportResult' }
         '400': { $ref: '#/components/responses/Invalid' } # rule_invalid: message has one line per rule with a problem, each naming its rule ('Rule 3 ("Scams"): Unknown operator "like".'); path is where the first problem is inside its rule (conditions.any[0].op; a mailbox number in an account condition is one, at its value). Also for a mailbox that is not connected or is connected twice (path rules[N].applies_to, or rules[N].match / rules[N].unless for an account condition, N from 0), for applies_to together with mailbox_removed (path rules[N].mailbox_removed) and for defaults naming other models (path defaults.decision_model or defaults.fallback_model); the message then says what to change
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '413': { $ref: '#/components/responses/TooLarge' }
   /api/rules/{id}:
     parameters:
@@ -706,6 +724,7 @@ paths:
     patch:
       tags: [Rules]
       operationId: updateRule
+      x-role: admin
       summary: Edit a rule; fields left out stay as they are
       description: The result is validated as a whole, by the same check a batch save and an import run (`model` included), and the rule's `version` goes up by one. Priority is changed with `/api/rules/reorder`. A rule marked `mailbox_removed` cannot be switched on until its mark is cleared, which sending `account_id` (a mailbox, or null for every mailbox), `conditions` or `exceptions` does, in this request or an earlier one.
       requestBody:
@@ -721,17 +740,18 @@ paths:
               schema: { $ref: '#/components/schemas/RuleEnvelope' }
         '400': { $ref: '#/components/responses/Invalid' } # rule_invalid (path e.g. conditions.all[0].op, or model), invalid_input (path: a field of the wrong type, or account_id; or enabled, for a rule marked mailbox_removed: "Its mailbox was removed. Choose a mailbox for it, or All mailboxes, or edit its condition, before turning it on."), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Rules]
       operationId: deleteRule
+      x-role: admin
       summary: Delete a rule
       description: Its past decisions stay in the activity feed under the name it had (`rule_id` becomes null there). Sender rules that route to it go with it.
       responses:
         '204': { description: Deleted }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
   /api/rules/{id}/compose:
     parameters:
@@ -739,6 +759,7 @@ paths:
     post:
       tags: [Rules]
       operationId: recomposeRule
+      x-role: admin
       summary: Re-optimize one rule from its original wording plus new text
       description: Returns a single draft to replace the rule, validated and tested like a composed one. Nothing is saved; save it with PATCH.
       requestBody:
@@ -763,7 +784,7 @@ paths:
                   rule: { $ref: '#/components/schemas/RuleDraft' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: text), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # no_composer_model, anthropic_workspace_needed
         '502': { $ref: '#/components/responses/Upstream' } # model_error
@@ -824,6 +845,7 @@ paths:
     put:
       tags: [Senders]
       operationId: putSender
+      x-role: admin
       summary: Set how a sender is routed
       description: 'Stores a sender rule of source `user`, replacing whatever the sender had, a learned rule included. Mail from the sender is then settled without a model; `hits` counts it. A `move` names a folder by its name on the server and applies on every mailbox, as a rule''s move action does: a mailbox that lacks the folder gets it on the first live move (never in dry-run).'
       requestBody:
@@ -843,16 +865,17 @@ paths:
                   sender: { $ref: '#/components/schemas/Sender' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: type | value | verdict | rule_id | folder), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     delete:
       tags: [Senders]
       operationId: deleteSender
+      x-role: admin
       summary: Remove a sender rule, user-made or learned
       responses:
         '204': { description: Removed, or there was none }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: type | value)
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/senders/{type}/{value}/unsubscribe:
     parameters:
       - { name: type, in: path, required: true, schema: { type: string, enum: [address, domain] }, description: 'Only `address`: a domain is refused with 400 (path type)' }
@@ -878,7 +901,8 @@ paths:
         Unsubscribing changes no mailbox, so dry-run does not hold it back, and nothing is
         added to Activity. Once every mailbox is unsubscribed, an address that had no sender
         rule (of its own or of its domain) gets one of source `user` with verdict `block`, so
-        the mail the list still sends goes to Trash (as any trash does: not in dry-run). Asking
+        the mail the list still sends goes to Trash (as any trash does: not in dry-run), when
+        the person is an owner or admin: a member's unsubscribing adds no sender rule. Asking
         again when every mailbox is unsubscribed calls nothing and answers 200.
       responses:
         '200':
@@ -961,7 +985,8 @@ paths:
         signed-in person, replacing whatever the team had for that address: the sender's mail
         stays in the Inbox (`keep`), or goes to the folder (`move`), on every mailbox. `no`
         stores nothing. Either way the question closes and that sender and destination is
-        never asked about again. Nothing in any mailbox changes.
+        never asked about again. Nothing in any mailbox changes. Only an owner or admin may
+        answer `yes` (403 `role_required`): it changes the team's sender rules.
       requestBody:
         required: true
         content:
@@ -985,7 +1010,7 @@ paths:
                   answer: { type: string, enum: ['yes', 'no'] }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_json, invalid_input (path: answer)
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' } # not_found (answered already, or not the person's to see), or not_available without the module
   /api/messages/{id}:
     parameters:
@@ -1023,6 +1048,8 @@ paths:
         `domain_too_broad` for a well-known free-mail domain (gmail.com, googlemail.com,
         outlook.com, hotmail.com, live.com, yahoo.com, icloud.com, me.com, mac.com, proton.me,
         protonmail.com, aol.com, gmx.com, zoho.com, fastmail.com), before anything is done.
+        Only an owner or admin may send `always_for` (403 `role_required`): it changes the
+        team's sender rules.
       requestBody:
         required: true
         content:
@@ -1036,7 +1063,7 @@ paths:
               schema: { $ref: '#/components/schemas/FixResult' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id | always_for), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # message_gone, account_offline
         '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder, domain_too_broad (path: always_for)
@@ -1109,7 +1136,7 @@ paths:
               schema: { $ref: '#/components/schemas/FixResult' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: rule_id | always_for), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' } # not_in_review, message_gone, account_offline
         '422': { $ref: '#/components/responses/Unprocessable' } # no_special_folder, domain_too_broad (path: always_for)
@@ -1467,6 +1494,7 @@ paths:
     get:
       tags: [Plan]
       operationId: getPlan
+      x-role: owner
       x-module: billing
       summary: The tenant's plan, and the plans to choose from
       description: |
@@ -1482,11 +1510,13 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PlanInfo' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' } # not_available: this build sells no plans
   /api/plan/checkout:
     post:
       tags: [Plan]
       operationId: planCheckout
+      x-role: owner
       x-module: billing
       summary: What the browser needs to open checkout for a plan
       description: |
@@ -1511,16 +1541,17 @@ paths:
                 properties:
                   checkout: { type: object, additionalProperties: true, description: 'Opaque: what the module''s script takes' }
                   script: { type: string, description: 'The path of the checkout script, on this server' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: plan | interval), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: plan | interval | seats), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
-        '409': { $ref: '#/components/responses/Conflict' } # subscribed: change the plan instead (POST /api/plan/change); downgrade_refused: more mailboxes than the plan allows, the message says which to remove
+        '409': { $ref: '#/components/responses/Conflict' } # subscribed: change the plan instead (POST /api/plan/change); downgrade_refused: more mailboxes than the plan allows (the message says which to remove), or more members and invitations than its seats
         '502': { $ref: '#/components/responses/Upstream' } # billing_error: the billing service could not be reached
   /api/plan/change:
     post:
       tags: [Plan]
       operationId: planChange
+      x-role: owner
       x-module: billing
       summary: Move a subscribed tenant to another plan or interval, at once
       description: |
@@ -1540,9 +1571,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PlanInfo' }
-        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: plan | interval), invalid_json
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: plan | interval | seats), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
         '409': { $ref: '#/components/responses/Conflict' } # not_subscribed: buy a plan first (POST /api/plan/checkout); same_plan; downgrade_refused
         '502': { $ref: '#/components/responses/Upstream' } # billing_error
@@ -1550,6 +1581,7 @@ paths:
     get:
       tags: [Plan]
       operationId: planPortal
+      x-role: owner
       x-module: billing
       summary: The billing service's customer portal (Manage billing)
       description: Where a subscribed tenant's people cancel, change the payment method and get invoices. A cancelled plan runs to the end of its paid period.
@@ -1564,6 +1596,7 @@ paths:
                 properties:
                   url: { type: string }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
         '409': { $ref: '#/components/responses/Conflict' } # not_subscribed
         '502': { $ref: '#/components/responses/Upstream' } # billing_error
@@ -1583,6 +1616,7 @@ paths:
     patch:
       tags: [Settings]
       operationId: updateSettings
+      x-role: admin
       summary: Change settings; fields left out stay as they are
       description: |
         The result is validated as a whole and stored in one transaction. Everything takes
@@ -1633,12 +1667,13 @@ paths:
               schema: { $ref: '#/components/schemas/Settings' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: decider | decider_model | composer_model | escalate_below | min_confidence | retention_days | trash_to_folder | leave_own_mail | openai_base_url | ollama_url | anthropic_workspace_id | keys.<name> | summary.frequency | summary.weekday | summary.time | summary.time_zone | summary.to), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' } # smtp_not_configured (path summary.enabled): turning the summary email on while the daemon has no outgoing mail server; nothing was saved
   /api/settings/anthropic-workspaces:
     get:
       tags: [Settings]
       operationId: getAnthropicWorkspaces
+      x-role: admin
       summary: Which workspace the Claude key in force needs
       description: |
         A Claude key made for every workspace of an organisation must name one on each
@@ -1659,6 +1694,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AnthropicWorkspaces' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/summary/preview:
     get:
       tags: [Settings]
@@ -1745,6 +1781,7 @@ paths:
     post:
       tags: [Settings]
       operationId: createNotificationDestination
+      x-role: admin
       x-module: notifications
       summary: Add a place rule notifications go
       description: |
@@ -1764,7 +1801,7 @@ paths:
               schema: { $ref: '#/components/schemas/NotificationDestinationCreated' }
         '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: name | kind | url), invalid_json
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotAvailable' }
   /api/notifications/destinations/{id}:
     parameters:
@@ -1772,14 +1809,211 @@ paths:
     delete:
       tags: [Settings]
       operationId: deleteNotificationDestination
+      x-role: admin
       x-module: notifications
       summary: Remove a destination
       description: Its address, secret and delivery log go with it, and every rule stops naming it. Notices still waiting for it are dropped.
       responses:
         '204': { description: Removed }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/CsrfFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' } # not_found, or not_available without the module
+  /api/members:
+    get:
+      tags: [Team]
+      operationId: listMembers
+      x-module: team
+      summary: The people in the team, and its seats
+      description: |
+        Works with a module that invites people (`x-module`: the hosted build), for a tenant
+        whose plan includes the team (`features.team`; 403 `plan_required` otherwise). Every
+        member sees who is in the team. `seats` counts the members and the invitations waiting
+        against what the plan allows.
+      responses:
+        '200':
+          description: The team
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members, seats]
+                properties:
+                  members: { type: array, items: { $ref: '#/components/schemas/Member' }, description: 'The longest-standing first' }
+                  seats: { $ref: '#/components/schemas/Seats' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' } # plan_required
+        '404': { $ref: '#/components/responses/NotAvailable' }
+  /api/members/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    patch:
+      tags: [Team]
+      operationId: updateMember
+      x-role: admin
+      x-module: team
+      summary: Change a member's role
+      description: |
+        Takes effect on the member's next request. Only an owner makes someone an owner or
+        changes an owner's role (403 `role_required`), and the team keeps at least one owner
+        (409 `last_owner`). Recorded in the audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              additionalProperties: false
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200':
+          description: The member as they now are
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [member]
+                properties:
+                  member: { $ref: '#/components/schemas/Member' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: role), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' } # not_found, or not_available without the module
+        '409': { $ref: '#/components/responses/Conflict' } # last_owner
+    delete:
+      tags: [Team]
+      operationId: removeMember
+      x-role: admin
+      x-module: team
+      summary: Remove a member from the team
+      description: |
+        The sign-in service takes them out of the team's organisation first; when it cannot,
+        nothing is removed (502 `sign_in_error`). Then they are removed as a person the
+        service deleted is: their sessions end at once, the mailboxes they own (shared or not)
+        stop and lose their passwords at once and go 30 days later, and the team keeps its
+        rules and the rest. Only an owner removes an owner (403 `role_required`); nobody
+        removes themselves here (409 `remove_self`: they delete their account in Settings).
+        A person the sign-in service did not make cannot be removed (409 `not_removable`).
+        Recorded in the audit log.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' } # remove_self, not_removable
+        '502': { $ref: '#/components/responses/Upstream' } # sign_in_error
+  /api/invitations:
+    get:
+      tags: [Team]
+      operationId: listInvitations
+      x-role: admin
+      x-module: team
+      summary: The invitations waiting
+      description: Those not yet used or expired, oldest first. Each holds a seat.
+      responses:
+        '200':
+          description: Invitations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitations]
+                properties:
+                  invitations: { type: array, items: { $ref: '#/components/schemas/Invitation' } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotAvailable' }
+    post:
+      tags: [Team]
+      operationId: createInvitation
+      x-role: admin
+      x-module: team
+      summary: Invite a person by email
+      description: |
+        The daemon keeps the invitation, which takes a seat, then the module has the sign-in
+        service send it; when that fails the invitation is withdrawn (502 `invite_failed`).
+        Once the person accepts and signs in under the team's organisation, they join with
+        `role`. It expires after 7 days. Only an owner invites an owner (403
+        `role_required`). Refused while every seat of the plan is taken (409 `seat_limit`, the
+        message says what to do), for a member (409 `already_member`) and for an address
+        with an invitation waiting (409 `already_invited`). Recorded in the audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation: { $ref: '#/components/schemas/Invitation' }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: email | role), invalid_json
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotAvailable' }
+        '409': { $ref: '#/components/responses/Conflict' } # seat_limit, already_member, already_invited
+        '502': { $ref: '#/components/responses/Upstream' } # invite_failed
+  /api/invitations/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    delete:
+      tags: [Team]
+      operationId: revokeInvitation
+      x-role: admin
+      x-module: team
+      summary: Revoke an invitation
+      description: It is deleted, freeing its seat, and taken back at the sign-in service. Recorded in the audit log.
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/audit:
+    get:
+      tags: [Team]
+      operationId: downloadAudit
+      x-role: admin
+      x-module: team
+      summary: Download the audit log
+      description: |
+        Who changed what in the team: its rules and sender rules, mailboxes, members and
+        invitations, settings and notification destinations, and plan, oldest first. Names
+        and addresses only, never email content or a secret. A CSV file (`format=csv`, the
+        default: columns time (UTC, RFC 3339), actor, action, target, detail; a cell that
+        would start with `=`, `+`, `-` or `@` starts with `'`) or JSON. Rows are kept 365
+        days.
+      parameters:
+        - { name: format, in: query, schema: { type: string, enum: [csv, json] }, description: 'csv when left out' }
+        - { name: since, in: query, schema: { type: integer, format: int64, minimum: 0 }, description: 'Unix seconds; 365 days ago when left out' }
+        - { name: until, in: query, schema: { type: integer, format: int64, minimum: 0 }, description: 'Unix seconds; now when left out' }
+      responses:
+        '200':
+          description: The audit log, as an attachment
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+        '400': { $ref: '#/components/responses/Invalid' } # invalid_input (path: format | since | until)
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotAvailable' }
   /api/events:
     get:
       tags: [Live]
@@ -1911,6 +2145,11 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
+    Forbidden:
+      description: '`csrf_failed`: missing or wrong X-CSRF-Token header. `role_required`: the route needs the role its `x-role` names, or one above it, and the message says who may. `plan_required`: the tenant''s plan does not include the feature'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
     NotFound:
       description: '`not_found`'
       content:
@@ -1989,10 +2228,15 @@ components:
         new_password: { type: string, minLength: 12 }
     User:
       type: object
-      required: [id, email]
+      required: [id, email, role]
       properties:
         id: { type: integer, format: int64 }
         email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+    Role:
+      type: string
+      enum: [owner, admin, member]
+      description: '`owner`: the plan and billing, members, and everything an admin does. `admin`: the shared rules and sender rules, settings, notification destinations, members and invitations, the audit log. `member`: their own mailboxes, sorted by the shared rules'
     Session:
       type: object
       required: [user, members]
@@ -2890,27 +3134,31 @@ components:
       type: object
       required: [plan, interval]
       properties:
-        plan: { type: string, enum: [personal, pro] }
+        plan: { type: string, enum: [personal, pro, team], description: '`team` only while it is on sale (it is in `plans`)' }
         interval: { type: string, enum: [month, year] }
+        seats: { type: integer, minimum: 1, description: 'How many seats of a plan sold by the seat (`per_seat`), from its `min_seats` to 1,000; sent only for such a plan (400 `invalid_input` at `seats` otherwise)' }
     PlanTerms:
       type: object
-      required: [id, name, prices, includes, mailboxes, ai_emails, features]
+      required: [id, name, prices, includes, mailboxes, ai_emails, features, per_seat, min_seats]
       properties:
-        id: { type: string, enum: [personal, pro] }
+        id: { type: string, enum: [personal, pro, team] }
         name: { type: string }
-        prices: { type: object, additionalProperties: { type: string }, description: 'What it costs, as shown, by interval (month, year)' }
+        prices: { type: object, additionalProperties: { type: string }, description: 'What it costs, as shown, by interval (month, year); one seat''s for a plan sold by the seat' }
         includes: { type: array, items: { type: string }, description: 'The lines its card lists' }
-        mailboxes: { type: [integer, 'null'], description: 'null = any number' }
-        ai_emails: { type: [integer, 'null'], description: 'AI-sorted emails a month; null = any number' }
+        mailboxes: { type: [integer, 'null'], description: 'null = any number; one seat''s for a plan sold by the seat' }
+        ai_emails: { type: [integer, 'null'], description: 'AI-sorted emails a month; null = any number. For a plan sold by the seat, one seat''s: the team shares its seats'' together' }
         features: { type: array, items: { type: string }, description: 'Features only this plan''s tenants get, named as in `features`' }
+        per_seat: { type: boolean, description: 'Sold by the seat (Team): checkout and change send `seats`' }
+        min_seats: { type: [integer, 'null'], description: 'The fewest seats that may be bought of a plan sold by the seat; null for any other' }
     PlanInfo:
       type: object
-      required: [plan, interval, status, period_end, trial_ends_at, trial_days_left, ended_at, secrets_deleted_at, removed_at, read_only, subscribed, note, plans]
+      required: [plan, interval, status, period_end, seats, trial_ends_at, trial_days_left, ended_at, secrets_deleted_at, removed_at, read_only, subscribed, note, plans]
       properties:
-        plan: { type: string, enum: [trial, personal, pro, ended] }
+        plan: { type: string, enum: [trial, personal, pro, team, ended] }
         interval: { type: [string, 'null'], enum: [month, year, null] }
         status: { type: [string, 'null'], enum: [active, past_due, cancels_at_period_end, null], description: '`past_due`: a renewal is unpaid and the billing service retries it, the plan runs; `cancels_at_period_end`: it ends at `period_end`' }
         period_end: { type: [integer, 'null'], format: int64, description: 'When the paid period ends (renews, or ends when cancelled)' }
+        seats: { type: [integer, 'null'], description: 'The seats bought of a plan sold by the seat (Team), while it runs; null otherwise' }
         trial_ends_at: { type: integer, format: int64, description: '14 days after the tenant was made' }
         trial_days_left: { type: [integer, 'null'], description: 'Whole days left, rounded up, while in the trial; null otherwise' }
         ended_at: { type: [integer, 'null'], format: int64, description: 'When the trial or plan ended; null while one runs' }
@@ -3063,7 +3311,7 @@ components:
           type: object
           readOnly: true
           description: Later-phase features the UI draws; each stays hidden until its flag is true. A feature an optional module provides is true while the build includes the module
-          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest, delete_account, move_questions]
+          required: [notifications, timed_actions, draft_replies, billing, unsubscribe, oauth_providers, suggest, delete_account, move_questions, team]
           properties:
             notifications: { type: boolean, description: 'A module of this build delivers rule notifications, so `/api/notifications` works and rules may name destinations in `notify`' }
             timed_actions: { type: boolean }
@@ -3074,6 +3322,7 @@ components:
             suggest: { type: boolean, description: 'Suggest from my mail: the `suggest` module is in this build, so POST /api/rules/suggest works' }
             delete_account: { type: boolean, description: 'A module of this build signs people in (the hosted build), so POST /api/auth/delete-account works and Settings offers Delete my account' }
             move_questions: { type: boolean, description: 'A module of this build learns from the emails the person moves out of the folders MailRules filed them in, so Activity may ask about them (GET /api/activity/questions)' }
+            team: { type: boolean, description: 'A module of this build invites people to a team, and the tenant''s plan includes it: Members (GET /api/members), invitations and the audit log work' }
     SettingsPatch:
       type: object
       additionalProperties: false
@@ -3180,3 +3429,43 @@ components:
       description: Data of `rules.changed`, `usage.updated`, `notifications.changed`, `questions.changed` and `plan.changed`; refetch
       type: object
       additionalProperties: false
+    Member:
+      type: object
+      required: [id, email, role, joined_at, you]
+      properties:
+        id: { type: integer, format: int64, description: The member's user }
+        email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        joined_at: { type: integer, format: int64 }
+        you: { type: boolean, description: 'The signed-in person' }
+    Seats:
+      type: object
+      required: [used, limit]
+      properties:
+        used: { type: integer, description: 'Members and invitations waiting' }
+        limit: { type: [integer, 'null'], description: 'The seats the plan has; null = any number (a build that sells no plans)' }
+    Invitation:
+      type: object
+      required: [id, email, role, invited_by, created_at, expires_at, accepted_at]
+      properties:
+        id: { type: integer, format: int64 }
+        email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        invited_by: { type: [string, 'null'], description: 'Who sent it; null once they left the team' }
+        created_at: { type: integer, format: int64 }
+        expires_at: { type: integer, format: int64, description: '7 days after it was sent, or after it was accepted' }
+        accepted_at: { type: [integer, 'null'], format: int64, description: 'When the sign-in service said it was accepted; it is used up at the person''s first sign-in' }
+    AuditEntry:
+      type: object
+      required: [id, at, actor, action, target, detail]
+      properties:
+        id: { type: integer, format: int64 }
+        at: { type: integer, format: int64 }
+        actor: { type: string, description: 'Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules)' }
+        action:
+          type: string
+          enum: [rule.created, rule.changed, rule.deleted, rules.reordered, sender_rule.set, sender_rule.deleted, mailbox.added, mailbox.changed, mailbox.removed,
+            settings.changed, notification.added, notification.removed, plan.changed, member.joined, member.role_changed, member.removed,
+            invitation.created, invitation.revoked, invitation.accepted, invitation.withdrawn]
+        target: { type: string, description: 'What was changed, by name: a rule, a sender, a mailbox''s address, a member''s email; empty for settings and reorders' }
+        detail: { type: string, description: 'How, in a few words: what of a rule changed, a role from and to, the settings changed (a value only when it is true, false or a number)' }

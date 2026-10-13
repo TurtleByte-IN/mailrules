@@ -11,8 +11,9 @@
 // rule notifications (Module.Notifications), what the module is told when the person
 // moves an email MailRules filed, with a question it may ask in Activity (Module.Moves),
 // the plans the build sells: what each tenant may use and pays for (Module.Billing), the
-// key service that holds the key every tenant's data key is wrapped under (Module.Keys),
-// and every error the daemon logs, for an error tracker (Module.Errors).
+// invitations and member removals of a team at the sign-in service (Module.Team), the key
+// service that holds the key every tenant's data key is wrapped under (Module.Keys), and
+// every error the daemon logs, for an error tracker (Module.Errors).
 // ext/daemon runs the daemon with the modules a build compiles in.
 //
 // This package is a contract. What it exports is all a module may use of the daemon: the
@@ -126,6 +127,15 @@ type Module struct {
 	// is limited and every feature of the build is everyone's, as on self-host. At most one
 	// module of a build sets it.
 	Billing *Billing
+	// Team, when set, lets a tenant's owners and admins invite people by email and manage
+	// its members on the Members screen (GET /api/settings reports features.team; a plan
+	// that lists "team" in its Features offers it to its tenants only). The daemon keeps the
+	// members, their roles (RoleOwner, RoleAdmin, RoleMember: enforced on every route, in
+	// every build) and the invitations, refuses any beyond the plan's seats (Limits.Seats),
+	// and records every change in the tenant's audit log; the module sends and revokes the
+	// invitations at the sign-in service and removes people from the tenant's organisation
+	// there (see Team). It needs a module with SignIn. At most one module of a build sets it.
+	Team *Team
 	// Keys, when set, holds the key-encryption key in place of the master key (see
 	// KeyProvider): every tenant's data key, which seals its mailbox passwords, tokens,
 	// model keys and notification addresses, is wrapped and unwrapped by it. Without it the
@@ -226,11 +236,12 @@ var (
 
 var _ crypto.KeyProvider = KeyProvider(nil)
 
-// NoLimit is a limit that does not limit (Limits.Mailboxes, Limits.AIEmails).
+// NoLimit is a limit that does not limit (Limits.Mailboxes, Limits.AIEmails, Limits.Seats).
 const NoLimit = store.NoLimit
 
 // Limits is how much of the hosted service a tenant on a plan may use (PlanTerms.Limits). A
-// zero field allows none; NoLimit allows any number.
+// zero field allows none; NoLimit allows any number. For a plan sold by the seat
+// (PlanTerms.PerSeat) they are one seat's: the tenant gets them times its seats.
 type Limits struct {
 	// Mailboxes is how many mailboxes the tenant may have connected at once, its members'
 	// private ones included. A mailbox over it is refused on every path that adds one: the
@@ -247,7 +258,8 @@ type Limits struct {
 	// rules and rules without an intent keep sorting, a decision model on the tenant's own
 	// key decides without the operator's fallback, and mail that needs the operator's model
 	// waits in Needs review, which says why with a way to the person's own key and to Plan
-	// and billing. Nothing is charged for going over.
+	// and billing. Nothing is charged for going over. A plan sold by the seat pools it: the
+	// whole team draws on AIEmails times its seats.
 	AIEmails int
 	// FirstCleanupEmails is a one-time grant of emails the tenant's cleanup checks may have a
 	// model decide on keys the operator holds before they draw on AIEmails, so a first
@@ -256,7 +268,28 @@ type Limits struct {
 	// good: it never resets, and a plan with a larger one gives the difference. Live sorting
 	// never draws on it. 0 = none.
 	FirstCleanupEmails int
+	// Seats is how many people the tenant may have, its members and the invitations waiting
+	// together, for a plan not sold by the seat; 0 is read as 1 (the person who made the
+	// tenant). An invitation or a new member over it is refused (409 seat_limit, and a
+	// sign-in under the team's organisation without an invitation with ErrSeatLimit). The
+	// members a tenant has are left alone when the number goes down, but it cannot move to
+	// a plan with fewer seats than it has members (409 downgrade_refused). A plan sold by the
+	// seat ignores it: the tenant has the seats it bought (Plan.Seats).
+	Seats int
 }
+
+// The roles a person has in their tenant (Who.Role, Route.Role, Invitation.Role), from the
+// most they may do to the least. The daemon enforces them on its own routes and on a
+// module's routes that ask for one (Route.Role).
+const (
+	// RoleOwner: the plan and billing, members, and everything an admin does.
+	RoleOwner = store.RoleOwner
+	// RoleAdmin: mailboxes, the shared rules and sender rules, members, settings, the audit
+	// log.
+	RoleAdmin = store.RoleAdmin
+	// RoleMember: their own mailboxes, sorted by the shared rules.
+	RoleMember = store.RoleMember
+)
 
 // The plans a tenant may be on (PlanState.Plan, Plan.Plan, Billing.Plans).
 const (
@@ -265,6 +298,9 @@ const (
 	PlanTrial    = store.PlanTrial
 	PlanPersonal = store.PlanPersonal
 	PlanPro      = store.PlanPro
+	// PlanTeam is sold by the seat (PlanTerms.PerSeat, Plan.Seats). It is on sale when
+	// Billing.Plans has it.
+	PlanTeam = store.PlanTeam
 	// PlanEnded: the trial ran out with no plan bought, or a paid plan ended. Nothing is
 	// sorted, the app is read-only with a way to subscribe, and the tenant's mailbox
 	// passwords, tokens and model keys are deleted EndedSecretsDays later, everything else
@@ -304,8 +340,9 @@ const (
 // it opens checkout, changes a subscription, links to the service's customer portal and,
 // from its webhook route, reports every change with Host.SetPlan.
 type Billing struct {
-	// Plans are the terms of each plan: PlanTrial, PlanPersonal and PlanPro, each needed.
-	// A tenant whose plan has ended is held to none of them: it sorts nothing.
+	// Plans are the terms of each plan: PlanTrial, PlanPersonal and PlanPro, each needed,
+	// and PlanTeam, which is on sale only when it is here, with PerSeat set. A tenant whose
+	// plan has ended is held to none of them: it sorts nothing.
 	Plans map[string]PlanTerms
 	// Checkout returns what the browser hands to the module's checkout script (Script) to
 	// let the signed-in person buy plan, billed every interval, for their tenant: opaque to
@@ -314,12 +351,13 @@ type Billing struct {
 	// The daemon calls it only for a tenant that has not subscribed (its plan has no Record)
 	// and that has no more mailboxes than plan allows.
 	Checkout func(ctx context.Context, c CheckoutRequest) (json.RawMessage, error)
-	// ChangePlan moves a tenant that subscribed (its plan has a Record) to plan and interval
-	// at once, at the billing service: an upgrade charged for what is left of the period, a
-	// downgrade credited on the next bill. The daemon refuses a move to a plan that allows
-	// fewer mailboxes than the tenant has before it calls this. The new plan is what the
-	// module then reports with Host.SetPlan; ChangePlan's success alone changes nothing.
-	ChangePlan func(ctx context.Context, tenantID int64, record, plan, interval string) error
+	// ChangePlan moves a tenant that subscribed (its plan has a Record) to c.Plan and
+	// c.Interval, with c.Seats seats of a plan sold by the seat, at once, at the billing
+	// service: an upgrade charged for what is left of the period, a downgrade credited on
+	// the next bill. The daemon refuses a move to a plan that allows fewer mailboxes, or
+	// fewer seats, than the tenant has before it calls this. The new plan is what the module
+	// then reports with Host.SetPlan; ChangePlan's success alone changes nothing.
+	ChangePlan func(ctx context.Context, c PlanChange) error
 	// Portal returns the address of the billing service's customer portal for a tenant that
 	// subscribed, where its people cancel, change the payment method and get invoices
 	// (Manage billing).
@@ -352,31 +390,49 @@ type CheckoutSources struct {
 type PlanTerms struct {
 	Name string // as shown: "Personal"
 	// Prices are what the plan costs, as shown, by interval: {"month": "$5 a month",
-	// "year": "$50 a year"}. Empty for the trial.
+	// "year": "$50 a year"}; for a plan sold by the seat, one seat's: "$8 a seat a month".
+	// Empty for the trial.
 	Prices map[string]string
 	// Includes are the lines the plan's card lists ("3 mailboxes", "3,000 AI-sorted emails a
 	// month").
 	Includes []string
 	Limits   Limits
 	// Features are the build's features only tenants on this plan get, named as GET
-	// /api/settings reports them ("suggest", "notifications"). A feature some plan lists is
-	// offered to a tenant only while its plan lists it: the screens hide it, its routes
-	// answer 403 plan_required, and for notifications no notice is written. A feature no
-	// plan lists is everyone's.
+	// /api/settings reports them ("suggest", "notifications", "team"). A feature some plan
+	// lists is offered to a tenant only while its plan lists it: the screens hide it, its
+	// routes answer 403 plan_required, and for notifications no notice is written. A feature
+	// no plan lists is everyone's.
 	Features []string
+	// PerSeat sells the plan by the seat (PlanTeam): the tenant buys a number of seats, at
+	// least MinSeats, one per member, and its Limits are one seat's, multiplied by its seats.
+	PerSeat bool
+	// MinSeats is the fewest seats of a plan sold by the seat that may be bought; 0 is read
+	// as 1.
+	MinSeats int
 }
 
 // CheckoutRequest is who is buying what (Billing.Checkout).
 type CheckoutRequest struct {
 	TenantID int64
 	Email    string // the signed-in person's, to fill in at checkout
-	Plan     string // PlanPersonal or PlanPro
+	Plan     string // PlanPersonal, PlanPro or PlanTeam
 	Interval string // IntervalMonth or IntervalYear
+	Seats    int    // for a plan sold by the seat, how many; 0 for any other
+}
+
+// PlanChange is a subscribed tenant's move to another plan, interval or number of seats
+// (Billing.ChangePlan).
+type PlanChange struct {
+	TenantID int64
+	Record   string // the tenant's Plan.Record
+	Plan     string // PlanPersonal, PlanPro or PlanTeam
+	Interval string // IntervalMonth or IntervalYear
+	Seats    int    // for a plan sold by the seat, how many; 0 for any other
 }
 
 // Plan is a tenant's plan as the module reports it (Host.SetPlan).
 type Plan struct {
-	Plan     string // PlanPersonal, PlanPro or PlanEnded
+	Plan     string // PlanPersonal, PlanPro, PlanTeam or PlanEnded
 	Interval string // IntervalMonth or IntervalYear; empty for PlanEnded
 	Status   string // StatusActive, StatusPastDue or StatusCancelsAtPeriodEnd; empty for PlanEnded
 	// PeriodEnd is when the paid period ends (the plan renews or, cancelled, ends); zero
@@ -386,6 +442,9 @@ type Plan struct {
 	// customer and subscription ids: kept as it is, handed back to Checkout, ChangePlan and
 	// Portal, never shown.
 	Record string
+	// Seats is how many seats the tenant bought of a plan sold by the seat (PlanTeam), at
+	// least 1; 0 for any other plan.
+	Seats int
 }
 
 // PlanState is a tenant's plan as the daemon has it (Host.Plan).
@@ -401,7 +460,50 @@ type PlanState struct {
 type Who struct {
 	UserID, TenantID int64
 	Email            string
+	Role             string // RoleOwner, RoleAdmin or RoleMember
 }
+
+// Team is how a module invites people to a tenant and removes them from it at the sign-in
+// service (Module.Team). Owners and admins invite on the Members screen; the daemon stores
+// each invitation, holding a seat, before it calls Invite. Once the person accepts at the
+// service, which adds them to the tenant's organisation, the module tells the daemon
+// (Host.AcceptInvitation); their first sign-in under that organisation (Host.SignIn) joins
+// them to the tenant with the invitation's role. Someone the service lets into the
+// organisation without an invitation (company sign-in) joins as a member while a seat is
+// free. An invitation not accepted within InvitationDays expires and frees its seat.
+type Team struct {
+	// Invite has the service send inv, and returns the module's reference to it, kept as
+	// Invitation.Record and handed back to Revoke. When it fails the daemon withdraws the
+	// invitation, freeing its seat, and answers 502 invite_failed.
+	Invite func(ctx context.Context, inv Invitation) (record string, err error)
+	// Revoke takes back at the service an invitation an owner or admin revoked; the daemon
+	// has deleted it already. An error is logged, not shown.
+	Revoke func(ctx context.Context, inv Invitation) error
+	// RemoveMember removes the person from the tenant's organisation at the service (id.Tenant
+	// is the organisation's id there), so they cannot sign in to the team again. The daemon
+	// calls it before it removes them; when it fails, nothing is removed (502
+	// sign_in_error). On success the daemon removes them as Host.ForgetIdentity does: their
+	// sessions end, their mailboxes go with them, the team keeps the rest.
+	RemoveMember func(ctx context.Context, tenantID int64, id Identity) error
+}
+
+// Invitation is one invitation to a tenant (Team.Invite, Team.Revoke).
+type Invitation struct {
+	ID       int64
+	TenantID int64
+	// Organisation is the sign-in service's id of the tenant's organisation (the
+	// Identity.Tenant its members sign in under).
+	Organisation string
+	Email        string
+	Role         string // RoleOwner, RoleAdmin or RoleMember
+	InvitedBy    string // the inviter's email
+	ExpiresAt    time.Time
+	Record       string // what Invite returned; empty when Invite is called
+}
+
+// InvitationDays is how long an invitation waits to be accepted, and, once accepted, for the
+// person's first sign-in.
+const InvitationDays = store.InvitationDays
 
 // MailboxSignIn is how a module connects mailboxes with one-click sign-in (Module.Mailboxes).
 // The module holds no connection, and the daemon knows nothing of OAuth: it stores the
@@ -811,6 +913,10 @@ type Route struct {
 	// carries no session or token. The handler must authenticate the caller itself, for
 	// example by checking a signature header.
 	Webhook bool
+	// Role is the least role a signed-in person needs to be served the route (RoleAdmin,
+	// RoleOwner); anyone else is answered 403 role_required. Empty serves every member. A
+	// route that changes the shared rules, settings or members sets RoleAdmin.
+	Role string
 }
 
 // Identity is a person as a sign-in service names them.
@@ -828,6 +934,10 @@ var (
 	// ErrEmailInUse is what Host.SignIn returns when another user of the daemon already
 	// has the email. Nothing changed.
 	ErrEmailInUse = store.ErrEmailInUse
+	// ErrSeatLimit is what Host.SignIn returns for a new person the sign-in service let into
+	// a team's organisation without an invitation while every seat of the team's plan is
+	// taken (errors.Is). Nothing changed.
+	ErrSeatLimit = store.ErrSeatLimit
 )
 
 // ForgetDays is how many days after Host.ForgetIdentity a forgotten person's data is
@@ -847,6 +957,8 @@ const (
 	SignInTenantMismatch = "tenant_mismatch"
 	// SignInEmailInUse: Host.SignIn returned ErrEmailInUse.
 	SignInEmailInUse = "email_in_use"
+	// SignInSeatsFull: Host.SignIn returned ErrSeatLimit.
+	SignInSeatsFull = "seats_full"
 )
 
 // Host is what the daemon gives a module's routes.
@@ -901,9 +1013,12 @@ type Host interface {
 	// SignIn signs in the person a sign-in service vouched for, from the module's SignIn
 	// flow: it finds their tenant by (Provider, Tenant), or makes it, finds their user by
 	// (Provider, Subject), or makes one in that tenant who has no password, sets the user's
-	// email to id.Email, and starts the browser's session as a password sign-in does. It
-	// fails, changing nothing, with ErrTenantMismatch or ErrEmailInUse (answer those with
-	// SignInFailed and the matching code), or with an error of the database.
+	// email to id.Email, and starts the browser's session as a password sign-in does. The
+	// person who makes a tenant is its owner; one who joins a tenant that exists gets the
+	// role of the invitation waiting for their email (Team), or joins as a member. It
+	// fails, changing nothing, with ErrTenantMismatch, ErrEmailInUse or ErrSeatLimit
+	// (answer those with SignInFailed and the matching code), or with an error of the
+	// database.
 	SignIn(w http.ResponseWriter, r *http.Request, id Identity) (userID int64, err error)
 	// EndSessions signs the identity out of every browser at once. An identity nobody has
 	// is not an error.
@@ -970,7 +1085,7 @@ type Host interface {
 	// codes, which it explains (303 to /#/accounts?mailbox_error=<code>).
 	MailboxFailed(w http.ResponseWriter, r *http.Request, code string)
 
-	// Who is the signed-in person the request is for: their user, tenant and email.
+	// Who is the signed-in person the request is for: their user, tenant, email and role.
 	Who(r *http.Request) Who
 	// Plan returns the tenant's plan as the daemon has it now (Module.Billing): the one last
 	// set with SetPlan, the trial while no plan was bought within TrialDays of the tenant's
@@ -983,6 +1098,15 @@ type Host interface {
 	// again changes nothing. It fails, changing nothing, with ErrNoTenant, ErrBadPlan for a
 	// plan, interval or status not among the constants, or an error of the database.
 	SetPlan(ctx context.Context, tenantID int64, p Plan) error
+
+	// AcceptInvitation records that the person invited to the tenant at email accepted at
+	// the sign-in service (Module.Team), such as from the module's webhook route. Their
+	// first sign-in under the tenant's organisation then joins them with the invitation's
+	// role, which the daemon keeps (the module cannot change it); one who signed in already
+	// gets that role now. It fails, changing nothing, with ErrNoInvitation when the tenant
+	// has no invitation for the address that has not expired (a tenant that does not exist
+	// has none), or an error of the database.
+	AcceptInvitation(ctx context.Context, tenantID int64, email string) error
 }
 
 var (
@@ -994,6 +1118,9 @@ var (
 	// signed-in user's tenant's plan has ended: nothing is connected until a plan is bought.
 	// Its text is the sentence to show. Nothing changed.
 	ErrPlanEnded error = planEnded{}
+	// ErrNoInvitation is what Host.AcceptInvitation returns for an address the tenant has
+	// no invitation for: revoked, expired, or never sent.
+	ErrNoInvitation = errors.New("no such invitation")
 )
 
 type planEnded struct{}

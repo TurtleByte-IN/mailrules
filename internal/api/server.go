@@ -99,12 +99,23 @@ type route struct {
 	handler      http.HandlerFunc
 	public       bool // reachable without a session
 	webhook      bool // a call from another server: no CSRF check (only with public)
+	// role is the least role the signed-in person needs (store.Role*); empty: any member.
+	// what says, for the refusal, what it is needed for.
+	role, what string
+}
+
+// need is the route served only to a person whose role is at least role.
+func (r route) need(role, what string) route {
+	r.role, r.what = role, what
+	return r
 }
 
 // routes is the single list of endpoints, the modules' included; a test keeps it in step
-// with api/openapi.yaml.
+// with api/openapi.yaml. Who may call each is the permission matrix (team.go): a route with
+// no role is every member's.
 func (s *server) routes() []route {
 	get, post, put, patch, del := http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete
+	owner, admin := store.RoleOwner, store.RoleAdmin
 	on := func(method, path string, h http.HandlerFunc) route {
 		return route{method: method, path: path, handler: h}
 	}
@@ -118,6 +129,8 @@ func (s *server) routes() []route {
 		// Public only so that a build without account deletion refuses it before asking for a session.
 		{method: post, path: "/api/auth/delete-account", handler: s.deletionOnly(s.requireSession(s.handleDeleteAccount)), public: true},
 
+		// Mailboxes: everyone adds and manages their own (ownAccount); what they see is theirs
+		// and the ones shared with them.
 		on(get, "/api/presets", s.handlePresets),
 		on(post, "/api/accounts/test", s.handleAccountTest),
 		on(get, "/api/accounts", s.handleAccounts),
@@ -129,24 +142,29 @@ func (s *server) routes() []route {
 		on(post, "/api/accounts/{id}/test", s.handleStoredAccountTest),
 		on(get, "/api/accounts/{id}/folders", s.handleAccountFolders),
 
+		// Rules are the team's: everyone reads them and undoes what they did to the mail they
+		// see; writing, composing and testing them is an admin's.
 		on(get, "/api/rules", s.handleRules),
-		on(post, "/api/rules/compose", s.handleCompose),
-		on(post, "/api/rules/batch", s.handleRulesBatch),
-		on(post, "/api/rules/reorder", s.handleRulesReorder),
-		on(post, "/api/rules/test", s.handleRulesTest),
+		on(post, "/api/rules/compose", s.handleCompose).need(admin, toEditRules),
+		on(post, "/api/rules/batch", s.handleRulesBatch).need(admin, toEditRules),
+		on(post, "/api/rules/reorder", s.handleRulesReorder).need(admin, toEditRules),
+		on(post, "/api/rules/test", s.handleRulesTest).need(admin, toEditRules),
 		on(get, "/api/rules/export", s.handleRulesExport),
-		on(post, "/api/rules/import", s.handleRulesImport),
+		on(post, "/api/rules/import", s.handleRulesImport).need(admin, toEditRules),
 		on(get, "/api/rules/{id}", s.handleRule),
-		on(patch, "/api/rules/{id}", s.handleRulePatch),
-		on(del, "/api/rules/{id}", s.handleRuleDelete),
-		on(post, "/api/rules/{id}/compose", s.handleRecompose),
+		on(patch, "/api/rules/{id}", s.handleRulePatch).need(admin, toEditRules),
+		on(del, "/api/rules/{id}", s.handleRuleDelete).need(admin, toEditRules),
+		on(post, "/api/rules/{id}/compose", s.handleRecompose).need(admin, toEditRules),
 		on(post, "/api/rules/{id}/undo", s.handleRuleUndo),
 
 		on(get, "/api/senders", s.handleSenders),
-		on(put, "/api/senders/{type}/{value}", s.handleSenderPut),
-		on(del, "/api/senders/{type}/{value}", s.handleSenderDelete),
+		on(put, "/api/senders/{type}/{value}", s.handleSenderPut).need(admin, toEditSenders),
+		on(del, "/api/senders/{type}/{value}", s.handleSenderDelete).need(admin, toEditSenders),
+		// Unsubscribing is everyone's; the sender rule it adds after is an admin's (handler).
 		on(post, "/api/senders/{type}/{value}/unsubscribe", s.handleSenderUnsubscribe),
 
+		// Mail: everyone acts on the mail they see. A correction that makes a sender rule
+		// (always_for) and a Yes to a question are an admin's (handlers).
 		on(get, "/api/activity", s.handleActivity),
 		on(get, "/api/activity/questions", s.questionsOnly(s.handleQuestions)),
 		on(post, "/api/activity/questions/{id}/answer", s.questionsOnly(s.handleQuestionAnswer)),
@@ -171,22 +189,32 @@ func (s *server) routes() []route {
 		on(get, "/api/stats/summary", s.handleStatsSummary),
 		on(get, "/api/stats/usage", s.handleStatsUsage),
 		on(get, "/api/limits", s.handleLimits),
-		on(get, "/api/plan", s.billingOnly(s.handlePlan)),
-		on(post, "/api/plan/checkout", s.billingOnly(s.handlePlanCheckout)),
-		on(post, "/api/plan/change", s.billingOnly(s.handlePlanChange)),
-		on(get, "/api/plan/portal", s.billingOnly(s.handlePlanPortal)),
+		on(get, "/api/plan", s.billingOnly(s.handlePlan)).need(owner, toManagePlan),
+		on(post, "/api/plan/checkout", s.billingOnly(s.handlePlanCheckout)).need(owner, toManagePlan),
+		on(post, "/api/plan/change", s.billingOnly(s.handlePlanChange)).need(owner, toManagePlan),
+		on(get, "/api/plan/portal", s.billingOnly(s.handlePlanPortal)).need(owner, toManagePlan),
 
 		on(get, "/api/settings", s.handleSettings),
-		on(patch, "/api/settings", s.handleSettingsPatch),
-		on(get, "/api/settings/anthropic-workspaces", s.handleAnthropicWorkspaces),
+		on(patch, "/api/settings", s.handleSettingsPatch).need(admin, toEditSettings),
+		on(get, "/api/settings/anthropic-workspaces", s.handleAnthropicWorkspaces).need(admin, toEditSettings),
 		on(get, "/api/events", s.handleEvents),
 		on(get, "/api/summary/preview", s.handleSummaryPreview),
 		on(get, "/api/summary/preview.html", s.handleSummaryPreviewPage),
 		on(post, "/api/summary/test", s.handleSummaryTest),
 
 		on(get, "/api/notifications", s.notificationsOnly(s.handleNotifications)),
-		on(post, "/api/notifications/destinations", s.notificationsOnly(s.handleDestinationCreate)),
-		on(del, "/api/notifications/destinations/{id}", s.notificationsOnly(s.handleDestinationDelete)),
+		on(post, "/api/notifications/destinations", s.notificationsOnly(s.handleDestinationCreate)).need(admin, toEditSettings),
+		on(del, "/api/notifications/destinations/{id}", s.notificationsOnly(s.handleDestinationDelete)).need(admin, toEditSettings),
+
+		// The team: everyone sees who is in it; admins invite, change roles and remove (only
+		// an owner touches an owner: handlers), and download the audit log.
+		on(get, "/api/members", s.teamOnly(s.handleMembers)),
+		on(patch, "/api/members/{id}", s.teamOnly(s.handleMemberPatch)).need(admin, toManageMembers),
+		on(del, "/api/members/{id}", s.teamOnly(s.handleMemberDelete)).need(admin, toManageMembers),
+		on(get, "/api/invitations", s.teamOnly(s.handleInvitations)).need(admin, toManageMembers),
+		on(post, "/api/invitations", s.teamOnly(s.handleInvitationCreate)).need(admin, toManageMembers),
+		on(del, "/api/invitations/{id}", s.teamOnly(s.handleInvitationDelete)).need(admin, toManageMembers),
+		on(get, "/api/audit", s.teamOnly(s.handleAudit)).need(admin, toSeeAudit),
 	}
 	return append(builtIn, s.moduleRoutes()...)
 }
@@ -230,13 +258,17 @@ func NewHandler(o Options) http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("GET /metrics", s.Metrics.Handler())
-	// A tenant whose plan has ended changes nothing but its plan (readOnly).
+	// A tenant whose plan has ended changes nothing but its plan (readOnly). A route that
+	// needs a role refuses anyone with less first (requireRole).
 	for _, r := range s.routes() {
 		var h http.Handler = r.handler
 		if !r.public {
 			inner := r.handler
 			if !readOnlyExempt(r.path) {
 				inner = s.readOnly(r.handler).ServeHTTP
+			}
+			if r.role != "" {
+				inner = s.requireRole(r.role, r.what, inner)
 			}
 			h = s.requireSession(inner)
 		}

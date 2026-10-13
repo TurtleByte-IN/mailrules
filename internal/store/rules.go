@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
 )
@@ -41,10 +42,18 @@ func ruleJSON(r rules.Rule) (conditions, exceptions, actions, notify []byte, err
 // CreateRule inserts a rule of the tenant at version 1 and returns it with its id.
 // r.UserID is its author. The caller validates the rule first.
 func (s *Store) CreateRule(ctx context.Context, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
-	ctx = WithTenant(ctx, tenantID)
-	return createRule(ctx, s.db, tenantID, r, now)
+	err := s.change(ctx, tenantID, "create rule", func(ctx context.Context, tx *txn) error {
+		var err error
+		r, err = createRule(ctx, tx, tenantID, r, now)
+		return err
+	})
+	if err != nil {
+		return rules.Rule{}, err
+	}
+	return r, nil
 }
 
+// createRule inserts the rule in q, a transaction, and records it in the audit log.
 func createRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, now int64) (rules.Rule, error) {
 	conditions, exceptions, actions, notify, err := ruleJSON(r)
 	if err != nil {
@@ -59,6 +68,13 @@ func createRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, no
 		return rules.Rule{}, fmt.Errorf("create rule: %w", err)
 	}
 	r.Version, r.CreatedAt, r.UpdatedAt = 1, now, now
+	detail := "on"
+	if !r.Enabled {
+		detail = "off"
+	}
+	if err := record(ctx, q, tenantID, now, AuditRuleCreated, r.Name, detail); err != nil {
+		return rules.Rule{}, err
+	}
 	return r, nil
 }
 
@@ -66,14 +82,27 @@ func createRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, no
 // version, so past decisions keep pointing at the wording they were made under. The
 // author (UserID) stays as it is. A rule of another tenant is ErrNotFound.
 func (s *Store) UpdateRule(ctx context.Context, tenantID int64, r rules.Rule, now int64) error {
-	ctx = WithTenant(ctx, tenantID)
-	return updateRule(ctx, s.db, tenantID, r, now)
+	return s.change(ctx, tenantID, "update rule", func(ctx context.Context, tx *txn) error {
+		return updateRule(ctx, tx, tenantID, r, now)
+	})
 }
 
+// updateRule rewrites the rule in q, a transaction, and records in the audit log what of it
+// changed.
 func updateRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, now int64) error {
 	conditions, exceptions, actions, notify, err := ruleJSON(r)
 	if err != nil {
 		return err
+	}
+	var old rules.Rule
+	if _, audited := ActorOf(ctx); audited {
+		old, err = scanRule(q.QueryRowContext(ctx, `SELECT `+ruleColumns+` FROM rules WHERE id = ? AND tenant_id = ?`, r.ID, tenantID))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("update rule: %w", err)
+		}
 	}
 	res, err := q.ExecContext(ctx,
 		`UPDATE rules SET account_id = ?, name = ?, said = ?, template = ?, intent = ?, conditions = ?, exceptions = ?, actions = ?,
@@ -88,7 +117,48 @@ func updateRule(ctx context.Context, q querier, tenantID int64, r rules.Rule, no
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if old.ID == 0 {
+		return nil
+	}
+	return record(ctx, q, tenantID, now, AuditRuleChanged, r.Name, ruleChanges(old, r))
+}
+
+// ruleChanges says, for the audit log, what of a rule an edit changed: "renamed from
+// Newsletters, conditions, turned off". Never the conditions themselves.
+func ruleChanges(old, r rules.Rule) string {
+	var out []string
+	if old.Name != r.Name {
+		out = append(out, "renamed from "+old.Name)
+	}
+	same := func(a, b any) bool {
+		x, _ := json.Marshal(a)
+		y, _ := json.Marshal(b)
+		return string(x) == string(y)
+	}
+	for _, f := range []struct {
+		what string
+		same bool
+	}{
+		{"description", old.Said == r.Said && old.Intent == r.Intent},
+		{"conditions", same(old.Conditions, r.Conditions)},
+		{"exceptions", same(old.Exceptions, r.Exceptions)},
+		{"actions", same(old.Actions, r.Actions)},
+		{"mailbox", old.AccountID == r.AccountID && old.MailboxRemoved == r.MailboxRemoved},
+		{"model", old.Model == r.Model && same(old.MinConfidence, r.MinConfidence)},
+		{"stack", old.Stack == r.Stack},
+		{"notifications", same(old.Notify, r.Notify)},
+	} {
+		if !f.same {
+			out = append(out, f.what)
+		}
+	}
+	switch {
+	case old.Enabled && !r.Enabled:
+		out = append(out, "turned off")
+	case !old.Enabled && r.Enabled:
+		out = append(out, "turned on")
+	}
+	return strings.Join(out, ", ")
 }
 
 const ruleColumns = `id, user_id, account_id, name, said, template, intent, conditions, exceptions, actions,
@@ -167,15 +237,17 @@ func listRules(ctx context.Context, q querier, tenantID int64) ([]rules.Rule, er
 // route to it along (ON DELETE CASCADE) and keeps its decisions and corrections, with their
 // rule set to NULL.
 func (s *Store) DeleteRule(ctx context.Context, tenantID, id int64) error {
-	ctx = WithTenant(ctx, tenantID)
-	res, err := s.db.ExecContext(ctx, `DELETE FROM rules WHERE id = ? AND tenant_id = ?`, id, tenantID)
-	if err != nil {
-		return fmt.Errorf("delete rule: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.change(ctx, tenantID, "delete rule", func(ctx context.Context, tx *txn) error {
+		var name string
+		err := tx.QueryRowContext(ctx, `DELETE FROM rules WHERE id = ? AND tenant_id = ? RETURNING name`, id, tenantID).Scan(&name)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("delete rule: %w", err)
+		}
+		return record(ctx, tx, tenantID, 0, AuditRuleDeleted, name, "")
+	})
 }
 
 // tenantRule is a rule with the tenant it belongs to.
@@ -306,18 +378,35 @@ func (s *Store) PutSenderRule(ctx context.Context, tenantID int64, sr rules.Send
 			return rules.SenderRule{}, err
 		}
 	}
-	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-		 ON CONFLICT (tenant_id, match_type, value) DO UPDATE
-		 SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = excluded.folder, source = excluded.source
-		 RETURNING id, hits, created_at`,
-		tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, null(sr.Folder), sr.Source, now).
-		Scan(&sr.ID, &sr.Hits, &sr.CreatedAt)
+	err := s.change(ctx, tenantID, "put sender rule", func(ctx context.Context, tx *txn) error {
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO sender_rules (tenant_id, user_id, match_type, value, rule_id, verdict, folder, source, hits, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+			 ON CONFLICT (tenant_id, match_type, value) DO UPDATE
+			 SET rule_id = excluded.rule_id, verdict = excluded.verdict, folder = excluded.folder, source = excluded.source
+			 RETURNING id, hits, created_at`,
+			tenantID, sr.UserID, sr.MatchType, sr.Value, null(sr.RuleID), sr.Verdict, null(sr.Folder), sr.Source, now).
+			Scan(&sr.ID, &sr.Hits, &sr.CreatedAt); err != nil {
+			return fmt.Errorf("put sender rule: %w", err)
+		}
+		return record(ctx, tx, tenantID, now, AuditSenderRuleSet, sr.Value, senderVerdict(sr))
+	})
 	if err != nil {
-		return rules.SenderRule{}, fmt.Errorf("put sender rule: %w", err)
+		return rules.SenderRule{}, err
 	}
 	return sr, nil
+}
+
+// senderVerdict is a sender rule's verdict for the audit log: "move to Receipts, learned".
+func senderVerdict(sr rules.SenderRule) string {
+	out := sr.Verdict
+	if sr.Folder != "" {
+		out += " to " + sr.Folder
+	}
+	if sr.Source != "" && sr.Source != "user" {
+		out += ", " + sr.Source
+	}
+	return out
 }
 
 // SenderRules returns all of the tenant's sender rules.
@@ -359,12 +448,17 @@ func (s *Store) HitSenderRule(ctx context.Context, id int64) error {
 // DeleteSenderRule removes one of the tenant's sender verdicts; deleting a missing one is
 // not an error.
 func (s *Store) DeleteSenderRule(ctx context.Context, tenantID int64, matchType, value string) error {
-	ctx = WithTenant(ctx, tenantID)
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM sender_rules WHERE tenant_id = ? AND match_type = ? AND value = ?`, tenantID, matchType, value); err != nil {
-		return fmt.Errorf("delete sender rule: %w", err)
-	}
-	return nil
+	return s.change(ctx, tenantID, "delete sender rule", func(ctx context.Context, tx *txn) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM sender_rules WHERE tenant_id = ? AND match_type = ? AND value = ?`, tenantID, matchType, value)
+		if err != nil {
+			return fmt.Errorf("delete sender rule: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		return record(ctx, tx, tenantID, 0, AuditSenderRuleDeleted, value, "")
+	})
 }
 
 // RuleStat is how often a rule has been applied.
@@ -436,6 +530,9 @@ func (s *Store) ReorderRules(ctx context.Context, tenantID int64, ids []int64) e
 	// writer serialises them on every database) keeps its priority rather than losing it.
 	if _, err := tx.ExecContext(ctx, `UPDATE rules SET priority = -priority WHERE tenant_id = ? AND priority < 0`, tenantID); err != nil {
 		return fmt.Errorf("reorder rules: %w", err)
+	}
+	if err := record(ctx, tx, tenantID, 0, AuditRulesReordered, "", fmt.Sprintf("%d rules", have)); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("reorder rules: %w", err)

@@ -220,9 +220,7 @@ func TestMigrationSenderSource(t *testing.T) {
 	s := keyed(db)
 	// The rows are written by hand: the store's own queries read columns later migrations add
 	// (a mailbox's secret is sealed under its tenant's key, 0025).
-	if _, err := s.CreateFirstUser(ctx, "me@icloud.com", "hash", 1); err != nil {
-		t.Fatal(err)
-	}
+	u := User{ID: legacyUser(t, db), TenantID: SelfHostTenant}
 	a := Account{ID: legacyAccount(t, db, 1)}
 	res, err := db.ExecContext(ctx, `INSERT INTO messages (account_id, folder, uidvalidity, uid, created_at, acted_at) VALUES (?, 'INBOX', 1, 1, 100, 100)`, a.ID)
 	if err != nil {
@@ -232,7 +230,6 @@ func TestMigrationSenderSource(t *testing.T) {
 	if m.ID, err = res.LastInsertId(); err != nil {
 		t.Fatal(err)
 	}
-	u, _ := s.FirstUser(ctx)
 	rule, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: "Food", Intent: "food", Actions: []rules.Action{{Type: rules.ActKeep}}, Enabled: true}, 1)
 	if err != nil {
 		t.Fatal(err)

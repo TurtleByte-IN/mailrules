@@ -17,7 +17,7 @@ import (
 func TestDeletedSecretDoesNotLogIn(t *testing.T) {
 	ctx := t.Context()
 	st, db := storetest.New(t)
-	u, err := st.SignInIdentity(ctx, store.Identity{Provider: "p", Subject: "s", Email: "a@example.test", Tenant: "o"}, 1)
+	u, err := st.SignInIdentity(ctx, store.Identity{Provider: "p", Subject: "s", Email: "a@example.test", Tenant: "o"}, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

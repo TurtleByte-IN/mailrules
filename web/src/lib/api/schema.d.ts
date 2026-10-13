@@ -697,7 +697,8 @@ export interface paths {
          *     Unsubscribing changes no mailbox, so dry-run does not hold it back, and nothing is
          *     added to Activity. Once every mailbox is unsubscribed, an address that had no sender
          *     rule (of its own or of its domain) gets one of source `user` with verdict `block`, so
-         *     the mail the list still sends goes to Trash (as any trash does: not in dry-run). Asking
+         *     the mail the list still sends goes to Trash (as any trash does: not in dry-run), when
+         *     the person is an owner or admin: a member's unsubscribing adds no sender rule. Asking
          *     again when every mailbox is unsubscribed calls nothing and answers 200.
          */
         post: operations["unsubscribeSender"];
@@ -774,7 +775,8 @@ export interface paths {
          *     signed-in person, replacing whatever the team had for that address: the sender's mail
          *     stays in the Inbox (`keep`), or goes to the folder (`move`), on every mailbox. `no`
          *     stores nothing. Either way the question closes and that sender and destination is
-         *     never asked about again. Nothing in any mailbox changes.
+         *     never asked about again. Nothing in any mailbox changes. Only an owner or admin may
+         *     answer `yes` (403 `role_required`): it changes the team's sender rules.
          */
         post: operations["answerMoveQuestion"];
         delete?: never;
@@ -824,6 +826,8 @@ export interface paths {
          *     `domain_too_broad` for a well-known free-mail domain (gmail.com, googlemail.com,
          *     outlook.com, hotmail.com, live.com, yahoo.com, icloud.com, me.com, mac.com, proton.me,
          *     protonmail.com, aol.com, gmx.com, zoho.com, fastmail.com), before anything is done.
+         *     Only an owner or admin may send `always_for` (403 `role_required`): it changes the
+         *     team's sender rules.
          */
         post: operations["correctMessage"];
         delete?: never;
@@ -1561,6 +1565,141 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The people in the team, and its seats
+         * @description Works with a module that invites people (`x-module`: the hosted build), for a tenant
+         *     whose plan includes the team (`features.team`; 403 `plan_required` otherwise). Every
+         *     member sees who is in the team. `seats` counts the members and the invitations waiting
+         *     against what the plan allows.
+         */
+        get: operations["listMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/members/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a member from the team
+         * @description The sign-in service takes them out of the team's organisation first; when it cannot,
+         *     nothing is removed (502 `sign_in_error`). Then they are removed as a person the
+         *     service deleted is: their sessions end at once, the mailboxes they own (shared or not)
+         *     stop and lose their passwords at once and go 30 days later, and the team keeps its
+         *     rules and the rest. Only an owner removes an owner (403 `role_required`); nobody
+         *     removes themselves here (409 `remove_self`: they delete their account in Settings).
+         *     A person the sign-in service did not make cannot be removed (409 `not_removable`).
+         *     Recorded in the audit log.
+         */
+        delete: operations["removeMember"];
+        options?: never;
+        head?: never;
+        /**
+         * Change a member's role
+         * @description Takes effect on the member's next request. Only an owner makes someone an owner or
+         *     changes an owner's role (403 `role_required`), and the team keeps at least one owner
+         *     (409 `last_owner`). Recorded in the audit log.
+         */
+        patch: operations["updateMember"];
+        trace?: never;
+    };
+    "/api/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The invitations waiting
+         * @description Those not yet used or expired, oldest first. Each holds a seat.
+         */
+        get: operations["listInvitations"];
+        put?: never;
+        /**
+         * Invite a person by email
+         * @description The daemon keeps the invitation, which takes a seat, then the module has the sign-in
+         *     service send it; when that fails the invitation is withdrawn (502 `invite_failed`).
+         *     Once the person accepts and signs in under the team's organisation, they join with
+         *     `role`. It expires after 7 days. Only an owner invites an owner (403
+         *     `role_required`). Refused while every seat of the plan is taken (409 `seat_limit`, the
+         *     message says what to do), for a member (409 `already_member`) and for an address
+         *     with an invitation waiting (409 `already_invited`). Recorded in the audit log.
+         */
+        post: operations["createInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/invitations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an invitation
+         * @description It is deleted, freeing its seat, and taken back at the sign-in service. Recorded in the audit log.
+         */
+        delete: operations["revokeInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the audit log
+         * @description Who changed what in the team: its rules and sender rules, mailboxes, members and
+         *     invitations, settings and notification destinations, and plan, oldest first. Names
+         *     and addresses only, never email content or a secret. A CSV file (`format=csv`, the
+         *     default: columns time (UTC, RFC 3339), actor, action, target, detail; a cell that
+         *     would start with `=`, `+`, `-` or `@` starts with `'`) or JSON. Rows are kept 365
+         *     days.
+         */
+        get: operations["downloadAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -1678,7 +1817,13 @@ export interface components {
             /** Format: int64 */
             id: number;
             email: string;
+            role: components["schemas"]["Role"];
         };
+        /**
+         * @description `owner`: the plan and billing, members, and everything an admin does. `admin`: the shared rules and sender rules, settings, notification destinations, members and invitations, the audit log. `member`: their own mailboxes, sorted by the shared rules
+         * @enum {string}
+         */
+        Role: "owner" | "admin" | "member";
         Session: {
             user: components["schemas"]["User"];
             /** @description How many users the signed-in user's team has; the web app offers sharing a mailbox only when there is more than one */
@@ -2819,31 +2964,40 @@ export interface components {
             upgrade_url: string | null;
         };
         PlanChoice: {
-            /** @enum {string} */
-            plan: "personal" | "pro";
+            /**
+             * @description `team` only while it is on sale (it is in `plans`)
+             * @enum {string}
+             */
+            plan: "personal" | "pro" | "team";
             /** @enum {string} */
             interval: "month" | "year";
+            /** @description How many seats of a plan sold by the seat (`per_seat`), from its `min_seats` to 1,000; sent only for such a plan (400 `invalid_input` at `seats` otherwise) */
+            seats?: number;
         };
         PlanTerms: {
             /** @enum {string} */
-            id: "personal" | "pro";
+            id: "personal" | "pro" | "team";
             name: string;
-            /** @description What it costs, as shown, by interval (month, year) */
+            /** @description What it costs, as shown, by interval (month, year); one seat's for a plan sold by the seat */
             prices: {
                 [key: string]: string;
             };
             /** @description The lines its card lists */
             includes: string[];
-            /** @description null = any number */
+            /** @description null = any number; one seat's for a plan sold by the seat */
             mailboxes: number | null;
-            /** @description AI-sorted emails a month; null = any number */
+            /** @description AI-sorted emails a month; null = any number. For a plan sold by the seat, one seat's: the team shares its seats' together */
             ai_emails: number | null;
             /** @description Features only this plan's tenants get, named as in `features` */
             features: string[];
+            /** @description Sold by the seat (Team): checkout and change send `seats` */
+            per_seat: boolean;
+            /** @description The fewest seats that may be bought of a plan sold by the seat; null for any other */
+            min_seats: number | null;
         };
         PlanInfo: {
             /** @enum {string} */
-            plan: "trial" | "personal" | "pro" | "ended";
+            plan: "trial" | "personal" | "pro" | "team" | "ended";
             /** @enum {string|null} */
             interval: "month" | "year" | null;
             /**
@@ -2856,6 +3010,8 @@ export interface components {
              * @description When the paid period ends (renews, or ends when cancelled)
              */
             period_end: number | null;
+            /** @description The seats bought of a plan sold by the seat (Team), while it runs; null otherwise */
+            seats: number | null;
             /**
              * Format: int64
              * @description 14 days after the tenant was made
@@ -3083,6 +3239,8 @@ export interface components {
                 delete_account: boolean;
                 /** @description A module of this build learns from the emails the person moves out of the folders MailRules filed them in, so Activity may ask about them (GET /api/activity/questions) */
                 move_questions: boolean;
+                /** @description A module of this build invites people to a team, and the tenant's plan includes it: Members (GET /api/members), invitations and the audit log work */
+                team: boolean;
             };
         };
         /** @description For every field: left out = unchanged; `null` = forget the stored value, so the environment's default is back in force; an empty string = that value, stored (see each field), or refused where empty cannot work */
@@ -3198,6 +3356,59 @@ export interface components {
         EventBatchProgress: components["schemas"]["Batch"];
         /** @description Data of `rules.changed`, `usage.updated`, `notifications.changed`, `questions.changed` and `plan.changed`; refetch */
         EventEmpty: Record<string, never>;
+        Member: {
+            /**
+             * Format: int64
+             * @description The member's user
+             */
+            id: number;
+            email: string;
+            role: components["schemas"]["Role"];
+            /** Format: int64 */
+            joined_at: number;
+            /** @description The signed-in person */
+            you: boolean;
+        };
+        Seats: {
+            /** @description Members and invitations waiting */
+            used: number;
+            /** @description The seats the plan has; null = any number (a build that sells no plans) */
+            limit: number | null;
+        };
+        Invitation: {
+            /** Format: int64 */
+            id: number;
+            email: string;
+            role: components["schemas"]["Role"];
+            /** @description Who sent it; null once they left the team */
+            invited_by: string | null;
+            /** Format: int64 */
+            created_at: number;
+            /**
+             * Format: int64
+             * @description 7 days after it was sent, or after it was accepted
+             */
+            expires_at: number;
+            /**
+             * Format: int64
+             * @description When the sign-in service said it was accepted; it is used up at the person's first sign-in
+             */
+            accepted_at: number | null;
+        };
+        AuditEntry: {
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            at: number;
+            /** @description Who made the change, as they were then: an email, or the service that made it (Billing service, Sign-in service, MailRules) */
+            actor: string;
+            /** @enum {string} */
+            action: "rule.created" | "rule.changed" | "rule.deleted" | "rules.reordered" | "sender_rule.set" | "sender_rule.deleted" | "mailbox.added" | "mailbox.changed" | "mailbox.removed" | "settings.changed" | "notification.added" | "notification.removed" | "plan.changed" | "member.joined" | "member.role_changed" | "member.removed" | "invitation.created" | "invitation.revoked" | "invitation.accepted" | "invitation.withdrawn";
+            /** @description What was changed, by name: a rule, a sender, a mailbox's address, a member's email; empty for settings and reorders */
+            target: string;
+            /** @description How, in a few words: what of a rule changed, a role from and to, the settings changed (a value only when it is true, false or a number) */
+            detail: string;
+        };
     };
     responses: {
         /** @description Error */
@@ -3229,6 +3440,15 @@ export interface components {
         };
         /** @description `csrf_failed`: missing or wrong X-CSRF-Token header */
         CsrfFailed: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description `csrf_failed`: missing or wrong X-CSRF-Token header. `role_required`: the route needs the role its `x-role` names, or one above it, and the message says who may. `plan_required`: the tenant's plan does not include the feature */
+        Forbidden: {
             headers: {
                 [name: string]: unknown;
             };
@@ -3485,6 +3705,7 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["CsrfFailed"];
             404: components["responses"]["NotAvailable"];
+            409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };
     };
@@ -3816,7 +4037,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };
@@ -3847,7 +4068,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             502: components["responses"]["Upstream"];
         };
     };
@@ -3878,7 +4099,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
         };
     };
     testRules: {
@@ -3906,7 +4127,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
         };
@@ -3987,7 +4208,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             413: components["responses"]["TooLarge"];
         };
     };
@@ -4034,7 +4255,7 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -4064,7 +4285,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -4098,7 +4319,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
@@ -4197,7 +4418,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
         };
     };
     deleteSender: {
@@ -4222,7 +4443,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
         };
     };
     unsubscribeSender: {
@@ -4352,7 +4573,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -4408,7 +4629,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
@@ -4495,7 +4716,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
@@ -4917,6 +5138,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
         };
     };
@@ -4951,7 +5173,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
@@ -4981,7 +5203,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
@@ -5008,6 +5230,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
             409: components["responses"]["Conflict"];
             502: components["responses"]["Upstream"];
@@ -5058,7 +5281,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
         };
     };
@@ -5081,6 +5304,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     previewSummary: {
@@ -5195,7 +5419,7 @@ export interface operations {
             };
             400: components["responses"]["Invalid"];
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotAvailable"];
         };
     };
@@ -5218,8 +5442,213 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["CsrfFailed"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    listMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The team */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description The longest-standing first */
+                        members: components["schemas"]["Member"][];
+                        seats: components["schemas"]["Seats"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
+        };
+    };
+    removeMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    updateMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    role: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description The member as they now are */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        member: components["schemas"]["Member"];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    listInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invitations: components["schemas"]["Invitation"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
+        };
+    };
+    createInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                    role: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description Sent */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invitation: components["schemas"]["Invitation"];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
+            409: components["responses"]["Conflict"];
+            502: components["responses"]["Upstream"];
+        };
+    };
+    revokeInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadAudit: {
+        parameters: {
+            query?: {
+                /** @description csv when left out */
+                format?: "csv" | "json";
+                /** @description Unix seconds; 365 days ago when left out */
+                since?: number;
+                /** @description Unix seconds; now when left out */
+                until?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The audit log, as an attachment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                    "application/json": {
+                        entries: components["schemas"]["AuditEntry"][];
+                    };
+                };
+            };
+            400: components["responses"]["Invalid"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotAvailable"];
         };
     };
     streamEvents: {

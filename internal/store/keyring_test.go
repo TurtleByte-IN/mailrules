@@ -286,7 +286,7 @@ func TestSignUpNeedsTheKeyService(t *testing.T) {
 	tenants := count(`SELECT COUNT(*) FROM tenants`)
 	f.down.Store(true)
 	id := identity("user_new", "new@example.com", "org_new")
-	if _, err := ks.SignInIdentity(ctx, id, 10); !errors.Is(err, crypto.ErrKeyUnavailable) {
+	if _, err := ks.SignInIdentity(ctx, id, 10, nil); !errors.Is(err, crypto.ErrKeyUnavailable) {
 		t.Fatalf("sign-up while the key service is down: %v, want ErrKeyUnavailable", err)
 	}
 	if n := count(`SELECT COUNT(*) FROM tenants`); n != tenants {
@@ -296,7 +296,7 @@ func TestSignUpNeedsTheKeyService(t *testing.T) {
 		t.Fatalf("%d users after a failed sign-up", n)
 	}
 	f.down.Store(false)
-	u, err := ks.SignInIdentity(ctx, id, 10)
+	u, err := ks.SignInIdentity(ctx, id, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -70,6 +70,10 @@ func (s *server) handleQuestionAnswer(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "answer", "The answer is yes or no.")
 		return
 	}
+	if in.Answer == "yes" && !allowed(r, store.RoleAdmin) {
+		roleRequired(w, store.RoleAdmin, "make a rule for every email from a sender")
+		return
+	}
 	q, err := s.store.AnswerQuestion(r.Context(), viewer(r), id, in.Answer == "yes", s.now().Unix())
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "This question was already answered, or is not one you can see.", "")

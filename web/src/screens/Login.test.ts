@@ -51,6 +51,7 @@ it.each([
   ['choose_tenant', 'Your account belongs to more than one organisation. Choose one to continue.'],
   ['tenant_mismatch', 'This account signed up under a different organisation. Sign in with that one.'],
   ['email_in_use', 'Another MailRules account already uses this email address.'],
+  ['seats_full', "Every seat of your team's plan is taken. Ask an Owner or Admin to add seats or remove someone."],
   ['something_new', "That sign-in didn't go through. Try again."],
 ])('shows the message for ?signin_error=%s and clears it from the address bar', async (code, message) => {
   history.replaceState(null, '', `/?signin_error=${code}&keep=1#/`);

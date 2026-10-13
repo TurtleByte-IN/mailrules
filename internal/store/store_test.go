@@ -69,8 +69,8 @@ func TestOpenAndMigrate(t *testing.T) {
 			t.Errorf("%s = %s, want %s", q.pragma, got, q.want)
 		}
 	}
-	want := []string{"accounts", "actions", "ai_emails", "batches", "contacts", "corrections", "decisions", "first_cleanup", "folders", "forgotten",
-		"identities", "messages", "move_questions", "moves", "notices", "notify_deliveries", "notify_destinations", "plans", "removed_mailboxes",
+	want := []string{"accounts", "actions", "ai_emails", "audit_log", "batches", "contacts", "corrections", "decisions", "first_cleanup", "folders", "forgotten",
+		"identities", "invitations", "messages", "move_questions", "moves", "notices", "notify_deliveries", "notify_destinations", "plans", "removed_mailboxes",
 		"rules", "sender_rules", "sessions", "settings", "summaries", "tenants", "unsubscribes", "usage_daily", "users"}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'goose%' AND name NOT LIKE 'sqlite%' ORDER BY name`)
 	if err != nil {
@@ -435,8 +435,8 @@ func TestCreateCleanupRun(t *testing.T) {
 }
 
 // legacyUser inserts the admin user straight into a database whose schema is from before
-// migration 0011 (no users.tenant_id). It returns its id, which is 1, so after the full
-// migration it is the self-host tenant's user.
+// migration 0011 (no users.tenant_id) or 0028 (no users.role). It returns its id, which is
+// 1, so after the full migration it is the self-host tenant's user.
 func legacyUser(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 	res, err := db.ExecContext(t.Context(),

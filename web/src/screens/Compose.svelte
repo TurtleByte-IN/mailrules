@@ -1,5 +1,6 @@
 <script lang="ts">
   import { router } from 'svelte-spa-router';
+  import { canManage, managedNote } from '../lib/state/auth.svelte';
   import { compose } from '../lib/state/compose.svelte';
   import { rules } from '../lib/state/rules.svelte';
   import { settings } from '../lib/state/settings.svelte';
@@ -49,6 +50,10 @@
         : 'Describe rules in your own words, build one from exact conditions, or start from a template.'}
     </p>
   </header>
+  <!-- A Member reaches here only by typing the address: the team's rules are not theirs to add. -->
+  {#if !canManage()}
+    <p class="text-secondary">{managedNote}</p>
+  {:else}
   <!-- Two by two below lg (and on a phone): four labels only fit in one row from lg up. -->
   <div role="tablist" aria-label="How to add rules" class="inline-flex gap-1 self-start rounded-md bg-line-divider p-1 max-lg:grid max-lg:grid-cols-2 max-lg:self-stretch">
     {#each modes as [id, label], i (id)}
@@ -79,4 +84,5 @@
       {/key}
     {/if}
   </div>
+  {/if}
 </div>

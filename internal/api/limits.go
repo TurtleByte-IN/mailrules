@@ -11,7 +11,7 @@ import (
 )
 
 // noLimits is what a tenant may use in a build that sells no plans: self-host.
-var noLimits = ext.Limits{Mailboxes: ext.NoLimit, AIEmails: ext.NoLimit}
+var noLimits = ext.Limits{Mailboxes: ext.NoLimit, AIEmails: ext.NoLimit, Seats: ext.NoLimit}
 
 // limits are what the tenant may use now: its plan's (tenantLimits).
 func (s *server) limits(ctx context.Context, tenantID int64) (ext.Limits, error) {
@@ -192,7 +192,7 @@ func (s *server) morePlan(l ext.Limits) bool {
 		return false
 	}
 	more := func(have, other int) bool { return have >= 0 && (other < 0 || other > have) }
-	for _, id := range soldPlans {
+	for _, id := range soldPlans(b) {
 		o := b.Plans[id].Limits
 		if more(l.Mailboxes, o.Mailboxes) || more(l.AIEmails, o.AIEmails) {
 			return true

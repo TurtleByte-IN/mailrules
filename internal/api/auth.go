@@ -40,6 +40,7 @@ type userKey struct{}
 type userJSON struct {
 	ID    int64  `json:"id"`
 	Email string `json:"email"`
+	Role  string `json:"role"`
 }
 
 type credentials struct {
@@ -122,7 +123,9 @@ func (s *server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 		}
 		// Everything the request has the store do is scoped to the person's tenant: on Postgres
 		// the policies then hide every other tenant's rows, even from a query that forgot to.
+		// What it changes is recorded in the tenant's audit log under them.
 		ctx := store.WithTenant(context.WithValue(r.Context(), userKey{}, u), u.TenantID)
+		ctx = store.WithActor(ctx, store.Actor{UserID: u.ID, Name: u.Email})
 		telemetry.AddAttrs(ctx, slog.Int64("tenant_id", u.TenantID)) // for what is logged about the request, its outer layers too
 		next(w, r.WithContext(ctx))
 	}
@@ -418,6 +421,14 @@ func (s *server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, err)
 		return
 	}
+	// A team keeps an owner: its last one hands that on before leaving.
+	if last, err := s.store.LastOwner(r.Context(), u); err != nil {
+		internalError(w, r, err)
+		return
+	} else if last {
+		writeError(w, http.StatusConflict, "last_owner", "You are your team's only Owner. Make someone else an Owner on Members first, then delete your account.", "")
+		return
+	}
 	if del := s.signIn().DeleteIdentity; del != nil {
 		if err := del(r.Context(), id.Provider, id.Subject); err != nil {
 			slog.ErrorContext(r.Context(), "the sign-in service did not delete an account; nothing was deleted", "user_id", u.ID, "error", err.Error())
@@ -450,7 +461,7 @@ func (s *server) writeSession(w http.ResponseWriter, r *http.Request, status int
 		internalError(w, r, err)
 		return
 	}
-	out := sessionJSON{User: userJSON{ID: u.ID, Email: u.Email}, Members: members}
+	out := sessionJSON{User: userJSON{ID: u.ID, Email: u.Email, Role: u.Role}, Members: members}
 	if m := s.signIn(); m != nil {
 		out.SignOut = m.SignOut
 	}

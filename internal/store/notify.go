@@ -111,6 +111,9 @@ func (s *Store) CreateDestination(ctx context.Context, d Destination, sec Destin
 	if _, err := tx.ExecContext(ctx, `UPDATE notify_destinations SET secret_enc = ?, dek_enc = ? WHERE id = ?`, secretEnc, dekEnc, d.ID); err != nil {
 		return Destination{}, fmt.Errorf("create destination: %w", err)
 	}
+	if err := record(ctx, tx, d.TenantID, now, AuditDestinationAdded, d.Name, d.Kind); err != nil {
+		return Destination{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Destination{}, fmt.Errorf("create destination: %w", err)
 	}
@@ -201,12 +204,16 @@ func (s *Store) DeleteDestination(ctx context.Context, tenantID, id, now int64) 
 		return nil, fmt.Errorf("delete destination: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // a no-op after Commit
-	res, err := tx.ExecContext(ctx, `DELETE FROM notify_destinations WHERE id = ? AND tenant_id = ?`, id, tenantID)
+	var name string
+	err = tx.QueryRowContext(ctx, `DELETE FROM notify_destinations WHERE id = ? AND tenant_id = ? RETURNING name`, id, tenantID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, fmt.Errorf("delete destination: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, ErrNotFound
+	if err := record(ctx, tx, tenantID, now, AuditDestinationRemoved, name, ""); err != nil {
+		return nil, err
 	}
 	named, err := rulesNaming(ctx, tx, tenantID, id)
 	if err != nil {

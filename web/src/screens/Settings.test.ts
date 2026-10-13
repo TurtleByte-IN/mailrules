@@ -16,7 +16,7 @@ const fresh = (over: Partial<Saved> = {}): Saved => ({
   warnings: [],
   server: { version: 'dev', data_dir: './data', listen: '127.0.0.1:8080', mode: 'selfhost' },
   limits: { test_default: 200, test_max: 2000, check_max: 2000 },
-  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false, delete_account: false, move_questions: false },
+  features: { notifications: false, timed_actions: false, draft_replies: false, billing: false, unsubscribe: false, oauth_providers: false, suggest: false, delete_account: false, move_questions: false, team: false },
   summary: { enabled: false, frequency: 'daily', weekday: 'monday', time: '08:00', time_zone: 'UTC', to: '', to_default: '', smtp: { configured: false, missing: [] }, last_sent_at: null, next_at: null },
   ...over,
 });
@@ -636,4 +636,17 @@ describe('Delete my account', () => {
     await fireEvent.click(opener);
     expect((card().getByLabelText(/^Type your email address/) as HTMLInputElement).value).toBe('');
   });
+});
+
+it("shows a Member the team's settings with every control off, but keeps Appearance theirs", async () => {
+  auth.user = { id: 3, email: 'cy@example.com', role: 'member' };
+  try {
+    await show(fresh());
+    expect(screen.getByText('Shared with your team: only an Owner or Admin changes these.')).toBeTruthy();
+    expect(screen.getByLabelText('Fallback model').matches(':disabled')).toBe(true);
+    expect(screen.getByRole('checkbox', { name: /^Dry-run/ }).matches(':disabled')).toBe(true);
+    expect(screen.getByRole('combobox', { name: 'Appearance' }).matches(':disabled')).toBe(false);
+  } finally {
+    auth.user = null;
+  }
 });
