@@ -79,3 +79,13 @@ Where to put the variables depends on how you run MailRules; see [Install](./ins
 | `MAILRULES_SMTP_PASSWORD_FILE` | `--smtp-password-file` | none | A file holding that password, instead of `MAILRULES_SMTP_PASSWORD`. |
 | `MAILRULES_SMTP_FROM` | `--smtp-from` | none | The summary's From address, such as `MailRules <me@example.com>`. Most servers want one of your own addresses. |
 | `MAILRULES_SMTP_TLS` | `--smtp-tls` | `starttls` | `starttls` (the server must offer it), `implicit` (TLS from the start), or `none`, which is allowed only for a mail server on this machine. |
+
+## OpenTelemetry export
+
+| Variable | Flag | Default | What it does |
+| --- | --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-exporter-otlp-endpoint` | none | Base URL of an OpenTelemetry (OTLP/HTTP) receiver, such as `https://otel.example.com` or `http://localhost:4318`. Set, MailRules sends it the metrics `/metrics` serves, Go runtime included, to `/v1/metrics` every minute (`OTEL_METRIC_EXPORT_INTERVAL`, in milliseconds, changes that), and every line of its log, redacted as the log is, to `/v1/logs`. Empty sends nothing and starts nothing. A receiver that is slow or down never holds up MailRules: log lines that cannot be sent are dropped and counted in `mailrules_otel_log_records_dropped_total`. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `--otel-exporter-otlp-headers` | none | Headers sent with every export, as `key=value` pairs separated by commas, such as `X-Obs-Key=<token>`; values may be percent-encoded. Never logged. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `--otel-exporter-otlp-protocol` | `http/protobuf` | How to send: only `http/protobuf` is supported. |
+| `OTEL_SERVICE_NAME` | `--otel-service-name` | `mailrules` | The `service.name` the metrics and log lines are sent under. |
+| `MAILRULES_ENVIRONMENT` | `--environment` | none | The deployment's name, such as `staging` or `production`, sent as `deployment.environment.name` with the metrics and log lines. Empty sends none. |
