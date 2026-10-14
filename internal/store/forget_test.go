@@ -181,6 +181,7 @@ func (w fworld) tenantRows(t *testing.T, tenantID int64) map[string]int {
 		"notices":             `tenant_id = ?1`,
 		"notify_deliveries":   `tenant_id = ?1`,
 		"plans":               `tenant_id = ?1`,
+		"removed_identities":  `tenant_id = ?1`,
 	} {
 		var n int
 		if err := w.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table+` WHERE `+where, tenantID).Scan(&n); err != nil {
@@ -437,6 +438,207 @@ func TestDeleteOwnAccountTeamMember(t *testing.T) {
 	}
 	if u, err := s.User(ctx, back.ID); err != nil || u.Email != "leaver@example.com" {
 		t.Errorf("the new user after the removal = %+v, %v", u, err)
+	}
+}
+
+// A member removed from their team (MAI-253) who signs in again under another organisation,
+// as the sign-in service then puts them in one of their own, gets a new account of their
+// own, as a deleted person would: a new tenant they own, which sees nothing of the team.
+// The team keeps its data, and the removed user's goes on the team's schedule; its seats
+// and members do not count them. The service deleting the person later reaches the new
+// account only.
+func TestRemovedMemberSignsInElsewhere(t *testing.T) {
+	w := forgetWorld(t)
+	s, ctx := w.s, t.Context()
+	team := w.leaver.TenantID
+	before := w.tenantRows(t, team)
+	if _, err := s.RemoveMember(as(ctx, w.mate), "workos", "user_leaver", fNow); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_leaver"), fNow+6*3600, nil)
+	if err != nil {
+		t.Fatalf("the removed member signing in under their own organisation: %v", err)
+	}
+	if fresh.ID == w.leaver.ID || fresh.TenantID == team || fresh.Role != RoleOwner || fresh.Email != "leaver@example.com" {
+		t.Fatalf("signed in as %+v; want a new owner in a new tenant, not user %d of tenant %d", fresh, w.leaver.ID, team)
+	}
+	if as, _ := s.VisibleAccounts(ctx, fresh.Viewer()); len(as) != 0 {
+		t.Errorf("the new account sees mailboxes: %+v", as)
+	}
+	if rs, _ := s.Rules(ctx, fresh.TenantID); len(rs) != 0 {
+		t.Errorf("the new account sees rules: %+v", rs)
+	}
+	if ms, _ := s.Members(ctx, fresh.TenantID); len(ms) != 1 || ms[0].UserID != fresh.ID {
+		t.Errorf("the new tenant's members = %+v", ms)
+	}
+	if got := audited(t, s, fresh.TenantID); len(got) != 1 {
+		t.Errorf("the new tenant's audit log = %q, want its own join alone", got)
+	}
+	// The team: its data all there until the removal, the removed person counted nowhere.
+	if ms, _ := s.Members(ctx, team); len(ms) != 1 || ms[0].UserID != w.mate.ID {
+		t.Errorf("the team's members = %+v, want the mate alone", ms)
+	}
+	if n, err := s.SeatsUsed(ctx, team, fNow+1); err != nil || n != 1 {
+		t.Errorf("the team's seats = %d, %v; want 1", n, err)
+	}
+	got := w.tenantRows(t, team)
+	for _, table := range []string{"accounts", "messages", "rules", "sender_rules", "users"} {
+		if got[table] != before[table] {
+			t.Errorf("team %s: %d rows, want %d until the removal", table, got[table], before[table])
+		}
+	}
+	if got["identities"] != 1 || got["forgotten"] != 1 {
+		t.Errorf("team identities %d, forgotten %d; want the mate's identity alone and the removal waiting", got["identities"], got["forgotten"])
+	}
+	gone, err := s.RemoveForgotten(ctx, w.leaver.ID, fDue)
+	if err != nil || gone.Tenant || gone.TenantID != team || !slices.Equal(gone.Accounts, []int64{w.leaverPriv, w.leaverShared}) {
+		t.Errorf("removal = %+v, %v; want the removed user's two mailboxes, the team kept", gone, err)
+	}
+	if got := w.tenantRows(t, fresh.TenantID); got["users"] != 1 || got["identities"] != 1 || got["tenants"] != 1 {
+		t.Errorf("the new tenant after the team's removal: %v", got)
+	}
+	again, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_leaver"), fDue+1, nil)
+	if err != nil || again.ID != fresh.ID {
+		t.Errorf("signing in again = %+v, %v; want the new account %d", again, err, fresh.ID)
+	}
+	f, err := s.ForgetIdentity(ctx, "workos", "user_leaver", fDue+2)
+	if err != nil || f.UserID != fresh.ID || f.TenantID != fresh.TenantID {
+		t.Errorf("the service deleting the person reached %+v, %v; want the new account", f, err)
+	}
+}
+
+// A member removed from their team who signs in under the team's organisation again (the
+// sign-in service should not let them) is refused, changing nothing, until the team invites
+// them again; then they join as a new user with the invitation's role, without their old
+// data, which still goes on the team's schedule. The address MAI-248 freed can be invited.
+func TestRemovedMemberUnderTheTeamAgain(t *testing.T) {
+	w := forgetWorld(t)
+	s, ctx := w.s, t.Context()
+	team := w.leaver.TenantID
+	if _, err := s.RemoveMember(as(ctx, w.mate), "workos", "user_leaver", fNow); err != nil {
+		t.Fatal(err)
+	}
+	before := w.tenantRows(t, team)
+	if before["removed_identities"] != 1 {
+		t.Fatalf("removed identities = %d, want the leaver's", before["removed_identities"])
+	}
+	if _, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_team"), fNow+1, seats(NoLimit)); !errors.Is(err, ErrRemovedMember) {
+		t.Fatalf("signing in under the team without an invitation: %v, want ErrRemovedMember", err)
+	}
+	after := w.tenantRows(t, team)
+	for table, n := range before {
+		if after[table] != n {
+			t.Errorf("the refused sign-in changed %s: %d rows, want %d", table, after[table], n)
+		}
+	}
+	if ms, _ := s.Members(ctx, team); len(ms) != 1 {
+		t.Errorf("members after the refused sign-in = %+v", ms)
+	}
+	if _, err := s.CreateInvitation(as(ctx, w.mate), team, Invitation{Email: "leaver@example.com", Role: RoleAdmin, InvitedBy: w.mate.ID}, nil, fNow+2); err != nil {
+		t.Fatalf("inviting the removed member again: %v", err)
+	}
+	back, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_team"), fNow+3, seats(2))
+	if err != nil {
+		t.Fatalf("signing in with the invitation: %v", err)
+	}
+	if back.ID == w.leaver.ID || back.TenantID != team || back.Role != RoleAdmin {
+		t.Fatalf("joined again as %+v; want a new admin of the team, not user %d", back, w.leaver.ID)
+	}
+	// The old user's shared mailbox is the team's, as every member sees it, until it goes.
+	visible, _ := s.VisibleAccounts(ctx, back.Viewer())
+	for _, a := range visible {
+		if a.ID == w.leaverPriv {
+			t.Errorf("the new user sees the old user's private mailbox %+v", a)
+		}
+	}
+	if n, _ := s.SeatsUsed(ctx, team, fNow+3); n != 2 {
+		t.Errorf("seats = %d, want the mate and the new user, the invitation used up", n)
+	}
+	if got := w.tenantRows(t, team); got["removed_identities"] != 0 || got["identities"] != 2 {
+		t.Errorf("after joining again: %v", got)
+	}
+	gone, err := s.RemoveForgotten(ctx, w.leaver.ID, fDue)
+	if err != nil || gone.Tenant || !slices.Equal(gone.Accounts, []int64{w.leaverPriv, w.leaverShared}) {
+		t.Errorf("the old user's removal = %+v, %v", gone, err)
+	}
+	if u, err := s.User(ctx, back.ID); err != nil || u.Email != "leaver@example.com" {
+		t.Errorf("the new user after the old one's removal = %+v, %v", u, err)
+	}
+	// Removed again, the removal is remembered again.
+	if _, err := s.RemoveMember(as(ctx, w.mate), "workos", "user_leaver", fDue+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SignInIdentity(ctx, identity("user_leaver", "leaver@example.com", "org_team"), fDue+2, nil); !errors.Is(err, ErrRemovedMember) {
+		t.Errorf("signing in after a second removal: %v, want ErrRemovedMember", err)
+	}
+}
+
+// MAI-254: the last real member of a team forgotten while another forgotten member's
+// removal still waits is the team's only member: the team's model keys and notification
+// addresses go at once and no seat check is queued, as for a team of one, and when they
+// deleted their own account the team lets go of its organisation, so a newcomer under it
+// does not join the old data. The removals still keep their order: the first forgotten
+// takes their mailboxes, the last the tenant.
+func TestLastRealMemberForgottenWhileAnotherWaits(t *testing.T) {
+	for _, own := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deleted by the service", true: "deleted their own account"}[own], func(t *testing.T) {
+			w := forgetWorld(t)
+			s, ctx := w.s, t.Context()
+			team := w.leaver.TenantID
+			if _, _, err := s.SetPlan(ctx, team, Plan{Plan: PlanTeam, Interval: IntervalMonth, Status: StatusActive, Record: "sub", Seats: 3}, 10); err != nil {
+				t.Fatal(err)
+			}
+			if f, err := s.ForgetIdentity(ctx, "workos", "user_leaver", fNow); err != nil || f.Keys {
+				t.Fatalf("forget the leaver = %+v, %v; want the team's keys kept for the mate", f, err)
+			}
+			checks, err := s.WaitingSeatChecks(ctx, 1<<40, 10)
+			if err != nil || len(checks) != 1 {
+				t.Fatalf("seat checks after the leaver = %+v, %v", checks, err)
+			}
+			all := []int64{w.mateBox, w.leaverPriv, w.leaverShared}
+			if ids, err := s.IdentityMailboxes(ctx, "workos", "user_mate"); err != nil || !slices.Equal(ids, all) {
+				t.Errorf("IdentityMailboxes of the last member = %v, %v; want every mailbox of the team", ids, err)
+			}
+			forget := s.ForgetIdentity
+			if own {
+				forget = s.DeleteOwnAccount
+			}
+			f, err := forget(ctx, "workos", "user_mate", fNow+day)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !f.Keys || !slices.Equal(f.Accounts, all) {
+				t.Errorf("forget the last member = %+v; want every mailbox of the team and its keys", f)
+			}
+			if _, err := s.Setting(ctx, team, "key.anthropic_api_key"); !errors.Is(err, ErrNotFound) {
+				t.Errorf("the team's model key: %v, want it gone", err)
+			}
+			if ds, _ := s.Destinations(ctx, team); len(ds) == 0 || !ds[0].AddressDeleted {
+				t.Errorf("the team's destinations = %+v, want their addresses gone", ds)
+			}
+			if cs, _ := s.WaitingSeatChecks(ctx, 1<<40, 10); len(cs) != 1 || cs[0].Version != checks[0].Version {
+				t.Errorf("seat checks after the last member = %+v, want only the leaver's %+v", cs, checks)
+			}
+			if own {
+				newcomer, err := s.SignInIdentity(ctx, identity("user_new", "new@example.com", "org_team"), fNow+2*day, nil)
+				if err != nil || newcomer.TenantID == team {
+					t.Errorf("a newcomer under the team's organisation = %+v, %v; want a new tenant", newcomer, err)
+				}
+			}
+			first, err := s.RemoveForgotten(ctx, w.leaver.ID, fDue)
+			if err != nil || first.Tenant || !slices.Equal(first.Accounts, []int64{w.leaverPriv, w.leaverShared}) {
+				t.Errorf("the leaver's removal = %+v, %v; want their mailboxes, the tenant kept for the mate", first, err)
+			}
+			last, err := s.RemoveForgotten(ctx, w.mate.ID, fDue+day)
+			if err != nil || !last.Tenant {
+				t.Errorf("the mate's removal = %+v, %v; want the whole tenant", last, err)
+			}
+			for table, n := range w.tenantRows(t, team) {
+				if n != 0 {
+					t.Errorf("%s: %d rows of the removed team left", table, n)
+				}
+			}
+		})
 	}
 }
 

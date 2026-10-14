@@ -456,14 +456,24 @@ func (s *Store) AcceptInvitation(ctx context.Context, tenantID int64, email stri
 
 // joinRole is, in tx, the role a new user of an existing tenant gets at now: the role of
 // the invitation waiting for their email, which is then used up, else member, for which a
-// seat must be free. how is the audit log's detail of the join: the inviter is named by
-// their user id, never their address (no audit detail holds one).
-func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now int64, seats SeatLimit) (role, how string, err error) {
-	var id int64
+// seat must be free. An identity the tenant removed (removed_identities) needs the
+// invitation, else ErrRemovedMember; joining with one, it is no longer a removed one. how is
+// the audit log's detail of the join: the inviter is named by their user id, never their
+// address (no audit detail holds one).
+func joinRole(ctx context.Context, tx *txn, tenantID int64, id Identity, now int64, seats SeatLimit) (role, how string, err error) {
+	var removed bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM removed_identities WHERE tenant_id = ? AND provider = ? AND subject = ?)`,
+		tenantID, id.Provider, id.Subject).Scan(&removed); err != nil {
+		return "", "", fmt.Errorf("find a removal: %w", err)
+	}
+	var inv int64
 	var invitedBy sql.NullInt64
 	err = tx.QueryRowContext(ctx, `SELECT id, role, invited_by FROM invitations
-		WHERE tenant_id = ? AND lower(email) = lower(?) AND expires_at > ?`, tenantID, email, now).Scan(&id, &role, &invitedBy)
+		WHERE tenant_id = ? AND lower(email) = lower(?) AND expires_at > ?`, tenantID, id.Email, now).Scan(&inv, &role, &invitedBy)
 	if errors.Is(err, sql.ErrNoRows) {
+		if removed {
+			return "", "", ErrRemovedMember
+		}
 		if err := takeSeat(ctx, tx, tenantID, now, seats); err != nil {
 			return "", "", err
 		}
@@ -472,8 +482,14 @@ func joinRole(ctx context.Context, tx *txn, tenantID int64, email string, now in
 	if err != nil {
 		return "", "", fmt.Errorf("find invitation: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM invitations WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM invitations WHERE id = ?`, inv); err != nil {
 		return "", "", fmt.Errorf("use invitation: %w", err)
+	}
+	if removed {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM removed_identities WHERE tenant_id = ? AND provider = ? AND subject = ?`,
+			tenantID, id.Provider, id.Subject); err != nil {
+			return "", "", fmt.Errorf("forget the removal: %w", err)
+		}
 	}
 	how = "as " + RoleName(role) + ", invited"
 	if invitedBy.Valid {

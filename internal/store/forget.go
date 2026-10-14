@@ -14,7 +14,8 @@ import (
 
 // ForgetDays is how long what MailRules kept of a forgotten person waits before it is
 // removed. Signing in again with the same identity before then cancels the removal, unless
-// the person deleted their own account (DeleteOwnAccount).
+// the person deleted their own account (DeleteOwnAccount) or was removed from their team
+// (RemoveMember).
 const ForgetDays = 30
 
 // forgottenEmail is the address a forgotten user holds while their removal waits: unique,
@@ -72,7 +73,7 @@ func (s *Store) IdentityMailboxes(ctx context.Context, provider, subject string)
 	if err != nil {
 		return nil, fmt.Errorf("list identity mailboxes: %w", err)
 	}
-	_, ids, err := removalAccounts(ctx, tx, userID, tenantID)
+	_, ids, err := removalAccounts(ctx, tx, userID, tenantID, true)
 	if err != nil {
 		return nil, fmt.Errorf("list identity mailboxes: %w", err)
 	}
@@ -103,13 +104,19 @@ func identityUser(ctx context.Context, tx *txn, provider, subject string) (userI
 // error, and forgetting one again changes nothing, the removal time included. Only users
 // made from an identity are reached, so the self-host admin never is.
 func (s *Store) ForgetIdentity(ctx context.Context, provider, subject string, now int64) (Forget, error) {
-	return s.forget(ctx, provider, subject, now, false, "their sign-in was deleted")
+	return s.forget(ctx, provider, subject, now, forgetDeleted)
 }
 
 // RemoveMember is a member an owner or admin removed from their team: ForgetIdentity,
-// recorded in the audit log as a removal.
+// recorded in the audit log as a removal, and in the same transaction their user lets go of
+// the identity, as DeleteOwnAccount's does (MAI-253): the sign-in service has taken them out
+// of the team's organisation, so they cannot come back to their data, and the same identity
+// signing in under another organisation gets a new tenant of their own instead of
+// ErrTenantMismatch. The tenant remembers the identity was removed (removed_identities), so
+// signing in under its organisation again joins it only with a new invitation
+// (SignInIdentity). Their old user's data goes on the team's schedule, ForgetDays later.
 func (s *Store) RemoveMember(ctx context.Context, provider, subject string, now int64) (Forget, error) {
-	return s.forget(ctx, provider, subject, now, false, "removed from the team")
+	return s.forget(ctx, provider, subject, now, forgetRemoved)
 }
 
 // DeleteOwnAccount is a person who deleted their own account: ForgetIdentity, and in the
@@ -120,11 +127,31 @@ func (s *Store) RemoveMember(ctx context.Context, provider, subject string, now 
 // data's. The old data is removed after ForgetDays all the same, and the service's own
 // deletion notice for the identity afterwards reaches nobody.
 func (s *Store) DeleteOwnAccount(ctx context.Context, provider, subject string, now int64) (Forget, error) {
-	return s.forget(ctx, provider, subject, now, true, "deleted their own account")
+	return s.forget(ctx, provider, subject, now, forgetOwn)
 }
 
-// forget is ForgetIdentity, and DeleteOwnAccount when own; how is the audit log's detail.
-func (s *Store) forget(ctx context.Context, provider, subject string, now int64, own bool, how string) (Forget, error) {
+// forgetHow is why a person is forgotten.
+type forgetHow int
+
+const (
+	forgetDeleted forgetHow = iota // the sign-in service deleted them (ForgetIdentity)
+	forgetOwn                      // they deleted their own account (DeleteOwnAccount)
+	forgetRemoved                  // an owner or admin removed them from the team (RemoveMember)
+)
+
+// detail is the audit log's detail of the removal.
+func (h forgetHow) detail() string {
+	switch h {
+	case forgetOwn:
+		return "deleted their own account"
+	case forgetRemoved:
+		return "removed from the team"
+	}
+	return "their sign-in was deleted"
+}
+
+// forget is ForgetIdentity, DeleteOwnAccount or RemoveMember, as how says.
+func (s *Store) forget(ctx context.Context, provider, subject string, now int64, how forgetHow) (Forget, error) {
 	ctx = s.tenantFor(ctx, ofIdentity, provider, subject)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -159,8 +186,10 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET email = ? WHERE id = ?`, forgottenEmail(out.UserID), out.UserID); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: free email: %w", err)
 	}
+	// Alone is without another member: one forgotten already, whose removal waits, uses
+	// nothing of the tenant any more (MAI-254).
 	var alone bool
-	if alone, out.Accounts, err = removalAccounts(ctx, tx, out.UserID, out.TenantID); err != nil {
+	if alone, out.Accounts, err = removalAccounts(ctx, tx, out.UserID, out.TenantID, true); err != nil {
 		return Forget{}, fmt.Errorf("forget identity: list mailboxes: %w", err)
 	}
 	out.Keys = alone
@@ -171,7 +200,7 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 		// The audit log keeps what they did and what was done to them, but not their address:
 		// it becomes removedMember in every row, this removal's own included.
 		gone := removedMember(out.UserID)
-		if err := record(ctx, tx, out.TenantID, now, AuditMemberRemoved, gone, how); err != nil {
+		if err := record(ctx, tx, out.TenantID, now, AuditMemberRemoved, gone, how.detail()); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE audit_log SET actor = ? WHERE tenant_id = ? AND actor_id = ?`,
@@ -195,7 +224,7 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 			return Forget{}, fmt.Errorf("forget identity: %w", err)
 		}
 	}
-	if own {
+	if how == forgetOwn || how == forgetRemoved {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM identities WHERE user_id = ?`, out.UserID); err != nil {
 			return Forget{}, fmt.Errorf("forget identity: let go of the identity: %w", err)
 		}
@@ -204,6 +233,13 @@ func (s *Store) forget(ctx context.Context, provider, subject string, now int64,
 			if _, err := tx.ExecContext(ctx, `UPDATE tenants SET external_id = NULL WHERE id = ?`, out.TenantID); err != nil {
 				return Forget{}, fmt.Errorf("forget identity: let go of the organisation: %w", err)
 			}
+		}
+	}
+	if how == forgetRemoved {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO removed_identities (tenant_id, provider, subject, removed_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT (tenant_id, provider, subject) DO UPDATE SET removed_at = excluded.removed_at`,
+			out.TenantID, provider, subject, now); err != nil {
+			return Forget{}, fmt.Errorf("forget identity: remember the removal: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -285,7 +321,7 @@ func (s *Store) DueForRemoval(ctx context.Context, now int64) ([]Forgotten, erro
 }
 
 // RemovalAccounts lists the mailboxes removing the user would delete as things stand: every
-// mailbox of their tenant when they are its only member, else the ones they own, shared or
+// mailbox of their tenant when nobody else is left in it, else the ones they own, shared or
 // not. Their supervisors are stopped before RemoveForgotten runs.
 func (s *Store) RemovalAccounts(ctx context.Context, userID int64) ([]int64, error) {
 	ctx = s.tenantFor(ctx, ofUser, userID)
@@ -301,7 +337,7 @@ func (s *Store) RemovalAccounts(ctx context.Context, userID int64) ([]int64, err
 		}
 		return nil, fmt.Errorf("list removal accounts: %w", err)
 	}
-	_, ids, err := removalAccounts(ctx, tx, userID, tenantID)
+	_, ids, err := removalAccounts(ctx, tx, userID, tenantID, false)
 	if err != nil {
 		return nil, fmt.Errorf("list removal accounts: %w", err)
 	}
@@ -313,14 +349,22 @@ func (s *Store) RemovalAccounts(ctx context.Context, userID int64) ([]int64, err
 // own mail, which the team saw while they were in it.
 const leaverMailboxes = `user_id = ?`
 
-// removalAccounts reports, in tx, whether the user is their tenant's only member, and the
-// mailboxes their removal deletes.
-func removalAccounts(ctx context.Context, tx *txn, userID, tenantID int64) (alone bool, ids []int64, err error) {
-	var others int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = ? AND id != ?`, tenantID, userID).Scan(&others); err != nil {
+// removalAccounts reports, in tx, whether the user is alone in their tenant, and the
+// mailboxes their going deletes: every mailbox of the tenant when alone, else the ones they
+// own. With members, alone is without another member (forgetting: a user forgotten already
+// uses nothing of the tenant, MAI-254); without, without another user at all (removing: one
+// whose own removal still waits may come back to the tenant's data, so it stays until the
+// last one's removal).
+func removalAccounts(ctx context.Context, tx *txn, userID, tenantID int64, members bool) (alone bool, ids []int64, err error) {
+	others := `SELECT COUNT(*) FROM users WHERE tenant_id = ? AND id != ?`
+	if members {
+		others += ` AND ` + activeUsers
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, others, tenantID, userID).Scan(&n); err != nil {
 		return false, nil, err
 	}
-	alone = others == 0
+	alone = n == 0
 	query, arg := `SELECT id FROM accounts WHERE `+leaverMailboxes+` ORDER BY id`, userID
 	if alone {
 		query, arg = `SELECT id FROM accounts WHERE tenant_id = ? ORDER BY id`, tenantID
@@ -387,7 +431,7 @@ func (s *Store) RemoveForgotten(ctx context.Context, userID, now int64) (Removal
 	if out.TenantID == SelfHostTenant { // never: an identity's user is not in it
 		return Removal{}, fmt.Errorf("remove forgotten user %d: in the self-host tenant", userID)
 	}
-	out.Tenant, out.Accounts, err = removalAccounts(ctx, tx, userID, out.TenantID)
+	out.Tenant, out.Accounts, err = removalAccounts(ctx, tx, userID, out.TenantID, false)
 	if err != nil {
 		return Removal{}, fmt.Errorf("remove forgotten user: %w", err)
 	}
@@ -434,6 +478,7 @@ func removeTenant(ctx context.Context, tx *txn, tenantID int64) error {
 		{"AI-sorted email counts", `DELETE FROM ai_emails WHERE tenant_id = ?`},
 		{"first-cleanup grant", `DELETE FROM first_cleanup WHERE tenant_id = ?`},
 		{"seat checks", `DELETE FROM seat_checks WHERE tenant_id = ?`},
+		{"removed identities", `DELETE FROM removed_identities WHERE tenant_id = ?`},
 		{"plan", `DELETE FROM plans WHERE tenant_id = ?`}, // no foreign key, and tenant ids can be reused
 		{"users", `DELETE FROM users WHERE tenant_id = ?`},
 		{"tenant", `DELETE FROM tenants WHERE id = ?`},

@@ -47,6 +47,10 @@ func teamModules(ft *fakeTeam, fb *fakeBilling) []ext.Module {
 					switch {
 					case errors.Is(err, ext.ErrSeatLimit):
 						h.SignInFailed(w, r, ext.SignInSeatsFull)
+					case errors.Is(err, ext.ErrRemovedMember):
+						h.SignInFailed(w, r, ext.SignInRemoved)
+					case errors.Is(err, ext.ErrTenantMismatch):
+						h.SignInFailed(w, r, ext.SignInTenantMismatch)
 					case err != nil:
 						h.SignInFailed(w, r, ext.SignInRefused)
 					default:
@@ -84,7 +88,13 @@ func teamModules(ft *fakeTeam, fb *fakeBilling) []ext.Module {
 // teamSignIn signs this browser in through the team module and returns where it was sent.
 func (e *env) teamSignIn(sub, email string) string {
 	e.t.Helper()
-	q := url.Values{"sub": {sub}, "email": {email}, "org": {"org_team"}}
+	return e.teamSignInAt(sub, email, "org_team")
+}
+
+// teamSignInAt is teamSignIn under the organisation org.
+func (e *env) teamSignInAt(sub, email, org string) string {
+	e.t.Helper()
+	q := url.Values{"sub": {sub}, "email": {email}, "org": {org}}
 	r := e.do(http.MethodGet, teamStart+"?"+q.Encode(), "")
 	if r.status != http.StatusSeeOther {
 		e.t.Fatalf("sign in as %s = %d %s", sub, r.status, r.raw)
@@ -394,6 +404,47 @@ func TestInvitationRefusesAccount(t *testing.T) {
 	}
 	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(w.ids["member"], 10), "", http.StatusNoContent)
 	o.call(http.MethodPost, "/api/invitations", `{"email":"member@team.test","role":"member"}`, http.StatusCreated)
+}
+
+// A removed member (MAI-253) signing in under the team's organisation again is refused until
+// the team invites them; invited, they join as a new member. Removed again and put by the
+// sign-in service in an organisation of their own, they get an account of their own: a new
+// tenant they own, with nothing of the team, while the team keeps its people and seats.
+func TestRemovedMemberSignsInAgain(t *testing.T) {
+	w := newTeamWorld(t)
+	o := w.owner
+	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(w.ids["member"], 10), "", http.StatusNoContent)
+	if loc := o.browser().teamSignIn("user_m", "member@team.test"); loc != "/?signin_error=removed" {
+		t.Fatalf("the removed member under the team without an invitation went to %q", loc)
+	}
+	o.call(http.MethodPost, "/api/invitations", `{"email":"member@team.test","role":"member"}`, http.StatusCreated)
+	back := o.browser()
+	if loc := back.teamSignIn("user_m", "member@team.test"); loc != "/" {
+		t.Fatalf("the removed member invited again went to %q", loc)
+	}
+	again := id(back.me()["user"].(map[string]any)["id"])
+	if again == w.ids["member"] {
+		t.Errorf("invited again as the old user %d", again)
+	}
+	o.call(http.MethodDelete, "/api/members/"+strconv.FormatInt(again, 10), "", http.StatusNoContent)
+	own := o.browser()
+	if loc := own.teamSignInAt("user_m", "member@team.test", "org_m"); loc != "/" {
+		t.Fatalf("the removed member under an organisation of their own went to %q", loc)
+	}
+	me := own.me()
+	if u := me["user"].(map[string]any); u["role"] != "owner" || me["members"] != float64(1) || own.tenantOf("member@team.test") == w.tenant {
+		t.Errorf("their own account = %v, want the owner of a new tenant of one", me)
+	}
+	if as := own.call(http.MethodGet, "/api/accounts", "", http.StatusOK)["items"].([]any); len(as) != 0 {
+		t.Errorf("their own account sees mailboxes: %v", as)
+	}
+	if ms := o.call(http.MethodGet, "/api/members", "", http.StatusOK)["members"].([]any); len(ms) != 2 {
+		t.Errorf("the team's members = %v, want the owner and the admin", ms)
+	}
+	// Their identity is now their own account's: the team's organisation is not theirs.
+	if loc := o.browser().teamSignIn("user_m", "member@team.test"); loc != "/?signin_error=tenant_mismatch" {
+		t.Errorf("their identity under the team's organisation went to %q", loc)
+	}
 }
 
 // A seat freed is given back (MAI-247): removing a member, revoking an invitation, one

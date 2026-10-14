@@ -1947,7 +1947,10 @@ paths:
         nothing is removed (502 `sign_in_error`). Then they are removed as a person the
         service deleted is: their sessions end at once, the mailboxes they own (shared or not)
         stop and lose their passwords at once and go 30 days later, and the team keeps its
-        rules and the rest. Only an owner removes an owner (403 `role_required`); nobody
+        rules and the rest. Unlike a deleted person they never get their data back: signing
+        in again under another organisation gives them a new account of their own, and under
+        the team's they join only with a new invitation, as a new member (else
+        `?signin_error=removed`). Only an owner removes an owner (403 `role_required`); nobody
         removes themselves here (409 `remove_self`: they delete their account in Settings).
         A person the sign-in service did not make cannot be removed (409 `not_removable`).
         Their seat is free at once; on a plan sold by the seat the daemon then has the billing

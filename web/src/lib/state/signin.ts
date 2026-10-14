@@ -9,6 +9,7 @@ const messages: Record<string, string> = {
   tenant_mismatch: 'This account signed up under a different organisation. Sign in with that one.',
   email_in_use: 'Another MailRules account already uses this email address.',
   seats_full: "Every seat of your team's plan is taken. Ask an Owner or Admin of your team to invite you: an invitation adds a seat.",
+  removed: 'You were removed from this team. Ask an Owner or Admin of the team to invite you again.',
 };
 
 /**
