@@ -13,6 +13,9 @@ var (
 	ErrTenantMismatch = errors.New("identity belongs to another tenant")
 	// ErrEmailInUse is an email another user already has.
 	ErrEmailInUse = errors.New("email in use by another user")
+	// ErrRemovedMember is a person removed from a team (RemoveMember) signing in under its
+	// organisation again without a new invitation.
+	ErrRemovedMember = errors.New("removed from the team: a new invitation is needed")
 )
 
 // Identity is a person as a sign-in service names them: Subject is the service's stable id
@@ -25,18 +28,20 @@ type Identity struct {
 // The tenant is the one of (Provider, Tenant), made when there is none yet. A new identity
 // gets a user in that tenant who cannot sign in with a password; a known one keeps its user,
 // whose email becomes id.Email, and a known one that was forgotten (ForgetIdentity) has its
-// removal called off. One whose person deleted their own account is no longer known
-// (DeleteOwnAccount), so it gets a new user. It fails, changing nothing, with
-// ErrTenantMismatch when a known identity's user is in another tenant, and with
-// ErrEmailInUse when another user has the email. A new tenant gets its data key at once,
-// wrapped by the store's key provider (when it has one): a provider that cannot answer
-// fails the sign-in with crypto.ErrKeyUnavailable, and no tenant is made.
+// removal called off. One whose person deleted their own account, or was removed from
+// their team, is no longer known (DeleteOwnAccount, RemoveMember), so it gets a new user. It
+// fails, changing nothing, with ErrTenantMismatch when a known identity's user is in another
+// tenant, and with ErrEmailInUse when another user has the email. A new tenant gets its data
+// key at once, wrapped by the store's key provider (when it has one): a provider that cannot
+// answer fails the sign-in with crypto.ErrKeyUnavailable, and no tenant is made.
 //
 // The person who makes a tenant is its owner. A new identity joining a tenant that exists
 // (the sign-in service let them into its organisation) gets the role of the invitation
 // waiting for their email, which is then used up; without one they join as a member, and
 // only while the tenant's plan has a seat free (seats; nil limits nothing), else the sign-in
-// fails with a *SeatLimitError. Either join is recorded in the tenant's audit log.
+// fails with a *SeatLimitError. An identity removed from the tenant (RemoveMember) joins it
+// again only with an invitation, else the sign-in fails with ErrRemovedMember. Either join
+// is recorded in the tenant's audit log.
 //
 // It runs before anyone is signed in, so on Postgres it finds the tenants through the
 // definer functions (scope.go) and scopes its transaction once it knows the tenant.
@@ -105,7 +110,7 @@ func (s *Store) SignInIdentity(ctx context.Context, id Identity, now int64, seat
 		}
 		role, how := RoleOwner, "made the team"
 		if !newTenant {
-			if role, how, err = joinRole(ctx, tx, tenantID, id.Email, now, seats); err != nil {
+			if role, how, err = joinRole(ctx, tx, tenantID, id, now, seats); err != nil {
 				return User{}, fmt.Errorf("sign in identity: %w", err)
 			}
 		}

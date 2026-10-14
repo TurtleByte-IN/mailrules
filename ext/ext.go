@@ -552,7 +552,8 @@ type Who struct {
 // (Host.AcceptInvitation); their first sign-in under that organisation (Host.SignIn) joins
 // them to the tenant with the invitation's role. Someone the service lets into the
 // organisation without an invitation (company sign-in) joins as a member while a seat is
-// free. An invitation not accepted within InvitationDays expires and frees its seat.
+// free, unless the team removed them (RemoveMember). An invitation not accepted within
+// InvitationDays expires and frees its seat.
 type Team struct {
 	// Invite has the service send inv, and returns the module's reference to it, kept as
 	// Invitation.Record and handed back to Revoke. When it fails the daemon withdraws the
@@ -565,7 +566,11 @@ type Team struct {
 	// is the organisation's id there), so they cannot sign in to the team again. The daemon
 	// calls it before it removes them; when it fails, nothing is removed (502
 	// sign_in_error). On success the daemon removes them as Host.ForgetIdentity does: their
-	// sessions end, their mailboxes go with them, the team keeps the rest.
+	// sessions end, their mailboxes go with them, the team keeps the rest. Unlike a person
+	// the service deleted, they never get their data back: the same identity signing in
+	// again under another organisation gets a new account of its own, and under the team's
+	// joins it as a new user only with a new invitation (else Host.SignIn fails with
+	// ErrRemovedMember).
 	RemoveMember func(ctx context.Context, tenantID int64, id Identity) error
 	// AdminPortal, when set, offers company sign-in (SAML or OIDC) to the tenants that may
 	// use it (PlanState.CompanySignIn; GET /api/settings reports features.company_sign_in to
@@ -1131,6 +1136,10 @@ var (
 	// a team's organisation without an invitation while every seat of the team's plan is
 	// taken (errors.Is). Nothing changed.
 	ErrSeatLimit = store.ErrSeatLimit
+	// ErrRemovedMember is what Host.SignIn returns for a person removed from a team
+	// (Team.RemoveMember) who signs in under its organisation again without a new
+	// invitation. Nothing changed.
+	ErrRemovedMember = store.ErrRemovedMember
 )
 
 // ForgetDays is how many days after Host.ForgetIdentity a forgotten person's data is
@@ -1152,6 +1161,8 @@ const (
 	SignInEmailInUse = "email_in_use"
 	// SignInSeatsFull: Host.SignIn returned ErrSeatLimit.
 	SignInSeatsFull = "seats_full"
+	// SignInRemoved: Host.SignIn returned ErrRemovedMember.
+	SignInRemoved = "removed"
 )
 
 // Host is what the daemon gives a module's routes.
@@ -1209,9 +1220,9 @@ type Host interface {
 	// email to id.Email, and starts the browser's session as a password sign-in does. The
 	// person who makes a tenant is its owner; one who joins a tenant that exists gets the
 	// role of the invitation waiting for their email (Team), or joins as a member. It
-	// fails, changing nothing, with ErrTenantMismatch, ErrEmailInUse or ErrSeatLimit
-	// (answer those with SignInFailed and the matching code), or with an error of the
-	// database.
+	// fails, changing nothing, with ErrTenantMismatch, ErrEmailInUse, ErrSeatLimit or
+	// ErrRemovedMember (answer those with SignInFailed and the matching code), or with an
+	// error of the database.
 	SignIn(w http.ResponseWriter, r *http.Request, id Identity) (userID int64, err error)
 	// EndSessions signs the identity out of every browser at once. An identity nobody has
 	// is not an error.

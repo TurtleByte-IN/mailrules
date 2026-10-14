@@ -227,7 +227,8 @@ func lastOwner(w http.ResponseWriter) {
 
 // handleMemberDelete removes a member from the team: the sign-in service takes them out of
 // the team's organisation first (ext.Team.RemoveMember), then they are forgotten as a
-// person the service deleted is, their mailboxes going with them.
+// person the service deleted is, their mailboxes going with them, except that they never
+// get their data back (store.RemoveMember).
 func (s *server) handleMemberDelete(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.member(w, r)
 	if !ok {
