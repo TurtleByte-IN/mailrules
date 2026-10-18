@@ -124,7 +124,7 @@ func TestHaltedPlanRetriesAndCleansNothing(t *testing.T) {
 	for name, run := range map[string]func() error{
 		"RetryDue":  func() error { _, err := e.p.RetryDue(ctx); return err },
 		"Sort":      func() error { return e.p.Sort(ctx, existing) },
-		"SortSaved": func() error { _, err := e.p.SortSaved(ctx, existing, out); return err },
+		"SortSaved": func() error { _, err := e.sortSaved(ctx, existing, out); return err },
 	} {
 		if err := run(); !errors.Is(err, ErrHalted) {
 			t.Errorf("%s = %v, want ErrHalted", name, err)
