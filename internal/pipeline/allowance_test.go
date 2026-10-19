@@ -178,7 +178,7 @@ func TestAllowanceCountsACleanupCheckOnce(t *testing.T) {
 	if err != nil || !out.Metered {
 		t.Fatalf("settle = %+v, %v", out, err)
 	}
-	if applied, err := e.p.SortSaved(ctx, ref, out); err != nil || !applied {
+	if applied, err := e.sortSaved(ctx, ref, out); err != nil || !applied {
 		t.Fatalf("SortSaved = %v, %v", applied, err)
 	}
 	if got := e.aiEmails(e.now); got != 1 {

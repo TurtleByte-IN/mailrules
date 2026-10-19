@@ -198,22 +198,7 @@ func (x *Exec) do(ctx context.Context, mb mail.Mailbox, accountID int64, a rules
 	case a.Type == rules.ActKeep:
 		return after, nil // no IMAP call; recorded for the activity feed
 	case isMove(a.Type):
-		dest := a.Folder
-		var err error
-		switch role := moveRole[a.Type]; {
-		case a.Type == rules.ActTrash && dest != "":
-			// trash_to_folder: MailRules' own folder, made on first use. When it cannot be
-			// made the action fails: falling back to Trash would defeat the setting.
-			err = x.ensureFolder(ctx, mb, accountID, dest)
-		case role != "":
-			// Never guess a folder, and never create one: junk, archive, and trash with
-			// trash_to_folder off, only ever move to the folder the server marks for that use.
-			dest, err = x.roleFolder(ctx, accountID, role)
-		default:
-			// A rule's own folder: made on first use and put on record, so folder menus
-			// list it without waiting for the next folder discovery.
-			err = x.ensureFolder(ctx, mb, accountID, dest)
-		}
+		dest, err := x.destination(ctx, mb, accountID, a)
 		if err != nil {
 			return after, err
 		}
@@ -232,6 +217,151 @@ func (x *Exec) do(ctx context.Context, mb mail.Mailbox, accountID int64, a rules
 		return after, fmt.Errorf("unknown action %q", a.Type)
 	}
 	return setFlag(after, f.flag, f.set), setFlagOn(ctx, mb, cur.Ref(accountID), f.flag, f.set)
+}
+
+// destination is the folder a move-type action goes to, made first when it is one MailRules
+// makes.
+func (x *Exec) destination(ctx context.Context, mb mail.Mailbox, accountID int64, a rules.Action) (string, error) {
+	switch role := moveRole[a.Type]; {
+	case a.Type == rules.ActTrash && a.Folder != "":
+		// trash_to_folder: MailRules' own folder, made on first use. When it cannot be
+		// made the action fails: falling back to Trash would defeat the setting.
+		return a.Folder, x.ensureFolder(ctx, mb, accountID, a.Folder)
+	case role != "":
+		// Never guess a folder, and never create one: junk, archive, and trash with
+		// trash_to_folder off, only ever move to the folder the server marks for that use.
+		return x.roleFolder(ctx, accountID, role)
+	default:
+		// A rule's own folder: made on first use and put on record, so folder menus
+		// list it without waiting for the next folder discovery.
+		return a.Folder, x.ensureFolder(ctx, mb, accountID, a.Folder)
+	}
+}
+
+// Many is one email for ApplyMany: its decision, and the flags it had when it was just
+// read, which stand in for the snapshot Apply reads itself.
+type Many struct {
+	DecisionRecord
+	Flags []string
+}
+
+// IsMove reports whether acts is a single move-type action (move, archive, trash or junk),
+// the kind ApplyMany takes.
+func IsMove(acts []rules.Action) bool { return len(acts) == 1 && isMove(acts[0].Type) }
+
+// ApplyMany is Apply for one move-type action on several emails of one folder, as a cleanup
+// Sort replays it: the destination is looked up (or made) once and the emails go to the
+// server together (Mailbox.MoveMany), while each still gets its own row, written with its
+// before snapshot ahead of the change, so each is undone on its own as before. An email the
+// batch did not move is moved on its own, which says why when it cannot be. errs lines up
+// with ms, nil for each email whose action is on record as done (or dry-run); dry reports
+// the tenant's dry-run, in which nothing reaches the server.
+func (x *Exec) ApplyMany(ctx context.Context, ms []Many, a rules.Action, batchID int64) (dry bool, errs []error) {
+	errs = make([]error, len(ms))
+	fail := func(from int, err error) []error {
+		for i := from; i < len(errs); i++ {
+			errs[i] = err
+		}
+		return errs
+	}
+	if len(ms) == 0 {
+		return false, errs
+	}
+	accountID := ms[0].Ref.AccountID
+	tenant, err := x.Store.AccountTenant(ctx, accountID)
+	if err != nil {
+		return false, fail(0, err)
+	}
+	if dry, err = x.Store.DryRun(ctx, tenant, x.DryRunDefault); err != nil {
+		return false, fail(0, err)
+	}
+	acts, err := x.trashDestination(ctx, tenant, []rules.Action{a})
+	if err != nil {
+		return false, fail(0, err)
+	}
+	a = acts[0]
+	recs := make([]ActionRecord, len(ms))
+	for i, m := range ms {
+		recs[i] = ActionRecord{DecisionID: m.DecisionID, BatchID: batchID, MessageID: m.MessageID, AccountID: accountID,
+			Kind: a.Type, Folder: a.Folder, Before: store.Snapshot{Folder: m.Ref.Folder, UIDValidity: m.Ref.UIDValidity, UID: m.Ref.UID},
+			Status: store.ActionDryRun, CreatedAt: x.now()}
+	}
+	if dry {
+		for i := range recs {
+			if _, err := x.Store.InsertAction(ctx, recs[i]); err != nil {
+				return true, fail(i, err)
+			}
+		}
+		return true, errs
+	}
+
+	// What follows a mailbox change must be recorded even if the daemon is stopping.
+	recCtx := context.WithoutCancel(ctx)
+	notify := x.Notices == nil || x.Notices(ctx, tenant)
+	draft := x.Drafts != nil && x.Drafts(ctx, tenant)
+	mb, snapErr := x.Accounts.Mailbox(accountID)
+	for i, m := range ms {
+		recs[i].Before.Flags = m.Flags
+		recs[i].Status, recs[i].Error = store.ActionFailed, store.ActionInterrupted
+		if snapErr != nil {
+			recs[i].Error = snapErr.Error() // no mailbox, so no change: the attempt is still on record
+		}
+		if recs[i].ID, err = x.Store.InsertAction(recCtx, recs[i]); err != nil {
+			return false, fail(i, err)
+		}
+	}
+	if snapErr != nil {
+		return false, fail(0, snapErr)
+	}
+	end := func(i int, after *store.Snapshot, err error) {
+		rec := recs[i]
+		then := store.FollowUps{Notices: notify, Draft: draft}
+		if err != nil {
+			rec.Error, then.Draft = err.Error(), false
+			errs[i] = errors.Join(fmt.Errorf("%s: %w", a.Type, err), x.Store.FinishAction(recCtx, rec, then))
+			return
+		}
+		rec.Status, rec.Error, rec.After = store.ActionDone, "", after
+		errs[i] = x.Store.FinishAction(recCtx, rec, then)
+	}
+	dest, err := x.destination(ctx, mb, accountID, a)
+	var refs []mail.MsgRef
+	var at []int // index into ms of each of refs
+	for i, m := range ms {
+		after := recs[i].Before
+		switch {
+		case err != nil:
+			end(i, nil, err)
+		case m.Ref.Folder == dest:
+			end(i, &after, nil) // already there, as Apply leaves it
+		default:
+			refs, at = append(refs, m.Ref), append(at, i)
+		}
+	}
+	if len(refs) == 0 {
+		return false, errs
+	}
+	moved, moveErr := mb.MoveMany(ctx, refs, dest)
+	for k, i := range at {
+		if moveErr != nil {
+			end(i, nil, moveErr)
+			continue
+		}
+		to := moved[k]
+		if to.UID == 0 {
+			// Not moved with the rest: alone, Move moves it or says why it cannot.
+			var err error
+			if to, err = mb.Move(ctx, refs[k], dest); err != nil {
+				end(i, nil, err)
+				continue
+			}
+		}
+		after := recs[i].Before
+		after.Flags = slices.Clone(after.Flags)
+		after.Folder, after.UIDValidity, after.UID = to.Folder, to.UIDValidity, to.UID
+		end(i, &after, nil)
+	}
+	return false, errs
 }
 
 func setFlagOn(ctx context.Context, mb mail.Mailbox, ref mail.MsgRef, flag string, set bool) error {
@@ -364,6 +494,86 @@ func (x *Exec) undo(ctx context.Context, actionID int64) error {
 	return nil
 }
 
+// MoveChunk is how many emails go to the server in one MoveMany: a cleanup Sort's chunk
+// and an undo's. One command that fails takes no more than this many with it.
+const MoveChunk = 100
+
+// undoEach undoes acts as Undo would, in the order given, and returns an error per action,
+// lined up with acts. A move whose email has no other action among acts goes back together
+// with the others from the same folder to the same folder (Mailbox.MoveMany), MoveChunk at
+// a time; every other action, and a move the batch did not put back, is undone on its own.
+func (x *Exec) undoEach(ctx context.Context, acts []store.Action) []error {
+	errs := make([]error, len(acts))
+	done := make([]bool, len(acts))
+	per := map[int64]int{}
+	for _, a := range acts {
+		per[a.MessageID]++
+	}
+	type key struct {
+		account  int64
+		from, to string
+		validity uint32
+	}
+	groups := map[key][]int{}
+	var order []key
+	for i, a := range acts {
+		if !isMove(a.Kind) || a.Status != store.ActionDone || a.After == nil || a.After.Folder == a.Before.Folder ||
+			per[a.MessageID] > 1 || x.now()-a.CreatedAt > store.UndoDays*24*3600 {
+			continue
+		}
+		k := key{a.AccountID, a.After.Folder, a.Before.Folder, a.After.UIDValidity}
+		if groups[k] == nil {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], i)
+	}
+	for _, k := range order {
+		for chunk := range slices.Chunk(groups[k], MoveChunk) {
+			x.undoMoves(ctx, k.account, k.to, acts, chunk, done, errs)
+		}
+	}
+	for i, a := range acts {
+		if !done[i] {
+			errs[i] = x.Undo(ctx, a.ID)
+		}
+	}
+	return errs
+}
+
+// undoMoves puts the emails of the move actions acts[idx] back in folder to with one
+// MoveMany, holding the account's lock as Undo does, and marks each it put back undone. A
+// failed MoveMany fails them all: a move that may have half-happened is not tried again.
+// One it did not move (not where the action left it) is left for Undo to find or call gone.
+func (x *Exec) undoMoves(ctx context.Context, accountID int64, to string, acts []store.Action, idx []int, done []bool, errs []error) {
+	defer x.Accounts.Lock(accountID)()
+	mb, err := x.Accounts.Mailbox(accountID)
+	if err != nil {
+		return // undone one by one, which says why
+	}
+	refs := make([]mail.MsgRef, len(idx))
+	for k, i := range idx {
+		refs[k] = acts[i].After.Ref(accountID)
+	}
+	moved, err := mb.MoveMany(ctx, refs, to)
+	recCtx := context.WithoutCancel(ctx)
+	for k, i := range idx {
+		if err != nil {
+			done[i], errs[i] = true, fmt.Errorf("undo %s: %w", acts[i].Kind, err)
+			continue
+		}
+		if moved[k].UID == 0 {
+			continue
+		}
+		a := acts[i]
+		a.UndoneAt = x.now()
+		done[i], errs[i] = true, x.Store.MarkActionUndone(recCtx, a, moved[k], a.UndoneAt)
+		if errs[i] == nil {
+			a.Status = store.ActionUndone
+			x.publish(ctx, a.AccountID, events.ActionUndone, a)
+		}
+	}
+}
+
 // publish sends an event about one account's mailbox, for its tenant.
 func (x *Exec) publish(ctx context.Context, accountID int64, name string, data any) {
 	tenant, err := x.Store.AccountTenant(context.WithoutCancel(ctx), accountID)
@@ -437,19 +647,22 @@ func (x *Exec) UndoBatch(ctx context.Context, v store.Viewer, batchID int64) (Un
 	var u Undid
 	emails := map[int64]bool{}
 	changed := false // the batch changed a mailbox at some point
-	var errs []error
+	var todo []store.Action
 	for _, a := range slices.Backward(acts) {
 		changed = changed || a.Status == store.ActionDone || a.Status == store.ActionUndone
-		if a.Status != store.ActionDone {
-			continue
+		if a.Status == store.ActionDone {
+			todo = append(todo, a)
 		}
-		if err := x.Undo(ctx, a.ID); err != nil {
+	}
+	var errs []error
+	for i, err := range x.undoEach(ctx, todo) {
+		if err != nil {
 			u.Failed++
-			errs = append(errs, fmt.Errorf("action %d: %w", a.ID, err))
+			errs = append(errs, fmt.Errorf("action %d: %w", todo[i].ID, err))
 			continue
 		}
 		u.Actions++
-		emails[a.MessageID] = true
+		emails[todo[i].MessageID] = true
 	}
 	u.Emails = len(emails)
 	if len(errs) > 0 {
@@ -643,8 +856,8 @@ func (x *Exec) undoAll(ctx context.Context, tenantID int64, acts []store.Action)
 		return 0, Undid{}, nil, err
 	}
 	emails := map[int64]bool{}
-	for _, a := range acts {
-		if err := x.Undo(ctx, a.ID); err != nil {
+	for i, err := range x.undoEach(ctx, acts) {
+		if err != nil {
 			u.Failed++
 			if why == nil {
 				why = err
@@ -652,7 +865,7 @@ func (x *Exec) undoAll(ctx context.Context, tenantID int64, acts []store.Action)
 			continue
 		}
 		u.Actions++
-		emails[a.MessageID] = true
+		emails[acts[i].MessageID] = true
 	}
 	u.Emails = len(emails)
 	status := store.BatchDone

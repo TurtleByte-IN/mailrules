@@ -279,6 +279,78 @@ func TestMove(t *testing.T) {
 	}
 }
 
+// MoveMany moves the messages still there with one command and says where each went; one
+// that is not there comes back zero, a stale UIDVALIDITY moves nothing, and mail another
+// client marked deleted is never expunged.
+func TestMoveMany(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		caps    imap.CapSet
+		wantErr error
+	}{
+		{"UID MOVE", capsMove, nil},
+		{"UID MOVE without UIDPLUS finds them by Message-ID", imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapMove: {}}, nil},
+		{"COPY, STORE and UID EXPUNGE fallback", capsUIDPlus, nil},
+		{"neither MOVE nor UIDPLUS is refused", capsBare, mail.ErrUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			s := imaptest.Start(t, tc.caps)
+			if err := s.User.Create("Food", nil); err != nil {
+				t.Fatal(err)
+			}
+			s.Append(t, "INBOX", eml(1))
+			s.Append(t, "INBOX", eml(2), imap.FlagDeleted) // another client's: never expunged
+			s.Append(t, "INBOX", eml(3))
+			s.Append(t, "INBOX", eml(4))
+			m := open(t, config(s))
+			st, _ := m.Status(ctx, "INBOX")
+			ref := func(uid uint32) mail.MsgRef {
+				return mail.MsgRef{AccountID: 7, Folder: "INBOX", UIDValidity: st.UIDValidity, UID: uid}
+			}
+
+			moved, err := m.MoveMany(ctx, []mail.MsgRef{ref(1), ref(3), ref(9), ref(4)}, "Food")
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				if got := uids(t, m, "INBOX"); !slices.Equal(got, []uint32{1, 2, 3, 4}) {
+					t.Fatalf("INBOX after a refused move = %v", got)
+				}
+				return
+			}
+			if err != nil || len(moved) != 4 {
+				t.Fatalf("MoveMany = %+v, %v", moved, err)
+			}
+			if got := uids(t, m, "INBOX"); !slices.Equal(got, []uint32{2}) {
+				t.Fatalf("INBOX = %v, want [2]: only the moved UIDs may be expunged", got)
+			}
+			dst, _ := m.Status(ctx, "Food")
+			for i, id := range []string{"msg-1", "msg-3", "", "msg-4"} {
+				if id == "" {
+					if moved[i] != (mail.MsgRef{}) {
+						t.Errorf("a UID that was never there came back as %+v", moved[i])
+					}
+					continue
+				}
+				found, err := m.FindByMessageID(ctx, "Food", id+"@example.test")
+				if err != nil || found != moved[i] || moved[i].UIDValidity != dst.UIDValidity {
+					t.Errorf("%s: moved to %+v, found at %+v (%v)", id, moved[i], found, err)
+				}
+			}
+
+			stale := ref(2)
+			stale.UIDValidity++
+			if moved, err := m.MoveMany(ctx, []mail.MsgRef{stale}, "Food"); err != nil || moved[0] != (mail.MsgRef{}) {
+				t.Errorf("a stale UIDVALIDITY: %+v, %v", moved, err)
+			}
+			if got := uids(t, m, "INBOX"); !slices.Equal(got, []uint32{2}) {
+				t.Errorf("INBOX after a stale move = %v", got)
+			}
+		})
+	}
+}
+
 // Append saves a whole message with its flags and date and says where it went; Delete
 // removes that one UID and nothing else, even mail another client marked deleted, and is
 // refused, changing nothing, by a server without UIDPLUS.
