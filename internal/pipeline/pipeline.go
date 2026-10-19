@@ -51,6 +51,7 @@ var ErrHalted = errors.New("the plan has ended, so MailRules sorts nothing")
 // Executor is the part of actions.Executor the pipeline needs.
 type Executor interface {
 	Apply(ctx context.Context, d actions.DecisionRecord, acts []rules.Action, batchID int64) ([]actions.ActionRecord, error)
+	ApplyMany(ctx context.Context, ms []actions.Many, a rules.Action, batchID int64) (dry bool, errs []error)
 }
 
 // Pipeline processes the mail of one account. It is not safe for concurrent use: the
@@ -340,45 +341,116 @@ func (p *Pipeline) learnFrom(ctx context.Context, dec store.Decision, res rules.
 	}
 }
 
-// SortSaved applies a decision a cleanup check already settled to one existing email,
-// without asking a model: it verifies the email is still where the check found it
-// (BODY.PEEK, never marking it read), ingests its row, records the decision carrying the
-// check's stage, rule, model, confidence and reason — but no fresh cost, which is on the
-// ledger once from the check — and hands the actions to the executor in the run's batch.
-// applied is false when the email has moved or gone since the check: it is passed over.
-func (p *Pipeline) SortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) (applied bool, err error) {
+// Saved is one email a cleanup check settled: where the check found it, and its answer.
+type Saved struct {
+	Ref mail.MsgRef
+	Out Outcome
+}
+
+// SortSaved applies decisions a cleanup check already settled to existing emails of one
+// folder (one UIDVALIDITY), without asking a model: it verifies they are still where the
+// check found them with one fetch for all of them (BODY.PEEK, never marking them read),
+// ingests their rows, records each decision carrying the check's stage, rule, model,
+// confidence and reason — but no fresh cost, which is on the ledger once from the check —
+// and hands the actions to the executor in the run's batch: the emails whose one action is
+// the same move go to the server together (Executor.ApplyMany), any other email on its own.
+// applied[i] is false when email i has moved or gone since the check: it is passed over.
+// An error is the first email whose actions failed or whose outcome could not be recorded;
+// what the others did is on record.
+func (p *Pipeline) SortSaved(ctx context.Context, saved []Saved) (applied []bool, err error) {
 	if err := p.halted(ctx); err != nil {
-		return false, err
+		return nil, err
 	}
-	raw, err := p.Mailbox.Fetch(ctx, ref, 0)
-	if errors.Is(err, mail.ErrNotFound) {
-		return false, nil // moved or deleted since the check: skip it, and say so
+	refs := make([]mail.MsgRef, len(saved))
+	for i, s := range saved {
+		refs[i] = s.Ref
 	}
+	raws, err := p.Mailbox.FetchMany(ctx, refs, 0)
 	if err != nil {
-		return false, fmt.Errorf("fetch: %w", err)
+		return nil, fmt.Errorf("fetch: %w", err)
 	}
 	now := p.now()
-	m, _, err := p.Store.IngestMessage(ctx, ref, now.Unix())
-	if err != nil {
-		return false, err
+	type email struct {
+		m   store.Message
+		dec store.Decision
+		res rules.Result
+		dry bool
+		err error
 	}
-	if sum, perr := message.Parse(raw, m.AccountID, p.BodyChars); perr == nil {
-		if err := contacts.Fill(ctx, p.Store, sum); err != nil {
-			return false, err
+	applied = make([]bool, len(saved))
+	emails := make([]*email, len(saved))
+	moves := map[rules.Action][]int{} // emails whose one action is that move
+	var order []rules.Action
+	for i, sv := range saved {
+		raw := raws[i]
+		if raw == nil {
+			continue // moved or deleted since the check: skip it, and say so
 		}
-		fill(&m, sum, raw)
-		if err := p.Store.SaveMessageSummary(ctx, m); err != nil {
-			return false, err
+		m, _, err := p.Store.IngestMessage(ctx, refs[i], now.Unix())
+		if err != nil {
+			return applied, err
+		}
+		if sum, perr := message.Parse(raw, m.AccountID, p.BodyChars); perr == nil {
+			if err := contacts.Fill(ctx, p.Store, sum); err != nil {
+				return applied, err
+			}
+			fill(&m, sum, raw)
+			if err := p.Store.SaveMessageSummary(ctx, m); err != nil {
+				return applied, err
+			}
+		}
+		e := &email{m: m, res: sv.Out.Result, dec: decisionFrom(sv.Out, m.ID, now)}
+		e.dec.TokensIn, e.dec.TokensOut, e.dec.CostUSD, e.dec.LatencyMS = 0, 0, 0, 0 // paid once, on the check's ledger
+		e.dec.Metered = false                                                        // counted once, by the check
+		emails[i] = e
+		acts := actsOf(e.res)
+		if p.Exec == nil || !actions.IsMove(acts) {
+			e.dry, e.err = p.finish(ctx, &e.m, e.dec, e.res)
+			continue
+		}
+		if e.dec.ID, err = p.Store.AddDecision(ctx, e.dec, store.StateDecided); err != nil {
+			return applied, err
+		}
+		if moves[acts[0]] == nil {
+			order = append(order, acts[0])
+		}
+		moves[acts[0]] = append(moves[acts[0]], i)
+	}
+	if len(order) > 0 {
+		batch, err := p.batch(ctx)
+		if err != nil {
+			return applied, err
+		}
+		for _, a := range order {
+			ms := make([]actions.Many, len(moves[a]))
+			for k, i := range moves[a] {
+				e := emails[i]
+				ms[k] = actions.Many{DecisionRecord: actions.DecisionRecord{DecisionID: e.dec.ID, MessageID: e.m.ID, Ref: e.m.Location()}, Flags: raws[i].Flags}
+			}
+			dry, errs := p.Exec.ApplyMany(ctx, ms, a, batch)
+			for k, i := range moves[a] {
+				e := emails[i]
+				if e.dry, e.err = dry, errs[k]; e.err != nil {
+					e.err = fmt.Errorf("apply: %w", e.err)
+					continue
+				}
+				e.err = p.conclude(ctx, &e.m, e.dec, e.res)
+			}
 		}
 	}
-	dec := decisionFrom(out, m.ID, now)
-	dec.TokensIn, dec.TokensOut, dec.CostUSD, dec.LatencyMS = 0, 0, 0, 0 // paid once, on the check's ledger
-	dec.Metered = false                                                  // counted once, by the check
-	dry, err := p.finish(ctx, &m, dec, out.Result)
-	if err != nil {
-		return false, err
+	for i, e := range emails {
+		if e == nil {
+			continue
+		}
+		if e.err == nil {
+			e.err = p.settled(ctx, e.dec, e.res, &e.m, e.dry)
+		}
+		if e.err != nil {
+			return applied, e.err
+		}
+		applied[i] = true
 	}
-	return true, p.settled(ctx, dec, out.Result, &m, dry)
+	return applied, nil
 }
 
 // settled does what follows an email's decision once its actions ran: the sender rule that
@@ -405,35 +477,53 @@ func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decis
 	if dec.ID, err = p.Store.AddDecision(ctx, dec, store.StateDecided); err != nil {
 		return false, err
 	}
-	rec := actions.DecisionRecord{DecisionID: dec.ID, MessageID: m.ID, Ref: m.Location()}
-	state, event := store.StateSkipped, events.MessageProcessed
-	var acts []rules.Action
-	switch {
-	case res.Review:
-		state, event = store.StateReview, events.MessageReview
-	case len(res.Actions) > 0:
-		state, acts = store.StateActed, res.Actions
-	}
-	if p.Exec != nil && len(acts) > 0 {
-		// Live processing shares one batch per day, so "undo today" is one batch undo.
-		batch := p.Batch
-		if batch == 0 {
-			if batch, err = p.Store.LiveBatch(ctx, p.Account.TenantID, p.now()); err != nil {
-				return false, err
-			}
+	if acts := actsOf(res); p.Exec != nil && len(acts) > 0 {
+		batch, err := p.batch(ctx)
+		if err != nil {
+			return false, err
 		}
-		recs, err := p.Exec.Apply(ctx, rec, acts, batch)
+		recs, err := p.Exec.Apply(ctx, actions.DecisionRecord{DecisionID: dec.ID, MessageID: m.ID, Ref: m.Location()}, acts, batch)
 		if err != nil {
 			return false, fmt.Errorf("apply: %w", err)
 		}
 		dry = slices.ContainsFunc(recs, func(a actions.ActionRecord) bool { return a.Status == store.ActionDryRun })
 	}
+	return dry, p.conclude(ctx, m, dec, res)
+}
+
+// actsOf is what a decision's actions are once it is settled: none while it waits in Needs
+// review.
+func actsOf(res rules.Result) []rules.Action {
+	if res.Review {
+		return nil
+	}
+	return res.Actions
+}
+
+// batch is the batch the actions belong to: the run's own, or else the day's live batch, so
+// "undo today" is one batch undo.
+func (p *Pipeline) batch(ctx context.Context) (int64, error) {
+	if p.Batch != 0 {
+		return p.Batch, nil
+	}
+	return p.Store.LiveBatch(ctx, p.Account.TenantID, p.now())
+}
+
+// conclude sets a decided message's final state once its actions ran and publishes the event.
+func (p *Pipeline) conclude(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) error {
+	state, event := store.StateSkipped, events.MessageProcessed
+	switch {
+	case res.Review:
+		state, event = store.StateReview, events.MessageReview
+	case len(res.Actions) > 0:
+		state = store.StateActed
+	}
 	if err := p.Store.SetMessageState(ctx, m.ID, state, m.Attempts, 0); err != nil {
-		return false, err
+		return err
 	}
 	m.State, m.NextAttemptAt = state, 0
 	p.Hub.Publish(p.Account.TenantID, m.AccountID, event, store.ActivityRow{Message: *m, Decision: &dec})
-	return dry, nil
+	return nil
 }
 
 // fill copies what is kept of a parsed email onto its row. The body is not: only its

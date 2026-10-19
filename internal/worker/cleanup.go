@@ -10,9 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TurtleByte-IN/mailrules/internal/actions"
 	"github.com/TurtleByte-IN/mailrules/internal/composer"
 	"github.com/TurtleByte-IN/mailrules/internal/events"
 	"github.com/TurtleByte-IN/mailrules/internal/mail"
+	"github.com/TurtleByte-IN/mailrules/internal/pipeline"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
 )
 
@@ -159,11 +161,13 @@ func (m *Manager) SortAll(ctx context.Context, runs []SortRun) ([]store.Batch, e
 	return batches, nil
 }
 
-// sort applies the kept rows, oldest first. Between two emails it lets go of the account,
-// so new mail, an undo or a correction is never kept waiting for the whole run. It asks no
-// model: the decisions were settled by the check. An email that is no longer where the
-// check found it is passed over and counted as skipped. finish is called once the last
-// email is handled and before the run is recorded as finished.
+// sort applies the kept rows, oldest first, actions.MoveChunk at a time: each chunk is read
+// with one fetch and its moves go to the server together (Pipeline.SortSaved), and its
+// progress is reported. Between two chunks it lets go of the account, so new mail, an undo
+// or a correction is never kept waiting for the whole run. It asks no model: the decisions
+// were settled by the check. An email that is no longer where the check found it is passed
+// over and counted as skipped. finish is called once the last email is handled and before
+// the run is recorded as finished.
 func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, rows []composer.CheckRow, finish func()) {
 	acct := s.account() // the supervisor may change its status fields while this runs
 	p := s.Pipeline
@@ -196,33 +200,51 @@ func (s *Supervisor) sort(ctx context.Context, mb mail.Mailbox, batchID int64, r
 				"handled", total.handled, "of", len(rows), "skipped", total.skipped, "duration_ms", time.Since(began).Milliseconds())
 		}
 	}
-	// About a hundred progress events per run, however long it is.
-	every := max(1, len(rows)/100)
-	for i, row := range rows {
+	for len(rows) > 0 {
 		// A connection that was lost or replaced would fail every remaining email.
 		if ctx.Err() != nil || s.Mailbox() != mb {
 			report(store.BatchFailed)
 			return
 		}
-		var applied bool
+		chunk := nextChunk(rows)
+		rows = rows[len(chunk):]
+		saved := make([]pipeline.Saved, len(chunk))
+		for i, row := range chunk {
+			saved[i] = pipeline.Saved{Ref: row.Ref, Out: row.Outcome}
+		}
+		var applied []bool
 		err := guard(ctx, "a cleanup sort panicked", acct.ID, func() error {
 			return s.locked(func() (err error) {
-				applied, err = p.SortSaved(ctx, row.Ref, row.Outcome)
+				applied, err = p.SortSaved(ctx, saved)
 				return err
 			})
 		})
-		if err != nil { // the outcome could not be recorded at all, the daemon is stopping, or it panicked
+		done := 0
+		for _, ok := range applied {
+			if ok {
+				done++
+			}
+		}
+		if err != nil { // an email's actions failed, an outcome could not be recorded, the daemon is stopping, or it panicked
+			handled += done
 			slog.WarnContext(ctx, "cleanup sort stopped", "account", acct.ID, "batch", batchID, "error", err.Error())
 			report(store.BatchFailed)
 			return
 		}
-		handled++
-		if !applied {
-			skipped++
-		}
-		if (i+1)%every == 0 && i+1 < len(rows) {
+		handled, skipped = handled+len(chunk), skipped+len(chunk)-done
+		if len(rows) > 0 {
 			report("")
 		}
 	}
 	report(store.BatchDone)
+}
+
+// nextChunk is the first up to actions.MoveChunk rows that share the first one's folder and
+// UIDVALIDITY: what one SortSaved, and one move command, takes.
+func nextChunk(rows []composer.CheckRow) []composer.CheckRow {
+	n := 1
+	for n < len(rows) && n < actions.MoveChunk && rows[n].Ref.Folder == rows[0].Ref.Folder && rows[n].Ref.UIDValidity == rows[0].Ref.UIDValidity {
+		n++
+	}
+	return rows[:n]
 }

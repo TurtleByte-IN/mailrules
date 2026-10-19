@@ -23,6 +23,9 @@ import (
 type Mailbox struct {
 	AccountID int64
 	Caps      mail.Caps
+	// Moves counts move commands, one per Move and one per MoveMany, so a test can tell a
+	// batch from a run of single moves. Read it while nothing else uses the mailbox.
+	Moves int
 
 	mu      sync.Mutex
 	folders map[string]*folder
@@ -255,6 +258,12 @@ func (m *Mailbox) FetchSince(ctx context.Context, name string, since time.Time, 
 func (m *Mailbox) Move(ctx context.Context, ref mail.MsgRef, dest string) (mail.MsgRef, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.Moves++
+	return m.move(ctx, ref, dest)
+}
+
+// move is Move for callers that hold m.mu.
+func (m *Mailbox) move(ctx context.Context, ref mail.MsgRef, dest string) (mail.MsgRef, error) {
 	if !m.Caps.CanMove() {
 		return mail.MsgRef{}, fmt.Errorf("move: %w", mail.ErrUnsupported)
 	}
@@ -269,6 +278,26 @@ func (m *Mailbox) Move(ctx context.Context, ref mail.MsgRef, dest string) (mail.
 	raw := f.msgs[i].raw
 	f.msgs = slices.Delete(f.msgs, i, i+1)
 	return m.add(dest, d, raw), ctx.Err()
+}
+
+// MoveMany is Move for each message, as one command, with a zero MsgRef for one that is
+// not there.
+func (m *Mailbox) MoveMany(ctx context.Context, refs []mail.MsgRef, dest string) ([]mail.MsgRef, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Moves++
+	out := make([]mail.MsgRef, len(refs))
+	for i, ref := range refs {
+		if ref.Folder != refs[0].Folder || ref.UIDValidity != refs[0].UIDValidity {
+			return nil, fmt.Errorf("move from %q: the messages are not all in one folder", refs[0].Folder)
+		}
+		to, err := m.move(ctx, ref, dest)
+		if err != nil && !errors.Is(err, mail.ErrNotFound) {
+			return nil, err
+		}
+		out[i] = to
+	}
+	return out, nil
 }
 
 // Append adds a message to a folder, as APPEND does, and returns its place as APPENDUID

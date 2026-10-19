@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -28,6 +29,8 @@ type imapWorld struct {
 	srv  *imaptest.Server
 	st   *store.Store
 	acct store.Account
+	mgr  *Manager
+	exec *actions.Exec
 	user mail.Mailbox // the user's mail client: changes made outside MailRules
 }
 
@@ -60,13 +63,13 @@ func newIMAPWorld(t *testing.T) *imapWorld {
 		IdleRestart: 40 * time.Millisecond, PollInterval: 10 * time.Millisecond, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond}
 	hub := events.NewHub()
 	mgr := &Manager{}
+	exec := &actions.Exec{Store: st, Accounts: mgr, Hub: hub}
 	runCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	t.Cleanup(func() { stop(); mgr.Wait() }) // before the database closes
 	mgr.Start(runCtx, &Supervisor{
 		Account: acct, Store: st, Hub: hub,
-		Open: func(ctx context.Context) (mail.Mailbox, error) { return imap.Open(ctx, cfg) },
-		Pipeline: pipeline.Pipeline{Store: st, Hub: hub, MinConfidence: 0.75, BodyChars: 2000,
-			Exec: &actions.Exec{Store: st, Accounts: mgr, Hub: hub}},
+		Open:       func(ctx context.Context) (mail.Mailbox, error) { return imap.Open(ctx, cfg) },
+		Pipeline:   pipeline.Pipeline{Store: st, Hub: hub, MinConfidence: 0.75, BodyChars: 2000, Exec: exec},
 		BackoffMin: time.Millisecond, BackoffMax: 5 * time.Millisecond, DrainTimeout: 50 * time.Millisecond,
 	})
 	eventually(t, "the account to be live", func() bool {
@@ -78,7 +81,7 @@ func newIMAPWorld(t *testing.T) *imapWorld {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = user.Close() })
-	return &imapWorld{t: t, srv: srv, st: st, acct: acct, user: user}
+	return &imapWorld{t: t, srv: srv, st: st, acct: acct, mgr: mgr, exec: exec, user: user}
 }
 
 // deliver puts an email in INBOX and waits until MailRules has handled it.
@@ -188,5 +191,61 @@ func TestEmailBackUnderANewUID(t *testing.T) {
 				t.Errorf("Needs review holds %d, want %d", n, tc.rows)
 			}
 		})
+	}
+}
+
+// MAI-262: a cleanup Sort over a real IMAP connection moves its emails in chunks of
+// actions.MoveChunk, each email still on record as its own undoable action, and the batch's
+// undo puts every one back.
+func TestCleanupSortOverIMAP(t *testing.T) {
+	w := newIMAPWorld(t)
+	ctx := t.Context()
+	if err := w.user.EnsureFolder(ctx, "Old"); err != nil {
+		t.Fatal(err)
+	}
+	const n = actions.MoveChunk + 50 // two chunks
+	for i := range n {
+		w.srv.Append(t, "Old", fmt.Sprintf("From: orders@food.example\r\nTo: me@example.test\r\nSubject: order %d\r\nMessage-ID: <order-%d@food.example>\r\n\r\nbody\r\n", i, i))
+	}
+	rows := checkRows(t, w.st, w.user, w.acct.ID, 1, "Old")
+	if len(rows) != n {
+		t.Fatalf("check found %d rows, want %d", len(rows), n)
+	}
+	b, err := w.mgr.Sort(ctx, SortRun{AccountID: w.acct.ID, Folder: "Old", Rows: rows})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the run to finish", func() bool {
+		got, _ := w.st.Batch(ctx, b.ID)
+		return got.Status != store.BatchRunning
+	})
+	if got, _ := w.st.Batch(ctx, b.ID); got.Status != store.BatchDone || got.Done != n || got.Skipped != 0 {
+		t.Fatalf("batch = %+v", got)
+	}
+	count := func(folder string) int {
+		refs, _, err := w.user.FetchSince(ctx, folder, time.Time{}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(refs)
+	}
+	if old, food := count("Old"), count("Food"); old != 0 || food != n {
+		t.Fatalf("after the sort: Old %d, Food %d", old, food)
+	}
+	acts, err := w.st.BatchActions(ctx, b.ID)
+	if err != nil || len(acts) != n {
+		t.Fatalf("%d actions on record, %v", len(acts), err)
+	}
+	for _, a := range acts {
+		if a.Status != store.ActionDone || a.After == nil || a.After.Folder != "Food" || a.After.UID == 0 {
+			t.Fatalf("action = %+v", a)
+		}
+	}
+	u, err := w.exec.UndoBatch(ctx, store.Viewer{UserID: 1, TenantID: 1}, b.ID)
+	if err != nil || u.Actions != n || u.Emails != n {
+		t.Fatalf("UndoBatch = %+v, %v", u, err)
+	}
+	if old, food := count("Old"), count("Food"); old != n || food != 0 {
+		t.Errorf("after the undo: Old %d, Food %d", old, food)
 	}
 }

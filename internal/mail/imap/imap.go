@@ -787,6 +787,153 @@ func (m *Mailbox) Move(ctx context.Context, ref mail.MsgRef, dest string) (mail.
 	return out, nil
 }
 
+// MoveMany is Move for many messages of one folder: one UID FETCH to learn which are still
+// there, then one UID MOVE (or UID COPY, UID STORE and UID EXPUNGE of exactly the UIDs
+// copied) for all of them. Without UIDPLUS no COPYUID says where they went, so each is
+// found again in dest by its Message-ID, and one that has none is left where it is.
+func (m *Mailbox) MoveMany(ctx context.Context, refs []mail.MsgRef, dest string) ([]mail.MsgRef, error) {
+	out := make([]mail.MsgRef, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	folder, validity := refs[0].Folder, refs[0].UIDValidity
+	var uids imap.UIDSet
+	at := make(map[imap.UID][]int, len(refs))
+	for i, ref := range refs {
+		if ref.Folder != folder || ref.UIDValidity != validity {
+			return nil, fmt.Errorf("move from %q: the messages are not all in one folder", folder)
+		}
+		uid := imap.UID(ref.UID)
+		if at[uid] == nil {
+			uids.AddNum(uid)
+		}
+		at[uid] = append(at[uid], i)
+	}
+	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, HeaderFields: []string{"Message-ID"}, Peek: true}
+	ids := map[imap.UID]string{} // without UIDPLUS: how to find each moved message again
+	err := m.do(ctx, fmt.Sprintf("move to %q", dest), func(c *imapclient.Client) error {
+		if !m.caps.CanMove() {
+			return fmt.Errorf("%w: the server has neither MOVE nor UIDPLUS, so mail cannot be moved safely", mail.ErrUnsupported)
+		}
+		if err := m.selectFolder(c, folder); err != nil {
+			return err
+		}
+		if validity != m.selValidity {
+			return nil // every UID now means another message, or none
+		}
+		// Only the messages still there are moved: servers disagree on how they answer a
+		// move of nothing. A UID that does not come back is asked for once more after NOOP,
+		// as fetchOne does.
+		opts := &imap.FetchOptions{UID: true}
+		if !m.caps.UIDPlus {
+			opts.BodySection = []*imap.FetchItemBodySection{section}
+		}
+		var present imap.UIDSet
+		for try, ask := 0, uids; len(ask) > 0; try++ {
+			msgs, err := c.Fetch(ask, opts).Collect()
+			if err != nil {
+				return err
+			}
+			for _, b := range msgs {
+				if at[b.UID] == nil || present.Contains(b.UID) {
+					continue
+				}
+				if !m.caps.UIDPlus {
+					id := messageIDOf(b.FindBodySection(section))
+					if id == "" {
+						continue // no way to find it in dest afterwards: left for Move to refuse
+					}
+					ids[b.UID] = id
+				}
+				present.AddNum(b.UID)
+			}
+			if try > 0 {
+				break
+			}
+			var missing imap.UIDSet
+			for uid := range at {
+				if !present.Contains(uid) {
+					missing.AddNum(uid)
+				}
+			}
+			if len(missing) > 0 {
+				if err := c.Noop().Wait(); err != nil {
+					return err
+				}
+			}
+			ask = missing
+		}
+		if len(present) == 0 {
+			return nil
+		}
+		var (
+			src, dst     imap.UIDSet
+			destValidity uint32
+		)
+		switch {
+		case m.caps.Move:
+			data, err := c.Move(present, dest).Wait()
+			if err != nil {
+				return err
+			}
+			src, _ = data.SourceUIDs.(imap.UIDSet)
+			dst, _ = data.DestUIDs.(imap.UIDSet)
+			destValidity = data.UIDValidity
+		default: // UIDPLUS
+			data, err := c.Copy(present, dest).Wait()
+			if err != nil {
+				return err
+			}
+			src, dst, destValidity = data.SourceUIDs, data.DestUIDs, data.UIDValidity
+			if len(src) == 0 {
+				return nil // nothing copied: delete nothing
+			}
+			store := &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
+			if err := c.Store(src, store, nil).Close(); err != nil {
+				return fmt.Errorf("copied to %q but could not mark the originals deleted: %w", dest, err)
+			}
+			if err := c.UIDExpunge(src).Close(); err != nil {
+				return fmt.Errorf("copied to %q but could not expunge the originals: %w", dest, err)
+			}
+		}
+		// COPYUID lists the source and destination UIDs in the same order (RFC 4315).
+		from, _ := src.Nums()
+		to, _ := dst.Nums()
+		if len(from) != len(to) {
+			return nil // a COPYUID that does not pair up: found again below, or left for Move
+		}
+		for k, uid := range from {
+			for _, i := range at[uid] {
+				out[i] = mail.MsgRef{AccountID: refs[i].AccountID, Folder: dest, UIDValidity: destValidity, UID: uint32(to[k])}
+			}
+			delete(ids, uid)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for uid, id := range ids {
+		ref, err := m.FindByMessageID(ctx, dest, id)
+		if err != nil && !errors.Is(err, mail.ErrNotFound) {
+			return nil, err
+		}
+		for _, i := range at[uid] {
+			out[i] = ref
+		}
+	}
+	return out, nil
+}
+
+// messageIDOf reads the Message-ID out of a fetched header section, without angle brackets.
+func messageIDOf(header []byte) string {
+	msg, err := netmail.ReadMessage(bytes.NewReader(header))
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(msg.Header.Get("Message-Id")), "<>")
+}
+
 // fetchMessageID peeks at one message's Message-ID header.
 func fetchMessageID(c *imapclient.Client, uid imap.UIDSet) (string, error) {
 	section := &imap.FetchItemBodySection{Specifier: imap.PartSpecifierHeader, HeaderFields: []string{"Message-ID"}, Peek: true}
@@ -794,11 +941,7 @@ func fetchMessageID(c *imapclient.Client, uid imap.UIDSet) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	msg, err := netmail.ReadMessage(bytes.NewReader(b.FindBodySection(section)))
-	if err != nil {
-		return "", fmt.Errorf("read message-id: %w", err)
-	}
-	id := strings.Trim(strings.TrimSpace(msg.Header.Get("Message-Id")), "<>")
+	id := messageIDOf(b.FindBodySection(section))
 	if id == "" {
 		return "", fmt.Errorf("%w: the server reports no new UID for moves and the message has no Message-ID to find it by", mail.ErrUnsupported)
 	}

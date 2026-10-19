@@ -64,6 +64,22 @@ func (s *spy) Move(ctx context.Context, ref mail.MsgRef, dest string) (mail.MsgR
 	return moved, err
 }
 
+// MoveMany records the one command ("move-many N", not itself a change) and then a "move"
+// for each message it moved, so changes still counts one per message.
+func (s *spy) MoveMany(ctx context.Context, refs []mail.MsgRef, dest string) ([]mail.MsgRef, error) {
+	moved, err := s.Mailbox.MoveMany(ctx, refs, dest)
+	if err != nil {
+		return moved, err
+	}
+	s.calls = append(s.calls, fmt.Sprintf("move-many %d", len(refs)))
+	for _, to := range moved {
+		if to.UID != 0 {
+			s.calls = append(s.calls, "move "+dest)
+		}
+	}
+	return moved, nil
+}
+
 func (s *spy) SetFlags(ctx context.Context, ref mail.MsgRef, add, remove []string) error {
 	if s.storeErr != nil {
 		return s.storeErr
@@ -452,12 +468,83 @@ func TestDryRun(t *testing.T) {
 // rule never appends or deletes (checkInvariants counts both as changes).
 func TestMailboxOffersNoDelete(t *testing.T) {
 	readOnly := []string{"Capabilities", "Close", "Fetch", "FetchMany", "FetchSince", "FindByMessageID", "Flags", "Folders", "Present", "SentRecipients", "Status", "Watch"}
-	changing := []string{"EnsureFolder", "Move", "SetFlags", "Append", "Delete"}
+	changing := []string{"EnsureFolder", "Move", "MoveMany", "SetFlags", "Append", "Delete"}
 	typ := reflect.TypeFor[mail.Mailbox]()
 	for i := range typ.NumMethod() {
 		if name := typ.Method(i).Name; !slices.Contains(readOnly, name) && !slices.Contains(changing, name) {
 			t.Errorf("mail.Mailbox gained %s: decide whether it changes a mailbox, and if so cover it in the safety invariants", name)
 		}
+	}
+}
+
+// ApplyMany moves several emails with one command, gives each its own row with the flags it
+// was read with as its before snapshot, moves one the batch missed on its own (which says it
+// is gone), records nothing but dry-run rows in dry-run, and its batch undoes with one
+// command too.
+func TestApplyMany(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	batch, err := e.st.CreateBatch(ctx, 1, store.BatchCleanup, store.BatchRunning, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, gone := e.deliver("a"), e.deliver("b", `\Seen`), e.deliver("gone")
+	if _, err := e.raw.Move(ctx, gone.Ref, "Archive"); err != nil { // moved by someone else since it was read
+		t.Fatal(err)
+	}
+	e.mb.calls = nil
+	ms := []Many{{a, nil}, {b, []string{`\Seen`}}, {gone, nil}}
+	dry, errs := e.x.ApplyMany(ctx, ms, rules.Action{Type: rules.ActTrash}, batch)
+	if dry || errs[0] != nil || errs[1] != nil || !errors.Is(errs[2], mail.ErrNotFound) {
+		t.Fatalf("ApplyMany = %v, %v", dry, errs)
+	}
+	want := []string{"ensure " + TrashFolder, "move-many 3", "move " + TrashFolder, "move " + TrashFolder}
+	if !slices.Equal(e.mb.calls, want) {
+		t.Errorf("mailbox calls = %v, want %v", e.mb.calls, want)
+	}
+	for _, m := range ms[:2] {
+		rows := e.actions(m.MessageID)
+		if len(rows) != 1 || rows[0].Status != store.ActionDone || rows[0].BatchID != batch || rows[0].Folder != TrashFolder ||
+			rows[0].Before.Ref(e.acct.ID) != m.Ref || !slices.Equal(rows[0].Before.Flags, m.Flags) || rows[0].After.Folder != TrashFolder {
+			t.Errorf("rows of %d = %+v", m.MessageID, rows)
+		}
+		if ref, flags := e.where(m.MessageID); ref.Folder != TrashFolder || !slices.Equal(flags, m.Flags) {
+			t.Errorf("message %d is in %s with %v", m.MessageID, ref.Folder, flags)
+		}
+	}
+	if rows := e.actions(gone.MessageID); len(rows) != 1 || rows[0].Status != store.ActionFailed || rows[0].Error == "" {
+		t.Errorf("rows of the gone email = %+v", rows)
+	}
+
+	// Each is still undone on its own, and the rest of the batch with one command.
+	if err := e.x.Undo(ctx, e.actions(a.MessageID)[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	e.mb.calls = nil
+	if u, err := e.x.UndoBatch(ctx, e.user.Viewer(), batch); u != (Undid{Actions: 1, Emails: 1}) || err != nil {
+		t.Fatalf("UndoBatch = %+v, %v", u, err)
+	}
+	if !slices.Equal(e.mb.calls, []string{"move-many 1", "move INBOX"}) {
+		t.Errorf("undo calls = %v", e.mb.calls)
+	}
+	for _, m := range ms[:2] {
+		if ref, flags := e.where(m.MessageID); ref.Folder != "INBOX" || !slices.Equal(flags, m.Flags) {
+			t.Errorf("after undo, message %d is in %s with %v", m.MessageID, ref.Folder, flags)
+		}
+	}
+
+	// Dry-run: rows only, nothing reaches the server.
+	if err := e.st.SetDryRun(ctx, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	c := e.deliver("c")
+	e.mb.calls = nil
+	dry, errs = e.x.ApplyMany(ctx, []Many{{c, nil}}, rules.Action{Type: rules.ActMove, Folder: "Food"}, batch)
+	if !dry || errs[0] != nil || len(e.mb.calls) != 0 {
+		t.Fatalf("dry-run ApplyMany = %v, %v, calls %v", dry, errs, e.mb.calls)
+	}
+	if rows := e.actions(c.MessageID); len(rows) != 1 || rows[0].Status != store.ActionDryRun || rows[0].After != nil {
+		t.Errorf("dry-run rows = %+v", rows)
 	}
 }
 

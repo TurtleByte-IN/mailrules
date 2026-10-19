@@ -27,6 +27,7 @@ import (
 // apply and changes nothing.
 type recorder struct {
 	calls []call
+	many  []int // emails per ApplyMany call
 	err   error // returned by Apply
 }
 
@@ -38,6 +39,16 @@ type call struct {
 func (r *recorder) Apply(_ context.Context, d actions.DecisionRecord, acts []rules.Action, _ int64) ([]actions.ActionRecord, error) {
 	r.calls = append(r.calls, call{d, acts})
 	return nil, r.err
+}
+
+// ApplyMany records each email as Apply does, with how many went in one call.
+func (r *recorder) ApplyMany(ctx context.Context, ms []actions.Many, a rules.Action, batch int64) (bool, []error) {
+	r.many = append(r.many, len(ms))
+	errs := make([]error, len(ms))
+	for i, m := range ms {
+		_, errs[i] = r.Apply(ctx, m.DecisionRecord, []rules.Action{a}, batch)
+	}
+	return false, errs
 }
 
 // applied lists the actions applied so far, e.g. "move:Food".
@@ -552,6 +563,23 @@ func (f *flaky) Fetch(ctx context.Context, ref mail.MsgRef, maxBody int) (*messa
 	return f.Mailbox.Fetch(ctx, ref, maxBody)
 }
 
+// FetchMany fails as Fetch does, except that ErrNotFound means every message is gone.
+func (f *flaky) FetchMany(ctx context.Context, refs []mail.MsgRef, maxBody int) ([]*message.Raw, error) {
+	switch {
+	case errors.Is(f.fetchErr, mail.ErrNotFound):
+		return make([]*message.Raw, len(refs)), nil
+	case f.fetchErr != nil:
+		return nil, f.fetchErr
+	}
+	return f.Mailbox.FetchMany(ctx, refs, maxBody)
+}
+
+// sortSaved replays one settled answer through Pipeline.SortSaved.
+func (e *env) sortSaved(ctx context.Context, ref mail.MsgRef, out Outcome) (bool, error) {
+	applied, err := e.p.SortSaved(ctx, []Saved{{Ref: ref, Out: out}})
+	return len(applied) == 1 && applied[0], err
+}
+
 func TestFailures(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -718,7 +746,7 @@ func TestDryRunLearnsNothing(t *testing.T) {
 		"new mail": func(e *env, subject string) { e.process(sender, subject) },
 		"cleanup Sort of a check's answers": func(e *env, subject string) {
 			ref := e.deliver(sender, subject)
-			if applied, err := e.p.SortSaved(e.t.Context(), ref, e.settle(ref)); err != nil || !applied {
+			if applied, err := e.sortSaved(e.t.Context(), ref, e.settle(ref)); err != nil || !applied {
 				e.t.Fatalf("SortSaved = %v, %v", applied, err)
 			}
 		},
@@ -938,7 +966,7 @@ func TestDryRunCountsNoSenderRuleHits(t *testing.T) {
 			var row store.ActivityRow
 			if tc.replay {
 				ref := e.deliver("orders@swiggy.example", "order 1")
-				if applied, err := e.p.SortSaved(ctx, ref, e.settle(ref)); err != nil || !applied {
+				if applied, err := e.sortSaved(ctx, ref, e.settle(ref)); err != nil || !applied {
 					t.Fatalf("SortSaved = %v, %v", applied, err)
 				}
 				row = e.row(ref)
@@ -1149,6 +1177,37 @@ func TestSortExistingMail(t *testing.T) {
 	}
 }
 
+// SortSaved hands the emails whose one action is the same move to the executor together,
+// any other email on its own, leaves one waiting for review untouched, and passes over one
+// that is gone.
+func TestSortSavedBatchesMoves(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	e.mb.AddFolder("Archive", mail.RoleArchive)
+	var saved []Saved
+	for i, conf := range []float64{0.93, 0.93, 0.93, 0.5} {
+		e.primary.DecideFunc, e.fallback.DecideFunc = answer(e.food.ID, conf), answer(e.food.ID, conf)
+		ref := e.deliver("orders@swiggy.example", fmt.Sprintf("order %d", i))
+		saved = append(saved, Saved{Ref: ref, Out: e.settle(ref)})
+	}
+	saved[2].Out.Actions = append(saved[2].Out.Actions, rules.Action{Type: rules.ActRead}) // two actions: on its own
+	if _, err := e.mb.Move(ctx, saved[1].Ref, "Archive"); err != nil {                     // gone since the check
+		t.Fatal(err)
+	}
+	applied, err := e.p.SortSaved(ctx, saved)
+	if err != nil || !slices.Equal(applied, []bool{true, false, true, true}) {
+		t.Fatalf("SortSaved = %v, %v", applied, err)
+	}
+	if !slices.Equal(e.exec.many, []int{1}) || !slices.Equal(e.exec.applied(), []string{"move:Food", "read", "move:Food"}) {
+		t.Errorf("ApplyMany calls %v, applied %v", e.exec.many, e.exec.applied())
+	}
+	for i, want := range map[int]string{0: store.StateActed, 2: store.StateActed, 3: store.StateReview} {
+		if got := e.row(saved[i].Ref).Message.State; got != want {
+			t.Errorf("email %d is %s, want %s", i, got, want)
+		}
+	}
+}
+
 // SortSaved replays an answer a cleanup check already settled: it records the same decision
 // as the live/direct path, without asking the model again and without booking its cost a
 // second time, and it passes over a reference that is gone.
@@ -1169,7 +1228,7 @@ func TestSortSavedReplaysTheCheck(t *testing.T) {
 	refB := e.deliver("orders@swiggy.example", "order B")
 	out := e.settle(refB)
 	callsBefore := len(e.primary.Requests())
-	applied, err := e.p.SortSaved(ctx, refB, out)
+	applied, err := e.sortSaved(ctx, refB, out)
 	if err != nil || !applied {
 		t.Fatalf("SortSaved = %v, %v", applied, err)
 	}
@@ -1197,7 +1256,7 @@ func TestSortSavedReplaysTheCheck(t *testing.T) {
 
 	// A reference that is gone since the check is passed over, not acted on.
 	e.p.Mailbox = &flaky{Mailbox: e.mb, fetchErr: mail.ErrNotFound}
-	if applied, err := e.p.SortSaved(ctx, refB, out); err != nil || applied {
+	if applied, err := e.sortSaved(ctx, refB, out); err != nil || applied {
 		t.Errorf("SortSaved of a gone reference = %v, %v", applied, err)
 	}
 }

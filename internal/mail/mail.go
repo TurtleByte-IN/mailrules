@@ -121,6 +121,12 @@ type Mailbox interface {
 	FetchSince(ctx context.Context, folder string, since time.Time, limit int) (refs []MsgRef, matched int, err error)
 	// Move moves one message and returns where it now lives.
 	Move(ctx context.Context, ref MsgRef, dest string) (MsgRef, error)
+	// MoveMany moves several messages of one folder to dest with as few commands as the
+	// server allows, and returns where each now lives, lined up with refs. A message it did
+	// not move is a zero MsgRef: it is not there, the folder's UIDVALIDITY changed, or (on a
+	// server without UIDPLUS) it could not be found in dest afterwards; Move on its own says
+	// which. refs must all name the same folder and UIDVALIDITY.
+	MoveMany(ctx context.Context, refs []MsgRef, dest string) ([]MsgRef, error)
 	SetFlags(ctx context.Context, ref MsgRef, add, remove []string) error
 	Flags(ctx context.Context, ref MsgRef) ([]string, error)
 	// FindByMessageID returns the newest message in folder with that Message-ID, or ErrNotFound.
