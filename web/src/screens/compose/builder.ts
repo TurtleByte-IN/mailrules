@@ -80,7 +80,8 @@ export function toRule(b: Builder): Required<Pick<RulePatch, 'name' | 'intent' |
     intent: b.intent.trim(),
     conditions: rows.length ? { [b.match]: rows.map(toCondition) } : {},
     exceptions: b.unless ? { all: [{ field: 'replied_before', op: 'eq', value: true }] } : {},
-    actions: b.markRead && b.action !== 'trash' ? [...first, { type: 'read' }] : first,
+    // Read after trash too: trash_to_folder files it in MailRules Trash, which counts unread (MAI-264).
+    actions: b.markRead ? [...first, { type: 'read' }] : first,
     account_id: b.account_id,
     stack: b.stack,
     notify: b.notify,
