@@ -141,6 +141,10 @@ func TestSaidIsTheOwnersWords(t *testing.T) {
 		"not numbers":         {`["Put Swiggy in Food"]`, "", text},
 		"re-optimize":         {`[3]`, "Swiggy goes to Food", "Swiggy goes to Food\nmark them read."},
 		"re-optimize no new":  {`[]`, "Swiggy goes to Food", "Swiggy goes to Food"},
+		// A rule built with conditions has no words of the owner's (MAI-261): a rewrite keeps
+		// only the new ones, with no line above them.
+		"re-optimize made without words": {`[3]`, "", "mark them read."},
+		"re-optimize blank said":         {`[3]`, " \n ", "mark them read."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := `{"name":"Food","intent":"Food delivery","actions":[{"type":"keep"}],"parts":` + tc.parts + `}`

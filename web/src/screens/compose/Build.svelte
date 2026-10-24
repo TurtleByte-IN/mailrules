@@ -71,7 +71,7 @@
     const id = b.editingId;
     saving = true;
     try {
-      const saved = id ? await edit(id, r) : (await add([{ ...r, said: 'Built with conditions', enabled: true }]))[0];
+      const saved = id ? await edit(id, r) : (await add([{ ...r, said: '', enabled: true }]))[0];
       flash(r.name + (id ? ' updated' : ' saved and live'));
       push('/rules?id=' + saved.id);
     } catch (e) {
