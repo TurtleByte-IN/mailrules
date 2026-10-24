@@ -5,7 +5,11 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/TurtleByte-IN/mailrules/internal/rules"
+	"github.com/TurtleByte-IN/mailrules/internal/store/migrations"
+	"github.com/TurtleByte-IN/mailrules/internal/store/pgtest"
 )
 
 func TestRules(t *testing.T) {
@@ -122,6 +126,55 @@ func TestMigrationRuleTemplate(t *testing.T) {
 		r, err := s.Rule(ctx, SelfHostTenant, ids[name])
 		if err != nil || r.Said != want[0] || r.Template != want[1] {
 			t.Errorf("%s: said %q, template %q, %v; want %q, %q", name, r.Said, r.Template, err, want[0], want[1])
+		}
+	}
+}
+
+// Migration 0033: a rule made in Build with conditions saved "Built with conditions" as
+// said (MAI-261). It goes; words a rewrite added under it stay, and the owner's own words
+// are left alone. On Postgres it runs as the owner, whom row-level security applies to.
+func TestMigrationBuiltWithConditions(t *testing.T) {
+	ctx := t.Context()
+	s, owner := open(t)
+	dialect, fsys := goose.DialectSQLite3, migrations.SQLite()
+	if pgtest.DSN() != "" {
+		pg := pgtest.Open(t)
+		s, dialect, fsys = keyed(pg.App), goose.DialectPostgres, migrations.Postgres()
+		var err error
+		if owner, err = OpenPostgres(ctx, pg.URL(pgtest.AsOwner)); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = owner.Close() })
+	}
+	u, _ := s.CreateFirstUser(ctx, "me@icloud.com", "hash", 100)
+	cases := map[string][2]string{ // said before, said after
+		"placeholder":     {"Built with conditions", ""},
+		"rewritten":       {"Built with conditions\nalso mark them read", "also mark them read"},
+		"owner's words":   {"Built with conditions for Swiggy", "Built with conditions for Swiggy"},
+		"no words at all": {"", ""},
+	}
+	ids := map[string]int64{}
+	for name, tc := range cases {
+		r, err := s.CreateRule(ctx, u.TenantID, rules.Rule{UserID: u.ID, Name: name, Said: tc[0], Priority: 1, Enabled: true,
+			Actions: []rules.Action{{Type: rules.ActKeep}}}, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = r.ID
+	}
+	p, err := goose.NewProvider(dialect, owner, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(ctx, 32); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range cases {
+		if r, err := s.Rule(ctx, u.TenantID, ids[name]); err != nil || r.Said != tc[1] {
+			t.Errorf("%s: said %q, %v; want %q", name, r.Said, err, tc[1])
 		}
 	}
 }

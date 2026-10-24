@@ -161,7 +161,7 @@ it('starts with no condition and brings the row, sentence and picker in with the
   expect(screen.getByRole('heading', { name: 'Conditions (optional)' })).toBeTruthy();
 });
 
-it('saves an AI-only rule with no conditions in the payload', async () => {
+it('saves an AI-only rule with no conditions and no words of the owner in the payload', async () => {
   const saved = { ...drafted('Invoices'), id: 3 };
   const f = serve({ 'POST /api/rules/batch': [200, { rules: [saved] }] });
   render(Compose);
@@ -175,6 +175,8 @@ it('saves an AI-only rule with no conditions in the payload', async () => {
   const sent = JSON.parse(f.mock.calls[0][1].body as string).rules[0];
   expect(sent.intent).toBe('an invoice');
   expect(sent.conditions).toEqual({});
+  // The owner typed no sentence, so the editor shows no "You said" (MAI-261).
+  expect(sent.said).toBe('');
 });
 
 it('offers the threshold only once the email is about something, and saves it', async () => {
