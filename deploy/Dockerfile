@@ -16,7 +16,7 @@ RUN if [ -f package.json ]; then npm ci && npm run build; else mkdir dist; fi
 
 # 2. The binary: static, no CGO (the SQLite driver is pure Go).
 # Its tag is go.mod's toolchain without the "go" (cmd/mailrules/toolchain_test.go checks).
-FROM --platform=$BUILDPLATFORM golang:1.27.2 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

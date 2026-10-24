@@ -4,8 +4,9 @@ name: release
 #      and checksums, not yet marked latest, and keeps the Homebrew cask as an artifact.
 #   2. image: the multi-arch image from deploy/Dockerfile, pushed with its version tag only.
 #   3. verify: verify-release.yml installs every format on its platform and runs it.
-#   4. publish: only when all of that passed, the release becomes the latest, the image gets
-#      `latest`, and the cask is pushed to TurtleByte-IN/homebrew-tap.
+#   4. publish: only when verify's passed job reports every check succeeded (its `verified`
+#      output), the release becomes the latest, the image gets `latest`, and the cask is
+#      pushed to TurtleByte-IN/homebrew-tap.
 # Until step 4, users installing "the latest" still get the previous release.
 on:
   push:
@@ -91,6 +92,8 @@ jobs:
 
   publish:
     needs: verify
+    # Not only the reusable workflow's overall result: its own gate must say every job passed.
+    if: needs.verify.outputs.verified == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write # mark the release latest
