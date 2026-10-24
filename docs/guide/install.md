@@ -95,15 +95,22 @@ Homebrew does not set MailRules up as a background service. Run it in a terminal
 
 ## Single binary
 
-Download the archive for your system and `checksums.txt` from the [Releases page](https://github.com/TurtleByte-IN/mailrules/releases). Archives are named `mailrules_<version>_<os>_<arch>.tar.gz`, where `<os>` is `linux` or `darwin` (macOS) and `<arch>` is `amd64` or `arm64`. For example, on Linux on amd64:
+Download the archive for your system and `checksums.txt` from the [Releases page](https://github.com/TurtleByte-IN/mailrules/releases). Archives are named `mailrules_<version>_<os>_<arch>.tar.gz`, where `<os>` is `linux` or `darwin` (macOS) and `<arch>` is `amd64` or `arm64`. These commands find the latest release and the archive for the machine you run them on:
 
 ```bash
-curl -LO https://github.com/TurtleByte-IN/mailrules/releases/download/v0.1.0/mailrules_0.1.0_linux_amd64.tar.gz
-curl -LO https://github.com/TurtleByte-IN/mailrules/releases/download/v0.1.0/checksums.txt
+VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/TurtleByte-IN/mailrules/releases/latest | sed 's|.*/tag/v||')
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+ARCHIVE="mailrules_${VERSION}_${OS}_${ARCH}.tar.gz"
+URL="https://github.com/TurtleByte-IN/mailrules/releases/download/v${VERSION}"
+curl -fLO "$URL/$ARCHIVE"
+curl -fLO "$URL/checksums.txt"
 sha256sum --ignore-missing -c checksums.txt
-tar xzf mailrules_0.1.0_linux_amd64.tar.gz
+tar xzf "$ARCHIVE"
 ./mailrules serve
 ```
+
+To install an older release instead, set `VERSION` to it without the `v` (for example `VERSION=0.2.0`) and skip the first line.
 
 On macOS, check the archive with `shasum -a 256 --ignore-missing -c checksums.txt` instead. The check must print `OK` for the archive you downloaded; if it does not, do not run the binary.
 
