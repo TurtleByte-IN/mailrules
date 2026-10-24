@@ -457,8 +457,8 @@ type PlanTerms struct {
 // A Team tenant may use it while its plan runs and it has IncludedSeats paid seats or more
 // (Plan.Seats), or has the add-on (Plan.CompanySignInAddOn); any other tenant may not.
 type CompanySignInTerms struct {
-	// IncludedSeats is how many paid seats include company sign-in with no add-on: 10 on the
-	// hosted Team plan. 0: never included, only bought.
+	// IncludedSeats is how many paid seats include company sign-in with no add-on. 0: never
+	// included, only bought.
 	IncludedSeats int
 	// Prices are what the add-on costs a team, as shown, by interval: {"month": "$180 a
 	// month", "year": "$1,800 a year"}. Both intervals are needed.
