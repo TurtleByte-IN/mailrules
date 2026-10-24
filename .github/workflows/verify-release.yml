@@ -15,6 +15,10 @@ on:
         description: An artifact of this run holding mailrules.rb; empty = the cask in the tap.
         type: string
         default: ""
+    outputs:
+      verified:
+        description: '"true" only when every job here concluded success (the passed job).'
+        value: ${{ jobs.passed.outputs.verified }}
   workflow_dispatch:
     inputs:
       tag:
@@ -134,3 +138,26 @@ jobs:
           cp cask/mailrules.rb "$(brew --repository local/verify)/Casks/"
           brew install --cask local/verify/mailrules
           scripts/release-smoke.sh bin "$(command -v mailrules)" "$VERSION"
+
+  # The one verdict release.yml's publish reads. It runs whatever happened above and fails
+  # unless every job concluded success, so a failed, cancelled or skipped check can never
+  # pass as "verified". A job added above must be added to needs and RESULTS here too.
+  passed:
+    needs: [tag, archive, image, brew]
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - id: check
+        env:
+          RESULTS: >-
+            tag=${{ needs.tag.result }}
+            archive=${{ needs.archive.result }}
+            image=${{ needs.image.result }}
+            brew=${{ needs.brew.result }}
+        run: |
+          for r in $RESULTS; do
+            [ "${r#*=}" = success ] || { echo "verify job ${r%%=*} ended ${r#*=}: not verified"; exit 1; }
+          done
+          echo "verified=true" >> "$GITHUB_OUTPUT"
