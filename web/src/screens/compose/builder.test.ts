@@ -82,7 +82,7 @@ describe('builder', () => {
   });
 
   it('is a RuleInput once it has its wording, with the destinations it tells', () => {
-    const input: RuleInput = { ...toRule(full), said: 'Built with conditions', enabled: true };
+    const input: RuleInput = { ...toRule(full), said: '', enabled: true };
     expect(Object.keys(input).sort()).toEqual(['account_id', 'actions', 'conditions', 'draft', 'enabled', 'exceptions', 'intent', 'min_confidence', 'name', 'notify', 'said', 'stack']);
     expect(input.notify).toEqual([3, 5]);
     expect(toRule(emptyBuilder()).notify).toEqual([]);

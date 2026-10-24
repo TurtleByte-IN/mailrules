@@ -2561,7 +2561,7 @@ components:
         id: { type: integer, format: int64 }
         account_id: { type: [integer, 'null'], format: int64, description: null = every account }
         name: { type: string }
-        said: { type: string, description: The user's original wording; empty when they gave none (a template, say) }
+        said: { type: string, description: The user's original wording; empty when they gave none (a template, or Build with conditions, say) }
         template: { type: string, description: 'The name of the gallery template the rule was added from ("Receipts"); empty when it was not. Set when the rule is created or imported, and kept through edits' }
         intent: { type: string, description: Plain-English intent for the decision model; empty = condition-only }
         conditions: { $ref: '#/components/schemas/Condition' }
