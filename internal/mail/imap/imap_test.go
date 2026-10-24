@@ -902,6 +902,35 @@ func TestConnectErrors(t *testing.T) {
 	}
 }
 
+// Outlook.com takes the sign-in of an account not verified yet but will not open its
+// mailbox: that is told apart from a refused password or token, and still stops as one does.
+func TestConnectUnverified(t *testing.T) {
+	s := imaptest.Start(t, capsMove)
+	iss := &issuer{s: s}
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		also error // the refusal it stops as
+	}{
+		{"password", config(s), mail.ErrAuth},
+		{"access token", oauthConfig(s, iss.token), mail.ErrReconnect},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s.Unverified(true)
+			_, err := Open(t.Context(), tc.cfg)
+			if !errors.Is(err, mail.ErrUnverified) || !errors.Is(err, tc.also) {
+				t.Fatalf("err = %v, want ErrUnverified and %v", err, tc.also)
+			}
+			s.Unverified(false)
+			m, err := Open(t.Context(), tc.cfg)
+			if err != nil {
+				t.Fatalf("once verified: %v", err)
+			}
+			_ = m.Close()
+		})
+	}
+}
+
 func TestCertificates(t *testing.T) {
 	s := imaptest.Start(t, capsMove)
 	fp := s.Fingerprint()

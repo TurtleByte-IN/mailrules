@@ -185,6 +185,9 @@ func (m *Mailbox) dial(ctx context.Context, handler *imapclient.UnilateralDataHa
 func (m *Mailbox) login(ctx context.Context, c *imapclient.Client, addr string) error {
 	if m.cfg.Token == nil {
 		err := c.Login(m.cfg.Username, m.cfg.Password).Wait()
+		if unverified(err) {
+			return fmt.Errorf("log in to %s: %w: %w: %w", addr, mail.ErrAuth, mail.ErrUnverified, err)
+		}
 		var ie *imap.Error
 		if err != nil && errors.As(err, &ie) && kindOf(err) == nil {
 			// Many servers answer a bad password with a bare NO and no response code.
@@ -201,12 +204,25 @@ func (m *Mailbox) login(ctx context.Context, c *imapclient.Client, addr string) 
 		return fmt.Errorf("sign in to %s: get an access token: %w: %w", addr, mail.ErrConnection, err)
 	}
 	err = c.Authenticate(xoauth2{user: m.cfg.Username, token: token})
+	if unverified(err) {
+		return fmt.Errorf("log in to %s with an access token: %w: %w: %w", addr, mail.ErrReconnect, mail.ErrUnverified, err)
+	}
 	var ie *imap.Error
 	if errors.Is(err, errTokenRefused) ||
 		(errors.As(err, &ie) && ie.Type == imap.StatusResponseTypeNo && (kindOf(err) == nil || errors.Is(kindOf(err), mail.ErrAuth))) {
 		return fmt.Errorf("log in to %s with an access token: %w: %w", addr, mail.ErrReconnect, err)
 	}
 	return classify("log in to "+addr+" with an access token", err)
+}
+
+// unverified reports whether err is the NO Microsoft answers a login with when it took the
+// sign-in but has not verified the account, so it does not open the mailbox: "User is
+// authenticated but not connected." (a new Outlook.com account, until the person verifies
+// it in Settings > Mail > Forwarding and IMAP). Only that text, in any case, matches.
+func unverified(err error) bool {
+	var ie *imap.Error
+	return errors.As(err, &ie) && ie.Type == imap.StatusResponseTypeNo &&
+		strings.Contains(strings.ToLower(ie.Text), "user is authenticated but not connected")
 }
 
 // verifyCert accepts the server's certificate when it is the pinned one or, with no pin,

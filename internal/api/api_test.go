@@ -352,6 +352,8 @@ func TestAccounts(t *testing.T) {
 	e.connectErr = fmt.Errorf("login: %w", mail.ErrAuth)
 	e.refuse(http.MethodPost, "/api/accounts/test", accountBody, http.StatusUnprocessableEntity, "auth_failed", "password")
 	e.refuse(http.MethodPost, "/api/accounts", accountBody, http.StatusUnprocessableEntity, "auth_failed", "password")
+	e.connectErr = fmt.Errorf("login: %w: %w", mail.ErrAuth, mail.ErrUnverified)
+	e.refuse(http.MethodPost, "/api/accounts/test", accountBody, http.StatusUnprocessableEntity, "account_unverified", "")
 	e.connectErr = fmt.Errorf("handshake: %w", mail.ErrTLS)
 	e.refuse(http.MethodPost, "/api/accounts/test", accountBody, http.StatusUnprocessableEntity, "tls_failed", "host")
 	e.connectErr = fmt.Errorf("dial: %w", mail.ErrConnection)
