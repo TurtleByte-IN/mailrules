@@ -817,6 +817,13 @@ var (
 	// many mailboxes as its Limits allow. The error's text is the sentence to show the
 	// person, such as a form step's Message. Nothing changed.
 	ErrMailboxLimit = store.ErrMailboxLimit
+	// ErrMailboxUnverified is wrapped by what Host.AddMailbox and Host.ReconnectMailbox
+	// return when the mail server took the sign-in but will not open the mailbox until the
+	// person verifies the account with the provider, as Outlook.com answers for a new account
+	// ("User is authenticated but not connected"). The error also wraps the refusal it would
+	// otherwise be (ErrReconnect, or for NewMailbox.Password the mail server's), so test for
+	// this one first and answer MailboxUnverified, or a form step's Message. Nothing changed.
+	ErrMailboxUnverified = mail.ErrUnverified
 )
 
 // The codes Host.MailboxFailed sends the browser back to Mailboxes with.
@@ -842,6 +849,10 @@ const (
 	// accounts. The module keeps no token for it. The wizard says personal Gmail connects
 	// with an app password and opens the Gmail app-password guide.
 	MailboxWorkspaceOnly = "workspace_only"
+	// MailboxUnverified: Host.AddMailbox or Host.ReconnectMailbox returned an error that
+	// wraps ErrMailboxUnverified. The wizard tells the person to verify the account at
+	// Outlook.com (Settings → Mail → Forwarding and IMAP), then connect again.
+	MailboxUnverified = "unverified"
 )
 
 // Notifications is how a module delivers rule notifications (Module.Notifications). The
@@ -1265,9 +1276,10 @@ type Host interface {
 	// storing nothing, with ErrMailboxExists, with ErrMailboxLimit when the tenant has all
 	// the mailboxes its Limits allow (checked before the login and again as it stores the
 	// mailbox, so two added at once cannot both take the last place), with an error that
-	// wraps ErrReconnect when the provider refused the secret or the token, or with an error
-	// of the mail server or the database (answer those with MailboxFailed and the matching
-	// code, or a form step's Message).
+	// wraps ErrReconnect when the provider refused the secret or the token (and also
+	// ErrMailboxUnverified when it took them but has not verified the account), or with an
+	// error of the mail server or the database (answer those with MailboxFailed and the
+	// matching code, or a form step's Message).
 	AddMailbox(ctx context.Context, m NewMailbox) (accountID int64, err error)
 	// ReconnectMailbox gives a mailbox the signed-in user added through the module a new
 	// secret, from the module's Connect route called with account=<id> (a one-click

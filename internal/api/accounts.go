@@ -281,6 +281,9 @@ func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Acco
 	switch {
 	case errors.Is(err, mail.ErrNotPublic): // the name resolved elsewhere when it was dialed
 		return refuse("host_not_public", notPublicMessage, "host")
+	case errors.Is(err, mail.ErrUnverified): // before ErrAuth and ErrReconnect, which it comes wrapped with
+		return refuse("account_unverified", "Outlook.com hasn't verified this account yet, so it won't open the mailbox to MailRules. "+
+			"Open Outlook.com, go to Settings → Mail → Forwarding and IMAP, verify your account there, then connect again.", "")
 	case errors.Is(err, mail.ErrReconnect), errors.Is(err, mail.ErrAuth) && a.Module:
 		// A mailbox a module's form connected logs in with a password the person never saw
 		// (Bridge's): only signing in through the form again fixes it, as for one-click.

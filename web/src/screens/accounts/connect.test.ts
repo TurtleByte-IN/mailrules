@@ -124,6 +124,7 @@ it.each<[string, Wizard['presetId'], Reply, string]>([
   ['bad port', 'generic', [400, refusal('invalid_input', 'The port must be between 1 and 65535.', 'port')], 'port'],
   ['unreachable host of a preset, which has no host field', 'icloud', [422, refusal('connection_failed', 'Could not reach imap.mail.me.com:993. Check the host and port.', 'host')], ''],
   ['watch folder missing, which has no field', 'icloud', [422, refusal('no_folder', 'The server has no folder named INBOX.', 'watch_folder')], ''],
+  ['an account the provider has not verified, which has no field', 'generic', [422, refusal('account_unverified', "Outlook.com hasn't verified this account yet, so it won't open the mailbox to MailRules. Open Outlook.com, go to Settings → Mail → Forwarding and IMAP, verify your account there, then connect again.")], ''],
   ['an error with no path', 'icloud', [403, refusal('csrf_failed', 'Reload the page and try again.')], ''],
 ])('shows the daemon message inline when the test fails: %s', async (_name, presetId, reply, field) => {
   routes['POST /api/accounts/test'] = reply;

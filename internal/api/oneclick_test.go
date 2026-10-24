@@ -75,6 +75,8 @@ func oneClickModule() ext.Module {
 					h.MailboxFailed(w, r, ext.MailboxExists)
 				case errors.Is(err, ext.ErrMailboxLimit):
 					h.MailboxFailed(w, r, ext.MailboxLimitReached)
+				case errors.Is(err, ext.ErrMailboxUnverified):
+					h.MailboxFailed(w, r, ext.MailboxUnverified)
 				case err != nil:
 					h.WriteJSON(w, http.StatusOK, map[string]string{"failed": err.Error()})
 				default:
@@ -134,6 +136,15 @@ func TestOneClickMailboxes(t *testing.T) {
 		t.Errorf("features.oauth_providers = %v with the module", on)
 	}
 
+	// A new Outlook.com account not verified yet: Microsoft takes the token but does not open
+	// the mailbox. Nothing is stored, and the person is told to verify the account.
+	unverified := fmt.Errorf("log in with an access token: %w: %w", mail.ErrReconnect, mail.ErrUnverified)
+	oauthErr = unverified
+	if r := e.do(http.MethodGet, "/api/oneclick/connect?provider=outlook&address=jo@outlook.test&secret=refresh-0", ""); r.header.Get("Location") != "/#/accounts?mailbox_error=unverified" {
+		t.Errorf("an unverified account = %d %s %s", r.status, r.header.Get("Location"), r.raw)
+	}
+	oauthErr, secrets = nil, nil
+
 	// A password mailbox first, then a one-click Outlook one.
 	e.call(http.MethodPost, "/api/accounts", accountBody, http.StatusCreated)
 	r := e.do(http.MethodGet, "/api/oneclick/connect?provider=outlook&address=jo@outlook.test&secret=refresh-1", "")
@@ -168,9 +179,11 @@ func TestOneClickMailboxes(t *testing.T) {
 	// The stored test signs in through the module with the stored secret.
 	secrets = nil
 	e.call(http.MethodPost, "/api/accounts/2/test", "", http.StatusOK)
+	oauthErr = unverified
+	e.refuse(http.MethodPost, "/api/accounts/2/test", "", http.StatusUnprocessableEntity, "account_unverified", "")
 	oauthErr = fmt.Errorf("invalid_grant: %w", mail.ErrReconnect)
 	e.refuse(http.MethodPost, "/api/accounts/2/test", "", http.StatusUnprocessableEntity, "reconnect_needed", "")
-	if !slices.Equal(secrets, []string{"stored", "stored"}) {
+	if !slices.Equal(secrets, []string{"stored", "stored", "stored"}) {
 		t.Errorf("stored tests used %v", secrets)
 	}
 
