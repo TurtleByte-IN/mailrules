@@ -1172,3 +1172,21 @@ func TestEventStream(t *testing.T) {
 		t.Errorf("a stale Last-Event-ID replayed from id %s, want 1", eventID)
 	}
 }
+
+func TestUnverifiedMessage(t *testing.T) {
+	const verify, admin = "Outlook.com hasn't verified", "Ask your IT admin"
+	for _, tc := range []struct{ address, want string }{
+		{"me@outlook.com", verify},
+		{" Me@Hotmail.co.uk ", verify},
+		{"me@live.com", verify},
+		{"me@msn.com", verify},
+		{"me@company.com", admin},
+		{"me@outlook.company.com", admin},
+		{"me@livestock.com", admin},
+		{"me", admin},
+	} {
+		if got := unverifiedMessage(tc.address); !strings.Contains(got, tc.want) {
+			t.Errorf("unverifiedMessage(%q) = %q, want it to say %q", tc.address, got, tc.want)
+		}
+	}
+}
