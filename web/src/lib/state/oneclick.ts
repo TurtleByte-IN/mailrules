@@ -13,7 +13,7 @@ const messages: Record<string, string> = {
   mailbox_limit: "Your plan has no room for another mailbox, so this one wasn't connected. Remove a mailbox to connect another.",
   plan_ended: "Your plan has ended, so the mailbox wasn't connected. Subscribe on Plan and billing to connect it.",
   unverified:
-    "Outlook.com hasn't verified this account yet, so the mailbox wasn't connected. Open Outlook.com, go to Settings → Mail → Forwarding and IMAP, verify your account there, then connect again.",
+    "Microsoft took the sign-in but won't open the mailbox, so it wasn't connected. For an Outlook.com, Hotmail, Live or MSN address, open Outlook.com, go to Settings → Mail → Forwarding and IMAP, verify your account there, then connect again. For a work address, ask your IT admin to switch IMAP on for your mailbox, then connect again.",
   workspace_only:
     'Personal Gmail connects with an app password. Google sign-in is only for Google Workspace accounts whose admin trusts MailRules, so no mailbox was connected.',
 };

@@ -820,7 +820,8 @@ var (
 	// ErrMailboxUnverified is wrapped by what Host.AddMailbox and Host.ReconnectMailbox
 	// return when the mail server took the sign-in but will not open the mailbox until the
 	// person verifies the account with the provider, as Outlook.com answers for a new account
-	// ("User is authenticated but not connected"). The error also wraps the refusal it would
+	// ("User is authenticated but not connected"). Microsoft gives the same answer for a work
+	// mailbox whose admin has switched IMAP off. The error also wraps the refusal it would
 	// otherwise be (ErrReconnect, or for NewMailbox.Password the mail server's), so test for
 	// this one first and answer MailboxUnverified, or a form step's Message. Nothing changed.
 	ErrMailboxUnverified = mail.ErrUnverified
@@ -850,8 +851,9 @@ const (
 	// with an app password and opens the Gmail app-password guide.
 	MailboxWorkspaceOnly = "workspace_only"
 	// MailboxUnverified: Host.AddMailbox or Host.ReconnectMailbox returned an error that
-	// wraps ErrMailboxUnverified. The wizard tells the person to verify the account at
-	// Outlook.com (Settings → Mail → Forwarding and IMAP), then connect again.
+	// wraps ErrMailboxUnverified. The browser brings no address back, so the wizard gives
+	// both fixes: verify a personal address at Outlook.com (Settings → Mail → Forwarding and
+	// IMAP), or ask the IT admin to switch IMAP on for a work mailbox; then connect again.
 	MailboxUnverified = "unverified"
 )
 
