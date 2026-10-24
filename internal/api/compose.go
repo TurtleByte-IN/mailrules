@@ -143,9 +143,10 @@ func (s *server) composeAccount(w http.ResponseWriter, r *http.Request, id int64
 	return nil, nil, true
 }
 
-// compose runs the composer for a new text, or for one rule to re-optimize.
+// compose runs the composer for a new text, or for one rule to re-optimize, where no text
+// means improve it from how it behaved.
 func (s *server) compose(w http.ResponseWriter, r *http.Request, text string, accountID int64, rule *rules.Rule) (composer.Output, bool) {
-	if msg := composer.CheckText(text); msg != "" {
+	if msg := composer.CheckText(text); msg != "" && (rule == nil || strings.TrimSpace(text) != "") {
 		invalid(w, "text", msg)
 		return composer.Output{}, false
 	}
@@ -205,8 +206,9 @@ func (s *server) handleCompose(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRecompose re-optimizes one rule from its original wording plus new text, and
-// answers with a draft to replace it. Nothing is saved.
+// handleRecompose re-optimizes one rule from its original wording, how it behaved and new
+// text, if any, and answers with a draft to replace it, what changed and why, and the test
+// emails the draft starts or stops taking. Nothing is saved.
 func (s *server) handleRecompose(w http.ResponseWriter, r *http.Request) {
 	rule, ok := s.rule(w, r)
 	if !ok {
@@ -219,7 +221,7 @@ func (s *server) handleRecompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if out, ok := s.compose(w, r, in.Text, rule.AccountID, &rule); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"rule": out.Drafts[0]})
+		writeJSON(w, http.StatusOK, map[string]any{"rule": out.Drafts[0], "changes": out.Changes, "matching": out.Shifts})
 	}
 }
 

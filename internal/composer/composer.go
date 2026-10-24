@@ -43,8 +43,9 @@ type Composer struct {
 type Request struct {
 	Viewer store.Viewer // who asks: the rules are their tenant's, the mailboxes the ones they see
 	Text   string
-	// Rule, when set, is re-optimized: the model is given its original wording with Text
-	// and answers with a single draft to replace it.
+	// Rule, when set, is re-optimized: the model is given its original wording with Text,
+	// and how it behaved (Evidence), and answers with a single draft to replace it. Text
+	// may then be empty: the rule is improved from the evidence alone.
 	Rule *rules.Rule
 	// Account is the mailbox the drafts are checked against: its folders are the ones that
 	// exist, and its newest mail is what the drafts are tested on. nil = no mailbox is
@@ -118,6 +119,10 @@ func (d *Draft) Fail(path, message string) {
 type Output struct {
 	Drafts   []Draft
 	Unparsed []string // parts of the text that could not be turned into a rule
+	// For a re-optimize: what changed and why, in plain words, and the test emails the
+	// draft starts or stops taking compared with the rule.
+	Changes []string
+	Shifts  []Shift
 }
 
 // Compose runs the compose flow: build the context (the user's rules, the folders that
@@ -139,7 +144,15 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 		prior = req.Rule.Said
 	}
 	words := newWording(req.Text, prior)
-	system, user, schema := prompt(words, existing, folders, req.Rule)
+	var ev *Evidence
+	if req.Rule != nil {
+		e, err := c.Evidence(ctx, req, existing)
+		if err != nil {
+			return Output{}, err
+		}
+		ev = &e
+	}
+	system, user, schema := prompt(words, existing, folders, req.Rule, ev)
 
 	var raw json.RawMessage
 	began := time.Now()
@@ -165,6 +178,7 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 	var top struct {
 		Rules    []json.RawMessage `json:"rules"`
 		Unparsed json.RawMessage   `json:"unparsed"`
+		Changes  json.RawMessage   `json:"changes"`
 	}
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return Output{}, fmt.Errorf("%w: the answer is not an object with a list of rules", ErrModel)
@@ -203,7 +217,24 @@ func (c Composer) Compose(ctx context.Context, req Request) (Output, error) {
 	}
 	slog.InfoContext(ctx, "compose model call", "duration_ms", took.Milliseconds(), "tokens_in", usage.TokensIn,
 		"tokens_out", usage.TokensOut, "pieces", len(words.pieces), "drafts", len(out.Drafts))
-	c.test(ctx, req, out.Drafts)
+	if ev == nil {
+		c.test(ctx, req, out.Drafts)
+		return out, nil
+	}
+	var changes []string
+	_ = json.Unmarshal(top.Changes, &changes) // not a list of sentences: the draft still shows what changed
+	out.Changes = []string{}
+	for _, ch := range changes {
+		if ch = strings.TrimSpace(ch); ch != "" {
+			out.Changes = append(out.Changes, ch)
+		}
+	}
+	if ev.Test == nil {
+		c.test(ctx, req, out.Drafts) // the rule itself could not be tested; the draft may be
+		out.Shifts = []Shift{}
+	} else {
+		out.Shifts = c.retest(ctx, req, &out.Drafts[0], *ev)
+	}
 	return out, nil
 }
 
@@ -384,7 +415,7 @@ func (c Composer) test(ctx context.Context, req Request, drafts []Draft) {
 }
 
 // textTag matches the wrapper tags of the prompt, so the user's text cannot close one early.
-var textTag = regexp.MustCompile(`(?i)<\s*/?\s*(text|rule|current)\b[^>]*>`)
+var textTag = regexp.MustCompile(`(?i)<\s*/?\s*(text|rule|current|evidence)\b[^>]*>`)
 
 // RuleLine is how a rule is shown to the model: the fields it may reason about, as JSON.
 func RuleLine(r rules.Rule) string {
@@ -395,8 +426,9 @@ func RuleLine(r rules.Rule) string {
 }
 
 // prompt builds the composer's system prompt, user message and output schema. With rule
-// set it asks for one draft to replace that rule.
-func prompt(words *wording, existing []rules.Rule, folders []string, rule *rules.Rule) (system, user string, schema json.RawMessage) {
+// set it asks for one draft to replace that rule, from the owner's words and ev, how the
+// rule behaved, and for the list of what changed.
+func prompt(words *wording, existing []rules.Rule, folders []string, rule *rules.Rule, ev *Evidence) (system, user string, schema json.RawMessage) {
 	var sys strings.Builder
 	sys.WriteString(`You turn what the owner of a mailbox says into rules that sort their email. Answer by calling the tool; write nothing else.
 
@@ -450,29 +482,44 @@ How to write the rules:
 		default:
 			usr.WriteString("The owner made it without describing it in words.\n")
 		}
-		fmt.Fprintf(&usr, "What the owner says now (the [n] markers number the pieces):\n<text>\n%s\n</text>", clean(text))
+		threshold := "null (the owner's default)"
+		if rule.MinConfidence != nil {
+			threshold = fmt.Sprint(*rule.MinConfidence)
+		}
+		fmt.Fprintf(&usr, "Its \"min_confidence\" now: %s.\n", threshold)
+		if ev != nil {
+			ev.write(&usr)
+		}
+		if strings.TrimSpace(words.text) == "" {
+			usr.WriteString("The owner asked to improve this rule from how it behaved, and said nothing more.\n")
+		} else {
+			fmt.Fprintf(&usr, "What the owner says now (the [n] markers number the pieces):\n<text>\n%s\n</text>\n", clean(text))
+		}
+		usr.WriteString(`Change only what the owner's words or the evidence call for, and keep the rest as it is. Change the actions or "min_confidence" only when the owner asks or the evidence clearly shows they are wrong.
+List in "changes" each thing you changed and why, one short plain sentence each, naming the evidence (for example: "Added an exception for hdfcbank.com: you moved 3 of its emails out of Food."). When nothing needs to change, answer with the rule as it is and say why in "changes".`)
 	}
 
 	str, nullable, list := schemaTypes()
-	schema, _ = json.Marshal(map[string]any{ // cannot fail: plain maps of JSON types
-		"type": "object",
-		"properties": map[string]any{
-			"rules": list(map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": str, "parts": list(map[string]any{"type": "integer"}), "intent": nullable("string"),
-					"conditions": CondSchema(), "exceptions": CondSchema(),
-					"actions": ActionsSchema(), "min_confidence": nullable("number"), "new_folders": list(str), "question": nullable("string"),
-					"conflicts": list(map[string]any{"type": "object", "required": []string{"rule_id", "kind", "note"},
-						"properties": map[string]any{"rule_id": map[string]any{"type": "integer"},
-							"kind": map[string]any{"type": "string", "enum": conflictKinds}, "note": str}}),
-				},
-				"required": []string{"name", "parts", "intent", "conditions", "exceptions", "actions", "min_confidence", "new_folders", "question", "conflicts"},
-			}),
-			"unparsed": list(map[string]any{"type": "integer"}),
-		},
-		"required": []string{"rules", "unparsed"},
-	})
+	top := map[string]any{
+		"rules": list(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": str, "parts": list(map[string]any{"type": "integer"}), "intent": nullable("string"),
+				"conditions": CondSchema(), "exceptions": CondSchema(),
+				"actions": ActionsSchema(), "min_confidence": nullable("number"), "new_folders": list(str), "question": nullable("string"),
+				"conflicts": list(map[string]any{"type": "object", "required": []string{"rule_id", "kind", "note"},
+					"properties": map[string]any{"rule_id": map[string]any{"type": "integer"},
+						"kind": map[string]any{"type": "string", "enum": conflictKinds}, "note": str}}),
+			},
+			"required": []string{"name", "parts", "intent", "conditions", "exceptions", "actions", "min_confidence", "new_folders", "question", "conflicts"},
+		}),
+		"unparsed": list(map[string]any{"type": "integer"}),
+	}
+	required := []string{"rules", "unparsed"}
+	if rule != nil {
+		top["changes"], required = list(str), append(required, "changes")
+	}
+	schema, _ = json.Marshal(map[string]any{"type": "object", "properties": top, "required": required}) // cannot fail: plain maps of JSON types
 	return sys.String(), usr.String(), schema
 }
 

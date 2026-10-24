@@ -12,6 +12,12 @@ export const sample =
 /** Turns typed or dictated text (up to 4,000 characters) into draft rules. */
 export const compose = (req: components['schemas']['ComposeRequest']) => api<ComposeResult>('POST', '/rules/compose', req);
 
-/** Re-optimizes one saved rule from its original wording plus `text`. Returns a draft; save it with a patch. */
-export const recompose = async (id: number, text: string) =>
-  (await api<operations['recomposeRule']['responses'][200]['content']['application/json']>('POST', `/rules/${id}/compose`, { text })).rule;
+export type Recomposed = operations['recomposeRule']['responses'][200]['content']['application/json'];
+export type MatchShift = components['schemas']['MatchShift'];
+
+/**
+ * Rewrites one saved rule from its original wording, how it behaved and `text`; empty `text`
+ * improves it from how it behaved alone. Returns a draft, what changed and why, and the test
+ * emails it starts or stops taking; save the draft with a patch.
+ */
+export const recompose = (id: number, text: string) => api<Recomposed>('POST', `/rules/${id}/compose`, { text });

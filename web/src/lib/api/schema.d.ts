@@ -580,8 +580,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Re-optimize one rule from its original wording plus new text
-         * @description Returns a single draft to replace the rule, validated and tested like a composed one. Nothing is saved; save it with PATCH.
+         * Rewrite or improve one rule from its wording, how it behaved, and new text if any
+         * @description Rewrite with AI and Improve rule. The composer is given the rule, its original wording, the new text, and evidence of how the rule behaved: the corrections naming it (fixed from the feed or answered in Needs review, either way), the emails waiting in Needs review it was suggested for, and a fresh test of the rule alone on the newest 200 emails of its account's watched folder (model calls recorded with purpose `test`). Emails are shown to the model as sender, subject and List-Id, never their bodies, at most 50 of each kind. Empty or missing `text` improves the rule from the evidence alone. Returns a single draft to replace the rule, validated like a composed one and tested alone on the same emails the rule was, the composer's plain list of what changed and why, and the test emails the draft starts or stops taking. Nothing is saved; save it with PATCH.
          */
         post: operations["recomposeRule"];
         delete?: never;
@@ -2348,6 +2348,17 @@ export interface components {
             review?: boolean;
             /** @description What it would do */
             actions: components["schemas"]["RuleAction"][];
+        };
+        MatchShift: {
+            /**
+             * @description starts: the draft would take the email and the rule would not; stops: the other way round. Sent to Needs review counts as not taken
+             * @enum {string}
+             */
+            change: "starts" | "stops";
+            /** @description What the rule alone would do with it */
+            before: components["schemas"]["TestRow"];
+            /** @description What the draft alone would do with it */
+            after: components["schemas"]["TestRow"];
         };
         TestProgress: {
             /** @description Emails tested so far, or passed over because they are gone or cannot be read */
@@ -4446,7 +4457,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    text: string;
+                    /** @description What should change; empty or left out = improve from how the rule behaved */
+                    text?: string;
                 };
             };
         };
@@ -4459,6 +4471,10 @@ export interface operations {
                 content: {
                     "application/json": {
                         rule: components["schemas"]["RuleDraft"];
+                        /** @description What the draft changes and why, one plain sentence each, as the composer wrote them */
+                        changes: string[];
+                        /** @description The test emails the draft starts or stops taking, compared with the rule, newest first. Empty when the rule or the draft could not be tested (no mailbox connected or online, an intent and no decision model, or a draft with errors) */
+                        matching: components["schemas"]["MatchShift"][];
                     };
                 };
             };
