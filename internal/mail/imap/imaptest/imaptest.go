@@ -49,6 +49,7 @@ type Server struct {
 	tokens      map[string]bool
 	tokenLogins []string
 	noCreate    atomic.Bool
+	unverified  atomic.Bool
 	// special holds the folders made with CreateSpecial; once there is one, LIST is
 	// answered here (see session.List).
 	special map[string][]imap.MailboxAttr
@@ -285,6 +286,13 @@ func (x session) List(w *imapserver.ListWriter, ref string, patterns []string, o
 // client make folders would, until it is called with false.
 func (s *Server) RefuseCreate(refuse bool) { s.noCreate.Store(refuse) }
 
+// Unverified makes every login that would succeed, LOGIN and XOAUTH2 alike, answer
+// "NO User is authenticated but not connected." instead, as Outlook.com does for an account
+// the person has not verified yet, until it is called with false.
+func (s *Server) Unverified(on bool) { s.unverified.Store(on) }
+
+var errUnverified = &imap.Error{Type: imap.StatusResponseTypeNo, Text: "User is authenticated but not connected."}
+
 // ChangePassword makes LOGIN accept only p as the account's password from now on, as
 // Proton Mail Bridge does when the account is signed in to it again; sessions already
 // open stay. XOAUTH2 is not affected.
@@ -298,7 +306,10 @@ func (x session) Login(username, password string) error {
 		}
 		password = Password // what the in-memory user was made with
 	}
-	return x.SessionIMAP4rev2.Login(username, password)
+	if err := x.SessionIMAP4rev2.Login(username, password); err != nil || !x.s.unverified.Load() {
+		return err
+	}
+	return errUnverified
 }
 
 // session is the in-memory server's session with CREATE behind RefuseCreate.
@@ -382,6 +393,9 @@ func (a *xoauth2Server) Next(resp []byte) ([]byte, bool, error) {
 	if !ok {
 		a.refused = true
 		return []byte(`{"status":"401","schemes":"bearer","scope":"https://mail.google.com/"}`), false, nil
+	}
+	if s.unverified.Load() {
+		return nil, false, errUnverified
 	}
 	return nil, true, a.x.SessionIMAP4rev2.Login(Username, Password)
 }

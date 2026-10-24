@@ -19,6 +19,12 @@ var (
 	// get in: the person revoked MailRules' access, the grant expired, or the server refused
 	// the access token. Do not retry; the person must sign in to the provider again.
 	ErrReconnect = errors.New("one-click sign-in needs to be renewed")
+	// ErrUnverified means the server took the sign-in but will not open the mailbox until
+	// the person verifies the account with the provider, as Outlook.com answers for a new
+	// account ("User is authenticated but not connected"). It comes wrapped with ErrAuth (a
+	// password login) or ErrReconnect (an access token), so it stops as they do; check it
+	// first to tell the person to verify the account, then connect again.
+	ErrUnverified = errors.New("the provider has not verified the account, so it does not open the mailbox")
 	// ErrTLS means the TLS handshake or certificate check failed. Do not retry. A
 	// certificate the person could accept, or one that replaced the accepted one, is a
 	// *CertError, which wraps ErrTLS.
