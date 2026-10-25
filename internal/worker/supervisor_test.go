@@ -76,12 +76,19 @@ func (e *env) run(t *testing.T) (stop func()) {
 
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+	eventuallyWithin(t, 5*time.Second, what, ok)
+}
+
+// eventuallyWithin is eventually with a deadline sized to the work, for waits that do many
+// store writes and so run slower on Postgres and shared CI runners.
+func eventuallyWithin(t *testing.T, limit time.Duration, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(limit); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
 		if ok() {
 			return
 		}
 	}
-	t.Fatalf("timed out waiting for %s", what)
+	t.Fatalf("timed out after %s waiting for %s", limit, what)
 }
 
 func (e *env) state(t *testing.T, ref mail.MsgRef) string {
