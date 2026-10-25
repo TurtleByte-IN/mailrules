@@ -10,6 +10,10 @@
   let error = $state<{ message: string; path?: string } | null>(null);
   // A failed module sign-in comes back as ?signin_error=<code>; read it once and clear the address bar.
   const signInError = takeSignInError();
+  // With a sign-in module, go straight to its page. Not after a failed sign-in (that would loop back
+  // to the service) nor after this tab signed out (that would sign straight back in): those wait for Continue.
+  const straight = !!auth.signIn && !signInError && !auth.endedHere;
+  if (straight) navigate.replace(auth.signIn!);
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
@@ -27,7 +31,9 @@
 </script>
 
 <main class="mx-auto flex min-h-screen max-w-[420px] flex-col justify-center gap-6 p-6">
-  {#if auth.signIn}
+  {#if straight}
+    <!-- Leaving for the sign-in service. -->
+  {:else if auth.signIn}
     <h1>Sign in</h1>
     {#if signInError}
       <p role="alert" class="rounded bg-trash-bg px-3 py-2 text-trash">{signInError}</p>

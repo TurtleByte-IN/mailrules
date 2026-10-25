@@ -11,7 +11,7 @@ const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
 
 beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
-  Object.assign(auth, { status: 'loading', user: null, members: 1, signIn: null, signOut: null });
+  Object.assign(auth, { status: 'loading', user: null, members: 1, signIn: null, signOut: null, endedHere: false });
 });
 afterEach(() => {
   vi.unstubAllGlobals();

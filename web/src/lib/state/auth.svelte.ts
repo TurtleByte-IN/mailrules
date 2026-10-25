@@ -13,12 +13,18 @@ export const auth = $state<{
   signIn: string | null;
   /** Set when a sign-in module is present: the page to go to after signing out. */
   signOut: string | null;
+  /**
+   * Set when this tab ended the session itself (signing out, deleting the account): the sign-in
+   * screen then waits for a click instead of going straight back to the sign-in service.
+   */
+  endedHere: boolean;
 }>({
   status: 'loading',
   user: null,
   members: 1,
   signIn: null,
   signOut: null,
+  endedHere: false,
 });
 
 /**
@@ -63,8 +69,11 @@ export async function setup(c: authApi.Credentials) {
 }
 export const login = async (c: authApi.Credentials) => signedIn(await authApi.login(c));
 
-/** Full-page navigation, behind an object so tests can watch it. */
-export const navigate = { to: (url: string) => window.location.assign(url) };
+/** Full-page navigation, behind an object so tests can watch it; `replace` leaves no history entry. */
+export const navigate = {
+  to: (url: string) => window.location.assign(url),
+  replace: (url: string) => window.location.replace(url),
+};
 
 export async function logout() {
   await authApi.logout();
@@ -84,6 +93,7 @@ export async function deleteAccount(email: string) {
 function signedOut() {
   const to = auth.signOut;
   auth.user = null;
+  auth.endedHere = true;
   auth.status = 'login';
   forget();
   if (to) navigate.to(to);
