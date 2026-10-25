@@ -215,10 +215,14 @@ func TestCleanupSortOverIMAP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "the run to finish", func() bool {
+	// n emails are n undoable actions, each a few store writes: on Postgres on a shared CI
+	// runner that can take longer than eventually's default 5 s (MAI-286).
+	start := time.Now()
+	eventuallyWithin(t, 30*time.Second, "the run to finish", func() bool {
 		got, _ := w.st.Batch(ctx, b.ID)
 		return got.Status != store.BatchRunning
 	})
+	t.Logf("sorting %d emails took %s", n, time.Since(start).Round(time.Millisecond))
 	if got, _ := w.st.Batch(ctx, b.ID); got.Status != store.BatchDone || got.Done != n || got.Skipped != 0 {
 		t.Fatalf("batch = %+v", got)
 	}
