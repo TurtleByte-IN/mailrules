@@ -59,13 +59,13 @@ It is sent only to the provider of the model being asked. Nothing is sent for em
 
 ## The rule composer
 
-The rule composer writes rules from your words, and rewrites a rule with **Rewrite with AI**. Set its model under **Rule composer model** (`MAILRULES_COMPOSER_MODEL`, default `claude-haiku-4-5`):
+The rule composer writes rules from your words, and rewrites a rule with **Rewrite with AI** and **Improve rule**. Set its model under **Rule composer model** (`MAILRULES_COMPOSER_MODEL`, default `claude-haiku-4-5`):
 
 - a Claude model name, such as `claude-haiku-4-5`, uses the Anthropic API key;
 - `openai:<model>`, such as `openai:gpt-4o-mini`, uses the OpenAI-compatible endpoint and key;
 - `ollama:<model>`, such as `ollama:llama3.2`, uses your Ollama server.
 
-Without a working composer model, **Describe it** and **Rewrite with AI** do not work. **Build with conditions** and **Templates** still do.
+Without a working composer model, **Describe it**, **Rewrite with AI** and **Improve rule** do not work. **Build with conditions** and **Templates** still do.
 
 ## Keys: browser or environment
 

@@ -69,7 +69,9 @@ type Row struct {
 	Review     bool           `json:"review"` // below the threshold: it would go to Needs review
 	Actions    []rules.Action `json:"actions"`
 
-	rule int64 // the rule's id as given to Run, which for a draft is not a saved rule's
+	rule int64       // the rule's id as given to Run, which for a draft is not a saved rule's
+	ref  mail.MsgRef // which email it is, so two runs over the same mail can be lined up
+	list string      // its List-Id, for the evidence a rule is improved from
 }
 
 // Result is a finished test run. Its JSON is the contract's TestResult.
@@ -113,6 +115,11 @@ func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.Sender
 		return Result{}, err
 	}
 	slices.Reverse(refs) // newest first
+	return t.runOn(ctx, rs, senders, refs, progress)
+}
+
+// runOn is Run over the emails refs name, in that order.
+func (t Tester) runOn(ctx context.Context, rs []rules.Rule, senders []rules.SenderRule, refs []mail.MsgRef, progress func(Progress)) (Result, error) {
 	if progress != nil {
 		progress(Progress{Total: len(refs)})
 	}
@@ -122,7 +129,7 @@ func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.Sender
 		done int
 		rows = make([]*Row, len(refs))
 	)
-	err = t.each(ctx, refs, func(ctx context.Context, i int, sum *message.Summary) error {
+	err := t.each(ctx, refs, func(ctx context.Context, i int, sum *message.Summary) error {
 		var out pipeline.Outcome
 		if sum != nil {
 			var err error
@@ -134,6 +141,7 @@ func (t Tester) Run(ctx context.Context, rs []rules.Rule, senders []rules.Sender
 		defer mu.Unlock()
 		if sum != nil {
 			rows[i] = row(sum, out)
+			rows[i].ref = refs[i]
 		}
 		res.ModelCalls += out.Calls
 		res.CostUSD += out.Usage.CostUSD
@@ -273,7 +281,7 @@ func (s *readStats) log(ctx context.Context, account int64) {
 // row shapes what was settled for one email.
 func row(sum *message.Summary, out pipeline.Outcome) *Row {
 	r := &Row{From: sum.From, Subject: sum.Subject, Stage: string(out.Stage), RuleName: out.RuleName, Confidence: out.Confidence,
-		Reason: out.Reason, Review: out.Review, Actions: append([]rules.Action{}, out.Actions...), rule: out.RuleID}
+		Reason: out.Reason, Review: out.Review, Actions: append([]rules.Action{}, out.Actions...), rule: out.RuleID, list: sum.ListID}
 	if !sum.ReceivedAt.IsZero() {
 		at := sum.ReceivedAt.Unix()
 		r.ReceivedAt = &at

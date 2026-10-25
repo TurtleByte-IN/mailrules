@@ -271,7 +271,27 @@ func TestComposeAndReoptimize(t *testing.T) {
 		t.Errorf("re-optimize changed the saved rule: %v", r)
 	}
 	e.refuse(http.MethodPost, "/api/rules/99/compose", `{"text":"x"}`, http.StatusNotFound, "not_found", "")
-	e.refuse(http.MethodPost, "/api/rules/1/compose", `{"text":""}`, http.StatusBadRequest, "invalid_input", "text")
+	e.refuse(http.MethodPost, "/api/rules/1/compose", `{"text":"`+strings.Repeat("x", 4001)+`"}`, http.StatusBadRequest, "invalid_input", "text")
+
+	// Improve rule: no text, so the rule is improved from how it behaved. The draft is tested
+	// alone on the emails the rule was, and the ones it starts or stops taking come back.
+	answer = `{"rules":[{"name":"Food","parts":[],"intent":null,"conditions":{"field":"from_domain","op":"eq","value":"zomato.com"},"exceptions":{},"actions":[{"type":"move","folder":"Food"}],"min_confidence":null,"new_folders":[],"question":null,"conflicts":[]}],"unparsed":[],"changes":["Only Zomato: x."]}`
+	for _, body := range []string{`{}`, `{"text":"  "}`} {
+		res := e.call(http.MethodPost, "/api/rules/1/compose", body, http.StatusOK)
+		conform(t, e.doc, "RuleDraft", res["rule"])
+		if fmt.Sprint(res["changes"]) != "[Only Zomato: x.]" || !strings.Contains(seen, "said nothing more") || !strings.Contains(seen, "<evidence>") {
+			t.Errorf("improve %s = %v\nthe model saw:\n%s", body, res, seen)
+		}
+		matching := res["matching"].([]any)
+		if len(matching) != 1 {
+			t.Fatalf("matching = %v", matching)
+		}
+		m := matching[0].(map[string]any)
+		conform(t, e.doc, "MatchShift", m)
+		if m["change"] != "stops" || m["before"].(map[string]any)["from"] != "noreply@swiggy.in" || m["before"].(map[string]any)["rule_id"] != float64(1) {
+			t.Errorf("shift = %v", m)
+		}
+	}
 
 	// A model that fails, or answers with something that is not a list of rules, is a 502.
 	answer = `"I would rather not"`

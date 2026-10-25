@@ -696,11 +696,12 @@ func putUserSenderRule(ctx context.Context, tx *txn, tenantID int64, sr rules.Se
 }
 
 // Corrections lists the newest corrections made to mail in the mailboxes the viewer sees,
-// newest first, with the example each stored: the pool few-shot retrieval ranks.
+// newest first, with the example each stored: the pool few-shot retrieval ranks, and the
+// evidence a rule is improved from.
 func (s *Store) Corrections(ctx context.Context, v Viewer, limit int) ([]Correction, error) {
 	ctx = WithTenant(ctx, v.TenantID)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.id, c.message_id, COALESCE(c.wrong_rule_id, 0), COALESCE(c.right_rule_id, 0), c.example, c.created_at
+		`SELECT c.id, c.message_id, COALESCE(c.wrong_rule_id, 0), COALESCE(c.right_rule_id, 0), c.kind, c.example, c.created_at
 		 FROM corrections c JOIN messages m ON m.id = c.message_id
 		 WHERE `+inVisible("m.account_id")+` ORDER BY c.id DESC LIMIT ?`, limit, v.tenantArg(), v.userArg())
 	if err != nil {
@@ -710,7 +711,7 @@ func (s *Store) Corrections(ctx context.Context, v Viewer, limit int) ([]Correct
 	var out []Correction
 	for rows.Next() {
 		var c Correction
-		if err := rows.Scan(&c.ID, &c.MessageID, &c.WrongRuleID, &c.RightRuleID, &c.Example, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.MessageID, &c.WrongRuleID, &c.RightRuleID, &c.Kind, &c.Example, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("list corrections: %w", err)
 		}
 		out = append(out, c)

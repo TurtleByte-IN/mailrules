@@ -135,6 +135,7 @@ The **Rules** screen lists every rule in the order it is checked, with what it d
   - **Act when sure above**: this rule's threshold, from 50% to 99%. It applies only to rules with a description.
   - **Edit conditions** opens the rule in the builder.
   - **Rewrite with AI**: say what should change ("also skip anything from my bank"), compare **Current rule** and **New draft**, then **Update rule** or **Discard**.
+  - **Improve rule**: the same, without typing anything. The AI looks at how the rule behaved: the emails you corrected that name it, the emails waiting in **Needs review** for it, and a test of the rule on your last 200 emails. It sees each email's sender, subject and mailing list, never its text. Rewrite with AI looks at the same. You then see **Current rule** and **New draft** side by side, **What changed** and why, and the test emails it **Starts matching** and **Stops matching**, with the reasons. A change to what the rule does, or to **Act when sure above**, is listed apart and is only saved if you tick it. Nothing changes until you click **Update rule**; undo it from the rule's history.
   - **Undo what it did today** puts back every email this rule moved today (see [Undo and activity](./undo-and-activity.md)).
   - **Delete rule**. Past decisions stay in Activity under the old name.
 

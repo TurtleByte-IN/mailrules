@@ -48,13 +48,16 @@
   const trashTo = $derived(settings.value.trash_to_folder ? TRASH_FOLDER : undefined);
   const only = (r: rulesApi.Rule) => accounts.list.find((a) => String(a.id) === String(r.account_id))?.label;
 
-  // The rule whose Rewrite with AI box is open.
+  // The rule whose Rewrite with AI box is open, and how many times Improve rule opened it:
+  // each click opens a fresh panel that asks at once.
   let rewriting = $state(0);
+  let improving = $state(0);
   let editor = $state<HTMLElement>();
 
   async function select(id: number) {
     selectedId = id;
     rewriting = 0;
+    improving = 0;
     result = null;
     refused = null;
     // On a phone the editor sits under the list; bring it into view instead of changing off-screen.
@@ -329,7 +332,8 @@
         <div class="flex flex-wrap items-center gap-2">
           {#if manage}
             <a href="#/compose?edit={sel.id}" class="btn-primary">Edit conditions</a>
-            <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => (rewriting = rewriting === sel.id ? 0 : sel.id)}>Rewrite with AI</button>
+            <button type="button" class="btn font-semibold" aria-expanded={rewriting === sel.id} onclick={() => ((rewriting = rewriting === sel.id ? 0 : sel.id), (improving = 0))}>Rewrite with AI</button>
+            <button type="button" class="btn font-semibold" onclick={() => ((rewriting = sel.id), improving++)}>Improve rule</button>
             <TestRunner run={test} />
           {/if}
           <button type="button" class="btn" disabled={undoing} aria-expanded={askingUndo === sel.id} onclick={() => (askingUndo = sel.id)}>{undoing ? 'Undoing…' : 'Undo what it did today'}</button>
@@ -360,8 +364,8 @@
     {/if}
   </div>
   {#if sel && rewriting === sel.id}
-    {#key sel.id}
-      <Rewrite rule={sel} onclose={() => (rewriting = 0)} />
+    {#key `${sel.id}-${improving}`}
+      <Rewrite rule={sel} improve={improving > 0} onclose={() => ((rewriting = 0), (improving = 0))} />
     {/key}
   {/if}
   {/if}
