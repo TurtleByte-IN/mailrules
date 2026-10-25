@@ -34,6 +34,8 @@ const (
 // and tokens and its model keys after store.EndedSecretsDays, and removes the tenant after
 // store.EndedRemovalDays. Each step is recorded on the tenant's plan, so it is taken once,
 // across ticks and restarts; a plan bought again clears them, and stops the schedule.
+// Before that, it emails the owners of a tenant still in its trial, once,
+// store.TrialReminderDays before the trial ends (remindTrials).
 //
 // A warning missed (the daemon was down) is sent late only while no later one is due:
 // only the latest due warning goes, so a tenant first seen 25 days after its end gets
@@ -67,15 +69,20 @@ func (j PlanEnd) now() time.Time {
 	return time.Now()
 }
 
-// Once takes, for every tenant whose plan has ended, the steps due by now, and returns how
-// many it took. A tenant that fails does not keep the others from their turn; the failures
-// are returned joined.
+// Once sends the trial reminders due by now, then takes, for every tenant whose plan has
+// ended, the steps due by now, and returns how many it took. A tenant that fails does not
+// keep the others from their turn; the failures are returned joined.
 func (j PlanEnd) Once(ctx context.Context) (steps int, err error) {
+	var errs []error
+	reminded, err := j.remindTrials(ctx, j.now())
+	steps += reminded
+	if err != nil {
+		errs = append(errs, err)
+	}
 	ids, err := j.Store.PlanEndTenants(ctx, j.now().Unix())
 	if err != nil {
-		return 0, err
+		return steps, errors.Join(append(errs, err)...)
 	}
-	var errs []error
 	for _, id := range ids {
 		if id == store.SelfHostTenant { // never listed; the self-host tenant has no plan
 			continue
