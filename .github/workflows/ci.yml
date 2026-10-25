@@ -4,10 +4,73 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to a pull request cancels its older run; every push to main runs to the end.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
+  # What a pull request can affect, from the files it changes. A push to main runs everything.
+  changes:
     runs-on: ubuntu-latest
-    # The tests run a second time on Postgres, the hosted build's database.
+    outputs:
+      go: ${{ steps.files.outputs.go }}
+      web: ${{ steps.files.outputs.web }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          go=false web=false
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            go=true web=true
+          else
+            files=$(gh pr diff "$PR" --name-only --repo "${{ github.repository }}")
+            while IFS= read -r f; do
+              case "$f" in
+                "") ;;
+                # The contract is served by the daemon and generates the web client; these two run both.
+                api/openapi.yaml | Makefile | .github/workflows/ci.yml) go=true web=true ;;
+                web/*) web=true ;;
+                # Generated from internal/config and checked against it.
+                docs/guide/settings.md) go=true ;;
+                *.md) ;;
+                *) go=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "go=$go web=$web"
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make fmt vet lint settings-doc-check vuln
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make test
+
+  # The tests a second time on Postgres, the hosted build's database.
+  postgres:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17
@@ -25,18 +88,53 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - run: make test-postgres
+        env:
+          MAILRULES_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: make check
-      - run: make test-postgres
-        env:
-          MAILRULES_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
-      - run: make vuln
-      # `make check` already ran the web app's own checks; this is the build and embed a release does.
+      - run: make web-check
+
+  # The build and embed a release does.
+  build:
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - run: make build
+
+  # The check main's ruleset requires: passes when every job above passed or had nothing to check.
+  check:
+    if: always()
+    needs: [changes, lint, test, postgres, web, build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            case "$r" in
+              success | skipped) ;;
+              *) echo "a job ended $r"; exit 1 ;;
+            esac
+          done
 
   image:
     runs-on: ubuntu-latest
