@@ -13,6 +13,7 @@ Only a mailbox MailRules signs in to for you can say this: one connected with on
 - Signing in as another address is refused, and the mailbox stays as it was.
 - On a hosted MailRules, deleting your sign-in account deletes these mailboxes' sign-ins at once. If you sign in again with the same account within 30 days, each says "Your MailRules sign-in was deleted, so this mailbox's sign-in was deleted with it". Click **Reconnect** to sign in to the provider again. (After **Delete my account** in Settings, signing in again starts a new, empty account instead.)
 - "Outlook.com hasn't verified this account yet": Microsoft accepted your sign-in but won't open the mailbox until you verify a new account. Open Outlook.com, go to Settings → Mail → Forwarding and IMAP, follow its prompt to verify your account, then connect again. Signing in again before that gets the same answer.
+- "IMAP is switched off" on a work Microsoft 365 address: your organisation's admin has turned IMAP off for your mailbox. Ask your IT admin to switch IMAP on for it, then connect again. You can't change this yourself.
 - Google and Microsoft end each IMAP session about once an hour, when its access token expires. That is not this: MailRules reconnects with a new token on its own and the mailbox stays **Live**.
 
 ## A mailbox says Sign-in failed

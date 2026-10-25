@@ -282,8 +282,7 @@ func (s *server) tryAccount(w http.ResponseWriter, r *http.Request, a store.Acco
 	case errors.Is(err, mail.ErrNotPublic): // the name resolved elsewhere when it was dialed
 		return refuse("host_not_public", notPublicMessage, "host")
 	case errors.Is(err, mail.ErrUnverified): // before ErrAuth and ErrReconnect, which it comes wrapped with
-		return refuse("account_unverified", "Outlook.com hasn't verified this account yet, so it won't open the mailbox to MailRules. "+
-			"Open Outlook.com, go to Settings → Mail → Forwarding and IMAP, verify your account there, then connect again.", "")
+		return refuse("account_unverified", unverifiedMessage(a.Username), "")
 	case errors.Is(err, mail.ErrReconnect), errors.Is(err, mail.ErrAuth) && a.Module:
 		// A mailbox a module's form connected logs in with a password the person never saw
 		// (Bridge's): only signing in through the form again fixes it, as for one-click.
@@ -687,4 +686,23 @@ func (s *server) handleAccountFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": foldersJSON(folders)})
+}
+
+// unverifiedMessage says what to do when Microsoft took the sign-in but won't open the
+// mailbox. A personal Microsoft address has not been verified at Outlook.com yet; any other
+// address is a work mailbox whose admin has switched IMAP off, which only the admin can fix.
+func unverifiedMessage(address string) string {
+	if personalMicrosoft(address) {
+		return "Outlook.com hasn't verified this account yet, so it won't open the mailbox to MailRules. " +
+			"Open Outlook.com, go to Settings → Mail → Forwarding and IMAP, verify your account there, then connect again."
+	}
+	return "Microsoft won't open this mailbox to MailRules because IMAP is switched off for it. " +
+		"Ask your IT admin to switch IMAP on for your mailbox, then connect again."
+}
+
+// personalMicrosoft reports whether address is a personal Microsoft one: outlook.com,
+// hotmail.*, live.* or msn.com.
+func personalMicrosoft(address string) bool {
+	_, d, _ := strings.Cut(strings.ToLower(strings.TrimSpace(address)), "@")
+	return d == "outlook.com" || d == "msn.com" || strings.HasPrefix(d, "hotmail.") || strings.HasPrefix(d, "live.")
 }

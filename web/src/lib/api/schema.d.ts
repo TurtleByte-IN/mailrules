@@ -3650,8 +3650,9 @@ export interface components {
          * @description The mail server could not be used with these details: `auth_failed` (path `password`),
          *     `reconnect_needed` (a mailbox a module connected whose provider no longer accepts its sign-in: sign in
          *     again through the module), `account_unverified` (the server took the sign-in but will not open the mailbox
-         *     until the person verifies the account with the provider, as Outlook.com answers for a new account; the message
-         *     says where to verify it), `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
+         *     until the person verifies the account with the provider, as Outlook.com answers for a new account, or until an
+         *     admin switches IMAP on, as Microsoft answers for a work mailbox with IMAP off; the message says which by the
+         *     address: Outlook.com, Hotmail, Live and MSN addresses are told where to verify, any other to ask their IT admin), `tls_failed` (path `host`), `no_folder` (path `watch_folder`), `connection_failed` (path `host`),
          *     or a server certificate to accept (path `cert_fingerprint`, with `cert` set):
          *     `cert_untrusted`, when the system does not trust it and no fingerprint was sent (or
          *     stored), and `cert_changed`, when it is not the one whose fingerprint was sent (or stored).
