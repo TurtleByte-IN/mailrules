@@ -390,10 +390,10 @@ func serveIMAP(ctx context.Context, cfg *config.Config, version string, modules 
 		defer close(summaries)
 		sum.Run(ctx)
 	}()
-	// In a build that sells plans, the end-of-plan job keeps the mailboxes of a tenant whose
-	// plan ended stopped, sends it the warnings through the summary email's mail server
-	// (checkPlanMail made sure there is one), deletes its secrets and then the rest: now, and
-	// then every minute.
+	// In a build that sells plans, the end-of-plan job reminds the owners of a tenant whose
+	// trial ends in 3 days, keeps the mailboxes of a tenant whose plan ended stopped, sends
+	// it the warnings through the summary email's mail server (checkPlanMail made sure there
+	// is one), deletes its secrets and then the rest: now, and then every minute.
 	if ended != nil {
 		sender := sum.Sender
 		ending := make(chan struct{})

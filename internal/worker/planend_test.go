@@ -203,6 +203,7 @@ func TestPlanEndSchedule(t *testing.T) {
 	w1 := "Your MailRules trial has ended"
 	w2 := "MailRules will delete your mailbox passwords on " + d(30)
 	w3 := "MailRules will delete your data on " + d(90)
+	reminder := "owner@example.com: Your MailRules trial ends on " + d(0) // sent before day -1, to the owner only
 	for _, c := range []struct {
 		day     float64
 		sent    []string
@@ -222,8 +223,8 @@ func TestPlanEndSchedule(t *testing.T) {
 		{120, append(append(sent(w1), sent(w2)...), sent(w3)...), 3, true, false},
 	} {
 		w.at(t, j, c.day)
-		if got := subjects(w.sender); !slices.Equal(got, c.sent) {
-			t.Errorf("day %v: sent %q, want %q", c.day, got, c.sent)
+		if got, want := subjects(w.sender), append([]string{reminder}, c.sent...); !slices.Equal(got, want) {
+			t.Errorf("day %v: sent %q, want %q", c.day, got, want)
 		}
 		if exists := w.teamExists(t); exists != c.exists {
 			t.Fatalf("day %v: team exists = %v, want %v", c.day, exists, c.exists)
