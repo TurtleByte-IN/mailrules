@@ -457,15 +457,6 @@ func (s *Store) SenderRules(ctx context.Context, tenantID int64) ([]rules.Sender
 	return out, nil
 }
 
-// HitSenderRule counts one more email settled by a sender rule.
-func (s *Store) HitSenderRule(ctx context.Context, id int64) error {
-	ctx = s.tenantFor(ctx, ofSenderRule, id)
-	if _, err := s.db.ExecContext(ctx, `UPDATE sender_rules SET hits = hits + 1 WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("count sender rule hit: %w", err)
-	}
-	return nil
-}
-
 // DeleteSenderRule removes one of the tenant's sender verdicts; deleting a missing one is
 // not an error.
 func (s *Store) DeleteSenderRule(ctx context.Context, tenantID int64, matchType, value string) error {

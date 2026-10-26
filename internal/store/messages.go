@@ -238,6 +238,30 @@ func (s *Store) SetMessageState(ctx context.Context, id int64, state string, att
 	return nil
 }
 
+// SettleMessage moves a decided message to its final state and, when senderRuleID is not 0,
+// counts one more email settled by that sender rule, in one transaction: whoever sees the
+// message settled sees its sender rule's hit counted too.
+func (s *Store) SettleMessage(ctx context.Context, id int64, state string, attempts int, senderRuleID int64) error {
+	ctx = s.tenantFor(ctx, ofMessage, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("settle message: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	if _, err := tx.ExecContext(ctx, `UPDATE messages SET state = ?, attempts = ?, next_attempt_at = NULL WHERE id = ?`, state, attempts, id); err != nil {
+		return fmt.Errorf("settle message: %w", err)
+	}
+	if senderRuleID != 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE sender_rules SET hits = hits + 1 WHERE id = ?`, senderRuleID); err != nil {
+			return fmt.Errorf("count sender rule hit: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("settle message: %w", err)
+	}
+	return nil
+}
+
 // DueMessages lists an account's failed messages whose retry time has come, oldest first.
 func (s *Store) DueMessages(ctx context.Context, accountID, now int64) ([]Message, error) {
 	ctx = s.tenantFor(ctx, ofAccount, accountID)
