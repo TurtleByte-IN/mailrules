@@ -225,8 +225,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 	sum, err := message.Parse(raw, m.AccountID, p.BodyChars)
 	if err != nil {
 		dec.Reason = "This message could not be read"
-		_, err := p.finish(ctx, m, dec, rules.Result{Review: true})
-		return err
+		return p.finish(ctx, m, dec, rules.Result{Review: true})
 	}
 	if err := contacts.Fill(ctx, p.Store, sum); err != nil {
 		return err
@@ -274,12 +273,7 @@ func (p *Pipeline) attempt(ctx context.Context, m *store.Message) error {
 			p.Spent(u.TokensIn+u.TokensOut, u.CostUSD)
 		}
 	}
-	dec = decisionFrom(out, m.ID, now)
-	dry, err := p.finish(ctx, m, dec, res)
-	if err != nil {
-		return err
-	}
-	return p.settled(ctx, dec, res, m, dry)
+	return p.finish(ctx, m, decisionFrom(out, m.ID, now), res)
 }
 
 // cameBack reports whether m, a row MailRules has done nothing with yet, is an email it
@@ -374,7 +368,6 @@ func (p *Pipeline) SortSaved(ctx context.Context, saved []Saved) (applied []bool
 		m   store.Message
 		dec store.Decision
 		res rules.Result
-		dry bool
 		err error
 	}
 	applied = make([]bool, len(saved))
@@ -405,7 +398,7 @@ func (p *Pipeline) SortSaved(ctx context.Context, saved []Saved) (applied []bool
 		emails[i] = e
 		acts := actsOf(e.res)
 		if p.Exec == nil || !actions.IsMove(acts) {
-			e.dry, e.err = p.finish(ctx, &e.m, e.dec, e.res)
+			e.err = p.finish(ctx, &e.m, e.dec, e.res)
 			continue
 		}
 		if e.dec.ID, err = p.Store.AddDecision(ctx, e.dec, store.StateDecided); err != nil {
@@ -430,20 +423,17 @@ func (p *Pipeline) SortSaved(ctx context.Context, saved []Saved) (applied []bool
 			dry, errs := p.Exec.ApplyMany(ctx, ms, a, batch)
 			for k, i := range moves[a] {
 				e := emails[i]
-				if e.dry, e.err = dry, errs[k]; e.err != nil {
+				if e.err = errs[k]; e.err != nil {
 					e.err = fmt.Errorf("apply: %w", e.err)
 					continue
 				}
-				e.err = p.conclude(ctx, &e.m, e.dec, e.res)
+				e.err = p.conclude(ctx, &e.m, e.dec, e.res, dry)
 			}
 		}
 	}
 	for i, e := range emails {
 		if e == nil {
 			continue
-		}
-		if e.err == nil {
-			e.err = p.settled(ctx, e.dec, e.res, &e.m, e.dry)
 		}
 		if e.err != nil {
 			return applied, e.err
@@ -453,42 +443,26 @@ func (p *Pipeline) SortSaved(ctx context.Context, saved []Saved) (applied []bool
 	return applied, nil
 }
 
-// settled does what follows an email's decision once its actions ran: the sender rule that
-// settled it counts one more hit, and a model's confident pick teaches the sender index.
-// Neither happens when the actions were only recorded in dry-run: dry-run changes nothing
-// that persists as if the actions had been carried out.
-func (p *Pipeline) settled(ctx context.Context, dec store.Decision, res rules.Result, m *store.Message, dry bool) error {
-	if dry {
-		return nil
-	}
-	if res.SenderRuleID != 0 {
-		if err := p.Store.HitSenderRule(ctx, res.SenderRuleID); err != nil {
-			return err
-		}
-	}
-	p.learnFrom(ctx, dec, res, m)
-	return nil
-}
-
-// finish records the decision, acts on it or parks the message in Needs review, sets the
-// final state and publishes the event. A message parked in Needs review is not touched in
-// the mailbox at all. dry reports that the executor recorded the actions as dry-run.
-func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) (dry bool, err error) {
+// finish records the decision, acts on it or parks the message in Needs review, and
+// settles the message (conclude). A message parked in Needs review is not touched in the
+// mailbox at all.
+func (p *Pipeline) finish(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) (err error) {
 	if dec.ID, err = p.Store.AddDecision(ctx, dec, store.StateDecided); err != nil {
-		return false, err
+		return err
 	}
+	dry := false
 	if acts := actsOf(res); p.Exec != nil && len(acts) > 0 {
 		batch, err := p.batch(ctx)
 		if err != nil {
-			return false, err
+			return err
 		}
 		recs, err := p.Exec.Apply(ctx, actions.DecisionRecord{DecisionID: dec.ID, MessageID: m.ID, Ref: m.Location()}, acts, batch)
 		if err != nil {
-			return false, fmt.Errorf("apply: %w", err)
+			return fmt.Errorf("apply: %w", err)
 		}
 		dry = slices.ContainsFunc(recs, func(a actions.ActionRecord) bool { return a.Status == store.ActionDryRun })
 	}
-	return dry, p.conclude(ctx, m, dec, res)
+	return p.conclude(ctx, m, dec, res, dry)
 }
 
 // actsOf is what a decision's actions are once it is settled: none while it waits in Needs
@@ -509,8 +483,13 @@ func (p *Pipeline) batch(ctx context.Context) (int64, error) {
 	return p.Store.LiveBatch(ctx, p.Account.TenantID, p.now())
 }
 
-// conclude sets a decided message's final state once its actions ran and publishes the event.
-func (p *Pipeline) conclude(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result) error {
+// conclude settles a decided message once its actions ran, and only then publishes the
+// event, so whoever sees the message settled sees all it changed: a model's confident pick
+// teaches the sender index first, and the sender rule that settled it counts one more hit in
+// the same write that sets the message's final state. Neither happens when the actions
+// were only recorded in dry-run (dry): dry-run changes nothing that persists as if the
+// actions had been carried out.
+func (p *Pipeline) conclude(ctx context.Context, m *store.Message, dec store.Decision, res rules.Result, dry bool) error {
 	state, event := store.StateSkipped, events.MessageProcessed
 	switch {
 	case res.Review:
@@ -518,7 +497,12 @@ func (p *Pipeline) conclude(ctx context.Context, m *store.Message, dec store.Dec
 	case len(res.Actions) > 0:
 		state = store.StateActed
 	}
-	if err := p.Store.SetMessageState(ctx, m.ID, state, m.Attempts, 0); err != nil {
+	var hit int64
+	if !dry {
+		p.learnFrom(ctx, dec, res, m)
+		hit = res.SenderRuleID
+	}
+	if err := p.Store.SettleMessage(ctx, m.ID, state, m.Attempts, hit); err != nil {
 		return err
 	}
 	m.State, m.NextAttemptAt = state, 0
