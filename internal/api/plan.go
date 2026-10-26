@@ -292,7 +292,8 @@ func (s *server) planJSON(p store.PlanState, full bool) planJSON {
 	}
 	sold := companySignInSold(b, s.portalTeam() != nil)
 	if sold != nil {
-		out.CompanySignIn = &companySignInJSON{Allowed: companySignInAllowed(b, p), AddOn: p.CompanySignInAddOn && !p.Ended(), IncludedSeats: includedSeats(sold)}
+		out.CompanySignIn = &companySignInJSON{Allowed: companySignInAllowed(b, p), AddOn: p.CompanySignInAddOn && !p.Ended(), IncludedSeats: includedSeats(sold),
+			EndsAt: unix(companySignInEnds(p))}
 	}
 	if p.Plan.Plan == store.PlanTrial {
 		left := int(math.Ceil(float64(p.TrialEnd-s.now().Unix()) / (24 * 3600)))
@@ -338,7 +339,11 @@ func (s *server) billingOnly(h http.HandlerFunc) http.HandlerFunc {
 
 // currentPlan reads the signed-in user's tenant's plan, answering for a failure.
 func (s *server) currentPlan(w http.ResponseWriter, r *http.Request) (store.PlanState, bool) {
-	p, err := s.store.TenantPlan(r.Context(), viewer(r).TenantID, s.now().Unix())
+	tenantID := viewer(r).TenantID
+	p, err := s.store.TenantPlan(r.Context(), tenantID, s.now().Unix())
+	if err == nil {
+		p, err = s.checkCompanySignIn(r.Context(), tenantID, p, p)
+	}
 	if err != nil {
 		internalError(w, r, err)
 		return store.PlanState{}, false
@@ -585,16 +590,23 @@ func (h host) SetPlan(ctx context.Context, tenantID int64, p ext.Plan) error {
 	if err != nil {
 		return err
 	}
+	if _, err := h.s.checkCompanySignIn(ctx, tenantID, before, after); err != nil {
+		return err
+	}
 	h.s.applyPlan(ctx, tenantID, before, after)
 	return nil
 }
 
 // Plan returns the tenant's plan as the daemon has it now (ext.Host), with whether it may use
-// company sign-in.
+// company sign-in and, for a tenant that lost it, when it stops (checkCompanySignIn, which
+// may save that date).
 func (h host) Plan(ctx context.Context, tenantID int64) (ext.PlanState, error) {
 	p, err := h.s.store.TenantPlan(ctx, tenantID, h.s.now().Unix())
 	if errors.Is(err, store.ErrNotFound) {
 		return ext.PlanState{}, ext.ErrNoTenant
+	}
+	if err == nil {
+		p, err = h.s.checkCompanySignIn(ctx, tenantID, p, p)
 	}
 	if err != nil {
 		return ext.PlanState{}, err
@@ -607,7 +619,7 @@ func (h host) Plan(ctx context.Context, tenantID int64) (ext.PlanState, error) {
 	}
 	return ext.PlanState{Plan: ext.Plan{Plan: p.Plan.Plan, Interval: p.Interval, Status: p.Status, PeriodEnd: t(p.PeriodEnd), Record: p.Record,
 		Seats: p.Seats, CompanySignInAddOn: p.CompanySignInAddOn}, TrialEnd: t(p.TrialEnd), EndedAt: t(p.EndedAt),
-		CompanySignIn: h.s.portalTeam() != nil && companySignInAllowed(h.s.billing(), p)}, nil
+		CompanySignIn: h.s.portalTeam() != nil && companySignInAllowed(h.s.billing(), p), CompanySignInEnds: t(companySignInEnds(p))}, nil
 }
 
 // Who is the signed-in person the request is for (ext.Host).

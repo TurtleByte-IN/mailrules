@@ -75,6 +75,10 @@ type PlanState struct {
 	// the end-of-plan job deleted the tenant's passwords, tokens and model keys.
 	Warned         int
 	SecretsDeleted bool
+	// CompanySignInEndsAt is when company sign-in stops for a tenant that lost it while it
+	// held it (CheckCompanySignIn): fixed at the loss, however often the plan renews; 0
+	// while it may use it, or never could.
+	CompanySignInEndsAt int64
 }
 
 // Ended reports whether the tenant's plan is over: nothing is sorted and the app is read-only.
@@ -94,13 +98,15 @@ func tenantPlan(ctx context.Context, q querier, tenantID, now int64) (PlanState,
 		plan      sql.NullString
 		periodEnd sql.NullInt64
 		endedAt   sql.NullInt64
+		ssoEnds   sql.NullInt64
 		st        PlanState
 	)
 	err := q.QueryRowContext(ctx,
 		`SELECT t.created_at, p.plan, COALESCE(p.interval, ''), COALESCE(p.status, ''), p.period_end, COALESCE(p.record, ''),
-		        p.ended_at, COALESCE(p.warned, 0), COALESCE(p.secrets_deleted, FALSE), COALESCE(p.seats, 0), COALESCE(p.company_sign_in, FALSE)
+		        p.ended_at, COALESCE(p.warned, 0), COALESCE(p.secrets_deleted, FALSE), COALESCE(p.seats, 0), COALESCE(p.company_sign_in, FALSE),
+		        p.company_sign_in_ends_at
 		 FROM tenants t LEFT JOIN plans p ON p.tenant_id = t.id WHERE t.id = ?`, tenantID).
-		Scan(&created, &plan, &st.Interval, &st.Status, &periodEnd, &st.Record, &endedAt, &st.Warned, &st.SecretsDeleted, &st.Seats, &st.CompanySignInAddOn)
+		Scan(&created, &plan, &st.Interval, &st.Status, &periodEnd, &st.Record, &endedAt, &st.Warned, &st.SecretsDeleted, &st.Seats, &st.CompanySignInAddOn, &ssoEnds)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PlanState{}, ErrNotFound
 	}
@@ -108,7 +114,7 @@ func tenantPlan(ctx context.Context, q querier, tenantID, now int64) (PlanState,
 		return PlanState{}, fmt.Errorf("read the tenant's plan: %w", err)
 	}
 	st.TrialEnd = created + TrialDays*day
-	st.PeriodEnd = periodEnd.Int64
+	st.PeriodEnd, st.CompanySignInEndsAt = periodEnd.Int64, ssoEnds.Int64
 	switch {
 	case !plan.Valid: // never bought: the trial, then ended
 		st.Plan.Plan = PlanTrial

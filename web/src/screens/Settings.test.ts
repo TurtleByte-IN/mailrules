@@ -689,7 +689,7 @@ describe('Company sign-in', () => {
   const card = () => within(screen.getByRole('region', { name: 'Company sign-in' }));
   const as = (role: 'owner' | 'admin' | 'member') => (auth.user = { id: 1, email: role + '@team.test', role });
   const teamPlan = (seats: number, allowed: boolean): PlanInfo => ({
-    plan: 'team', interval: 'month', status: 'active', period_end: null, seats, seats_used: 3, company_sign_in: { allowed, add_on: false, included_seats: 10 },
+    plan: 'team', interval: 'month', status: 'active', period_end: null, seats, seats_used: 3, company_sign_in: { allowed, add_on: false, included_seats: 10, ends_at: null },
     trial_ends_at: 0, trial_days_left: null, ended_at: null, secrets_deleted_at: null, removed_at: null, read_only: false, subscribed: true, note: null,
     plans: [{ id: 'team', name: 'Team', prices: { month: '$8 a seat a month' }, includes: [], mailboxes: 5, ai_emails: 5000, features: ['team'], per_seat: true, min_seats: 2,
       company_sign_in: { included_seats: 10, prices: { month: '$180 a month', year: '$1,800 a year' } } }],

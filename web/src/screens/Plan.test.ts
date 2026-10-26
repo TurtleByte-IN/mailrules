@@ -232,7 +232,7 @@ describe('the Team plan, sold by the seat', () => {
 describe('company sign-in on the Team plan', () => {
   const ssoTerms = { ...teamTerms, company_sign_in: { included_seats: 10, prices: { month: '$180 a month', year: '$1,800 a year' } } };
   const team = (seats: number, cs: { allowed: boolean; add_on: boolean }) =>
-    pro({ plan: 'team', seats, seats_used: 3, plans: [...info().plans, ssoTerms], company_sign_in: { ...cs, included_seats: 10 } });
+    pro({ plan: 'team', seats, seats_used: 3, plans: [...info().plans, ssoTerms], company_sign_in: { ...cs, included_seats: 10, ends_at: null } });
   const section = async () => within(await screen.findByRole('group', { name: 'Company sign-in' }));
 
   it('offers the add-on below 10 seats, at the plan’s interval, and waits for the billing service', async () => {

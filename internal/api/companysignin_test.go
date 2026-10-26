@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TurtleByte-IN/mailrules/ext"
 	"github.com/TurtleByte-IN/mailrules/internal/store"
@@ -410,5 +411,83 @@ func TestCheckModulesCompanySignIn(t *testing.T) {
 				t.Errorf("CheckModules = %v, want %q", err, c.want)
 			}
 		})
+	}
+}
+
+// When a team loses company sign-in the daemon saves when it stops: the end of the paid
+// period in force at the loss, kept however often the plan renews, cleared when it comes
+// back, or the day the plan ended. Host.Plan and GET /api/plan both report it. A loss a
+// release brings (terms that no longer include the team's seats) gets the period's end the
+// first time Host.Plan sees it.
+func TestCompanySignInEnds(t *testing.T) {
+	fp := &fakePortal{state: ext.ConnectionActive}
+	w := newTeamWorldOf(t, ssoModules(fp))
+	ck := w.owner.ck
+	s := &server{Options: Options{Store: w.owner.st, Modules: w.modules}, store: w.owner.st, now: ck.now}
+	p1, p2, p3 := ck.t.Add(30*24*time.Hour), ck.t.Add(60*24*time.Hour), ck.t.Add(90*24*time.Hour)
+	team := func(seats int, addOn bool, end time.Time) ext.Plan {
+		return ext.Plan{Plan: store.PlanTeam, Interval: store.IntervalMonth, Status: store.StatusActive, Record: "sub_t",
+			Seats: seats, CompanySignInAddOn: addOn, PeriodEnd: end}
+	}
+	doc := spec(t)
+	endedNow := time.Unix(1, 0) // the moment the plan is reported ended
+	for _, c := range []struct {
+		name string
+		p    ext.Plan
+		want time.Time // zero: none
+	}{
+		{"10 seats", team(10, false, p1), time.Time{}},
+		{"down to 9 seats", team(9, false, p1), p1},
+		{"renewed at 9 seats", team(9, false, p2), p1},
+		{"the add-on bought", team(9, true, p2), time.Time{}},
+		{"moved to Pro", ext.Plan{Plan: store.PlanPro, Interval: store.IntervalMonth, Status: store.StatusActive, Record: "sub_t", PeriodEnd: p2}, p2},
+		{"the plan ended before the date", ext.Plan{Plan: store.PlanEnded, Record: "sub_t"}, endedNow},
+		{"bought again", team(10, false, p3), time.Time{}},
+		{"the plan ended", ext.Plan{Plan: store.PlanEnded, Record: "sub_t"}, endedNow},
+	} {
+		if err := (host{s}).SetPlan(t.Context(), w.tenant, c.p); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if c.want.Equal(endedNow) {
+			c.want = ck.t
+		}
+		got, err := host{s}.Plan(t.Context(), w.tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.CompanySignInEnds.Equal(c.want) || got.CompanySignIn != c.want.IsZero() {
+			t.Errorf("%s: Host.Plan = may use %t, ends %v; want ends %v", c.name, got.CompanySignIn, got.CompanySignInEnds, c.want)
+		}
+		r := w.owner.call(http.MethodGet, "/api/plan", "", http.StatusOK)
+		conform(t, doc, "PlanInfo", r)
+		var want any
+		if !c.want.IsZero() {
+			want = float64(c.want.Unix())
+		}
+		if ends := r["company_sign_in"].(map[string]any)["ends_at"]; ends != want {
+			t.Errorf("%s: GET /api/plan company_sign_in.ends_at = %v, want %v", c.name, ends, want)
+		}
+		ck.t = ck.t.Add(time.Hour)
+	}
+
+	// A release that includes company sign-in only from 20 seats: the team at 10 loses it,
+	// and the first check saves the end of its period.
+	if err := (host{s}).SetPlan(t.Context(), w.tenant, team(10, false, p3)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (host{s}).Plan(t.Context(), w.tenant); err != nil || !got.CompanySignIn {
+		t.Fatalf("10 seats: Host.Plan = %+v, %v", got, err)
+	}
+	ms := ssoModules(fp)(w.ft, w.fb)
+	terms := ms[1].Billing.Plans[store.PlanTeam]
+	terms.CompanySignIn = &ext.CompanySignInTerms{IncludedSeats: 20, Prices: terms.CompanySignIn.Prices}
+	ms[1].Billing.Plans[store.PlanTeam] = terms
+	released := &server{Options: Options{Store: w.owner.st, Modules: ms}, store: w.owner.st, now: ck.now}
+	for range 2 {
+		got, err := host{released}.Plan(t.Context(), w.tenant)
+		if err != nil || got.CompanySignIn || !got.CompanySignInEnds.Equal(p3) {
+			t.Errorf("after the release: Host.Plan = may use %t, ends %v, %v; want ends %v", got.CompanySignIn, got.CompanySignInEnds, err, p3)
+		}
+		ck.t = ck.t.Add(24 * time.Hour)
 	}
 }
