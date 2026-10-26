@@ -529,10 +529,19 @@ type PlanState struct {
 	// CompanySignInTerms.IncludedSeats paid seats or more, or with the add-on; in one that
 	// does not, every tenant; false in a build that does not offer company sign-in. It turns
 	// false as soon as a plan without it is reported (fewer seats and no add-on, another
-	// plan, the plan ended): the daemon then offers the setup link no more and changes
-	// nothing at the sign-in service, where a connection already made stays as it is. What
-	// becomes of it is the sign-in module's to decide.
+	// plan, the plan ended), or the build's terms no longer include it: the daemon then
+	// offers the setup link no more and changes nothing at the sign-in service, where a
+	// connection already made stays as it is. What becomes of it is the sign-in module's to
+	// decide, by CompanySignInEnds.
 	CompanySignIn bool
+	// CompanySignInEnds is when company sign-in stops for a tenant that lost it (in a build
+	// that sells plans): the end of the paid period in force at the moment it lost it, saved
+	// then by the daemon and fixed however often the plan renews, or the day the plan ended
+	// when that is sooner. A loss no report brought (a release that changed the terms) gets
+	// its date the first time Host.Plan sees it. Zero while CompanySignIn is true, or for a
+	// tenant that never had it; cleared if it comes back. Time the grace by this, never by
+	// PeriodEnd, which moves at every renewal.
+	CompanySignInEnds time.Time
 }
 
 // Who is the signed-in person a request is for (Host.Who).
@@ -1307,7 +1316,9 @@ type Host interface {
 	Who(r *http.Request) Who
 	// Plan returns the tenant's plan as the daemon has it now (Module.Billing): the one last
 	// set with SetPlan, the trial while no plan was bought within TrialDays of the tenant's
-	// creation, else PlanEnded. ErrNoTenant for a tenant that does not exist.
+	// creation, else PlanEnded. ErrNoTenant for a tenant that does not exist. For a tenant
+	// that just lost company sign-in it saves when that stops (PlanState.CompanySignInEnds),
+	// so it may write to the database.
 	Plan(ctx context.Context, tenantID int64) (PlanState, error)
 	// SetPlan records the tenant's plan as the billing service reports it, such as from the
 	// module's webhook route (the tenant comes from the reference Checkout gave the

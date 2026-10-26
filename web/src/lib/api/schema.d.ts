@@ -3160,6 +3160,11 @@ export interface components {
                 add_on: boolean;
                 /** @description The paid Team seats company sign-in comes with; null: only with the add-on */
                 included_seats: number | null;
+                /**
+                 * Format: int64
+                 * @description For a team that lost company sign-in: when it stops, the end of the paid period in force when it was lost (fixed however often the plan renews), or the day the plan ended if sooner. null while `allowed`, or for a team that never had it
+                 */
+                ends_at: number | null;
             } | null;
             /**
              * Format: int64

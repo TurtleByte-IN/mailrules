@@ -3353,11 +3353,12 @@ components:
         company_sign_in:
           type: [object, 'null']
           description: 'Where the tenant stands with company sign-in, for every role; null in a build that does not sell it (no sign-in module offers it, or the Team plan does not sell it)'
-          required: [allowed, add_on, included_seats]
+          required: [allowed, add_on, included_seats, ends_at]
           properties:
             allowed: { type: boolean, description: 'The tenant may use company sign-in now (`features.company_sign_in`): a Team plan that runs with `included_seats` paid seats or more, or with the add-on' }
             add_on: { type: boolean, description: 'The company sign-in add-on is on the Team subscription' }
             included_seats: { type: [integer, 'null'], description: 'The paid Team seats company sign-in comes with; null: only with the add-on' }
+            ends_at: { type: [integer, 'null'], format: int64, description: 'For a team that lost company sign-in: when it stops, the end of the paid period in force when it was lost (fixed however often the plan renews), or the day the plan ended if sooner. null while `allowed`, or for a team that never had it' }
         trial_ends_at: { type: integer, format: int64, description: '14 days after the tenant was made' }
         trial_days_left: { type: [integer, 'null'], description: 'Whole days left, rounded up, while in the trial; null otherwise' }
         ended_at: { type: [integer, 'null'], format: int64, description: 'When the trial or plan ended; null while one runs' }

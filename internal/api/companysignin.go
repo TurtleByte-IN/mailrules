@@ -20,7 +20,8 @@ import (
 // When a tenant may use it no more (fewer seats and no add-on, another plan, the plan
 // ended), it loses the setup link and the Company sign-in section, and that is all: the
 // daemon changes nothing at the sign-in service, where a connection made stays, and the
-// sign-in module decides what becomes of it (ext.PlanState.CompanySignIn). Plan and billing
+// sign-in module decides what becomes of it (ext.PlanState.CompanySignIn), by the date the
+// daemon saves at the loss (checkCompanySignIn, ext.PlanState.CompanySignInEnds). Plan and billing
 // warns the Owner before a change of theirs that ends it.
 
 // toSetUpSignIn is what a refusal says the Company sign-in section is for.
@@ -49,6 +50,41 @@ func companySignInAllowed(b *ext.Billing, p store.PlanState) bool {
 	}
 	c := b.Plans[p.Plan.Plan].CompanySignIn
 	return c != nil && (p.CompanySignInAddOn || c.IncludedSeats > 0 && p.Seats >= c.IncludedSeats)
+}
+
+// checkCompanySignIn records, in a build that offers company sign-in and sells plans,
+// whether the tenant in p may use it now, and returns p with when it stops for a tenant
+// that lost it (store.CheckCompanySignIn). before is the plan as it stood before a report
+// that changed it into p, or p itself: a loss stops sign-in at the end of the paid period in
+// force before it, or the day the plan ended. A loss no report brought (a release that
+// changed the terms) gets its date the first time this sees it.
+func (s *server) checkCompanySignIn(ctx context.Context, tenantID int64, before, p store.PlanState) (store.PlanState, error) {
+	if s.portalTeam() == nil || s.billing() == nil {
+		return p, nil
+	}
+	lossEnd := s.now().Unix()
+	switch {
+	case p.Ended():
+		lossEnd = p.EndedAt
+	case !before.Ended() && before.PeriodEnd != 0:
+		lossEnd = before.PeriodEnd
+	}
+	end, err := s.store.CheckCompanySignIn(ctx, tenantID, companySignInAllowed(s.billing(), p), lossEnd)
+	if err != nil {
+		return p, err
+	}
+	p.CompanySignInEndsAt = end
+	return p, nil
+}
+
+// companySignInEnds is when company sign-in stops for the tenant in p that lost it, unix
+// seconds; 0 while it may use it or never could. A plan that ended before the date saved at
+// the loss stops it on the day it ended.
+func companySignInEnds(p store.PlanState) int64 {
+	if e := p.CompanySignInEndsAt; e != 0 && p.Ended() && p.EndedAt < e {
+		return p.EndedAt
+	}
+	return p.CompanySignInEndsAt
 }
 
 // companySignInSold are the terms the build sells company sign-in on: the Team plan's, in a
@@ -243,6 +279,9 @@ type companySignInJSON struct {
 	Allowed       bool `json:"allowed"`        // the tenant may use it now (features.company_sign_in)
 	AddOn         bool `json:"add_on"`         // the add-on is on its subscription
 	IncludedSeats *int `json:"included_seats"` // the paid Team seats it comes with; null: only with the add-on
+	// EndsAt is when company sign-in stops for a team that lost it (companySignInEnds); null
+	// while allowed or never allowed.
+	EndsAt *int64 `json:"ends_at"`
 }
 
 // companySignInTermsJSON is how the Team plan sells company sign-in, for an Owner.
